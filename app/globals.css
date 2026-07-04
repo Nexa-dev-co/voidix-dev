@@ -860,6 +860,254 @@ body {
   }
 }
 
+/* ─── Works — the field of project meteors (homepage) ───────────── */
+
+/* The works field is an overlay INSIDE the hero section (like .services-deck), not a section of
+   its own — the hero's single pin fills the square, cycles the fleet, then reveals this on the
+   same black and cycles the projects. Hidden until that reveal (the hero pin fades it in via
+   autoAlpha), so there's no second pin and no seam. A solid backdrop keeps it on its own black. */
+.works-field {
+  position: absolute;
+  inset: 0;
+  isolation: isolate;
+  z-index: 30; /* above the services deck (z 25); its opaque backdrop covers the fixed sun in works */
+  overflow: hidden;
+  opacity: 0;
+}
+
+.works-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: var(--bg);
+}
+
+/* WebGL layer — accepts the pointer so the field can be dragged to look around. */
+.field-canvas-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.field-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.field-canvas:active {
+  cursor: grabbing;
+}
+
+/* Loading — ring + count while the meteor textures stream in (reuses the fleet-spin keyframe). */
+.field-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s ease;
+}
+
+.field-loading.is-visible {
+  opacity: 1;
+}
+
+.field-loading-ring {
+  width: 2.125rem;
+  height: 2.125rem;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0, 229, 255, 0.18);
+  border-top-color: var(--accent);
+  animation: fleet-spin 0.9s linear infinite;
+}
+
+.field-loading-label {
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-tiny);
+  font-weight: 400;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(0, 229, 255, 0.6);
+}
+
+/* Overlay — head (eyebrow + active detail) above, the arrow nav pinned to the bottom. Ignores the
+   pointer so drag-to-look reaches the canvas; only the nav row re-enables it. */
+.works-overlay {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100vh;
+  padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.5rem, 5vw, 5rem) clamp(1.75rem, 5vh, 3.25rem);
+  pointer-events: none;
+}
+
+.works-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: clamp(1.5rem, 5vw, 5rem);
+}
+
+.works-head-intro {
+  max-width: 28.75rem;
+}
+
+.works-title {
+  margin-top: 1rem;
+  font-weight: 800;
+  font-size: clamp(2rem, 4.4vw, 3.6rem);
+  line-height: 1.03;
+  letter-spacing: -0.03em;
+  color: var(--fg);
+}
+
+/* Active-project detail — top-right. Re-mounts on selection (keyed in JSX), so it re-reveals. */
+.works-detail {
+  max-width: 34ch;
+  text-align: left;
+  animation: works-detail-in 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.works-detail-title {
+  font-weight: 700;
+  font-size: clamp(1.4rem, 2.4vw, 2.1rem);
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--fg);
+  margin-bottom: 0.4rem;
+}
+
+.works-detail-meta {
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 1rem;
+}
+
+.works-detail-copy {
+  margin-bottom: 1.125rem;
+  font-size: clamp(0.82rem, 1vw, 0.92rem);
+  line-height: 1.75;
+  color: rgba(235, 232, 224, 0.7);
+}
+
+.works-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.works-detail-tag {
+  padding: 0.3125rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999rem;
+  background: rgba(235, 232, 224, 0.02);
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.04em;
+  color: rgba(235, 232, 224, 0.6);
+}
+
+@keyframes works-detail-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Arrow nav — two arrows step the focus; a counter sits between them. The overlay's only
+   interactive zone (drag-to-look is handled by the canvas beneath). */
+.works-nav {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(1.25rem, 4vw, 2.5rem);
+  pointer-events: auto;
+}
+
+.works-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(235, 232, 224, 0.02);
+  color: var(--fg);
+  cursor: pointer;
+  transition: border-color 0.3s ease, color 0.3s ease, background 0.3s ease, transform 0.15s ease;
+}
+
+.works-arrow:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0, 229, 255, 0.06);
+}
+
+.works-arrow:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.works-arrow:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0.25rem;
+}
+
+.works-arrow:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.works-counter {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-family: var(--font-syne), sans-serif;
+  letter-spacing: 0.05em;
+}
+
+.works-counter-current {
+  font-weight: 700;
+  font-size: clamp(1rem, 1.6vw, 1.35rem);
+  color: var(--accent);
+}
+
+.works-counter-sep {
+  color: var(--muted);
+}
+
+.works-counter-total {
+  font-size: var(--fs-small);
+  color: var(--muted);
+}
+
+/* Stacked layout — intro + detail stack; the arrow nav stays a centred row. */
+@media (max-width: 51.25em) {
+  .works-head {
+    flex-direction: column;
+  }
+
+  .works-detail {
+    max-width: none;
+  }
+}
+
 /* ─── Reduced motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
