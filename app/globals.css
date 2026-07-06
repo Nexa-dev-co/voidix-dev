@@ -445,6 +445,11 @@ body {
   --hero-accent: #ff8a1a;
   --hero-accent-rgb: 255 138 26;
   --hero-accent-bright-rgb: 255 205 140;
+
+  /* Muted graphite for the ambient constellation frame — dark dust on the cream (read by
+     useConstellationFrame via getComputedStyle). One place to retune the dust colour. */
+  --hero-dust: #1a1d26;
+  --hero-dust-rgb: 26 29 38;
 }
 
 /* Main content block — expands to fill, centres the title. No z-index here on purpose:
@@ -590,8 +595,13 @@ body {
    so nothing bleeds over the (transparent) fleet layers. (The ring's own fade already zeroes it by
    the time services begins; this just keeps it there.) */
 .hero-section.is-services .hero-hud,
-.hero-section.is-services .hero-sun-frame {
+.hero-section.is-services .hero-sun-frame,
+.hero-section.is-services .constellation-dust {
   opacity: 0;
+}
+/* The dust is a canvas that draws its own alpha; a transition keeps the services fade smooth. */
+.constellation-dust {
+  transition: opacity 0.4s ease;
 }
 
 /* ─── Hero instrument HUD ─────────────────────────────────────────── */

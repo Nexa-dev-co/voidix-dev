@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { useHeroAnimation } from '@/lib/hooks/useHeroAnimation';
 import { useHeroInstruments } from '@/lib/hooks/useHeroInstruments';
 import FluidCursor from '@/components/effects/FluidCursor/FluidCursor';
+import ConstellationFrame from '@/components/effects/ConstellationFrame/ConstellationFrame';
 import HeroInstruments from '@/components/sections/Hero/HeroInstruments/HeroInstruments';
 import ServicesDeck from '@/components/sections/ServicesDeck/ServicesDeck';
 import WorksField from '@/components/sections/WorksField/WorksField';
@@ -39,6 +40,10 @@ export default function Hero() {
       {/* Fluid ink trail — scoped to the hero. Its absolute canvases sit between the
           tagline (below, so the ink inverts it) and the headline/sun (above). */}
       <FluidCursor />
+
+      {/* Ambient constellation frame — graphite stars + faint links in a border band, blooming from
+          the centre on reveal then drifting. Sits above the trail, below the headline (z 4). */}
+      <ConstellationFrame />
 
       {/* Telemetry HUD flanking the headline (labels invert like the headline; values stay cyan). */}
       <HeroInstruments />
