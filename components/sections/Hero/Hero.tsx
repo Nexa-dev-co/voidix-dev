@@ -2,7 +2,9 @@
 
 import { useRef, useState } from 'react';
 import { useHeroAnimation } from '@/lib/hooks/useHeroAnimation';
+import { useHeroInstruments } from '@/lib/hooks/useHeroInstruments';
 import FluidCursor from '@/components/effects/FluidCursor/FluidCursor';
+import HeroInstruments from '@/components/sections/Hero/HeroInstruments/HeroInstruments';
 import ServicesDeck from '@/components/sections/ServicesDeck/ServicesDeck';
 import WorksField from '@/components/sections/WorksField/WorksField';
 import { DECK_SERVICES } from '@/components/sections/ServicesDeck/deckServices';
@@ -27,12 +29,19 @@ export default function Hero() {
     projectCount: WORKS_PROJECTS.length,
   });
 
+  // Instrument HUD + the square's ring: entrance in lockstep with the headline, plus the live
+  // ticking. Kept separate from the pin — it only reads --nav-progress-home for the ring fade.
+  useHeroInstruments({ sectionRef: heroSectionRef });
+
   return (
     <section ref={heroSectionRef} className="hero-section">
 
       {/* Fluid ink trail — scoped to the hero. Its absolute canvases sit between the
           tagline (below, so the ink inverts it) and the headline/sun (above). */}
       <FluidCursor />
+
+      {/* Telemetry HUD flanking the headline (labels invert like the headline; values stay cyan). */}
+      <HeroInstruments />
 
       <div className="hero-main">
         <div
@@ -50,10 +59,19 @@ export default function Hero() {
               <span className="hero-mask-inner hero-letter">W</span>
             </span>
 
-            {/* Sun square — only the black fill lives here; the sun is the shared
-                HeroSun overlay that lands on top of this slot. */}
-            <div ref={heroCardRef} className="hero-sun-card" data-hero-card>
-              <div className="hero-sun-fill" />
+            {/* Sun square + its neon frame. The slot wrapper only reserves the square's footprint in
+                the flex row (shrink-to-fit, no transform) so the card stays the untransformed anchor
+                HeroSun / useHeroAnimation measure. The frame is a sibling OUTSIDE the card (the card
+                has overflow:hidden), hugging it just outside its edge. Outer frame opacity fades with
+                the fill (--nav-progress-home); the inner frame animates in with the headline. */}
+            <div className="hero-sun-slot">
+              <div className="hero-sun-frame" aria-hidden="true">
+                <div className="hero-sun-frame-inner" />
+              </div>
+
+              <div ref={heroCardRef} className="hero-sun-card" data-hero-card>
+                <div className="hero-sun-fill" />
+              </div>
             </div>
 
             <span className="hero-mask">
