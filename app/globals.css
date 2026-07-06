@@ -437,6 +437,14 @@ body {
      white) over the dark ink trail. Push toward #fff for a whiter/stronger invert,
      toward mid-grey for a darker/softer one (which also lifts the resting black a touch). */
   --hero-invert-text: #c0c0c0;
+
+  /* Accent for the hero's own additions (HUD values, neon frame, orbital arcs) — a warm amber that
+     pops on the cream and inverts cleanly, kept separate from the site's brand cyan (--accent) so
+     the navbar/sun/deck stay cyan. Change these two lines to reskin all of today's hero accents.
+     The -rgb triplet feeds rgb(... / alpha) for the glows; -bright is the pale core of the neon. */
+  --hero-accent: #ff8a1a;
+  --hero-accent-rgb: 255 138 26;
+  --hero-accent-bright-rgb: 255 205 140;
 }
 
 /* Main content block — expands to fill, centres the title. No z-index here on purpose:
@@ -637,7 +645,7 @@ body {
   font-size: clamp(0.8125rem, 0.66rem + 0.55vw, 1.0625rem); /* 13 → 17px */
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--hero-accent);
 }
 .hud-row {
   display: flex;
@@ -659,8 +667,8 @@ body {
   width: 0.5rem;
   height: 0.5rem;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0.55rem rgba(0, 229, 255, 0.75);
+  background: var(--hero-accent);
+  box-shadow: 0 0 0.55rem rgb(var(--hero-accent-rgb) / 0.75);
 }
 
 /* Hairline divider — a short blended line between groups. */
@@ -706,7 +714,7 @@ body {
 .hud-orbit {
   position: relative;
   z-index: 5;
-  color: var(--accent);
+  color: var(--hero-accent);
   line-height: 0;
 }
 .hud-reticle svg {
@@ -766,12 +774,12 @@ body {
 .hero-sun-frame-inner {
   position: absolute;
   inset: 0;
-  border: 1.5px solid rgba(120, 244, 255, 0.95);
+  border: 1.5px solid rgb(var(--hero-accent-bright-rgb) / 0.95);
   box-shadow:
-    0 0 0.3rem rgba(120, 244, 255, 0.95),
-    0 0 0.85rem rgba(0, 229, 255, 0.6),
-    0 0 2.2rem rgba(0, 229, 255, 0.32),
-    inset 0 0 0.7rem rgba(0, 229, 255, 0.3);
+    0 0 0.3rem rgb(var(--hero-accent-bright-rgb) / 0.95),
+    0 0 0.85rem rgb(var(--hero-accent-rgb) / 0.6),
+    0 0 2.2rem rgb(var(--hero-accent-rgb) / 0.32),
+    inset 0 0 0.7rem rgb(var(--hero-accent-rgb) / 0.3);
   transform-origin: center center;
   animation: sun-frame-pulse 3.2s ease-in-out infinite;
 }
@@ -787,9 +795,9 @@ body {
     from var(--frame-angle),
     transparent 0deg,
     transparent 235deg,
-    rgba(120, 244, 255, 0.8) 300deg,
+    rgb(var(--hero-accent-bright-rgb) / 0.8) 300deg,
     #ffffff 322deg,
-    rgba(120, 244, 255, 0.8) 344deg,
+    rgb(var(--hero-accent-bright-rgb) / 0.8) 344deg,
     transparent 360deg
   );
   /* Cut out the centre so only the border ring shows the gradient. */
@@ -810,17 +818,17 @@ body {
   0%,
   100% {
     box-shadow:
-      0 0 0.3rem rgba(120, 244, 255, 0.95),
-      0 0 0.85rem rgba(0, 229, 255, 0.6),
-      0 0 2.2rem rgba(0, 229, 255, 0.32),
-      inset 0 0 0.7rem rgba(0, 229, 255, 0.3);
+      0 0 0.3rem rgb(var(--hero-accent-bright-rgb) / 0.95),
+      0 0 0.85rem rgb(var(--hero-accent-rgb) / 0.6),
+      0 0 2.2rem rgb(var(--hero-accent-rgb) / 0.32),
+      inset 0 0 0.7rem rgb(var(--hero-accent-rgb) / 0.3);
   }
   50% {
     box-shadow:
-      0 0 0.5rem rgba(120, 244, 255, 1),
-      0 0 1.3rem rgba(0, 229, 255, 0.78),
-      0 0 3rem rgba(0, 229, 255, 0.46),
-      inset 0 0 1rem rgba(0, 229, 255, 0.42);
+      0 0 0.5rem rgb(var(--hero-accent-bright-rgb) / 1),
+      0 0 1.3rem rgb(var(--hero-accent-rgb) / 0.78),
+      0 0 3rem rgb(var(--hero-accent-rgb) / 0.46),
+      inset 0 0 1rem rgb(var(--hero-accent-rgb) / 0.42);
   }
 }
 
