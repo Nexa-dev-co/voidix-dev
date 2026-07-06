@@ -3,7 +3,6 @@ import {
   CONSTELLATION_CONFIG,
   CONSTELLATION_CONFIG_LOW_POWER,
   LOW_POWER_MAX_WIDTH,
-  HAZE_RGB,
   DOT_PALETTE,
   LINE_RGB,
   type ConstellationConfig,
@@ -22,19 +21,15 @@ const FORWARD_NEIGHBOURS: ReadonlyArray<readonly [number, number]> = [
 ];
 
 // Deterministic per-cell hash (ported from the FluidCursor DISPLAY_SHADER starField): stable across
-// frames + resizes, so a star's placement, colour, drift phase and twinkle never jump.
+// frames + resizes, so a star's placement, colour, drift phase and fill noise never jump.
 function hash(x: number, y: number): number {
   const value = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
   return value - Math.floor(value);
 }
 
-// Standard normal sample (Box–Muller) — used to cluster the nebula blobs around the centre.
-function gaussian(): number {
-  let u = 0;
-  let v = 0;
-  while (u === 0) u = Math.random();
-  while (v === 0) v = Math.random();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
+  return t * t * (3 - 2 * t);
 }
 
 interface Star {
@@ -45,7 +40,9 @@ interface Star {
   driftPhaseX: number;
   driftPhaseY: number;
   twinklePhase: number;
-  distanceFromCentre: number;
+  /** Position in the fill sequence (0 = first to light, ~1 = last). Sides fill first, then the top
+   *  and bottom close toward their centres; a per-star noise offset makes the front seep like liquid. */
+  fillOrder: number;
   paletteIndex: number;
   // Per-frame scratch.
   x: number;
@@ -55,11 +52,11 @@ interface Star {
 }
 
 /**
- * Drives the hero's constellation effect. The screen starts empty; on REVEAL_EVENT a growth front
- * expands from the exact centre outward, revealing two zones as it passes: a soft smoky galaxy-dust
- * haze in the middle (behind the headline) and connected neon "zodiac" stars at the page edges. The
- * spread-and-connect takes ~growthSeconds, then it holds with gentle drift + twinkle. Frozen over the
- * services/works overlays, idled off-screen, reduced-motion safe (one static, fully-grown frame).
+ * Drives the hero's constellation frame: a photo-frame border of connected blue "zodiac" stars. The
+ * screen starts empty; on REVEAL_EVENT the frame fills in with a liquid-like flowing front that
+ * starts at the left & right sides and closes at the top-centre and bottom-centre over ~growthSeconds,
+ * then holds with gentle drift + twinkle. Frozen over the services/works overlays, idled off-screen,
+ * reduced-motion safe (one static, fully-filled frame).
  */
 export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | null>) {
   useEffect(() => {
@@ -77,9 +74,11 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
 
     const pixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
 
+    // Front travels a touch past 1 so the last (centre) stars fully clear the feathered front.
+    const revealCeiling = 1 + config.fillFeather + config.fillNoise;
+
     let viewportWidth = 0;
     let viewportHeight = 0;
-    let halfDiagonal = 0;
 
     // ── Soft neon dot sprites — one per palette colour, built once at device resolution ──
     const buildDotSprite = (rgb: string) => {
@@ -102,58 +101,43 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
     };
     let spriteCssSize = config.starRadiusPx * config.haloRadiusMultiple * 2;
     let colourSprites = DOT_PALETTE.map(buildDotSprite);
-
-    // ── Nebula haze — a soft cloud of blobs clustered around the centre, built once (downscaled) ──
-    let nebula = document.createElement('canvas');
-    const buildNebula = () => {
-      const nebulaWidth = Math.max(1, Math.round(viewportWidth * config.hazeRenderScale));
-      const nebulaHeight = Math.max(1, Math.round(viewportHeight * config.hazeRenderScale));
-      nebula = document.createElement('canvas');
-      nebula.width = nebulaWidth;
-      nebula.height = nebulaHeight;
-      const nebulaContext = nebula.getContext('2d');
-      if (!nebulaContext) return;
-
-      const centreX = nebulaWidth / 2;
-      const centreY = nebulaHeight / 2;
-      const sigma = Math.min(nebulaWidth, nebulaHeight) * config.hazeSpreadRatio;
-      for (let index = 0; index < config.hazeBlobCount; index += 1) {
-        const blobX = centreX + gaussian() * sigma;
-        const blobY = centreY + gaussian() * sigma;
-        const radius =
-          (config.hazeBlobMinPx + Math.random() * (config.hazeBlobMaxPx - config.hazeBlobMinPx)) *
-          config.hazeRenderScale;
-        const gradient = nebulaContext.createRadialGradient(blobX, blobY, 0, blobX, blobY, radius);
-        gradient.addColorStop(0, `rgb(${HAZE_RGB} / ${config.hazeBlobAlpha})`);
-        gradient.addColorStop(1, `rgb(${HAZE_RGB} / 0)`);
-        nebulaContext.fillStyle = gradient;
-        nebulaContext.fillRect(blobX - radius, blobY - radius, radius * 2, radius * 2);
-      }
-    };
-
-    const rebuildAssets = () => {
+    const rebuildSprites = () => {
       spriteCssSize = config.starRadiusPx * config.haloRadiusMultiple * 2;
       colourSprites = DOT_PALETTE.map(buildDotSprite);
-      buildNebula();
     };
 
-    // ── Edge-zone star placement (deterministic cells, perimeter band) ──
+    // ── Placement — deterministic cells, perimeter band, with a fill-order for the liquid reveal ──
     let stars: Star[] = [];
     const cellIndex = new Map<number, Star>();
     const cellKey = (cellX: number, cellY: number) => cellX * 100000 + cellY;
+
+    // Sides light first (from their mid-height outward), then the top & bottom edges close from the
+    // corners toward their centres. Continuous across the corners (both formulas meet there).
+    const fillOrderFor = (x: number, y: number) => {
+      const halfWidth = viewportWidth / 2;
+      const halfHeight = viewportHeight / 2;
+      const distTop = y;
+      const distBottom = viewportHeight - y;
+      const distLeft = x;
+      const distRight = viewportWidth - x;
+      const nearest = Math.min(distTop, distBottom, distLeft, distRight);
+      if (nearest === distLeft || nearest === distRight) {
+        // Side edge: mid-height (0) out to the corners (sideFillFraction).
+        return config.sideFillFraction * (Math.abs(y - halfHeight) / halfHeight);
+      }
+      // Top/bottom edge: corners (sideFillFraction) in to the centre (1).
+      return config.sideFillFraction + (1 - config.sideFillFraction) * (1 - Math.abs(x - halfWidth) / halfWidth);
+    };
 
     const placeStars = () => {
       stars = [];
       cellIndex.clear();
       viewportWidth = window.innerWidth;
       viewportHeight = window.innerHeight;
-      halfDiagonal = Math.hypot(viewportWidth, viewportHeight) / 2;
 
       const cell = config.cellSizePx;
       const bandX = viewportWidth * config.bandRatioX;
       const bandY = viewportHeight * config.bandRatioY;
-      const centreX = viewportWidth / 2;
-      const centreY = viewportHeight / 2;
       const columns = Math.ceil(viewportWidth / cell) + 1;
       const rows = Math.ceil(viewportHeight / cell) + 1;
 
@@ -164,13 +148,16 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
           const baseX = (cellX + hash(cellX + 1.7, cellY + 9.2)) * cell;
           const baseY = (cellY + hash(cellX + 5.3, cellY + 2.9)) * cell;
 
-          // Keep only the perimeter band — the centre belongs to the haze, not the zodiac.
+          // Keep only the perimeter band — the centre stays clear for the headline.
           const inBand =
             baseX < bandX ||
             baseX > viewportWidth - bandX ||
             baseY < bandY ||
             baseY > viewportHeight - bandY;
           if (!inBand) continue;
+
+          const noiseOffset = (hash(cellX + 11.1, cellY + 3.3) * 2 - 1) * config.fillNoise;
+          const fillOrder = Math.min(Math.max(fillOrderFor(baseX, baseY) + noiseOffset, 0), 1);
 
           const star: Star = {
             cellX,
@@ -180,7 +167,7 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
             driftPhaseX: hash(cellX + 4.3, cellY + 7.1) * Math.PI * 2,
             driftPhaseY: hash(cellX + 8.9, cellY + 1.3) * Math.PI * 2,
             twinklePhase: hash(cellX + 2.1, cellY + 8.7) * Math.PI * 2,
-            distanceFromCentre: Math.hypot(baseX - centreX, baseY - centreY),
+            fillOrder,
             paletteIndex: Math.min(
               DOT_PALETTE.length - 1,
               Math.floor(hash(cellX + 3.7, cellY + 6.1) * DOT_PALETTE.length),
@@ -207,35 +194,13 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
       return true;
     };
 
-    // ── One frame. `growthRadius` is the reveal front's radius from the centre. ──
-    const drawFrame = (elapsedSeconds: number, growthRadius: number) => {
-      context.setTransform(pixelRatio(), 0, 0, pixelRatio(), 0, 0);
+    // ── One frame. `front` in [0, revealCeiling] is the liquid fill position along the fill-order. ──
+    const drawFrame = (elapsedSeconds: number, front: number) => {
       context.clearRect(0, 0, viewportWidth, viewportHeight);
-      const centreX = viewportWidth / 2;
-      const centreY = viewportHeight / 2;
 
-      // 1. Haze — draw the nebula, then (while still growing) clip it to the growth disc with a
-      //    feathered radial mask so it reveals from the centre out.
-      context.globalCompositeOperation = 'source-over';
-      context.globalAlpha = 1;
-      context.drawImage(nebula, 0, 0, viewportWidth, viewportHeight);
-      if (growthRadius < halfDiagonal + config.growthFeatherPx) {
-        context.globalCompositeOperation = 'destination-in';
-        const innerRadius = Math.max(0, growthRadius - config.growthFeatherPx);
-        const mask = context.createRadialGradient(centreX, centreY, innerRadius, centreX, centreY, growthRadius);
-        mask.addColorStop(0, 'rgba(0,0,0,1)');
-        mask.addColorStop(1, 'rgba(0,0,0,0)');
-        context.fillStyle = mask;
-        context.fillRect(0, 0, viewportWidth, viewportHeight);
-        context.globalCompositeOperation = 'source-over';
-      }
-
-      // 2. Resolve each edge star's live position, reveal factor + twinkle.
+      // 1. Resolve each star's live position, reveal factor + twinkle.
       for (const star of stars) {
-        star.reveal = Math.min(
-          Math.max((growthRadius - star.distanceFromCentre) / config.growthFeatherPx, 0),
-          1,
-        );
+        star.reveal = smoothstep(star.fillOrder - config.fillFeather, star.fillOrder + config.fillFeather, front);
         star.x =
           star.baseX + config.driftAmplitudePx * Math.sin(elapsedSeconds * config.driftSpeed + star.driftPhaseX);
         star.y =
@@ -245,9 +210,9 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
           1 - config.twinkleDepth * (0.5 - 0.5 * Math.sin(elapsedSeconds * config.twinkleSpeed + star.twinklePhase));
       }
 
-      // 3. Links under the stars — appear as both endpoints are revealed.
+      // 2. Links under the stars — appear as both endpoints fill in.
       context.strokeStyle = `rgb(${LINE_RGB})`;
-      context.lineWidth = 1;
+      context.lineWidth = config.lineWidthPx;
       for (const star of stars) {
         if (star.reveal <= 0) continue;
         for (const [deltaX, deltaY] of FORWARD_NEIGHBOURS) {
@@ -264,7 +229,7 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
         }
       }
 
-      // 4. Stars on top — neon colour, fading in with the reveal front.
+      // 3. Stars on top — neon blue, fading in with the liquid front.
       const half = spriteCssSize / 2;
       for (const star of stars) {
         const alpha = config.starAlpha * star.reveal * star.twinkle;
@@ -275,17 +240,16 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
       context.globalAlpha = 1;
     };
 
-    // ── Reduced motion: one static, fully-grown frame, no loop ──
+    // ── Reduced motion: one static, fully-filled frame, no loop ──
     if (reduceMotion) {
       resizeBackingStore();
       placeStars();
-      rebuildAssets();
-      drawFrame(0, halfDiagonal + config.growthFeatherPx);
+      drawFrame(0, revealCeiling);
       const onResizeStatic = () => {
         if (resizeBackingStore()) {
           placeStars();
-          rebuildAssets();
-          drawFrame(0, halfDiagonal + config.growthFeatherPx);
+          rebuildSprites();
+          drawFrame(0, revealCeiling);
         }
       };
       window.addEventListener('resize', onResizeStatic);
@@ -295,7 +259,6 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
     // ── Animated path ──
     resizeBackingStore();
     placeStars();
-    rebuildAssets();
 
     let isHeroVisible = true;
     const visibilityObserver = new IntersectionObserver(
@@ -312,7 +275,7 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
     window.addEventListener(DECK_REVEAL_EVENT, onServicesEnter);
     window.addEventListener(DECK_HIDE_EVENT, onServicesLeave);
 
-    // The growth front is armed on reveal; nothing draws before then (screen stays empty).
+    // The liquid fill is armed on reveal; nothing draws before then (screen stays empty).
     let revealTimeMs = 0;
     let hasRevealed = false;
     const runReveal = () => {
@@ -330,14 +293,14 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
       if (!isHeroVisible || inServices || !hasRevealed) return;
       if (resizeBackingStore()) {
         placeStars();
-        rebuildAssets();
+        rebuildSprites();
       }
       const now = performance.now();
       const elapsedSeconds = (now - startTime) / 1000;
-      const growthFraction = Math.min((now - revealTimeMs) / 1000 / config.growthSeconds, 1);
-      const eased = 1 - Math.pow(1 - growthFraction, 3); // easeOutCubic: quick bloom, settle at edges
-      const growthRadius = eased * (halfDiagonal + config.growthFeatherPx);
-      drawFrame(elapsedSeconds, growthRadius);
+      const fillFraction = Math.min((now - revealTimeMs) / 1000 / config.growthSeconds, 1);
+      const eased = smoothstep(0, 1, fillFraction); // gentle ease so the fill settles, not stops abruptly
+      const front = eased * revealCeiling;
+      drawFrame(elapsedSeconds, front);
     };
     animationFrame = requestAnimationFrame(render);
 

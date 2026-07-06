@@ -5,6 +5,9 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { WORKS_PROJECTS } from '../worksProjects';
@@ -22,8 +25,22 @@ const CAMERA_FOV = 38;
 // Where the camera sits relative to the focused meteor: back + a touch above, looking at it. As
 // the focus travels between meteors the camera flies through the field and neighbours pass by.
 const CAMERA_OFFSET = new THREE.Vector3(0, 0.7, 6.4);
-const CAMERA_TRAVEL_EASE = 0.055; // how quickly the camera flies to a newly-focused meteor
-const CAMERA_TRAVEL_EASE_REDUCED = 1; // instant under reduced motion
+
+// ── Warp travel — the "punch between planets" feeling ────────────────────
+// The trip is time-based (not a constant lerp) so it launches, cruises, then arrives: the eased
+// progress means the camera accelerates out of one planet and decelerates into the next. That speed
+// curve then drives the star-streaks and an FOV kick, so the three read as one warp.
+const TRAVEL_DURATION = 0.9;        // seconds per hop, regardless of distance
+const TRAVEL_EASE = 'power3.inOut'; // accelerate → cruise → decelerate (the launch/arrive arc)
+// Camera speed (world units/second) that maps to a full-intensity warp. Tuned so a typical hop
+// between neighbouring meteors peaks near full streak without pinning there.
+const WARP_REFERENCE_SPEED = 22;
+const WARP_SMOOTHING = 0.22;        // ease the measured speed so streaks/FOV don't flicker frame to frame
+const FOV_KICK = 8;                 // degrees the FOV widens at peak warp (38 → 46), punching the launch
+// Star-streaks: at peak warp each star stretches into a light-line this long (view-space units) and
+// the streak layer fades up to this opacity. Restrained-cinematic, not a game hyperdrive.
+const STREAK_MAX_LENGTH = 7;
+const STREAK_MAX_OPACITY = 0.8;
 
 // ── Drag-to-look (orbit the camera a clamped amount to peek at neighbours) ──
 const DRAG_YAW_SENSITIVITY   = 0.005; // radians of orbit per pixel
@@ -45,7 +62,9 @@ const METEOR_LAYOUT: MeteorLayout[] = [
   { position: [-6.8, -1.5, -8],   radius: 1.45 },
   { position: [4.6, 2.7, -13.5],  radius: 1.15 },
 ];
-const METEOR_DETAIL = 1;        // icosahedron subdivisions — faceted "sapphire" crystal
+const METEOR_MODEL_PATH = '/models/meteor.glb'; // the real meteor body every project is carved from
+const DRACO_DECODER_PATH = '/draco/';
+const METEOR_DETAIL = 1;        // icosahedron subdivisions — the fallback shape if the model won't load
 const FIRE_SHELL_SCALE = 1.03;  // the fire mesh sits just outside the stone so it fully envelops it
 const IGNITE_DURATION = 0.7;    // cross-fade a meteor to fire
 const COOL_DURATION   = 0.5;    // …and back to stone
@@ -116,8 +135,50 @@ interface MeteorRig {
   fireUniforms: FireMeteorUniforms;
 }
 
-// A spherical shell of faint additive points — the stars wrapping the field.
-function createStarfield(): THREE.Points {
+// The live uniforms the render loop drives on the streak layer as the camera warps.
+interface StreakUniforms {
+  uStreakDir:    { value: THREE.Vector3 }; // world-space camera travel direction
+  uStreakLength: { value: number };        // view-space tail length (0 at rest → STREAK_MAX_LENGTH at peak)
+  uOpacity:      { value: number };        // streak layer fade (0 at rest → STREAK_MAX_OPACITY)
+}
+
+interface StarSystem {
+  group: THREE.Group;
+  streakUniforms: StreakUniforms;
+  dispose: () => void;
+}
+
+// Stretch a star's tail vertex along the camera's travel direction, in VIEW space so the group's
+// slow drift rotation never skews the streak. At rest uStreakLength is 0, so the tail sits on the
+// head and the line is invisible — the dots carry the resting look; the streaks only appear mid-warp.
+const STAR_STREAK_VERTEX = /* glsl */ `
+  uniform vec3  uStreakDir;
+  uniform float uStreakLength;
+  attribute float aTail;      // 0 = head (at the star), 1 = tail (pushed back along travel)
+  varying float vTail;
+
+  void main() {
+    vTail = aTail;
+    vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+    // Travel direction rotated into view space; the tail trails opposite to it.
+    vec3 travelView = normalize((viewMatrix * vec4(uStreakDir, 0.0)).xyz);
+    viewPosition.xyz -= travelView * aTail * uStreakLength;
+    gl_Position = projectionMatrix * viewPosition;
+  }
+`;
+const STAR_STREAK_FRAGMENT = /* glsl */ `
+  precision mediump float;
+  uniform float uOpacity;
+  varying float vTail;
+  void main() {
+    // Bright at the head, fading down the tail — a comet-streak rather than a solid bar.
+    gl_FragColor = vec4(vec3(1.0), uOpacity * (1.0 - vTail));
+  }
+`;
+
+// A spherical shell of stars wrapping the field: faint additive dots at rest, plus a streak layer
+// (built from the same star positions) that elongates them into light-lines while the camera warps.
+function createStarSystem(): StarSystem {
   const positions = new Float32Array(STAR_COUNT * 3);
   for (let starIndex = 0; starIndex < STAR_COUNT; starIndex += 1) {
     const theta = Math.random() * Math.PI * 2;
@@ -127,9 +188,11 @@ function createStarfield(): THREE.Points {
     positions[starIndex * 3 + 1] = radius * Math.cos(phi);
     positions[starIndex * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const material = new THREE.PointsMaterial({
+
+  // Resting dots.
+  const dotGeometry = new THREE.BufferGeometry();
+  dotGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const dotMaterial = new THREE.PointsMaterial({
     color: 0xffffff,
     size: STAR_SIZE,
     sizeAttenuation: true,
@@ -138,7 +201,57 @@ function createStarfield(): THREE.Points {
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
-  return new THREE.Points(geometry, material);
+  const dots = new THREE.Points(dotGeometry, dotMaterial);
+
+  // Streak layer — two vertices per star (head + tail), both at the star position; the tail is
+  // pushed back in the shader by uStreakLength. Drawn as line segments (pairs 0-1, 2-3, …).
+  const streakPositions = new Float32Array(STAR_COUNT * 2 * 3);
+  const streakTail = new Float32Array(STAR_COUNT * 2);
+  for (let starIndex = 0; starIndex < STAR_COUNT; starIndex += 1) {
+    const headOffset = starIndex * 6;
+    const starOffset = starIndex * 3;
+    for (let vertex = 0; vertex < 2; vertex += 1) {
+      streakPositions[headOffset + vertex * 3]     = positions[starOffset];
+      streakPositions[headOffset + vertex * 3 + 1] = positions[starOffset + 1];
+      streakPositions[headOffset + vertex * 3 + 2] = positions[starOffset + 2];
+    }
+    streakTail[starIndex * 2]     = 0; // head
+    streakTail[starIndex * 2 + 1] = 1; // tail
+  }
+  const streakGeometry = new THREE.BufferGeometry();
+  streakGeometry.setAttribute('position', new THREE.BufferAttribute(streakPositions, 3));
+  streakGeometry.setAttribute('aTail', new THREE.BufferAttribute(streakTail, 1));
+
+  const streakUniforms: StreakUniforms = {
+    uStreakDir:    { value: new THREE.Vector3(0, 0, 1) },
+    uStreakLength: { value: 0 },
+    uOpacity:      { value: 0 },
+  };
+  const streakMaterial = new THREE.ShaderMaterial({
+    vertexShader:   STAR_STREAK_VERTEX,
+    fragmentShader: STAR_STREAK_FRAGMENT,
+    uniforms:       streakUniforms as unknown as { [uniform: string]: THREE.IUniform },
+    transparent:    true,
+    depthWrite:     false,
+    blending:       THREE.AdditiveBlending,
+  });
+  const streaks = new THREE.LineSegments(streakGeometry, streakMaterial);
+  // The tail can reach beyond the star shell; keep it drawing even when its bounds leave the frustum.
+  streaks.frustumCulled = false;
+
+  const group = new THREE.Group();
+  group.add(dots, streaks);
+
+  return {
+    group,
+    streakUniforms,
+    dispose: () => {
+      dotGeometry.dispose();
+      dotMaterial.dispose();
+      streakGeometry.dispose();
+      streakMaterial.dispose();
+    },
+  };
 }
 
 // An irregular chunk: an icosahedron with its vertices randomly pushed in/out, so no two shards are
@@ -156,6 +269,49 @@ function createShardGeometry(seed: number): THREE.BufferGeometry {
   }
   geometry.computeVertexNormals();
   return geometry;
+}
+
+// Flatten a loaded glb into one buffer geometry the meteors can wear: bake every mesh's world
+// transform, keep only position/normal/uv (so primitives with different attribute sets still merge),
+// then centre it and normalise to a unit radius. Each meteor later clones this and scales it to its
+// own layout radius — so the model's absolute size and pivot don't matter. The fire shader only uses
+// normalize(localPosition), which is scale-invariant, so the flame maps onto the model unchanged.
+function meteorGeometryFromModel(root: THREE.Object3D): THREE.BufferGeometry {
+  root.updateWorldMatrix(true, true);
+
+  const parts: THREE.BufferGeometry[] = [];
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    let baked = child.geometry.clone();
+    baked.applyMatrix4(child.matrixWorld);
+    if (baked.index) baked = baked.toNonIndexed();
+    if (!baked.getAttribute('normal')) baked.computeVertexNormals();
+
+    const trimmed = new THREE.BufferGeometry();
+    trimmed.setAttribute('position', baked.getAttribute('position'));
+    trimmed.setAttribute('normal', baked.getAttribute('normal'));
+    const uv = baked.getAttribute('uv');
+    // Some meteor models have no unwrap; give a zeroed uv so merge + the fire's uMap sample don't NaN.
+    trimmed.setAttribute(
+      'uv',
+      uv ?? new THREE.BufferAttribute(new Float32Array(baked.getAttribute('position').count * 2), 2),
+    );
+    parts.push(trimmed);
+    baked.dispose();
+  });
+
+  // No mesh in the file → fall back to the faceted crystal so the section still builds.
+  if (!parts.length) return new THREE.IcosahedronGeometry(1, METEOR_DETAIL);
+  const merged = (parts.length === 1 ? parts[0] : mergeGeometries(parts, false)) ?? parts[0];
+
+  merged.computeBoundingBox();
+  const center = merged.boundingBox!.getCenter(new THREE.Vector3());
+  merged.translate(-center.x, -center.y, -center.z);
+  merged.computeBoundingSphere();
+  const radius = merged.boundingSphere?.radius || 1;
+  merged.scale(1 / radius, 1 / radius, 1 / radius);
+  merged.computeVertexNormals();
+  return merged;
 }
 
 export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions) {
@@ -213,24 +369,46 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
 
-    // ── Starfield ──
-    const starfield = createStarfield();
-    scene.add(starfield);
+    // ── Starfield (dots + warp streaks) ──
+    const starSystem = createStarSystem();
+    scene.add(starSystem.group);
 
     // ── Camera rig state ──
-    // The camera looks at `focusCurrent`, which eases toward the focused meteor; drag adds a clamped
-    // yaw/pitch orbit offset that springs back on release.
+    // The camera looks at `focusCurrent`. On a focus change it *warps* from where it is to the new
+    // meteor along a time-based eased hop (launch → cruise → arrive); drag adds a clamped yaw/pitch
+    // orbit offset that springs back on release.
     const focusCurrent = new THREE.Vector3().fromArray(METEOR_LAYOUT[activeIndexRef.current].position);
     const focusTarget  = focusCurrent.clone();
     let viewYaw = 0, viewPitch = 0, viewYawTarget = 0, viewPitchTarget = 0;
     // On portrait/narrow aspect the camera pulls back so the meteor stays framed instead of clipping.
     let distanceScale = 1;
 
+    // The warp hop: focusCurrent = lerp(travelFrom, travelTo, easedProgress). GSAP eases the progress
+    // so the speed curve (and thus the streaks + FOV kick) is the launch/arrive arc, not a flat drift.
+    const travelFrom = focusCurrent.clone();
+    const travelTo   = focusCurrent.clone();
+    const travelProgress = { value: 1 }; // 1 = arrived / idle
+    let travelActive = false;
+    const startTravel = () => {
+      travelFrom.copy(focusCurrent);
+      travelTo.copy(focusTarget);
+      travelProgress.value = 0;
+      travelActive = true;
+      gsap.killTweensOf(travelProgress);
+      gsap.to(travelProgress, {
+        value: 1,
+        duration: TRAVEL_DURATION,
+        ease: TRAVEL_EASE,
+        onComplete: () => { travelActive = false; },
+      });
+    };
+
     const updateCamera = (instant: boolean) => {
       if (instant || reduceMotion) {
         focusCurrent.copy(focusTarget);
-      } else {
-        focusCurrent.lerp(focusTarget, CAMERA_TRAVEL_EASE);
+        travelActive = false;
+      } else if (travelActive) {
+        focusCurrent.lerpVectors(travelFrom, travelTo, travelProgress.value);
       }
       viewYaw   += (viewYawTarget   - viewYaw)   * VIEW_RETURN_EASE;
       viewPitch += (viewPitchTarget - viewPitch) * VIEW_RETURN_EASE;
@@ -249,6 +427,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const shardGeometries: THREE.BufferGeometry[] = [];
     const shardMaterials: THREE.MeshStandardMaterial[] = [];
     const disposableTextures: THREE.Texture[] = [];
+    // The normalised meteor model, shared by all four project bodies. Set once the glb arrives; the
+    // field only builds after both this and the textures are in (see the coordinator below).
+    let meteorBaseGeometry: THREE.BufferGeometry | null = null;
 
     const loadingManager = new THREE.LoadingManager();
     const textureLoader = new THREE.TextureLoader(loadingManager);
@@ -269,12 +450,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       onStatus({ isLoading: true, percent: Math.round((loaded / Math.max(total, 1)) * 100) });
     };
 
-    // Build the bodies once every texture is in (the meteors need their maps).
+    // Build the bodies once the textures AND the meteor model are in (the meteors need both).
     const buildField = () => {
+      if (!meteorBaseGeometry) return;
       // Project meteors — a stone shell with a fire shell nested inside it for the ignite cross-fade.
       METEOR_LAYOUT.forEach((layout, index) => {
         const project = WORKS_PROJECTS[index];
-        const geometry = new THREE.IcosahedronGeometry(layout.radius, METEOR_DETAIL);
+        // Each meteor is the shared model geometry, cloned and grown to its own layout radius.
+        const geometry = meteorBaseGeometry!.clone().scale(layout.radius, layout.radius, layout.radius);
 
         const stoneMaterial = createStoneMaterial(index % 2 === 0 ? stoneMap : stone2Map, normalMap, {
           flatShading: true,
@@ -344,7 +527,34 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       applyFocus(activeIndexRef.current, true);
       onStatus({ isLoading: false, percent: 100 });
     };
-    loadingManager.onLoad = buildField;
+
+    // The meteor model and the textures load in parallel; build only when BOTH are ready. tryBuild
+    // is called from each side so whichever finishes last triggers the build (order-independent).
+    let texturesReady = false;
+    const tryBuild = () => {
+      if (texturesReady && meteorBaseGeometry) buildField();
+    };
+    loadingManager.onLoad = () => { texturesReady = true; tryBuild(); };
+
+    // Load the meteor body (Draco-compressed). Routed through the same manager so its bytes count
+    // toward the loading percentage. On failure we fall back to the faceted crystal so Works still builds.
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+    const gltfLoader = new GLTFLoader(loadingManager);
+    gltfLoader.setDRACOLoader(dracoLoader);
+    gltfLoader.load(
+      METEOR_MODEL_PATH,
+      (gltf) => {
+        meteorBaseGeometry = meteorGeometryFromModel(gltf.scene);
+        tryBuild();
+      },
+      undefined,
+      (error) => {
+        console.error(`Failed to load meteor model: ${METEOR_MODEL_PATH}`, error);
+        meteorBaseGeometry = new THREE.IcosahedronGeometry(1, METEOR_DETAIL);
+        tryBuild();
+      },
+    );
 
     // ── Ignite / cool ──
     const igniteMeteor = (rig: MeteorRig, instant: boolean) => {
@@ -370,11 +580,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       gsap.to(rig.stoneMaterial, { opacity: 1, duration: COOL_DURATION, ease: 'power2.in', overwrite: true });
     };
 
-    // Focus a project: fly the camera to its meteor, ignite it, cool the rest.
+    // Focus a project: warp the camera to its meteor, ignite it, cool the rest.
     let stagedIndex = activeIndexRef.current;
     const applyFocus = (index: number, instant: boolean) => {
       stagedIndex = index;
       focusTarget.fromArray(METEOR_LAYOUT[index].position);
+      // Launch the eased warp hop from wherever the camera is now to the new meteor.
+      if (!instant && !reduceMotion) startTravel();
       meteorRigs.forEach((rig, rigIndex) => {
         if (rigIndex === index) igniteMeteor(rig, instant);
         else coolMeteor(rig, instant);
@@ -433,12 +645,18 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // ── Render loop ──
     const clock = new THREE.Clock();
     let frameId = 0;
+    // Warp state — read from the camera's own speed each frame so the streaks + FOV follow the exact
+    // launch/arrive curve of the travel tween (longer hops naturally streak harder).
+    const previousCameraPosition = new THREE.Vector3();
+    const streakDirection = new THREE.Vector3(0, 0, 1);
+    let hasPreviousCameraPosition = false;
+    let warp = 0;
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
       const deltaSeconds = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
       const elapsed = clock.elapsedTime;
 
-      starfield.rotation.y = elapsed * STAR_DRIFT;
+      starSystem.group.rotation.y = elapsed * STAR_DRIFT;
       shardMeshes.forEach((mesh, meshIndex) => {
         // Opposite drift on the two fields gives the debris a parallax shimmer.
         mesh.rotation.y = elapsed * SHARD_DRIFT_SPEED * (meshIndex === 0 ? 1 : -1);
@@ -460,6 +678,32 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       });
 
       updateCamera(false);
+
+      // Warp intensity = the camera's speed this frame, normalised and smoothed. It rises as the hop
+      // launches and falls as it arrives, so the streaks stretch + the FOV widens in lockstep.
+      if (hasPreviousCameraPosition && !reduceMotion) {
+        const cameraSpeed = camera.position.distanceTo(previousCameraPosition) / deltaSeconds;
+        const warpTarget = THREE.MathUtils.clamp(cameraSpeed / WARP_REFERENCE_SPEED, 0, 1);
+        warp += (warpTarget - warp) * WARP_SMOOTHING;
+        if (cameraSpeed > 1e-4) {
+          streakDirection.subVectors(camera.position, previousCameraPosition).normalize();
+        }
+      } else {
+        warp = 0;
+      }
+      previousCameraPosition.copy(camera.position);
+      hasPreviousCameraPosition = true;
+
+      // Drive the star-streaks + FOV kick off the warp.
+      starSystem.streakUniforms.uStreakLength.value = warp * STREAK_MAX_LENGTH;
+      starSystem.streakUniforms.uOpacity.value = warp * STREAK_MAX_OPACITY;
+      starSystem.streakUniforms.uStreakDir.value.copy(streakDirection);
+      const targetFov = CAMERA_FOV + warp * FOV_KICK;
+      if (Math.abs(camera.fov - targetFov) > 0.01) {
+        camera.fov = targetFov;
+        camera.updateProjectionMatrix();
+      }
+
       composer.render();
     };
     renderFrame();
@@ -525,9 +769,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       shardGeometries.forEach((geometry) => geometry.dispose());
       shardMaterials.forEach((material) => material.dispose());
       shardMeshes = [];
+      meteorBaseGeometry?.dispose();
+      dracoLoader.dispose();
       disposableTextures.forEach((texture) => texture.dispose());
-      starfield.geometry.dispose();
-      (starfield.material as THREE.Material).dispose();
+      gsap.killTweensOf(travelProgress);
+      starSystem.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();
       // EffectComposer.dispose() doesn't free added passes — release the bloom pyramid explicitly.

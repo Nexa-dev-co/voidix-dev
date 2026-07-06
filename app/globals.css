@@ -247,7 +247,7 @@ body {
 .nav-link-label {
   font-family: var(--font-syne), sans-serif;
   font-weight: 700;
-  font-size: clamp(1rem, 1.5vw, 1.3125rem);
+  font-size: clamp(0.9375rem, 1.3vw, 1.1875rem); /* 15 → 19px */
   letter-spacing: 0.005em;
   line-height: 1;
   color: rgba(255, 255, 255, 0.82);
@@ -625,11 +625,37 @@ body {
   left: clamp(1.5rem, 3.6vw, 3.75rem);
   align-items: flex-start;
   text-align: left;
+
+  /* The Core OS panel's orb blue — the sun's electric cyan deepened so small text holds ≥4.5:1
+     on the cream; the bright triplet is the raw orb cyan, reserved for the ONLINE glow. Scoped
+     here so the neon frame and the right column keep the amber --hero-accent untouched. */
+  --hud-accent: #00687a;
+  --hud-accent-glow-rgb: 0 229 255;
+  /* Muted label glyph — through the difference blend this reads mid-gray on the cream, a clear
+     step quieter than the near-black values (which use --hero-invert-text, like the headline). */
+  --hud-label-muted: #6f6f6f;
+  /* Resting track under the energy fill — a hairline ghost of the panel's ink. */
+  --hud-track: rgb(0 0 0 / 0.14);
 }
 .hero-hud--right {
   right: clamp(1.5rem, 3.6vw, 3.75rem);
   align-items: flex-end;
   text-align: right;
+
+  /* Same scoped orb-blue / muted / track tokens as the left panel, so the two telemetry columns
+     read as one system while the neon frame keeps its amber --hero-accent. */
+  --hud-accent: #00687a;
+  --hud-accent-glow-rgb: 0 229 255;
+  --hud-label-muted: #6f6f6f;
+  --hud-track: rgb(0 0 0 / 0.14);
+}
+/* Right-panel modules mirror the left stack but hug the right edge, and the influence bar grows
+   inward from that outer edge. */
+.hero-hud--right .hud-module {
+  align-items: flex-end;
+}
+.hero-hud--right .hud-energy-fill {
+  transform-origin: right center;
 }
 
 /* Blended label — the invert. Grey glyph, difference-blend, lifted above the ink trail (z 3). */
@@ -639,46 +665,95 @@ body {
   mix-blend-mode: difference;
   font-family: var(--font-dm-sans), sans-serif;
   font-weight: 500;
-  font-size: clamp(0.6875rem, 0.57rem + 0.42vw, 0.875rem); /* 11 → 14px */
+  /* Viewport-scaled like the headline (vw term, so it keeps growing on large screens instead of
+     locking at a small max) — kept compact. */
+  font-size: clamp(0.52rem, 0.34rem + 0.42vw, 0.82rem);
   letter-spacing: 0.18em;
   line-height: 1.5;
   text-transform: uppercase;
   color: var(--hero-invert-text);
 }
-/* Value — the accent. Stays true cyan (normal blend), also lifted above the ink trail. */
-.hud-value {
-  position: relative;
-  z-index: 5;
-  margin-top: 0.2rem;
-  font-family: var(--font-dm-sans), sans-serif;
-  font-weight: 500;
-  font-size: clamp(0.8125rem, 0.66rem + 0.55vw, 1.0625rem); /* 13 → 17px */
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--hero-accent);
-}
-.hud-row {
+
+/* ── Left panel — the Core OS module stack ──
+   Each module is label over value; two are live (stability / energy, driven by useCoreTelemetry).
+   The wrapper carries NO transform/opacity/z-index of its own — the blended leaves inside would
+   lose their difference blend to the stacking context (the .hero-main trap). */
+.hud-module {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
 }
-.hero-hud--right .hud-row {
-  align-items: flex-end;
+/* Module labels step down to the muted glyph so the values carry the hierarchy. Fluid (clamp + vw)
+   so both panels scale with the viewport; shared by the left and right stacks. */
+.hud-module-label {
+  color: var(--hud-label-muted);
+  /* Scales with the viewport (like the headline) rather than capping tiny — kept compact. */
+  font-size: clamp(0.42rem, 0.28rem + 0.32vw, 0.66rem);
+  letter-spacing: 0.22em;
 }
-
-/* Core row — the cyan status dot + its label. */
-.hud-core {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-.hud-core-dot {
+/* Value — near-black through the same invert as the headline, so the ink trail flips it too. Fluid
+   (clamp + vw) and shared by both panels, so left and right scale together with the viewport. */
+.hud-module-value {
   position: relative;
   z-index: 5;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: var(--hero-accent);
-  box-shadow: 0 0 0.55rem rgb(var(--hero-accent-rgb) / 0.75);
+  mix-blend-mode: difference;
+  margin-top: 0.25rem;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-weight: 500;
+  /* Viewport-scaled so the readouts grow with the screen like the headline instead of staying flat
+     on large displays — kept compact. */
+  font-size: clamp(0.58rem, 0.38rem + 0.46vw, 0.92rem);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--hero-invert-text);
+}
+/* Live numbers hold their width per digit so the readout never jiggles the layout. */
+.hud-module-value--numeric {
+  font-variant-numeric: tabular-nums;
+}
+/* Right-panel escalation (Gravity → INTENSIFYING / MAXIMUM, Portal → READY): the state word switches
+   to steady orb blue on a normal blend — like the ONLINE light, but without the breathing. The hook
+   crossfades opacity around the swap so the change reads as an instrument settling, never a snap. */
+.hud-module-value[data-state='accent'] {
+  mix-blend-mode: normal;
+  color: var(--hud-accent);
+}
+/* The ONLINE status light — orb blue on a normal blend (the invert would muddy it), breathing its
+   glow like an indicator LED. Only the text-shadow animates: keyframed opacity would override the
+   entrance tween's inline opacity and leak the word through the intro veil. */
+.hud-module-value--accent {
+  mix-blend-mode: normal;
+  color: var(--hud-accent);
+  animation: hud-online-breathe 7s ease-in-out infinite;
+}
+@keyframes hud-online-breathe {
+  0%,
+  100% {
+    text-shadow: 0 0 0.6rem rgb(var(--hud-accent-glow-rgb) / 0.2);
+  }
+  50% {
+    text-shadow: 0 0 0.9rem rgb(var(--hud-accent-glow-rgb) / 0.45);
+  }
+}
+/* Energy bar — hairline track + orb-blue fill scaled by the live output (composited transform). */
+.hud-energy-track {
+  position: relative;
+  z-index: 5;
+  margin-top: 0.55rem;
+  width: clamp(3.25rem, 4.6vw, 4.75rem);
+  height: 2px;
+  background: var(--hud-track);
+}
+.hud-energy-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--hud-accent);
+  transform-origin: left center;
+  will-change: transform;
+}
+/* Separators between modules step down to the muted glyph — quieter than the panel-ending one. */
+.hud-module-divider {
+  background: var(--hud-label-muted);
 }
 
 /* Hairline divider — a short blended line between groups. */
@@ -689,17 +764,6 @@ body {
   height: 1px;
   background: var(--hero-invert-text);
   mix-blend-mode: difference;
-}
-
-/* Coordinates — same invert as labels, but mixed-case (not uppercased) and tighter tracking. */
-.hud-coords {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-}
-.hud-coord {
-  text-transform: none;
-  letter-spacing: 0.08em;
 }
 
 /* Scroll cue — bottom of the left column: label + a static arrow, separated from the stack. */
@@ -717,34 +781,6 @@ body {
   color: var(--hero-invert-text);
   width: clamp(0.95rem, 1.3vw, 1.25rem);
   height: auto;
-}
-
-/* Reticle + mini-orbit — brand-cyan glyphs (normal blend), lifted above the ink trail. */
-.hud-reticle,
-.hud-orbit {
-  position: relative;
-  z-index: 5;
-  color: var(--hero-accent);
-  line-height: 0;
-}
-.hud-reticle svg {
-  width: clamp(2.4rem, 3.1vw, 3.25rem);
-  height: auto;
-  animation: orbital-node-spin 26s linear infinite;
-}
-.hud-orbit {
-  display: inline-block;
-  width: clamp(3.4rem, 4.4vw, 4.5rem);
-  height: clamp(3.4rem, 4.4vw, 4.5rem);
-}
-.hud-orbit-static,
-.hud-orbit-spinning {
-  position: absolute;
-  inset: 0;
-}
-.hud-orbit-spinning {
-  transform-origin: center;
-  animation: orbital-node-spin 9s linear infinite;
 }
 
 /* ─── Hero sun-square neon frame ──────────────────────────────────── */
@@ -850,8 +886,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hud-reticle svg,
-  .hud-orbit-spinning,
+  .hud-module-value--accent,
   .hero-sun-frame-inner,
   .hero-sun-frame-inner::before {
     animation: none;

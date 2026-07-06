@@ -1,19 +1,19 @@
-// Tuning for the hero's constellation effect. The screen starts empty; on reveal a growth front
-// expands from the exact centre outward, revealing two zones as it passes: a soft smoky galaxy-dust
-// haze in the middle (behind the headline) and connected "zodiac" stars at the page edges. The whole
-// spread-and-connect takes ~growthSeconds, then it holds with gentle drift + twinkle.
+// Tuning for the hero's constellation frame — a photo-frame border of connected "zodiac" stars in
+// blue. The screen starts empty; on reveal the frame fills in with a LIQUID-like flowing front that
+// starts at the left & right sides and spreads along the border to meet at the top-centre and
+// bottom-centre. Only the constellation exists (no centre haze, no separate gray band). After it
+// completes it holds with gentle drift + twinkle.
 //
 // All values live here; the hook holds no magic numbers. Pixel values are CSS px (the hook
 // multiplies by DPR where it builds backing stores).
 
 export interface ConstellationConfig {
-  // ── Edge zone: the zodiac stars (perimeter band) ──
   /** Grid cell that may hold one star (CSS px). Larger = sparser field. */
   cellSizePx: number;
   /** Fraction of cells that actually hold a star (0..1). */
   fillRatio: number;
-  /** Border-band thickness as a fraction of viewport width (L/R) and height (T/B): the zodiac lives
-   *  here. The centre (1 - 2*bandRatio) has no edge stars — only the haze. */
+  /** Border-band thickness as a fraction of viewport width (L/R) and height (T/B). The zodiac lives
+   *  only in this band; the centre stays clear for the headline. */
   bandRatioX: number;
   bandRatioY: number;
   /** Star core radius (CSS px) and the soft halo multiple (the neon glow). */
@@ -30,76 +30,56 @@ export interface ConstellationConfig {
   /** Peak star alpha once revealed, and line alpha once both ends are revealed. */
   starAlpha: number;
   lineAlpha: number;
+  /** Connecting-line stroke width (CSS px). */
+  lineWidthPx: number;
 
-  // ── The growth front (unified radial reveal of both zones) ──
-  /** Seconds for the front to travel from the centre out to the far corners (fully connected). */
+  // ── The liquid fill (border reveal from the sides) ──
+  /** Seconds for the fill to travel from the sides and complete the whole frame. */
   growthSeconds: number;
-  /** Soft edge width of the growth front (CSS px) so things fade in as it passes, not pop. */
-  growthFeatherPx: number;
-
-  // ── Centre zone: the smoky dust haze ──
-  /** Number of soft blobs making up the nebula (more = denser smoke). Scaled down on low power. */
-  hazeBlobCount: number;
-  /** Blob radius range (CSS px). */
-  hazeBlobMinPx: number;
-  hazeBlobMaxPx: number;
-  /** How tightly the haze hugs the centre: fraction of the min viewport dim for the 1-sigma spread. */
-  hazeSpreadRatio: number;
-  /** Per-blob peak alpha (kept low so the haze sits behind the headline). */
-  hazeBlobAlpha: number;
-  /** Build the nebula at this fraction of viewport resolution (smoke is soft, so downscaling is
-   *  free performance). 1 = full res. */
-  hazeRenderScale: number;
+  /** Soft width (in fill-order units, 0..1) of the reveal front — the liquid meniscus. */
+  fillFeather: number;
+  /** Portion of the fill (0..1) spent lighting the two side edges before the top/bottom fill in. */
+  sideFillFraction: number;
+  /** Per-star random offset to the fill order (0..1) — makes the front irregular, so it seeps in
+   *  like liquid instead of a clean geometric line. */
+  fillNoise: number;
 }
 
 // Desktop / full-power profile.
 export const CONSTELLATION_CONFIG: ConstellationConfig = {
-  cellSizePx: 56,
-  fillRatio: 0.52,
-  bandRatioX: 0.2,
-  bandRatioY: 0.22,
-  starRadiusPx: 1.5,
-  haloRadiusMultiple: 3.6,
+  cellSizePx: 50,
+  fillRatio: 0.58,
+  bandRatioX: 0.13,
+  bandRatioY: 0.15,
+  starRadiusPx: 2.1,
+  haloRadiusMultiple: 3.4,
   driftAmplitudePx: 6,
   driftSpeed: 0.14,
   twinkleSpeed: 0.7,
   twinkleDepth: 0.4,
-  lineMaxDistPx: 88,
-  starAlpha: 0.85,
-  lineAlpha: 0.18,
+  lineMaxDistPx: 84,
+  starAlpha: 1,
+  lineAlpha: 0.34,
+  lineWidthPx: 1.6,
 
-  growthSeconds: 18,
-  growthFeatherPx: 150,
-
-  hazeBlobCount: 80,
-  hazeBlobMinPx: 90,
-  hazeBlobMaxPx: 260,
-  hazeSpreadRatio: 0.32,
-  hazeBlobAlpha: 0.05,
-  hazeRenderScale: 0.5,
+  growthSeconds: 14,
+  fillFeather: 0.07,
+  sideFillFraction: 0.38,
+  fillNoise: 0.09,
 };
 
-// Coarse-pointer / narrow-viewport profile: fewer stars + blobs, longer/fainter links.
+// Coarse-pointer / narrow-viewport profile: fewer stars, longer/fainter links.
 export const CONSTELLATION_CONFIG_LOW_POWER: ConstellationConfig = {
   ...CONSTELLATION_CONFIG,
-  cellSizePx: 76,
-  lineMaxDistPx: 112,
-  lineAlpha: 0.14,
+  cellSizePx: 68,
+  lineMaxDistPx: 104,
+  lineAlpha: 0.28,
   driftAmplitudePx: 5,
-  hazeBlobCount: 42,
-  hazeRenderScale: 0.4,
 };
 
 export const LOW_POWER_MAX_WIDTH = 760;
 
 // ── Colours ──────────────────────────────────────────────────────────────
-// Dark smoky blue for the haze; two dark-but-neon tones for the zodiac stars (blue + gold). "r g b".
-export const HAZE_RGB = '34 62 128';
-
-export const DOT_PALETTE: readonly string[] = [
-  '46 108 255', // neon blue
-  '226 168 30', // neon gold
-];
-
-// Line colour — a neutral cool tone that reads under both star colours.
-export const LINE_RGB = '90 120 200';
+// Blue only. Dark-but-neon dots + a slightly deeper blue for the connecting links.
+export const DOT_PALETTE: readonly string[] = ['72 140 255']; // brighter neon blue
+export const LINE_RGB = '96 156 255';
