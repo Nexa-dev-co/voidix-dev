@@ -2,18 +2,12 @@ import { useEffect, type RefObject } from 'react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
-import {
-  ENERGY_MIN,
-  ENERGY_MAX,
-  FIELD_BASE,
-  FIELD_JITTER,
-  LIVE_TICK_MS,
-} from '@/components/sections/Hero/HeroInstruments/heroReadouts';
 
-// Drives the hero instrument HUD + the square's ring: entrance on REVEAL_EVENT (in lockstep with
-// the headline, never on mount — Contract 2), plus the subtle live ticking that makes the readouts
-// feel like a running system. The ring's *fade on scroll* is pure CSS off --nav-progress-home, so
-// nothing here touches the pin. All decorative motion is gated behind reduced motion.
+// Drives the hero instrument HUD entrance + the square's ring: both on REVEAL_EVENT (in lockstep
+// with the headline, never on mount — Contract 2). The live readouts themselves are real telemetry
+// owned by useCoreTelemetry (co-located with HeroInstruments), not this hook. The ring's *fade on
+// scroll* is pure CSS off --nav-progress-home, so nothing here touches the pin. All decorative
+// motion is gated behind reduced motion.
 
 const ENTRANCE_DURATION = 0.8;
 const ENTRANCE_STAGGER = 0.06;
@@ -67,25 +61,9 @@ export function useHeroInstruments({ sectionRef }: HeroInstrumentsRefs) {
     window.addEventListener(REVEAL_EVENT, runReveal);
     const fallbackTimeout = window.setTimeout(runReveal, REVEAL_FALLBACK_MS);
 
-    // 3. Subtle live ticking — the values wander a hair so the panel reads as a live instrument.
-    //    Skipped entirely under reduced motion (the resting values stay put).
-    let liveTimer = 0;
-    if (!reduceMotion) {
-      const energyValues = section.querySelectorAll<HTMLElement>('[data-live="energy"]');
-      const fieldValues = section.querySelectorAll<HTMLElement>('[data-live="field"]');
-      const tick = () => {
-        const energy = Math.round(ENERGY_MIN + Math.random() * (ENERGY_MAX - ENERGY_MIN));
-        energyValues.forEach((element) => { element.textContent = `${energy}%`; });
-        const field = (FIELD_BASE + (Math.random() * 2 - 1) * FIELD_JITTER).toFixed(3);
-        fieldValues.forEach((element) => { element.textContent = field; });
-      };
-      liveTimer = window.setInterval(tick, LIVE_TICK_MS);
-    }
-
     return () => {
       window.removeEventListener(REVEAL_EVENT, runReveal);
       window.clearTimeout(fallbackTimeout);
-      window.clearInterval(liveTimer);
       gsap.killTweensOf([leftItems, rightItems]);
       if (ringInner) gsap.killTweensOf(ringInner);
     };

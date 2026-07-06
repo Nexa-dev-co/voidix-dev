@@ -1,48 +1,100 @@
 'use client';
 
+import { Fragment, useRef } from 'react';
+import { useCoreTelemetry } from './hooks/useCoreTelemetry';
+import { useEnvironmentTelemetry } from './hooks/useEnvironmentTelemetry';
 import {
-  CORE_LABEL,
-  LEFT_READOUTS,
-  RIGHT_READOUTS,
-  COORD_LINES,
+  CORE_MODULES,
+  ENERGY_IDLE,
+  ENERGY_PEAK,
+  ENVIRONMENT_MODULES,
   SCROLL_CUE,
-  type Readout,
+  type CoreModule,
+  type EnvironmentModule,
 } from './heroReadouts';
 
-// The hero's instrument HUD: two telemetry columns flanking the headline (see the concept mock).
-// Presentational only — the entrance + the subtle live ticking live in useHeroInstruments, which
-// Hero calls. Labels carry the difference-blend invert (like the headline); values stay brand-cyan
-// on a normal blend, so the invert never muddies the accent (see .hud-label / .hud-value in CSS).
+// The hero's instrument HUD: two panels flanking the headline. The LEFT is the Orbix Core's own OS
+// (Core Stability rides the real frame rate, Energy Output rides cursor velocity — useCoreTelemetry).
+// The RIGHT is the environment surrounding the Core — five modules of live telemetry (gravity field,
+// cursor influence, portal status, field distortion, orbital vector — useEnvironmentTelemetry). Both
+// hooks write straight to the DOM; the entrance stagger stays in useHeroInstruments, which Hero calls.
 //
-// The entrance animates elements marked `data-hud-item`. Those markers sit ONLY on leaf elements,
-// never on a wrapper that contains a .hud-label: a transform/opacity on such a wrapper would turn
-// it into a stacking context and permanently kill the label's difference blend (the same trap the
-// headline sidesteps by only transforming its inner spans). Animating the blended label directly is
-// safe — an element blends against its parent's backdrop regardless of its own transform.
+// Labels carry the difference-blend invert (like the headline); values stay on a normal-blend-safe
+// setup (see .hud-label / .hud-module-value in CSS). The entrance animates elements marked
+// `data-hud-item`. Those markers sit ONLY on leaf elements, never on a wrapper that contains a
+// blended element: a transform/opacity on such a wrapper would turn it into a stacking context and
+// permanently kill the blend (the same trap the headline sidesteps by only transforming its inner
+// spans). Animating a blended leaf directly is safe — an element blends against its parent's
+// backdrop regardless of its own transform.
 
-function Row({ label, value, live }: Readout) {
+function CoreModuleBlock({ label, value, live, accent }: CoreModule) {
+  const valueClassName = [
+    'hud-module-value',
+    accent ? 'hud-module-value--accent' : '',
+    live ? 'hud-module-value--numeric' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div className="hud-row">
-      <span className="hud-label" data-hud-item>{label}</span>
-      <span className="hud-value" data-hud-item data-live={live}>{value}</span>
+    <div className="hud-module">
+      <span className="hud-label hud-module-label" data-hud-item>{label}</span>
+      <span className={valueClassName} data-hud-item data-live={live}>{value}</span>
+      {live === 'energy' && (
+        <span className="hud-energy-track" data-hud-item>
+          <span
+            className="hud-energy-fill"
+            data-energy-fill
+            style={{ transform: `scaleX(${ENERGY_IDLE / ENERGY_PEAK})` }}
+          />
+        </span>
+      )}
+    </div>
+  );
+}
+
+function EnvironmentModuleBlock({ label, value, metric }: EnvironmentModule) {
+  return (
+    <div className="hud-module">
+      <span className="hud-label hud-module-label" data-hud-item>{label}</span>
+      <span
+        className={metric === 'influence' || metric === 'distortion' || metric === 'vector'
+          ? 'hud-module-value hud-module-value--numeric'
+          : 'hud-module-value'}
+        data-hud-item
+        data-metric={metric}
+        data-state="base"
+      >
+        {value}
+      </span>
+      {metric === 'influence' && (
+        <span className="hud-energy-track" data-hud-item>
+          <span className="hud-energy-fill" data-influence-fill style={{ transform: 'scaleX(0)' }} />
+        </span>
+      )}
     </div>
   );
 }
 
 export default function HeroInstruments() {
+  const leftPanelRef = useRef<HTMLElement>(null);
+  const rightPanelRef = useRef<HTMLElement>(null);
+
+  // Live telemetry — both start on REVEAL_EVENT and write straight to the DOM, no re-renders.
+  useCoreTelemetry({ panelRef: leftPanelRef });
+  useEnvironmentTelemetry({ panelRef: rightPanelRef });
+
   return (
     <>
-      {/* ── Left column — core status stack + scroll cue ── */}
-      <aside className="hero-hud hero-hud--left" aria-hidden="true">
-        <p className="hud-core">
-          <span className="hud-core-dot" data-hud-item />
-          <span className="hud-label" data-hud-item>{CORE_LABEL}</span>
-        </p>
-
-        <span className="hud-divider" data-hud-item />
-
-        {LEFT_READOUTS.map((readout) => (
-          <Row key={readout.label} {...readout} />
+      {/* ── Left panel — the Orbix Core OS ── */}
+      <aside ref={leftPanelRef} className="hero-hud hero-hud--left" aria-hidden="true">
+        {CORE_MODULES.map((coreModule, moduleIndex) => (
+          <Fragment key={coreModule.label}>
+            <CoreModuleBlock {...coreModule} />
+            {moduleIndex < CORE_MODULES.length - 1 && (
+              <span className="hud-divider hud-module-divider" data-hud-item />
+            )}
+          </Fragment>
         ))}
 
         <span className="hud-divider" data-hud-item />
@@ -59,37 +111,16 @@ export default function HeroInstruments() {
         </div>
       </aside>
 
-      {/* ── Right column — orbital telemetry ── */}
-      <aside className="hero-hud hero-hud--right" aria-hidden="true">
-        <span className="hud-reticle" data-hud-item>
-          <svg width="34" height="34" viewBox="0 0 34 34" fill="none">
-            <circle cx="17" cy="17" r="8" stroke="currentColor" strokeWidth="1" opacity="0.6" />
-            <path d="M17 1v7M17 26v7M1 17h7M26 17h7" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
-          </svg>
-        </span>
-
-        <div className="hud-coords">
-          {COORD_LINES.map((line) => (
-            <span key={line} className="hud-label hud-coord" data-hud-item>{line}</span>
-          ))}
-        </div>
-
-        <span className="hud-divider" data-hud-item />
-
-        {RIGHT_READOUTS.map((readout) => (
-          <Row key={readout.label} {...readout} />
+      {/* ── Right panel — the environment surrounding the Core ── */}
+      <aside ref={rightPanelRef} className="hero-hud hero-hud--right" aria-hidden="true">
+        {ENVIRONMENT_MODULES.map((environmentModule, moduleIndex) => (
+          <Fragment key={environmentModule.label}>
+            <EnvironmentModuleBlock {...environmentModule} />
+            {moduleIndex < ENVIRONMENT_MODULES.length - 1 && (
+              <span className="hud-divider hud-module-divider" data-hud-item />
+            )}
+          </Fragment>
         ))}
-
-        {/* Mini orbit widget — a dashed track with one slowly-orbiting node. */}
-        <span className="hud-orbit" data-hud-item>
-          <svg className="hud-orbit-static" width="52" height="52" viewBox="0 0 52 52" fill="none">
-            <circle cx="26" cy="26" r="18" stroke="currentColor" strokeWidth="0.75" strokeDasharray="2 3" opacity="0.5" />
-            <circle cx="26" cy="26" r="2" fill="currentColor" />
-          </svg>
-          <svg className="hud-orbit-spinning" width="52" height="52" viewBox="0 0 52 52" fill="none">
-            <circle cx="44" cy="26" r="2" fill="currentColor" />
-          </svg>
-        </span>
       </aside>
     </>
   );
