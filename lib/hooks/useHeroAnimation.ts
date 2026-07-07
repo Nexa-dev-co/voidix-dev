@@ -40,7 +40,7 @@ const DECK_HIDE_DURATION    = 0.4;
 const WORKS_HIDE_DURATION   = 0.4;
 const GOTO_DURATION         = 0.6; // programmatic scroll when a label/arrow jumps to a stop
 const SNAP_DURATION         = 0.5; // how quickly the carousel settles onto the nearest stop
-const SNAP_DURATION_MAX     = 1.2; // long snaps (across the handoff span) glide rather than lurch
+const SNAP_DURATION_MAX     = 2.2; // long snaps (across the handoff span) glide rather than lurch
 // The carousel stops start a touch *past* the fill, so stop 0 lands on the fully revealed fleet
 // instead of the fill/transition edge (which read as the section scrolling away).
 const CAROUSEL_SETTLE_FRACTION = 0.06;
@@ -51,7 +51,7 @@ const CAROUSEL_SETTLE_FRACTION = 0.06;
 // here we own the DOM cross-fades, each a window (start..end fraction) inside the span: the deck
 // UI drops out first, the field (backdrop + canvas) rises under the still-flying craft, and the
 // works UI settles only once the meteor has landed.
-const HANDOFF_SCROLL_VH = 240;
+const HANDOFF_SCROLL_VH = 380;
 const HANDOFF_CLASS     = 'is-handoff'; // raises the deck over the works field mid-handoff (CSS)
 const HANDOFF_DECK_UI_FADE:  [number, number] = [0.05, 0.24];
 const HANDOFF_FIELD_FADE:    [number, number] = [0.3, 0.5];
