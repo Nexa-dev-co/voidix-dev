@@ -9,6 +9,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
+import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
@@ -98,6 +99,30 @@ const SWAP_BANK         = 0.5;  // radians the craft rolls (banks) as it slides 
 const SWAP_ENTER_SCALE  = 0.6;  // the craft warps in from this scale
 const SWAP_EXIT_SCALE   = 0.7;  // and shrinks to this as it leaves
 
+// ── Departure (the services → works handoff) ──
+// Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT: the centred craft swells toward the
+// camera, turns to face screen-right, lifts off, then accelerates off the right edge while the
+// pad sinks away and the stars/shadow fade — leaving only the craft flying over the works field
+// rising beneath it. Each curve below is a window (start..end fraction) of the 0..1 handoff, so
+// the beats read in sequence and reverse cleanly when scrolled back.
+const DEPART_GROW_WINDOW: [number, number] = [0.03, 0.35]; // swell toward the camera
+const DEPART_TURN_WINDOW: [number, number] = [0.12, 0.48]; // yaw to face the right edge
+const DEPART_RISE_WINDOW: [number, number] = [0.05, 0.45]; // lift off the pad
+const DEPART_EXIT_WINDOW: [number, number] = [0.45, 0.97]; // burn off-screen right
+const DEPART_FADE_WINDOW: [number, number] = [0.1, 0.5];   // pad drop + star/shadow fade
+const DEPART_SCALE   = 1.55; // how big the craft reads at the top of its swell
+// Radians of yaw added while departing. 2.2 turns a glTF-convention (+Z-forward) hull from the
+// resting 3/4 view to nose-right — if a specific model reads as flying backwards, tune this.
+const DEPART_TURN    = 2.2;
+const DEPART_BANK    = -0.3; // roll into the turn; peaks mid-turn, levels out for the exit run
+const DEPART_RISE    = 0.7;
+const DEPART_DRIFT_X = 0.9;  // eases right during the turn, before the exit burn
+const DEPART_EXIT_X  = 10;   // fully clear of the frame even on very wide viewports
+const PAD_DROP       = 7;    // the pad sinks out of the bottom of the frame
+const DEPART_SMOOTHING = 0.09;   // per-frame ease toward the scrubbed target
+const TURNTABLE_SETTLE = 0.12;   // how quickly the accumulated showroom spin settles for departure
+const DEPART_GRIP_SPAN = 0.25;   // handoff fraction over which departure takes over the turntable
+
 // ── Drag-to-rotate + flick (replaces the old passive mouse-track) ──
 // A small drag on the craft rotates it (springs back on release); a big horizontal flick switches
 // the carousel via onFlick. Distances are in CSS pixels of pointer travel.
@@ -126,11 +151,13 @@ interface DeckOptions {
   onStatus: (status: DeckStatus) => void;
 }
 
-/** One craft's nested rig. stage → lift → spin → vessel lets each transform stay independent:
- *  stage owns the carousel fly-on/off, lift owns the hover height + float bob, spin owns yaw/pitch
- *  (base view + drag rotation). */
+/** One craft's nested rig. stage → depart → lift → spin → vessel lets each transform stay
+ *  independent: stage owns the carousel fly-on/off, depart owns the services→works departure
+ *  scrub (identity outside the handoff), lift owns the hover height + float bob, spin owns
+ *  yaw/pitch (base view + drag rotation). */
 interface DeckShip {
   stage: THREE.Group;
+  depart: THREE.Group;
   lift: THREE.Group;
   spin: THREE.Group;
   materials: THREE.Material[];
@@ -297,6 +324,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     // ── Starfield ──
     const starfield = createStarfield();
+    const starfieldMaterial = starfield.material as THREE.PointsMaterial;
     scene.add(starfield);
 
     // ── Contact shadow (one blob centred on the pad) ──
@@ -314,17 +342,20 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     // ── Ship rigs (created empty up-front so status works before models arrive) ──
     const ships: DeckShip[] = DECK_SERVICES.map(() => {
-      const stage = new THREE.Group();
-      const lift  = new THREE.Group();
-      const spin  = new THREE.Group();
+      const stage  = new THREE.Group();
+      const depart = new THREE.Group(); // written only by the handoff scrub in the render loop
+      const lift   = new THREE.Group();
+      const spin   = new THREE.Group();
       spin.rotation.y = BASE_YAW;
       lift.position.y = SHIP_HOVER;
       lift.add(spin);
-      stage.add(lift);
+      depart.add(lift);
+      stage.add(depart);
       scene.add(stage);
 
       return {
         stage,
+        depart,
         lift,
         spin,
         materials: [],
@@ -520,6 +551,18 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     window.addEventListener(DECK_REVEAL_EVENT, replayEntrance);
 
+    // ── Departure state (the services → works handoff) ──
+    // The hero pin scrubs the raw target; the render loop eases toward it every frame, so the
+    // choreography stays smooth whether the user creeps, flicks, or the snap glides through.
+    // `engaged` keeps the scrub's writes off the rig entirely until the handoff is first touched,
+    // and hands the rig back to the swap/idle systems once it has fully reversed out.
+    const departState = { target: 0, current: 0, engaged: false };
+    const onHandoffProgress = (event: Event) => {
+      departState.target = readHandoffProgress(event);
+      departState.engaged = true;
+    };
+    window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+
     // ── Load the landing pad (once) ──
     const dracoLoader = new DRACOLoader();
     dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
@@ -527,6 +570,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     gltfLoader.setDRACOLoader(dracoLoader);
 
     let padGroup: THREE.Group | null = null;
+    let padBaseY = 0; // resting height, remembered so the departure drop always offsets from it
     gltfLoader.load(
       PAD_MODEL_PATH,
       (gltf) => {
@@ -556,6 +600,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         group.add(loadedScene);
         // Align the pad's top with the ground so the craft hovers just above the surface.
         group.position.y = GROUND_Y - scaledHeight / 2 + PAD_Y_OFFSET;
+        padBaseY = group.position.y;
         scene.add(group);
         padGroup = group;
       },
@@ -679,6 +724,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // ── Render loop ──
     const clock = new THREE.Clock();
     let frameId = 0;
+    // 0..1 inside a departure window, clamped flat outside it — keeps each beat in sequence.
+    const departWindow = (curveWindow: [number, number], value: number) =>
+      THREE.MathUtils.clamp((value - curveWindow[0]) / (curveWindow[1] - curveWindow[0]), 0, 1);
+
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
 
@@ -688,6 +737,20 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const elapsed = clock.elapsedTime;
       starfield.rotation.y = elapsed * STAR_DRIFT;
 
+      // Ease toward the scrubbed handoff target (instant under reduced motion — the scroll
+      // position itself is then the only animator).
+      if (departState.engaged) {
+        departState.current +=
+          (departState.target - departState.current) * (reduceMotion ? 1 : DEPART_SMOOTHING);
+        if (Math.abs(departState.target - departState.current) < 0.001) {
+          departState.current = departState.target;
+        }
+      }
+      const departure = departState.current;
+      // How firmly the departure holds the craft — ramps in over the first beats so the turntable
+      // spin settles instead of snapping.
+      const departGrip = THREE.MathUtils.clamp(departure / DEPART_GRIP_SPAN, 0, 1);
+
       const centred = activeIndexRef.current;
       ships.forEach((ship, index) => {
         const isCentred = index === centred;
@@ -695,13 +758,59 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         const animateCentred = isCentred && !reduceMotion;
         // 1. Float / hover bob — drifts up and down.
         ship.lift.position.y = SHIP_HOVER + (animateCentred ? Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE : 0);
-        // 2. Slow turntable spin — paused while dragging so manual rotation stays precise.
-        if (animateCentred && !drag.active) ship.lift.rotation.y += AUTO_ROTATE_SPEED * deltaSeconds;
+        // 2. Slow turntable spin — paused while dragging so manual rotation stays precise, and
+        //    wound down as the departure takes its grip so the craft can hold a heading.
+        if (animateCentred && !drag.active) {
+          ship.lift.rotation.y += AUTO_ROTATE_SPEED * deltaSeconds * (1 - departGrip);
+        }
         // 3. Engine-glow breathing.
         ship.emitPulseUniform.value = animateCentred
           ? 1 + Math.sin(elapsed * EMIT_PULSE_SPEED) * EMIT_PULSE_AMPLITUDE
           : 1;
       });
+
+      // ── Departure scrub (services → works handoff) ──
+      if (departState.engaged) {
+        const grow = departWindow(DEPART_GROW_WINDOW, departure);
+        const turn = departWindow(DEPART_TURN_WINDOW, departure);
+        const rise = departWindow(DEPART_RISE_WINDOW, departure);
+        const exit = departWindow(DEPART_EXIT_WINDOW, departure);
+        const exitEased = exit * exit; // accelerates away rather than sliding out linearly
+
+        ships.forEach((ship, index) => {
+          if (index !== centred) {
+            // Any residue from an interrupted departure heals the moment a ship is off the pad.
+            ship.depart.position.set(0, 0, 0);
+            ship.depart.rotation.set(0, 0, 0);
+            ship.depart.scale.setScalar(1);
+            return;
+          }
+          // Settle the accumulated turntable yaw onto a full turn, so the depart heading below
+          // means the same thing no matter where the showroom spin happened to be.
+          const settledYaw = Math.round(ship.lift.rotation.y / (Math.PI * 2)) * (Math.PI * 2);
+          ship.lift.rotation.y += (settledYaw - ship.lift.rotation.y) * departGrip * TURNTABLE_SETTLE;
+
+          ship.depart.scale.setScalar(1 + (DEPART_SCALE - 1) * grow);
+          ship.depart.rotation.y = DEPART_TURN * turn;
+          // Bank peaks mid-turn and levels out for the exit run.
+          ship.depart.rotation.z = DEPART_BANK * Math.sin(turn * Math.PI);
+          ship.depart.position.set(
+            DEPART_DRIFT_X * turn + DEPART_EXIT_X * exitEased,
+            DEPART_RISE * rise,
+            0,
+          );
+        });
+
+        // The stage empties under the craft: pad + shadow sink out of frame, stars fade with them.
+        const stageFade = departWindow(DEPART_FADE_WINDOW, departure);
+        if (padGroup) padGroup.position.y = padBaseY - PAD_DROP * stageFade;
+        shadow.position.y = GROUND_Y + SHADOW_LIFT - PAD_DROP * stageFade;
+        shadowMaterial.opacity = SHADOW_OPACITY * (1 - stageFade);
+        starfieldMaterial.opacity = STAR_OPACITY * (1 - stageFade);
+
+        // Fully home again → hand the rig back to the swap/idle systems untouched.
+        if (departState.current === 0 && departState.target === 0) departState.engaged = false;
+      }
 
       composer.render();
     };
@@ -772,6 +881,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(DECK_REVEAL_EVENT, replayEntrance);
+      window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       // Stop any running tweens, then dispose every loaded hull's geometry + materials.
       ships.forEach((ship) => {
         gsap.killTweensOf(ship.litState);
@@ -804,7 +914,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       shadowMaterial.dispose();
       shadowTexture.dispose();
       starfield.geometry.dispose();
-      (starfield.material as THREE.Material).dispose();
+      starfieldMaterial.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();
       // EffectComposer.dispose() only frees its own targets + copy pass, not added passes —

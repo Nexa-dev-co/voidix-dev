@@ -924,6 +924,14 @@ body {
   opacity: 0;
 }
 
+/* During the services→works handoff the departing craft must fly OVER the meteor field fading
+   in beneath it, so the deck temporarily outranks .works-field (z 30). The hero pin toggles the
+   class only while the scroll position is inside the handoff span; the deck's own backdrop is
+   already transparent in services mode, so only the craft rides above the field. */
+.hero-section.is-handoff .services-deck {
+  z-index: 35;
+}
+
 /* Solid black backdrop behind the fleet. The whole .services-deck overlay fades in on reveal
    (driven by the hero pin), so this just stays opaque black underneath the canvas. */
 .deck-backdrop {

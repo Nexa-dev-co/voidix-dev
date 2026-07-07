@@ -10,8 +10,8 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
+import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { WORKS_PROJECTS } from '../worksProjects';
-import { WORKS_REVEAL_EVENT } from '../worksEvents';
 import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
 
 // ── Textures ────────────────────────────────────────────────────────────
@@ -71,6 +71,17 @@ const COOL_DURATION   = 0.5;    // …and back to stone
 const METEOR_SPIN_SPEED = 0.25; // rad/s slow turntable on the focused meteor
 const FLOAT_AMPLITUDE   = 0.12; // gentle vertical bob on the focused meteor
 const FLOAT_SPEED       = 0.9;
+
+// ── Arrival (the services → works handoff) ───────────────────────────────
+// Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT: while the departing craft crosses the
+// screen above this scene, project 01's meteor rides in from deep in the field — tiny → full
+// size — and only catches fire as it settles into place. The window is the slice of the 0..1
+// handoff the ride occupies (the field itself fades in just before it, the craft exits after).
+const ARRIVAL_WINDOW: [number, number] = [0.4, 0.86];
+const ARRIVAL_IGNITE_START = 0.55; // fraction of the arrival after which the stone catches fire
+const ARRIVAL_SCALE_START  = 0.1;  // the meteor first reads as a distant speck
+const ARRIVAL_FROM = new THREE.Vector3(-3.4, 1.2, -9); // drifts in from deep field-left
+const ARRIVAL_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target
 
 // ── Fire "breathing" (idle → flare rhythm, like the sun) ─────────────────
 const FLARE_BASE      = 0.6;
@@ -600,17 +611,30 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     setFocusRef.current = setFocus;
 
-    // Re-ignite the focused meteor when the section scrolls back into view.
-    const replayReveal = () => {
-      if (!meteorRigs.length) return;
-      const index = activeIndexRef.current;
-      const rig = meteorRigs[index];
-      // Snap it dark, then light it up, so the ignition visibly re-plays.
-      rig.fireUniforms.uIgnite.value = 0;
-      rig.stoneMaterial.opacity = 1;
-      applyFocus(index, false);
+    // ── Arrival state (the services → works handoff) ──
+    // The hero pin scrubs the raw handoff; we remap the slice project 01's ride occupies and ease
+    // toward it every frame. Until the handoff is first touched nothing is written (`engaged`), so
+    // the focus/ignite tween system owns the field; once the ride completes the rig is handed
+    // back with exact resting values. Entering/leaving works is always a trip through this span,
+    // so the scrub IS the replayed entrance — no reveal event needed.
+    const arrivalState = { target: 1, current: 1, engaged: false };
+    const onHandoffProgress = (event: Event) => {
+      const handoffProgress = readHandoffProgress(event);
+      arrivalState.target = THREE.MathUtils.clamp(
+        (handoffProgress - ARRIVAL_WINDOW[0]) / (ARRIVAL_WINDOW[1] - ARRIVAL_WINDOW[0]), 0, 1,
+      );
+      if (!arrivalState.engaged && arrivalState.target < 1) {
+        arrivalState.engaged = true;
+        arrivalState.current = Math.min(arrivalState.current, arrivalState.target);
+        // The scrub owns the first meteor now — stop any ignition tween that would fight it.
+        const arrivingRig = meteorRigs[0];
+        if (arrivingRig) {
+          gsap.killTweensOf(arrivingRig.fireUniforms.uIgnite);
+          gsap.killTweensOf(arrivingRig.stoneMaterial);
+        }
+      }
     };
-    window.addEventListener(WORKS_REVEAL_EVENT, replayReveal);
+    window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
     // ── Drag-to-look ──
     const drag = { active: false, startX: 0, startY: 0 };
@@ -676,6 +700,44 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           rig.group.position.y = rig.basePosition.y;
         }
       });
+
+      // ── Arrival scrub (services → works handoff) ──
+      if (arrivalState.engaged && meteorRigs.length) {
+        arrivalState.current +=
+          (arrivalState.target - arrivalState.current) * (reduceMotion ? 1 : ARRIVAL_SMOOTHING);
+        if (Math.abs(arrivalState.target - arrivalState.current) < 0.001) {
+          arrivalState.current = arrivalState.target;
+        }
+        const arrival = arrivalState.current;
+        const arrivingRig = meteorRigs[0];
+
+        // Ride in from deep field-left while growing to full size. The spin/bob above keeps
+        // running underneath, so the approach feels alive rather than tweened.
+        const approach = 1 - arrival;
+        arrivingRig.group.scale.setScalar(ARRIVAL_SCALE_START + (1 - ARRIVAL_SCALE_START) * arrival);
+        arrivingRig.group.position.x = arrivingRig.basePosition.x + ARRIVAL_FROM.x * approach;
+        arrivingRig.group.position.z = arrivingRig.basePosition.z + ARRIVAL_FROM.z * approach;
+        arrivingRig.group.position.y = THREE.MathUtils.lerp(
+          arrivingRig.basePosition.y + ARRIVAL_FROM.y,
+          arrivingRig.group.position.y, // resting height + bob, written just above
+          arrival,
+        );
+
+        // The stone only catches fire as it settles into place.
+        const ignite = THREE.MathUtils.clamp(
+          (arrival - ARRIVAL_IGNITE_START) / (1 - ARRIVAL_IGNITE_START), 0, 1,
+        );
+        arrivingRig.fireUniforms.uIgnite.value = ignite;
+        arrivingRig.stoneMaterial.opacity = 1 - ignite;
+
+        // Fully arrived → hand the rig back to the focus/ignite tween system at exact rest.
+        if (arrivalState.current === 1 && arrivalState.target === 1) {
+          arrivingRig.group.scale.setScalar(1);
+          arrivingRig.group.position.x = arrivingRig.basePosition.x;
+          arrivingRig.group.position.z = arrivingRig.basePosition.z;
+          arrivalState.engaged = false;
+        }
+      }
 
       updateCamera(false);
 
@@ -757,7 +819,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener(WORKS_REVEAL_EVENT, replayReveal);
+      window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
       meteorRigs.forEach((rig) => {
         gsap.killTweensOf(rig.fireUniforms.uIgnite);
