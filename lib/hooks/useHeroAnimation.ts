@@ -54,7 +54,10 @@ const CAROUSEL_SETTLE_FRACTION = 0.06;
 const HANDOFF_SCROLL_VH = 380;
 const HANDOFF_CLASS     = 'is-handoff'; // raises the deck over the works field mid-handoff (CSS)
 const HANDOFF_DECK_UI_FADE:  [number, number] = [0.05, 0.24];
-const HANDOFF_FIELD_FADE:    [number, number] = [0.3, 0.5];
+// The field fades in at the START of the fly-left beat (Phase B) — NOT during the launch (Phase A),
+// so the debris + meteor stay hidden while the ship rises up-left off the pad, then the streaking
+// stars + debris come in from the left as we fly.
+const HANDOFF_FIELD_FADE:    [number, number] = [0.33, 0.55];
 const HANDOFF_WORKS_UI_FADE: [number, number] = [0.8, 0.94];
 
 // ── Reveal (runs when the intro lands the sun in the square) ───────────

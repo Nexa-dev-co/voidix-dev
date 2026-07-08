@@ -11,6 +11,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
+import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
 import { WORKS_PROJECTS } from '../worksProjects';
 import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
 
@@ -21,10 +22,13 @@ const TEXTURE_NORMAL = '/textures/meteor/normal.jpg';
 const TEXTURE_FIRE   = '/textures/meteor/fire_meteor.jpg';
 
 // ── Camera / framing ────────────────────────────────────────────────────
+// This resting framing is exactly where the services→works left-flight lands (the shared camera at
+// progress 1 resolves to `meteor + CAMERA_OFFSET`), so browsing takes over without a jump. Derived
+// from the flight's end pose: sharedCam(1) − METEOR_SHARED_POSITION = (0, 1.0, 7).
 const CAMERA_FOV = 38;
 // Where the camera sits relative to the focused meteor: back + a touch above, looking at it. As
 // the focus travels between meteors the camera flies through the field and neighbours pass by.
-const CAMERA_OFFSET = new THREE.Vector3(0, 0.7, 6.4);
+const CAMERA_OFFSET = new THREE.Vector3(0, 1.0, 7.0);
 
 // ── Warp travel — the "punch between planets" feeling ────────────────────
 // The trip is time-based (not a constant lerp) so it launches, cruises, then arrives: the eased
@@ -72,16 +76,13 @@ const METEOR_SPIN_SPEED = 0.25; // rad/s slow turntable on the focused meteor
 const FLOAT_AMPLITUDE   = 0.12; // gentle vertical bob on the focused meteor
 const FLOAT_SPEED       = 0.9;
 
-// ── Arrival (the services → works handoff) ───────────────────────────────
-// Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT: while the departing craft crosses the
-// screen above this scene, project 01's meteor rides in from deep in the field — tiny → full
-// size — and only catches fire as it settles into place. The window is the slice of the 0..1
-// handoff the ride occupies (the field itself fades in just before it, the craft exits after).
-const ARRIVAL_WINDOW: [number, number] = [0.4, 0.86];
-const ARRIVAL_IGNITE_START = 0.55; // fraction of the arrival after which the stone catches fire
-const ARRIVAL_SCALE_START  = 0.1;  // the meteor first reads as a distant speck
-const ARRIVAL_FROM = new THREE.Vector3(-3.4, 1.2, -9); // drifts in from deep field-left
-const ARRIVAL_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target
+// ── The services → works flight (the CAMERA flies in; the meteors + debris stay put) ──
+// During the handoff the field camera rides the SAME shared path as the deck ship (see
+// lib/handoffFlightPath.ts), offset so the field's origin — where meteor 01 sits — lands on the
+// shared meteor spot. So the debris reads ahead → surrounding as we fly in, and the two canvases
+// composite as one continuous space. Eased at the same rate as the deck so the cameras stay locked
+// together (any drift between them would make the ship shimmer against the field).
+const FLIGHT_CAMERA_SMOOTHING = 0.09;
 
 // ── Fire "breathing" (idle → flare rhythm, like the sun) ─────────────────
 const FLARE_BASE      = 0.6;
@@ -97,6 +98,18 @@ const SHARD_MIN_SCALE   = 0.05;
 const SHARD_MAX_SCALE   = 0.4;
 const SHARD_DRIFT_SPEED = 0.012; // rad/s slow yaw drift on the whole debris field
 const SHARD_TINT        = 0x1c2530; // darker than the meteors so the projects read as the subjects
+// Silhouette: start from a subdivided icosphere, then carve it with layered directional lobes so
+// each rock reads as a lumpy, cratered chunk — big bulges + medium dents + fine chips — rather than
+// the faceted ball a low-detail icosahedron gives. flatShading (set on the material) then keeps the
+// facets crisp so it stays "rock", not "blob".
+const SHARD_GEOMETRY_DETAIL     = 2; // icosphere subdivisions (more facets → the noise reads as surface, not a gem)
+const SHARD_GEOMETRY_DETAIL_LOW = 1;
+const SHARD_LOBE_LARGE  = { frequency: 2.1, amplitude: 0.36 }; // the big bulges that break the round outline
+const SHARD_LOBE_MEDIUM = { frequency: 4.7, amplitude: 0.17 }; // craters / dents
+const SHARD_LOBE_FINE   = { frequency: 9.3, amplitude: 0.07 }; // fine surface chipping
+const SHARD_MIN_RADIUS  = 0.45; // clamp so a deep crater never punches through / inverts the surface
+const SHARD_STRETCH_MIN = 0.68; // per-axis elongation → oblong chunks (never a uniform sphere)
+const SHARD_STRETCH_MAX = 1.42;
 
 // ── Starfield ────────────────────────────────────────────────────────────
 const STAR_COUNT        = 1400;
@@ -265,17 +278,48 @@ function createStarSystem(): StarSystem {
   };
 }
 
-// An irregular chunk: an icosahedron with its vertices randomly pushed in/out, so no two shards are
-// the "perfect" gem shape the meteors are. Built once, then instanced with random pose/scale.
-function createShardGeometry(seed: number): THREE.BufferGeometry {
-  const geometry = new THREE.IcosahedronGeometry(1, 0);
+// An irregular asteroid chunk: a subdivided icosphere carved by layered directional lobes (big
+// bulges + craters + fine chips) and then squashed on each axis, so it reads as real space rock —
+// lumpy and oblong — not the "perfect" gem shape the meteors are. Built once per seed, then
+// instanced with random pose/scale. `detail` trades facet density for cost (lower on weak devices).
+function createShardGeometry(seed: number, detail: number): THREE.BufferGeometry {
+  const geometry = new THREE.IcosahedronGeometry(1, detail);
   const position = geometry.attributes.position as THREE.BufferAttribute;
   const vertex = new THREE.Vector3();
+  const direction = new THREE.Vector3();
+
+  // A stable 0..1 value from the seed (+ salt) — gives each base shard its own elongation so the
+  // two families don't share a silhouette.
+  const seededUnit = (salt: number) => {
+    const raw = Math.sin(seed * salt) * 43758.5453;
+    return raw - Math.floor(raw);
+  };
+  const stretch = new THREE.Vector3(
+    THREE.MathUtils.lerp(SHARD_STRETCH_MIN, SHARD_STRETCH_MAX, seededUnit(12.9898)),
+    THREE.MathUtils.lerp(SHARD_STRETCH_MIN, SHARD_STRETCH_MAX, seededUnit(78.233)),
+    THREE.MathUtils.lerp(SHARD_STRETCH_MIN, SHARD_STRETCH_MAX, seededUnit(37.719)),
+  );
+
+  // One directional lobe: a product of sines over the vertex direction, so the displacement swells
+  // and dips around the surface instead of applying a uniform per-vertex jitter (which just stays
+  // spherical). Different frequencies/phases stack into an organic, cratered profile.
+  const lobe = (unitDirection: THREE.Vector3, frequency: number, phase: number) =>
+    Math.sin(unitDirection.x * frequency + phase) *
+    Math.sin(unitDirection.y * frequency * 1.3 - phase * 1.7) *
+    Math.sin(unitDirection.z * frequency * 0.9 + phase * 0.5);
+
   for (let vertexIndex = 0; vertexIndex < position.count; vertexIndex += 1) {
     vertex.fromBufferAttribute(position, vertexIndex);
-    // Deterministic-ish jitter so the two base shards look different from each other.
-    const jitter = 0.55 + 0.5 * Math.sin(seed * 12.9898 + vertexIndex * 4.1414);
-    vertex.multiplyScalar(0.7 + jitter * 0.6);
+    direction.copy(vertex).normalize();
+    const displacedRadius =
+      1 +
+      SHARD_LOBE_LARGE.amplitude  * lobe(direction, SHARD_LOBE_LARGE.frequency,  seed) +
+      SHARD_LOBE_MEDIUM.amplitude * lobe(direction, SHARD_LOBE_MEDIUM.frequency, seed * 2.1) +
+      SHARD_LOBE_FINE.amplitude   * lobe(direction, SHARD_LOBE_FINE.frequency,   seed * 3.7);
+    vertex
+      .copy(direction)
+      .multiplyScalar(Math.max(displacedRadius, SHARD_MIN_RADIUS))
+      .multiply(stretch);
     position.setXYZ(vertexIndex, vertex.x, vertex.y, vertex.z);
   }
   geometry.computeVertexNormals();
@@ -505,7 +549,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const shardPosition = new THREE.Vector3();
 
       for (let baseIndex = 0; baseIndex < 2; baseIndex += 1) {
-        const geometry = createShardGeometry(baseIndex + 1);
+        const geometry = createShardGeometry(
+          baseIndex + 1,
+          lowPower ? SHARD_GEOMETRY_DETAIL_LOW : SHARD_GEOMETRY_DETAIL,
+        );
         const material = createStoneMaterial(baseIndex === 0 ? stoneMap : stone2Map, normalMap, {
           tint: SHARD_TINT,
           flatShading: true,
@@ -611,28 +658,20 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     setFocusRef.current = setFocus;
 
-    // ── Arrival state (the services → works handoff) ──
-    // The hero pin scrubs the raw handoff; we remap the slice project 01's ride occupies and ease
-    // toward it every frame. Until the handoff is first touched nothing is written (`engaged`), so
-    // the focus/ignite tween system owns the field; once the ride completes the rig is handed
-    // back with exact resting values. Entering/leaving works is always a trip through this span,
-    // so the scrub IS the replayed entrance — no reveal event needed.
-    const arrivalState = { target: 1, current: 1, engaged: false };
+    // ── Flight state (the services → works handoff) ──
+    // The hero pin scrubs the raw 0..1 handoff (0 = fleet, 1 = resting on project 01). While it's
+    // inside that span the camera rides the shared flight path; at either boundary the flight hands
+    // the camera back to the normal focus-follow (so browsing between projects works as before). The
+    // meteors themselves don't move — the camera flies IN to the already-lit project 01.
+    const flightState = { target: 0, current: 0, engaged: false };
+    const flightPose = createFlightPose();
+    // Offset that maps the field's origin (meteor 01, at layout [0,0,0]) onto the shared meteor spot:
+    // worksCamera = sharedCamera − meteorOffset.
+    const meteorOffset = new THREE.Vector3().fromArray(METEOR_SHARED_POSITION);
+    const flightLookTarget = new THREE.Vector3();
     const onHandoffProgress = (event: Event) => {
-      const handoffProgress = readHandoffProgress(event);
-      arrivalState.target = THREE.MathUtils.clamp(
-        (handoffProgress - ARRIVAL_WINDOW[0]) / (ARRIVAL_WINDOW[1] - ARRIVAL_WINDOW[0]), 0, 1,
-      );
-      if (!arrivalState.engaged && arrivalState.target < 1) {
-        arrivalState.engaged = true;
-        arrivalState.current = Math.min(arrivalState.current, arrivalState.target);
-        // The scrub owns the first meteor now — stop any ignition tween that would fight it.
-        const arrivingRig = meteorRigs[0];
-        if (arrivingRig) {
-          gsap.killTweensOf(arrivingRig.fireUniforms.uIgnite);
-          gsap.killTweensOf(arrivingRig.stoneMaterial);
-        }
-      }
+      flightState.target = readHandoffProgress(event);
+      flightState.engaged = true;
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
@@ -701,45 +740,38 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         }
       });
 
-      // ── Arrival scrub (services → works handoff) ──
-      if (arrivalState.engaged && meteorRigs.length) {
-        arrivalState.current +=
-          (arrivalState.target - arrivalState.current) * (reduceMotion ? 1 : ARRIVAL_SMOOTHING);
-        if (Math.abs(arrivalState.target - arrivalState.current) < 0.001) {
-          arrivalState.current = arrivalState.target;
+      // ── Camera: fly the shared path during the handoff, else the normal focus-follow ──
+      if (flightState.engaged) {
+        // Ease at the same rate as the deck ship so the two cameras stay locked together.
+        flightState.current +=
+          (flightState.target - flightState.current) * (reduceMotion ? 1 : FLIGHT_CAMERA_SMOOTHING);
+        if (Math.abs(flightState.target - flightState.current) < 0.001) {
+          flightState.current = flightState.target;
         }
-        const arrival = arrivalState.current;
-        const arrivingRig = meteorRigs[0];
 
-        // Ride in from deep field-left while growing to full size. The spin/bob above keeps
-        // running underneath, so the approach feels alive rather than tweened.
-        const approach = 1 - arrival;
-        arrivingRig.group.scale.setScalar(ARRIVAL_SCALE_START + (1 - ARRIVAL_SCALE_START) * arrival);
-        arrivingRig.group.position.x = arrivingRig.basePosition.x + ARRIVAL_FROM.x * approach;
-        arrivingRig.group.position.z = arrivingRig.basePosition.z + ARRIVAL_FROM.z * approach;
-        arrivingRig.group.position.y = THREE.MathUtils.lerp(
-          arrivingRig.basePosition.y + ARRIVAL_FROM.y,
-          arrivingRig.group.position.y, // resting height + bob, written just above
-          arrival,
-        );
-
-        // The stone only catches fire as it settles into place.
-        const ignite = THREE.MathUtils.clamp(
-          (arrival - ARRIVAL_IGNITE_START) / (1 - ARRIVAL_IGNITE_START), 0, 1,
-        );
-        arrivingRig.fireUniforms.uIgnite.value = ignite;
-        arrivingRig.stoneMaterial.opacity = 1 - ignite;
-
-        // Fully arrived → hand the rig back to the focus/ignite tween system at exact rest.
-        if (arrivalState.current === 1 && arrivalState.target === 1) {
-          arrivingRig.group.scale.setScalar(1);
-          arrivingRig.group.position.x = arrivingRig.basePosition.x;
-          arrivingRig.group.position.z = arrivingRig.basePosition.z;
-          arrivalState.engaged = false;
+        // Same shared pose the deck reads, shifted so the field's origin (meteor 01) lands on the
+        // shared meteor spot — so the ship (deck canvas) and this field composite as one space.
+        computeFlightPose(flightState.current, flightPose);
+        camera.position.copy(flightPose.cameraPosition).sub(meteorOffset);
+        flightLookTarget.copy(flightPose.cameraTarget).sub(meteorOffset);
+        camera.lookAt(flightLookTarget);
+        if (Math.abs(camera.fov - flightPose.cameraFov) > 0.001) {
+          camera.fov = flightPose.cameraFov;
+          camera.updateProjectionMatrix();
         }
+
+        // At either boundary the flight is over → hand back to focus-follow. At progress 1 the pose
+        // is, by construction, exactly the resting framing of project 01, so browsing continues with
+        // no jump; at 0 we're back at the fleet (field faded out).
+        if (
+          flightState.current === flightState.target &&
+          (flightState.target === 0 || flightState.target === 1)
+        ) {
+          flightState.engaged = false;
+        }
+      } else {
+        updateCamera(false);
       }
-
-      updateCamera(false);
 
       // Warp intensity = the camera's speed this frame, normalised and smoothed. It rises as the hop
       // launches and falls as it arrives, so the streaks stretch + the FOV widens in lockstep.
@@ -756,14 +788,17 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       previousCameraPosition.copy(camera.position);
       hasPreviousCameraPosition = true;
 
-      // Drive the star-streaks + FOV kick off the warp.
+      // Drive the star-streaks off the warp (the fly-in naturally streaks the field as we punch in).
       starSystem.streakUniforms.uStreakLength.value = warp * STREAK_MAX_LENGTH;
       starSystem.streakUniforms.uOpacity.value = warp * STREAK_MAX_OPACITY;
       starSystem.streakUniforms.uStreakDir.value.copy(streakDirection);
-      const targetFov = CAMERA_FOV + warp * FOV_KICK;
-      if (Math.abs(camera.fov - targetFov) > 0.01) {
-        camera.fov = targetFov;
-        camera.updateProjectionMatrix();
+      // The FOV kick is only for the focus-follow hops; during the flight the shared path owns the fov.
+      if (!flightState.engaged) {
+        const targetFov = CAMERA_FOV + warp * FOV_KICK;
+        if (Math.abs(camera.fov - targetFov) > 0.01) {
+          camera.fov = targetFov;
+          camera.updateProjectionMatrix();
+        }
       }
 
       composer.render();

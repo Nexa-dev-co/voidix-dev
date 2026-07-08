@@ -10,6 +10,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
+import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
@@ -48,6 +49,17 @@ const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the pad
 const FLOAT_AMPLITUDE = 0.1;   // vertical hover bob (up + down) on the centred craft
 const FLOAT_SPEED     = 1.1;
 const AUTO_ROTATE_SPEED = 0.35; // radians/sec — slow showroom turntable spin on the centred craft
+
+// ── Third-person flight idle (the parked/flying chase ship) ──
+// A gentle weave layered on the ship while the flight is engaged, so the third-person chase reads as
+// actively flying — banking + swaying — instead of a frozen pose. Ramped in by flight progress so
+// normal fleet browsing stays a calm turntable.
+const FLIGHT_WEAVE_ROLL_AMP    = 0.11; // radians of banking roll
+const FLIGHT_WEAVE_ROLL_SPEED  = 0.7;
+const FLIGHT_WEAVE_PITCH_AMP   = 0.05; // radians of nose bob
+const FLIGHT_WEAVE_PITCH_SPEED = 0.5;
+const FLIGHT_WEAVE_SWAY_AMP    = 0.13; // world units of side-to-side drift
+const FLIGHT_WEAVE_SWAY_SPEED  = 0.45;
 
 // ── Contact shadow (one soft blob on the pad, under the centred craft) ──
 const SHADOW_TEXTURE_PX = 256;
@@ -99,29 +111,43 @@ const SWAP_BANK         = 0.5;  // radians the craft rolls (banks) as it slides 
 const SWAP_ENTER_SCALE  = 0.6;  // the craft warps in from this scale
 const SWAP_EXIT_SCALE   = 0.7;  // and shrinks to this as it leaves
 
-// ── Departure (the services → works handoff) ──
-// Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT: the centred craft swells toward the
-// camera, turns to face screen-right, lifts off, then accelerates off the right edge while the
-// pad sinks away and the stars/shadow fade — leaving only the craft flying over the works field
-// rising beneath it. Each curve below is a window (start..end fraction) of the 0..1 handoff, so
-// the beats read in sequence and reverse cleanly when scrolled back.
-const DEPART_GROW_WINDOW: [number, number] = [0.03, 0.35]; // swell toward the camera
-const DEPART_TURN_WINDOW: [number, number] = [0.12, 0.48]; // yaw to face the right edge
-const DEPART_RISE_WINDOW: [number, number] = [0.05, 0.45]; // lift off the pad
-const DEPART_EXIT_WINDOW: [number, number] = [0.45, 0.97]; // burn off-screen right
-const DEPART_FADE_WINDOW: [number, number] = [0.1, 0.5];   // pad drop + star/shadow fade
-const DEPART_SCALE   = 1.55; // how big the craft reads at the top of its swell
-// Radians of yaw added while departing. 2.2 turns a glTF-convention (+Z-forward) hull from the
-// resting 3/4 view to nose-right — if a specific model reads as flying backwards, tune this.
-const DEPART_TURN    = 2.2;
-const DEPART_BANK    = -0.3; // roll into the turn; peaks mid-turn, levels out for the exit run
-const DEPART_RISE    = 0.7;
-const DEPART_DRIFT_X = 0.9;  // eases right during the turn, before the exit burn
-const DEPART_EXIT_X  = 10;   // fully clear of the frame even on very wide viewports
-const PAD_DROP       = 7;    // the pad sinks out of the bottom of the frame
+// ── Departure — the services → works flight (the ship no longer exits; it flies you in) ──
+// Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT. The ship's motion + the camera come from the
+// shared choreography in lib/handoffFlightPath.ts (see docs/services-to-works-flight.md); here we own
+// only the deck-local anchors: the pad + sun STAY put (the camera leaves the pad behind by moving),
+// the contact shadow fades as the ship lifts off, and the deck starfield fades out during the fly-left
+// so the works field's streaking stars take over. Each value reverses cleanly when scrolled back.
+const SHADOW_FADE_WINDOW:    [number, number] = [0.03, 0.20]; // shadow fades as the ship lifts (Phase A)
+const DECK_STAR_FADE_WINDOW: [number, number] = [0.30, 0.55]; // deck stars fade out during the fly-left (Phase B)
 const DEPART_SMOOTHING = 0.09;   // per-frame ease toward the scrubbed target
-const TURNTABLE_SETTLE = 0.12;   // how quickly the accumulated showroom spin settles for departure
-const DEPART_GRIP_SPAN = 0.25;   // handoff fraction over which departure takes over the turntable
+const TURNTABLE_SETTLE = 0.12;   // how quickly the accumulated showroom spin settles for the flight
+const DEPART_GRIP_SPAN = 0.25;   // handoff fraction over which the flight takes over the turntable
+
+// ── Auto-exit — once the ship reaches the meteor it blasts off-screen ON ITS OWN ──
+// This last beat is time-based (a GSAP tween), not scrubbed: the moment the scrub arrives at the
+// meteor the ship whooshes off screen without any more scrolling, and scrolling back plays it in
+// reverse (the ship flies back on). The offset is applied on TOP of the (parked) flight pose.
+const EXIT_TRIGGER = 0.97;  // scrub arrived → auto-play the whoosh off-screen (time-based)
+const EXIT_RESET   = 0.8;   // scrolled well back → reset the tween so a re-arrival re-plays the whoosh
+const EXIT_DURATION        = 1.1; // seconds — the whoosh off-screen
+const EXIT_RETURN_DURATION = 0.9; // seconds — the tween reset when reversing
+const EXIT_DELTA = new THREE.Vector3(-2, -3.5, 9); // dives down-left and PAST the camera → off-screen
+const EXIT_SCALE_GAIN = 0.25; // a touch bigger as it powers past
+// The off-screen offset is gated by arrival so (a) it never shows during the approach and (b)
+// scrolling back retracts it smoothly over this window — the ship flies back ON as you scroll back,
+// then the flight itself reverses. Also stops a fast scroll-back from stranding the ship off-screen.
+const EXIT_GATE_START = 0.82;
+const EXIT_GATE_END   = 0.97;
+
+// ── Heading — the nose always points where the ship is actually going ──
+// We drive the ship's YAW from its real per-frame velocity, so it points along its travel: left on
+// the way out, toward-camera as it whooshes off, and RIGHT on the way back — a smooth eased turn.
+// (Keyframed yaw can't do this: it's the same "nose-left" whether you scroll forward or back.)
+const HEADING_SPEED_THRESHOLD = 0.006;        // min per-frame horizontal move before the heading updates
+const HEADING_EASE            = 0.12;         // how fast the nose eases toward the travel direction
+const HEADING_PHASE           = 2.0 + Math.PI / 2; // depart.y = atan2(velX, velZ) + this → nose ∥ velocity (2.0 = the tuned nose-left datum)
+const REST_BLEND_START = 0.0;
+const REST_BLEND_END   = 0.12;                // ease the heading back to the pad's rest pose near progress 0
 
 // ── Drag-to-rotate + flick (replaces the old passive mouse-track) ──
 // A small drag on the craft rotates it (springs back on release); a big horizontal flick switches
@@ -557,6 +583,16 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // `engaged` keeps the scrub's writes off the rig entirely until the handoff is first touched,
     // and hands the rig back to the swap/idle systems once it has fully reversed out.
     const departState = { target: 0, current: 0, engaged: false };
+    // Reusable output for the shared flight choreography — filled each engaged frame, never allocated
+    // in the render loop.
+    const flightPose = createFlightPose();
+    // Auto-exit state: `shipExit` (0..1) is driven by a GSAP tween (time-based), not the scrub.
+    const shipExit = { value: 0 };
+    let exitPlaying = false;
+    // Heading state: the eased yaw the nose points, plus last position to measure velocity from.
+    const prevShipPosition = new THREE.Vector3();
+    let hasPrevShipPosition = false;
+    let headingYaw = 0;
     const onHandoffProgress = (event: Event) => {
       departState.target = readHandoffProgress(event);
       departState.engaged = true;
@@ -570,7 +606,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     gltfLoader.setDRACOLoader(dracoLoader);
 
     let padGroup: THREE.Group | null = null;
-    let padBaseY = 0; // resting height, remembered so the departure drop always offsets from it
     gltfLoader.load(
       PAD_MODEL_PATH,
       (gltf) => {
@@ -600,7 +635,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         group.add(loadedScene);
         // Align the pad's top with the ground so the craft hovers just above the surface.
         group.position.y = GROUND_Y - scaledHeight / 2 + PAD_Y_OFFSET;
-        padBaseY = group.position.y;
         scene.add(group);
         padGroup = group;
       },
@@ -671,7 +705,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const activeShip = () => ships[activeIndexRef.current];
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (reduceMotion) return;
+      // Drag only rotates the craft on the resting pad — it's disabled during the flight (the
+      // camera is scripted there, so a drag would fight it).
+      if (reduceMotion || departState.engaged) return;
       drag.active = true;
       drag.startX = event.clientX;
       drag.startY = event.clientY;
@@ -767,49 +803,95 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         ship.emitPulseUniform.value = animateCentred
           ? 1 + Math.sin(elapsed * EMIT_PULSE_SPEED) * EMIT_PULSE_AMPLITUDE
           : 1;
+        // 4. Third-person flight weave — banks + sways the chase ship so it reads as actively flying.
+        //    Ramped in by `departure` (0 during normal fleet browsing → full at the parked chase view).
+        const flightIdle = animateCentred && departState.engaged ? departure : 0;
+        ship.lift.rotation.z = Math.sin(elapsed * FLIGHT_WEAVE_ROLL_SPEED) * FLIGHT_WEAVE_ROLL_AMP * flightIdle;
+        ship.lift.rotation.x = Math.sin(elapsed * FLIGHT_WEAVE_PITCH_SPEED + 1.3) * FLIGHT_WEAVE_PITCH_AMP * flightIdle;
+        ship.lift.position.x = Math.sin(elapsed * FLIGHT_WEAVE_SWAY_SPEED + 0.7) * FLIGHT_WEAVE_SWAY_AMP * flightIdle;
       });
 
-      // ── Departure scrub (services → works handoff) ──
+      // ── The services → works flight ──
       if (departState.engaged) {
-        const grow = departWindow(DEPART_GROW_WINDOW, departure);
-        const turn = departWindow(DEPART_TURN_WINDOW, departure);
-        const rise = departWindow(DEPART_RISE_WINDOW, departure);
-        const exit = departWindow(DEPART_EXIT_WINDOW, departure);
-        const exitEased = exit * exit; // accelerates away rather than sliding out linearly
+        // One shared pose drives the ship + the camera swing (see lib/handoffFlightPath.ts). At
+        // progress 0 it returns the exact resting camera + an identity ship, so entering/leaving the
+        // flight is seamless with normal fleet browsing.
+        computeFlightPose(departure, flightPose);
+
+        // Auto-exit: arriving at the meteor plays the off-screen whoosh on its own (time-based); a
+        // scroll-back reverses it. The gate keeps the offset near the arrival only, so a fast
+        // scroll-back rejoins the flight rather than stranding the ship off-screen.
+        if (!reduceMotion) {
+          if (departure >= EXIT_TRIGGER && !exitPlaying) {
+            exitPlaying = true;
+            gsap.to(shipExit, { value: 1, duration: EXIT_DURATION, ease: 'power2.in', overwrite: true });
+          } else if (departure < EXIT_RESET && exitPlaying) {
+            exitPlaying = false;
+            gsap.to(shipExit, { value: 0, duration: EXIT_RETURN_DURATION, ease: 'power2.out', overwrite: true });
+          }
+        }
+        const exitAmount = shipExit.value * THREE.MathUtils.smoothstep(departure, EXIT_GATE_START, EXIT_GATE_END);
 
         ships.forEach((ship, index) => {
           if (index !== centred) {
-            // Any residue from an interrupted departure heals the moment a ship is off the pad.
+            // Any residue from an interrupted flight heals the moment a ship isn't the centred one.
             ship.depart.position.set(0, 0, 0);
             ship.depart.rotation.set(0, 0, 0);
             ship.depart.scale.setScalar(1);
             return;
           }
-          // Settle the accumulated turntable yaw onto a full turn, so the depart heading below
+          // Settle the accumulated turntable yaw onto a full turn, so the flight bank/heading below
           // means the same thing no matter where the showroom spin happened to be.
           const settledYaw = Math.round(ship.lift.rotation.y / (Math.PI * 2)) * (Math.PI * 2);
           ship.lift.rotation.y += (settledYaw - ship.lift.rotation.y) * departGrip * TURNTABLE_SETTLE;
 
-          ship.depart.scale.setScalar(1 + (DEPART_SCALE - 1) * grow);
-          ship.depart.rotation.y = DEPART_TURN * turn;
-          // Bank peaks mid-turn and levels out for the exit run.
-          ship.depart.rotation.z = DEPART_BANK * Math.sin(turn * Math.PI);
-          ship.depart.position.set(
-            DEPART_DRIFT_X * turn + DEPART_EXIT_X * exitEased,
-            DEPART_RISE * rise,
-            0,
-          );
+          // Scrubbed flight pose + the auto-exit off-screen offset on top.
+          ship.depart.position.copy(flightPose.shipPosition).addScaledVector(EXIT_DELTA, exitAmount);
+          ship.depart.scale.setScalar(flightPose.shipScale * (1 + EXIT_SCALE_GAIN * exitAmount));
+
+          // Keep the authored pitch/bank, but drive YAW from the actual velocity so the nose points
+          // where it's going (left out → toward-camera on the exit → right on the way back), eased for
+          // a smooth turn and settled back to the pad's rest heading near progress 0.
+          ship.depart.rotation.x = flightPose.shipRotation.x;
+          ship.depart.rotation.z = flightPose.shipRotation.z;
+          if (hasPrevShipPosition) {
+            const velocityX = ship.depart.position.x - prevShipPosition.x;
+            const velocityZ = ship.depart.position.z - prevShipPosition.z;
+            if (Math.hypot(velocityX, velocityZ) > HEADING_SPEED_THRESHOLD) {
+              const desiredYaw = Math.atan2(velocityX, velocityZ) + HEADING_PHASE;
+              // Ease along the shortest arc so a reverse turns the ship all the way around smoothly.
+              const shortest = Math.atan2(Math.sin(desiredYaw - headingYaw), Math.cos(desiredYaw - headingYaw));
+              headingYaw += shortest * HEADING_EASE;
+            }
+          }
+          prevShipPosition.copy(ship.depart.position);
+          hasPrevShipPosition = true;
+          ship.depart.rotation.y =
+            headingYaw * THREE.MathUtils.smoothstep(departure, REST_BLEND_START, REST_BLEND_END);
         });
 
-        // The stage empties under the craft: pad + shadow sink out of frame, stars fade with them.
-        const stageFade = departWindow(DEPART_FADE_WINDOW, departure);
-        if (padGroup) padGroup.position.y = padBaseY - PAD_DROP * stageFade;
-        shadow.position.y = GROUND_Y + SHADOW_LIFT - PAD_DROP * stageFade;
-        shadowMaterial.opacity = SHADOW_OPACITY * (1 - stageFade);
-        starfieldMaterial.opacity = STAR_OPACITY * (1 - stageFade);
+        // Drive the shared camera: holds through the launch, then tracks the ship left, then frames
+        // the meteor.
+        camera.position.copy(flightPose.cameraPosition);
+        camera.lookAt(flightPose.cameraTarget);
+        if (Math.abs(camera.fov - flightPose.cameraFov) > 0.001) {
+          camera.fov = flightPose.cameraFov;
+          camera.updateProjectionMatrix();
+        }
 
-        // Fully home again → hand the rig back to the swap/idle systems untouched.
-        if (departState.current === 0 && departState.target === 0) departState.engaged = false;
+        // The pad + sun are the stationary anchors — the pad does NOT sink (the camera leaves it
+        // behind by tracking away). Only the contact shadow fades as the ship lifts off, and the deck
+        // starfield fades out during the fly-left so the works field's streaking stars take over.
+        shadowMaterial.opacity = SHADOW_OPACITY * (1 - departWindow(SHADOW_FADE_WINDOW, departure));
+        starfieldMaterial.opacity = STAR_OPACITY * (1 - departWindow(DECK_STAR_FADE_WINDOW, departure));
+
+        // Fully home again → the last computed pose already restored the resting camera + rig, so
+        // just hand back to the swap/idle systems (and reset the heading tracker for the next flight).
+        if (departState.current === 0 && departState.target === 0) {
+          departState.engaged = false;
+          hasPrevShipPosition = false;
+          headingYaw = 0;
+        }
       }
 
       composer.render();
@@ -902,6 +984,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       gsap.killTweensOf(keyLight.color);
       gsap.killTweensOf(keyLight);
       gsap.killTweensOf(fillLight.color);
+      gsap.killTweensOf(shipExit);
       padGroup?.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           child.geometry.dispose();

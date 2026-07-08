@@ -583,6 +583,14 @@ body {
   opacity: 0;
   transition: opacity 0.5s ease;
 }
+/* Same treatment for the works field's backdrop: keep it transparent so the single pinned sun (the
+   fixed DOM billboard behind everything) stays visible through the left-flight AND into project
+   browsing — the black then comes from the page background. Without this the opaque works backdrop
+   covers the sun the moment the field fades in, which is what made the sun "disappear". */
+.hero-section.is-services .works-backdrop {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
 /* The hero headline ("we build worlds") and tagline belong to the hero only — fade them out in
    services so they don't bleed through the (transparent) fleet layers. The square itself is not
    a .hero-mask, so it stays as the sun's backdrop. */
