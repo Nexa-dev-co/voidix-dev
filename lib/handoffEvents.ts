@@ -19,3 +19,12 @@ export function readHandoffProgress(event: Event): number {
   const detail = (event as CustomEvent<HandoffProgressDetail>).detail;
   return typeof detail?.progress === 'number' ? detail.progress : 0;
 }
+
+/**
+ * The "ship has arrived" sentinel. Fired by the deck the instant the flight's auto-exit whoosh
+ * finishes — i.e. the ship has reached the meteor spot AND left the screen. The works field waits a
+ * short beat, then flies meteor 01 in from far. {@link SHIP_RETURNED_EVENT} is its mirror, fired when
+ * the ship flies back on (scroll-back), so the works field recedes the meteor again.
+ */
+export const SHIP_ARRIVED_EVENT  = 'orbix:ship-arrived';
+export const SHIP_RETURNED_EVENT = 'orbix:ship-returned';

@@ -9,7 +9,12 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
-import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
+import {
+  HANDOFF_PROGRESS_EVENT,
+  readHandoffProgress,
+  SHIP_ARRIVED_EVENT,
+  SHIP_RETURNED_EVENT,
+} from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT } from '../deckEvents';
@@ -138,6 +143,11 @@ const EXIT_SCALE_GAIN = 0.25; // a touch bigger as it powers past
 // then the flight itself reverses. Also stops a fast scroll-back from stranding the ship off-screen.
 const EXIT_GATE_START = 0.82;
 const EXIT_GATE_END   = 0.97;
+// The ship is "arrived" (fires the sentinel) only when it's genuinely all the way off-screen, and
+// "returned" once it comes back past this — measured on the real on-screen exit amount, with
+// hysteresis so it fires each once.
+const EXIT_ARRIVED_LEVEL = 0.98;
+const EXIT_LEFT_LEVEL    = 0.85;
 
 // ── Heading — the nose always points where the ship is actually going ──
 // We drive the ship's YAW from its real per-frame velocity, so it points along its travel: left on
@@ -589,6 +599,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // Auto-exit state: `shipExit` (0..1) is driven by a GSAP tween (time-based), not the scrub.
     const shipExit = { value: 0 };
     let exitPlaying = false;
+    let shipArrivedFired = false; // so the "arrived" / "returned" sentinels each fire once per crossing
     // Heading state: the eased yaw the nose points, plus last position to measure velocity from.
     const prevShipPosition = new THREE.Vector3();
     let hasPrevShipPosition = false;
@@ -821,16 +832,26 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         // Auto-exit: arriving at the meteor plays the off-screen whoosh on its own (time-based); a
         // scroll-back reverses it. The gate keeps the offset near the arrival only, so a fast
         // scroll-back rejoins the flight rather than stranding the ship off-screen.
-        if (!reduceMotion) {
-          if (departure >= EXIT_TRIGGER && !exitPlaying) {
-            exitPlaying = true;
-            gsap.to(shipExit, { value: 1, duration: EXIT_DURATION, ease: 'power2.in', overwrite: true });
-          } else if (departure < EXIT_RESET && exitPlaying) {
-            exitPlaying = false;
-            gsap.to(shipExit, { value: 0, duration: EXIT_RETURN_DURATION, ease: 'power2.out', overwrite: true });
-          }
+        if (departure >= EXIT_TRIGGER && !exitPlaying) {
+          exitPlaying = true;
+          if (reduceMotion) shipExit.value = 1; // no whoosh under reduced motion — snap off-screen
+          else gsap.to(shipExit, { value: 1, duration: EXIT_DURATION, ease: 'power2.in', overwrite: true });
+        } else if (departure < EXIT_RESET && exitPlaying) {
+          exitPlaying = false;
+          if (reduceMotion) shipExit.value = 0;
+          else gsap.to(shipExit, { value: 0, duration: EXIT_RETURN_DURATION, ease: 'power2.out', overwrite: true });
         }
         const exitAmount = shipExit.value * THREE.MathUtils.smoothstep(departure, EXIT_GATE_START, EXIT_GATE_END);
+        // Fire the "ship arrived" sentinel only when it's GENUINELY all the way off-screen, and its
+        // "returned" mirror once it comes back — measured on the real on-screen exit amount so the
+        // meteor's cue is exact (a slight scroll-back mid-whoosh won't false-trigger it).
+        if (exitAmount >= EXIT_ARRIVED_LEVEL && !shipArrivedFired) {
+          shipArrivedFired = true;
+          window.dispatchEvent(new Event(SHIP_ARRIVED_EVENT));
+        } else if (exitAmount < EXIT_LEFT_LEVEL && shipArrivedFired) {
+          shipArrivedFired = false;
+          window.dispatchEvent(new Event(SHIP_RETURNED_EVENT));
+        }
 
         ships.forEach((ship, index) => {
           if (index !== centred) {
@@ -891,6 +912,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           departState.engaged = false;
           hasPrevShipPosition = false;
           headingYaw = 0;
+          exitPlaying = false;
+          shipArrivedFired = false;
         }
       }
 

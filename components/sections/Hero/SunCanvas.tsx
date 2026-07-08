@@ -139,8 +139,12 @@ export default function SunCanvas() {
       // At rest (intensity 0, or the idle stretch) the multiplier is 1, so the hero/intro sun is
       // unchanged and the services sun only sprints during the spin window.
       const speedMultiplier = 1 + intensity * spinEnvelope * SUN_SPIN_SPEEDUP;
-      flowTime += deltaSeconds * speedMultiplier;
-      sunMesh.rotation.y += ROTATION_SPEED * speedMultiplier;
+      // Freeze BOTH the surface churn AND the sphere's spin once energised, so the sun reads as
+      // perfectly STILL in the services / works / flight section (a look-around in the field never
+      // moves it). Only the calm hero sun animates. `stillness` eases 1 → 0 as the sun energises.
+      const stillness = Math.max(0, 1 - intensity * 1.5);
+      flowTime += deltaSeconds * speedMultiplier * stillness;
+      sunMesh.rotation.y += ROTATION_SPEED * speedMultiplier * stillness;
 
       sunUniforms.uTime.value = flowTime;
       sunUniforms.uIntensity.value = intensity;

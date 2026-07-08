@@ -10,7 +10,11 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
-import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
+import {
+  HANDOFF_PROGRESS_EVENT,
+  readHandoffProgress,
+  SHIP_ARRIVED_EVENT,
+} from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
 import { WORKS_PROJECTS } from '../worksProjects';
 import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
@@ -83,6 +87,19 @@ const FLOAT_SPEED       = 0.9;
 // composite as one continuous space. Eased at the same rate as the deck so the cameras stay locked
 // together (any drift between them would make the ship shimmer against the field).
 const FLIGHT_CAMERA_SMOOTHING = 0.09;
+
+// ── Meteor 01 arrival — a real, FAR, existing rock that comes close (only after the ship exits) ──
+// The field's meteors stay hidden through the flight (only debris + streaking stars show). When the
+// deck fires the SHIP_ARRIVED sentinel (ship fully off-screen), we wait a beat, then the meteor
+// travels IN from far to its spot — perspective grows it as it approaches (it is NOT scaled up from
+// a speck, so it never reads as spawning from nothing) — and it gains its fire as it draws close.
+// The meteor arrives ONCE and stays (no recede on scroll-back).
+const METEOR_ARRIVE_DELAY    = 0.5;  // seconds to wait after the ship leaves before the meteor comes
+const METEOR_ARRIVE_DURATION = 1.6;  // seconds — the long approach
+const METEOR_ARRIVE_FROM  = new THREE.Vector3(0, 0.5, -42); // a real object, far behind the spot (field-local)
+const METEOR_APPEAR_FRACTION = 0.08; // quick emerge from the far dark at the very start (soften the on-cue)
+const METEOR_IGNITE_START = 0.5;     // fraction of the approach after which it gains its fire
+const METEOR_VISIBLE_EPSILON = 0.001; // below this the meteors are hidden (during the flight)
 
 // ── Fire "breathing" (idle → flare rhythm, like the sun) ─────────────────
 const FLARE_BASE      = 0.6;
@@ -675,6 +692,26 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
+    // ── Meteor 01 arrival (sentinel-driven, time-based — not scrubbed) ──
+    // `meteorArrival` (0 = hidden/far, 1 = landed) is driven by GSAP. The ship's arrival sentinel
+    // starts it ONCE, after a delay; it then stays landed — scrolling back does NOT recede it.
+    const meteorArrival = { value: 0 };
+    let meteorArrivalDelay: ReturnType<typeof gsap.delayedCall> | null = null;
+    let meteorArrivalTriggered = false;
+    const onShipArrived = () => {
+      if (meteorArrivalTriggered) return; // arrive once, then keep it
+      meteorArrivalTriggered = true;
+      if (reduceMotion) {
+        meteorArrival.value = 1;
+        return;
+      }
+      // Wait a beat after the ship has gone, THEN the meteor travels in from far.
+      meteorArrivalDelay = gsap.delayedCall(METEOR_ARRIVE_DELAY, () => {
+        gsap.to(meteorArrival, { value: 1, duration: METEOR_ARRIVE_DURATION, ease: 'power2.out' });
+      });
+    };
+    window.addEventListener(SHIP_ARRIVED_EVENT, onShipArrived);
+
     // ── Drag-to-look ──
     const drag = { active: false, startX: 0, startY: 0 };
     const handlePointerDown = (event: PointerEvent) => {
@@ -740,6 +777,34 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         }
       });
 
+      // ── Meteor 01 arrival (sentinel-driven) ──
+      // Every meteor stays HIDDEN until the ship has arrived + left the screen — so the flight shows
+      // only debris + streaking stars. Once `meteorArrival` lifts off 0, meteor 01 flies in from far
+      // and lights as it settles; the others simply appear at their spots. Fully in → the focus/float
+      // system owns meteor 01 again (browsing between projects works as before).
+      const arrival = meteorArrival.value;
+      const meteorsVisible = arrival > METEOR_VISIBLE_EPSILON;
+      meteorRigs.forEach((rig, rigIndex) => {
+        rig.group.visible = meteorsVisible;
+        // Neighbours simply fade in with the arrival; once fully landed the focus system owns them.
+        if (rigIndex !== 0 && arrival < 1) rig.stoneMaterial.opacity = arrival;
+      });
+      const arrivingRig = meteorRigs[0];
+      if (arrivingRig && meteorsVisible && arrival < 0.999) {
+        // A real, distant, EXISTING rock that travels in — perspective grows it as it nears (NO scale
+        // inflation, so it never reads as spawning). It emerges from the far dark, then gains its fire.
+        arrivingRig.group.position.lerpVectors(METEOR_ARRIVE_FROM, arrivingRig.basePosition, arrival);
+        arrivingRig.group.position.y += Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE * arrival;
+        arrivingRig.group.scale.setScalar(1);
+        const appear = THREE.MathUtils.smoothstep(arrival, 0, METEOR_APPEAR_FRACTION);
+        const ignite = THREE.MathUtils.smoothstep(arrival, METEOR_IGNITE_START, 1);
+        arrivingRig.fireUniforms.uIgnite.value = ignite;
+        arrivingRig.stoneMaterial.opacity = appear * (1 - ignite);
+      } else if (arrivingRig && arrival >= 0.999) {
+        // Landed → hand back (focus/float own its position + ignite from here).
+        arrivingRig.group.scale.setScalar(1);
+      }
+
       // ── Camera: fly the shared path during the handoff, else the normal focus-follow ──
       if (flightState.engaged) {
         // Ease at the same rate as the deck ship so the two cameras stay locked together.
@@ -768,6 +833,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           (flightState.target === 0 || flightState.target === 1)
         ) {
           flightState.engaged = false;
+          // Exited the whole section back to the fleet → reset the arrival so RE-entering plays the
+          // meteor's fly-in fresh (it's kept while you're inside works, restarted once you leave).
+          if (flightState.target === 0) {
+            meteorArrivalDelay?.kill();
+            gsap.killTweensOf(meteorArrival);
+            meteorArrival.value = 0;
+            meteorArrivalTriggered = false;
+          }
         }
       } else {
         updateCamera(false);
@@ -855,6 +928,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+      window.removeEventListener(SHIP_ARRIVED_EVENT, onShipArrived);
+      meteorArrivalDelay?.kill();
+      gsap.killTweensOf(meteorArrival);
 
       meteorRigs.forEach((rig) => {
         gsap.killTweensOf(rig.fireUniforms.uIgnite);

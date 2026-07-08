@@ -180,12 +180,18 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       heroSection.classList.remove(SERVICES_CLASS);
       fade(deck, 0, DECK_HIDE_DURATION);
       fade(works, 0, WORKS_HIDE_DURATION);
+      // The tagline belongs to the hero only — bring it back when we return to the fill. (It carries
+      // an inline opacity from the reveal that beats the .is-services CSS, so it must be driven here.)
+      fade(subline, 1, SUB_FADE_DURATION);
       // Return the sun to its calm hero look + front position.
       window.dispatchEvent(new Event(DECK_HIDE_EVENT));
     };
     const enterServices = (fromStage: Stage) => {
       heroSection.classList.add(SERVICES_CLASS);
       fade(deck, 1, DECK_REVEAL_DURATION);
+      // Hide the hero tagline ("software with its own gravity") — it's hero-only and would otherwise
+      // bleed through the now-transparent works/deck backdrop.
+      fade(subline, 0, DECK_REVEAL_DURATION);
       // Coming back down out of works the handoff scrub owns everything — it flies the craft back
       // onto the pad and fades the field away — so replaying the deck entrance would double the
       // motion and yank the returning craft.
@@ -199,6 +205,8 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // no DECK_HIDE here). Every visual of this crossing — deck UI out, field in, craft out,
       // meteor in — is scrubbed from the handoff span, so there is nothing to tween here.
       heroSection.classList.add(SERVICES_CLASS);
+      // Keep the hero tagline hidden here too (hero-only).
+      fade(subline, 0, DECK_REVEAL_DURATION);
     };
     const setStage = (stage: Stage) => {
       if (stage === currentStage) return;
