@@ -596,7 +596,7 @@ body {
    a .hero-mask, so it stays as the sun's backdrop. */
 .hero-section.is-services .hero-mask,
 .hero-section.is-services .hero-sub {
-  opacity: 0;
+  opacity: 0 !important;
   transition: opacity 0.4s ease;
 }
 /* The instrument HUD + the square's ring belong to the hero only — fade them with the headline
