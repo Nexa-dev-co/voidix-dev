@@ -10,11 +10,7 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
-import {
-  HANDOFF_PROGRESS_EVENT,
-  readHandoffProgress,
-  SHIP_ARRIVED_EVENT,
-} from '@/lib/handoffEvents';
+import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
 import { WORKS_PROJECTS } from '../worksProjects';
 import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
@@ -88,16 +84,18 @@ const FLOAT_SPEED       = 0.9;
 // together (any drift between them would make the ship shimmer against the field).
 const FLIGHT_CAMERA_SMOOTHING = 0.09;
 
-// ── Meteor 01 arrival — a real, FAR, existing rock that comes close (only after the ship exits) ──
-// The field's meteors stay hidden through the flight (only debris + streaking stars show). When the
-// deck fires the SHIP_ARRIVED sentinel (ship fully off-screen), we wait a beat, then the meteor
-// travels IN from far to its spot — perspective grows it as it approaches (it is NOT scaled up from
-// a speck, so it never reads as spawning from nothing) — and it gains its fire as it draws close.
-// The meteor arrives ONCE and stays (no recede on scroll-back).
-const METEOR_ARRIVE_DELAY    = 0.5;  // seconds to wait after the ship leaves before the meteor comes
-const METEOR_ARRIVE_DURATION = 1.6;  // seconds — the long approach
-const METEOR_ARRIVE_FROM  = new THREE.Vector3(0, 0.5, -42); // a real object, far behind the spot (field-local)
-const METEOR_APPEAR_FRACTION = 0.08; // quick emerge from the far dark at the very start (soften the on-cue)
+// ── Meteor arrival — real, FAR rocks that ALL fly in the same way as the flight completes ──
+// The field's meteors stay hidden through most of the flight (only debris + streaking stars show).
+// The arrival is driven straight off the handoff progress, so it can never be skipped or desync from
+// the scroll. Every meteor travels in from far behind ITS OWN spot over the window below (a long, slow
+// approach), and is fully landed by progress 1 — the focused one gaining its fire as it lands. It is
+// fully REVERSIBLE: scroll back and the rocks recede to the far dark exactly as the ship flies back
+// onto the pad, so the whole handoff cleanly undoes. Perspective grows each rock as it nears (NOT
+// scaled up from a speck, so it never reads as spawning). They stay far/small until the ship has
+// cleared frame-centre (see EXIT_PROGRESS_* in useServicesDeck), so ship and rocks never clash.
+const METEOR_ARRIVE_PROGRESS_START = 0.8;  // handoff progress where the rocks begin their approach (earlier = slower/longer)
+const METEOR_ARRIVE_OFFSET = new THREE.Vector3(0, 0.5, -42); // how far behind its own spot each rock starts (field-local)
+const METEOR_APPEAR_FRACTION = 0.12; // gentle fade-up from the far dark as they emerge
 const METEOR_IGNITE_START = 0.5;     // fraction of the approach after which it gains its fire
 const METEOR_VISIBLE_EPSILON = 0.001; // below this the meteors are hidden (during the flight)
 
@@ -109,12 +107,16 @@ const FLARE_SPEED     = 1.4;
 // ── Shards — irregular ambient debris (NOT projects) ─────────────────────
 const SHARD_COUNT       = 260;
 const SHARD_COUNT_LOW   = 90;
-const SHARD_FIELD       = new THREE.Vector3(13, 6.5, 20); // half-extents the debris fills (z biased back)
-const SHARD_Z_CENTER    = -7;
+const SHARD_FIELD       = new THREE.Vector3(13, 6.5, 14); // half-extents the debris fills (z biased back)
+const SHARD_Z_CENTER    = -16; // pushed BEHIND the meteor cluster (meteors sit z 0…-13.5) so debris never occludes a project
 const SHARD_MIN_SCALE   = 0.05;
-const SHARD_MAX_SCALE   = 0.4;
+const SHARD_MAX_SCALE   = 0.28; // capped so a chunk never reads as a giant boulder
 const SHARD_DRIFT_SPEED = 0.012; // rad/s slow yaw drift on the whole debris field
 const SHARD_TINT        = 0x1c2530; // darker than the meteors so the projects read as the subjects
+// Debris keeps clear of a sphere around each meteor's camera rest spot (base + CAMERA_OFFSET), so a
+// chunk never spawns right on top of the lens and blows up huge in perspective when you focus a project.
+const SHARD_CAMERA_KEEPOUT  = 5;
+const SHARD_PLACEMENT_TRIES = 8; // retries to find a spot clear of the keep-out before accepting one
 // Silhouette: start from a subdivided icosphere, then carve it with layered directional lobes so
 // each rock reads as a lumpy, cratered chunk — big bulges + medium dents + fine chips — rather than
 // the faceted ball a low-detail icosahedron gives. flatShading (set on the material) then keeps the
@@ -565,6 +567,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const shardScale = new THREE.Vector3();
       const shardPosition = new THREE.Vector3();
 
+      // Where the camera rests when focused on each meteor (base + offset) — debris keeps clear of a
+      // sphere around each of these so nothing spawns right on the lens and blows up huge.
+      const cameraAnchors = METEOR_LAYOUT.map((layout) =>
+        new THREE.Vector3().fromArray(layout.position).add(CAMERA_OFFSET),
+      );
+      const isClearOfCameras = (position: THREE.Vector3) =>
+        cameraAnchors.every((anchor) => anchor.distanceTo(position) >= SHARD_CAMERA_KEEPOUT);
+
       for (let baseIndex = 0; baseIndex < 2; baseIndex += 1) {
         const geometry = createShardGeometry(
           baseIndex + 1,
@@ -580,11 +590,16 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         instanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
 
         for (let instanceIndex = 0; instanceIndex < countForBase; instanceIndex += 1) {
-          shardPosition.set(
-            (Math.random() * 2 - 1) * SHARD_FIELD.x,
-            (Math.random() * 2 - 1) * SHARD_FIELD.y,
-            SHARD_Z_CENTER + (Math.random() * 2 - 1) * SHARD_FIELD.z,
-          );
+          // Place it, keeping clear of the camera keep-out spheres — retry a few times, then accept
+          // whatever the last try gave (the field is already behind the meteors, so a stray one is fine).
+          for (let attempt = 0; attempt < SHARD_PLACEMENT_TRIES; attempt += 1) {
+            shardPosition.set(
+              (Math.random() * 2 - 1) * SHARD_FIELD.x,
+              (Math.random() * 2 - 1) * SHARD_FIELD.y,
+              SHARD_Z_CENTER + (Math.random() * 2 - 1) * SHARD_FIELD.z,
+            );
+            if (isClearOfCameras(shardPosition)) break;
+          }
           shardEuler.set(Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2);
           shardQuaternion.setFromEuler(shardEuler);
           shardScale.setScalar(SHARD_MIN_SCALE + Math.random() * (SHARD_MAX_SCALE - SHARD_MIN_SCALE));
@@ -692,25 +707,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
-    // ── Meteor 01 arrival (sentinel-driven, time-based — not scrubbed) ──
-    // `meteorArrival` (0 = hidden/far, 1 = landed) is driven by GSAP. The ship's arrival sentinel
-    // starts it ONCE, after a delay; it then stays landed — scrolling back does NOT recede it.
+    // ── Meteor arrival (driven by handoff progress; fully reversible) ──
+    // 0 = hidden/far, 1 = landed. Recomputed each frame in the render loop from the eased flight
+    // progress via a smoothstep window — so scrolling back recedes the rocks in step with the ship
+    // flying back onto the pad.
     const meteorArrival = { value: 0 };
-    let meteorArrivalDelay: ReturnType<typeof gsap.delayedCall> | null = null;
-    let meteorArrivalTriggered = false;
-    const onShipArrived = () => {
-      if (meteorArrivalTriggered) return; // arrive once, then keep it
-      meteorArrivalTriggered = true;
-      if (reduceMotion) {
-        meteorArrival.value = 1;
-        return;
-      }
-      // Wait a beat after the ship has gone, THEN the meteor travels in from far.
-      meteorArrivalDelay = gsap.delayedCall(METEOR_ARRIVE_DELAY, () => {
-        gsap.to(meteorArrival, { value: 1, duration: METEOR_ARRIVE_DURATION, ease: 'power2.out' });
-      });
-    };
-    window.addEventListener(SHIP_ARRIVED_EVENT, onShipArrived);
+    const meteorArriveFrom = new THREE.Vector3(); // scratch: each rock's far start (basePosition + offset)
 
     // ── Drag-to-look ──
     const drag = { active: false, startX: 0, startY: 0 };
@@ -782,27 +784,34 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // only debris + streaking stars. Once `meteorArrival` lifts off 0, meteor 01 flies in from far
       // and lights as it settles; the others simply appear at their spots. Fully in → the focus/float
       // system owns meteor 01 again (browsing between projects works as before).
-      const arrival = meteorArrival.value;
+      // Reversible progress-driven arrival: tracks the eased handoff progress both ways, so the rocks
+      // recede to the far dark on scroll-back exactly as the ship flies back on. At 1 they're landed.
+      const arrival = THREE.MathUtils.smoothstep(flightState.current, METEOR_ARRIVE_PROGRESS_START, 1);
+      meteorArrival.value = arrival;
       const meteorsVisible = arrival > METEOR_VISIBLE_EPSILON;
-      meteorRigs.forEach((rig, rigIndex) => {
-        rig.group.visible = meteorsVisible;
-        // Neighbours simply fade in with the arrival; once fully landed the focus system owns them.
-        if (rigIndex !== 0 && arrival < 1) rig.stoneMaterial.opacity = arrival;
-      });
-      const arrivingRig = meteorRigs[0];
-      if (arrivingRig && meteorsVisible && arrival < 0.999) {
-        // A real, distant, EXISTING rock that travels in — perspective grows it as it nears (NO scale
-        // inflation, so it never reads as spawning). It emerges from the far dark, then gains its fire.
-        arrivingRig.group.position.lerpVectors(METEOR_ARRIVE_FROM, arrivingRig.basePosition, arrival);
-        arrivingRig.group.position.y += Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE * arrival;
-        arrivingRig.group.scale.setScalar(1);
+      const focusedIndex = activeIndexRef.current;
+      if (arrival < 0.999) {
+        // EVERY meteor flies in the same way — a real, distant rock travelling in from far behind its
+        // own spot; perspective grows it as it nears (NO scale inflation, so it never reads as
+        // spawning). It fades up from the far dark, and the focused one gains its fire as it lands.
         const appear = THREE.MathUtils.smoothstep(arrival, 0, METEOR_APPEAR_FRACTION);
-        const ignite = THREE.MathUtils.smoothstep(arrival, METEOR_IGNITE_START, 1);
-        arrivingRig.fireUniforms.uIgnite.value = ignite;
-        arrivingRig.stoneMaterial.opacity = appear * (1 - ignite);
-      } else if (arrivingRig && arrival >= 0.999) {
-        // Landed → hand back (focus/float own its position + ignite from here).
-        arrivingRig.group.scale.setScalar(1);
+        meteorRigs.forEach((rig, rigIndex) => {
+          rig.group.visible = meteorsVisible;
+          if (!meteorsVisible) return;
+          meteorArriveFrom.copy(rig.basePosition).add(METEOR_ARRIVE_OFFSET);
+          rig.group.position.lerpVectors(meteorArriveFrom, rig.basePosition, arrival);
+          rig.group.position.y += Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE * arrival;
+          rig.group.scale.setScalar(1);
+          const ignite = rigIndex === focusedIndex ? THREE.MathUtils.smoothstep(arrival, METEOR_IGNITE_START, 1) : 0;
+          rig.fireUniforms.uIgnite.value = ignite;
+          rig.stoneMaterial.opacity = appear * (1 - ignite);
+        });
+      } else {
+        // Landed → hand back to the focus/float system (owns position, spin, ignite from here).
+        meteorRigs.forEach((rig) => {
+          rig.group.visible = meteorsVisible;
+          rig.group.scale.setScalar(1);
+        });
       }
 
       // ── Camera: fly the shared path during the handoff, else the normal focus-follow ──
@@ -833,14 +842,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           (flightState.target === 0 || flightState.target === 1)
         ) {
           flightState.engaged = false;
-          // Exited the whole section back to the fleet → reset the arrival so RE-entering plays the
-          // meteor's fly-in fresh (it's kept while you're inside works, restarted once you leave).
-          if (flightState.target === 0) {
-            meteorArrivalDelay?.kill();
-            gsap.killTweensOf(meteorArrival);
-            meteorArrival.value = 0;
-            meteorArrivalTriggered = false;
-          }
         }
       } else {
         updateCamera(false);
@@ -928,9 +929,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
-      window.removeEventListener(SHIP_ARRIVED_EVENT, onShipArrived);
-      meteorArrivalDelay?.kill();
-      gsap.killTweensOf(meteorArrival);
 
       meteorRigs.forEach((rig) => {
         gsap.killTweensOf(rig.fireUniforms.uIgnite);

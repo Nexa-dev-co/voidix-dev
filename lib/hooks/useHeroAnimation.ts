@@ -51,7 +51,9 @@ const CAROUSEL_SETTLE_FRACTION = 0.06;
 // here we own the DOM cross-fades, each a window (start..end fraction) inside the span: the deck
 // UI drops out first, the field (backdrop + canvas) rises under the still-flying craft, and the
 // works UI settles only once the meteor has landed.
-const HANDOFF_SCROLL_VH = 380;
+// The handoff is auto-played by the snap "chasm" below (one flick carries the user across), so it no
+// longer needs to be a long manual scrub — a tighter span keeps the committed glide snappy.
+const HANDOFF_SCROLL_VH = 180;
 const HANDOFF_CLASS     = 'is-handoff'; // raises the deck over the works field mid-handoff (CSS)
 const HANDOFF_DECK_UI_FADE:  [number, number] = [0.05, 0.24];
 // The field fades in at the START of the fly-left beat (Phase B) — NOT during the launch (Phase A),
@@ -224,6 +226,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     const fadeWindow = (fadeRange: [number, number], value: number) =>
       gsap.utils.clamp(0, 1, (value - fadeRange[0]) / (fadeRange[1] - fadeRange[0]));
 
+    // Last scroll direction (1 down, -1 up), read from the pin's onUpdate. The snap "chasm" below
+    // resolves in this direction so a commitment either way carries the user all the way across.
+    let scrollDirection = 1;
+
     let lastHandoffProgress = -1;
     const applyHandoff = (progress: number) => {
       const handoffProgress = gsap.utils.clamp(
@@ -255,6 +261,15 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // handoff span is wider than a normal gap), so snap against the laid-out positions.
     const snapProgress = (value: number) => {
       if (value <= carouselStart) return value; // free scrub through the fill + settle zone
+      // The handoff is a "chasm" — there is NO resting stop inside it. Any commitment resolves in the
+      // direction of travel, so ONE flick past the last craft auto-glides the entire flight to
+      // project 01 (and a flick back returns to the fleet). This is what carries the user across
+      // "right away", and — because you can never come to rest mid-flight — it's also what stops the
+      // progress-driven meteor entrance from being skipped: you always land on project 01 (progress
+      // 1 = meteor fully arrived) or back on the fleet, never in between.
+      if (value > handoffStartProgress && value < handoffEndProgress) {
+        return scrollDirection >= 0 ? handoffEndProgress : handoffStartProgress;
+      }
       let nearest = stopProgressValues[0];
       for (const stopProgressValue of stopProgressValues) {
         if (Math.abs(value - stopProgressValue) < Math.abs(value - nearest)) {
@@ -309,6 +324,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
               : undefined,
           onUpdate: (self) => {
             const progress = self.progress;
+            scrollDirection = self.direction;
             // Feed the navbar "home" meter with the fill phase only.
             document.documentElement.style.setProperty(
               '--nav-progress-home',
