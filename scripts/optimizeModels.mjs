@@ -20,6 +20,15 @@ const TEXTURE_SIZE = 1024;
 const TEXTURE_FORMAT = "webp";
 const GEOMETRY_COMPRESSION = "draco";
 
+// Some models are loaded for their GEOMETRY ONLY — the runtime discards their
+// embedded materials and skins the mesh with its own textures (the meteor field
+// applies public/textures/meteor/* over the mesh, so the model's own 4K PBR maps
+// are never sampled). For those, the baked-in textures are pure dead weight, so we
+// crush them to a negligible size instead of the display cap above. The meteor
+// alone drops from ~70 MB to ~65 KB this way.
+const GEOMETRY_ONLY_TEXTURE_SIZE = 8;
+const GEOMETRY_ONLY_MODELS = new Set(["meteor.glb"]);
+
 function formatMegabytes(byteCount) {
   return `${(byteCount / 1024 / 1024).toFixed(2)} MB`;
 }
@@ -35,6 +44,10 @@ for (const fileName of modelFileNames) {
   const outputPath = join(OUTPUT_DIRECTORY, fileName);
   const sizeBefore = statSync(inputPath).size;
 
+  const textureSize = GEOMETRY_ONLY_MODELS.has(fileName)
+    ? GEOMETRY_ONLY_TEXTURE_SIZE
+    : TEXTURE_SIZE;
+
   execFileSync(
     "npx",
     [
@@ -44,7 +57,7 @@ for (const fileName of modelFileNames) {
       inputPath,
       outputPath,
       "--texture-size",
-      String(TEXTURE_SIZE),
+      String(textureSize),
       "--texture-compress",
       TEXTURE_FORMAT,
       "--compress",
