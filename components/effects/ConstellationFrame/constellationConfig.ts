@@ -19,9 +19,6 @@ export interface ConstellationConfig {
   /** Star core radius (CSS px) and the soft halo multiple (the neon glow). */
   starRadiusPx: number;
   haloRadiusMultiple: number;
-  /** How far a star wanders from its base position (CSS px) and how fast. */
-  driftAmplitudePx: number;
-  driftSpeed: number;
   /** Twinkle: alpha oscillates between (1 - depth) and 1 at this speed, phased per star. */
   twinkleSpeed: number;
   twinkleDepth: number;
@@ -43,6 +40,36 @@ export interface ConstellationConfig {
   /** Per-star random offset to the fill order (0..1) — makes the front irregular, so it seeps in
    *  like liquid instead of a clean geometric line. */
   fillNoise: number;
+
+  // ── Bond-and-seek motion (kicks in once the frame has finished filling) ──
+  // Stars sit still while bonded; when a bond's hold timer runs out it breaks and the star hops off
+  // to find a new connection, then parks again. Staggered timers keep the field calmly re-forming.
+  /** Max distance (CSS px) a star may sit from its home anchor — bounds the walk so the "photo
+   *  frame" shape survives all the movement. */
+  roamRadiusPx: number;
+  /** Seek travel speed in CSS px per second while a released star hunts for a new connection. */
+  roamSpeedPx: number;
+  /** A seeking star that gets this close (CSS px) to its target evaluates: connected → park, else
+   *  hop again. */
+  arriveRadiusPx: number;
+  /** Min / max seconds a star holds a bond before it breaks and the star goes looking again. */
+  holdSecondsMin: number;
+  holdSecondsMax: number;
+  /** Min / max hop distance (CSS px) a released star travels toward a fresh patch of the field. */
+  hopMinPx: number;
+  hopMaxPx: number;
+  /** Endpoint connection count at which a link reaches full brightness (more links → brighter). */
+  brightAtConnections: number;
+  /** Hard cap on how many links a single star may hold — it keeps its nearest ones and ignores the
+   *  rest, so no dot turns into an over-crowded hub. */
+  maxConnectionsPerDot: number;
+  /** Cap on how many stars may be seeking (broken off / travelling) at once — the rest hold their
+   *  place and wait their turn, so only ever a handful are in motion. */
+  maxConcurrentSeekers: number;
+  /** Highlight glow on un-bonded stars: halo size multiple (relative to the normal halo) and its
+   *  peak alpha, so a lone dark-blue pin still glows enough to be spotted. */
+  glowRadiusMultiple: number;
+  glowStrength: number;
 }
 
 // Desktop / full-power profile.
@@ -53,19 +80,30 @@ export const CONSTELLATION_CONFIG: ConstellationConfig = {
   bandRatioY: 0.15,
   starRadiusPx: 2.1,
   haloRadiusMultiple: 3.4,
-  driftAmplitudePx: 6,
-  driftSpeed: 0.14,
   twinkleSpeed: 0.7,
   twinkleDepth: 0.4,
   lineMaxDistPx: 84,
   starAlpha: 1,
-  lineAlpha: 0.34,
+  lineAlpha: 0.55,
   lineWidthPx: 1.6,
 
   growthSeconds: 14,
   fillFeather: 0.07,
   sideFillFraction: 0.38,
   fillNoise: 0.09,
+
+  roamRadiusPx: 70,
+  roamSpeedPx: 60,
+  arriveRadiusPx: 8,
+  holdSecondsMin: 5,
+  holdSecondsMax: 12,
+  hopMinPx: 40,
+  hopMaxPx: 90,
+  brightAtConnections: 9,
+  maxConnectionsPerDot: 6,
+  maxConcurrentSeekers: 30,
+  glowRadiusMultiple: 2.2,
+  glowStrength: 0.4,
 };
 
 // Coarse-pointer / narrow-viewport profile: fewer stars, longer/fainter links.
@@ -73,13 +111,17 @@ export const CONSTELLATION_CONFIG_LOW_POWER: ConstellationConfig = {
   ...CONSTELLATION_CONFIG,
   cellSizePx: 68,
   lineMaxDistPx: 104,
-  lineAlpha: 0.28,
-  driftAmplitudePx: 5,
+  lineAlpha: 0.48,
 };
 
 export const LOW_POWER_MAX_WIDTH = 760;
 
 // ── Colours ──────────────────────────────────────────────────────────────
-// Blue only. Dark-but-neon dots + a slightly deeper blue for the connecting links.
-export const DOT_PALETTE: readonly string[] = ['72 140 255']; // brighter neon blue
-export const LINE_RGB = '96 156 255';
+// Blue only. Dots switch state: deep blue while un-bonded, bright blue while connected.
+export const DOT_DIM_RGB = '40 78 150';      // deep blue — a lone, un-bonded star
+export const DOT_BRIGHT_RGB = '130 195 255'; // bright blue — lit once it forms a connection
+export const DOT_GLOW_RGB = '120 175 255';   // soft highlight halo around a lone, un-bonded pin
+// Links read against the light beige hero, so "more connections" deepens toward a saturated royal
+// blue (higher contrast on cream) rather than washing out toward white.
+export const LINE_RGB = '86 116 205';        // sparse links — soft periwinkle
+export const LINE_BRIGHT_RGB = '34 60 180';  // busy clusters — deep vivid blue that pops on beige
