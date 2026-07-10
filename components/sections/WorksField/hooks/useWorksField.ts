@@ -14,7 +14,7 @@ import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
 import { WORKS_PROJECTS } from '../worksProjects';
 import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
-import { reportAssetProgress, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
+import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
 // ── Textures ────────────────────────────────────────────────────────────
@@ -536,6 +536,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       reportAssetProgress('works', Math.min(0.99, fraction));
       onStatus({ isLoading: true, percent: Math.round(fraction * 100) });
     };
+    // If a texture/model fails, onLoad never fires, so buildField never runs — don't let that trap the
+    // intro's loader gate waiting on a source that will never be ready. Report the field "ready" so the
+    // reveal proceeds; the section degrades gracefully (it shows its own empty/loader state).
+    loadingManager.onError = (url) => {
+      console.error(`Works field asset failed to load: ${url}`);
+      reportAssetProgress('works', 1);
+    };
 
     // Build the bodies once the textures AND the meteor model are in (the meteors need both).
     const buildField = () => {
@@ -730,12 +737,23 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
-    // Compile the meteor / fire / shard materials + bloom pipeline on the intro's warm-up beat (a
-    // static hold), not when buildField runs mid-intro — so the compile stall stays out of the
-    // loading animation. Draws nothing visible (the field is hidden here).
+    // Warm the meteor / fire / shard materials + bloom pipeline before the field is shown. Compiled
+    // ASYNCHRONOUSLY (background threads, where the GPU supports it) so it doesn't block the main
+    // thread — a synchronous compile at the intro's warm-up beat froze ~0.2s right before the reveal.
+    // The field isn't shown until the handoff, so there's time; the bloom-warming composer.render()
+    // lands after the promise resolves, while the field is still hidden.
+    let disposed = false;
     const warmUpField = () => {
-      renderer.compile(scene, camera);
-      composer.render();
+      renderer
+        .compileAsync(scene, camera)
+        .then(() => {
+          if (disposed) return;
+          // Forces the bloom passes to compile too (the only part that can still block, and only on a
+          // GPU with no parallel-compile extension — during the intro hold, never at the reveal).
+          composer.render();
+          reportWarmupDone('works'); // the intro holds the reveal until this fires
+        })
+        .catch(() => { if (!disposed) reportWarmupDone('works'); });
     };
     window.addEventListener(ASSETS_WARMUP_EVENT, warmUpField);
 
@@ -935,9 +953,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       if (worksShouldRender && !document.hidden) {
         composer.render();
         // Adaptive resolution: measure THIS drawn frame, and re-size if the shared ratio has shifted.
-        // Only sampled while actually drawing, so idle frames never fake headroom.
-        sampleFrame(deltaSeconds);
-        if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+        // Only sampled while actually drawing (idle frames never fake headroom), and frozen through the
+        // handoff so a target reallocation can never hitch the fly-in.
+        const handoffActive = flightState.current > 0.001 && flightState.current < 0.999;
+        if (!handoffActive) {
+          sampleFrame(deltaSeconds);
+          if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+        }
       }
     };
     renderFrame();
@@ -973,6 +995,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     }
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
       destroyGui?.();

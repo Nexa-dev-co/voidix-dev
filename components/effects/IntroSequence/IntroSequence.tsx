@@ -6,10 +6,11 @@ import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import {
   getAssetProgress,
   areAssetsReady,
+  areWarmupsDone,
   onAssetProgress,
   ASSETS_WARMUP_EVENT,
 } from "@/lib/assetLoadProgress";
-import { REVEAL_EVENT } from "./introEvents";
+import { REVEAL_EVENT, INTRO_ACTIVE_EVENT } from "./introEvents";
 
 // The shared sun lives in HeroSun. The intro only drives it:
 //   .hero-sun-layer  — the outer layer (we fade its opacity in)
@@ -47,6 +48,11 @@ const REDUCED_MOTION_DELAY = 0.3;
 // user at the loader). Kept well under the hero's REVEAL fallback so the intro always reveals first.
 const COUNTER_EASE_SECONDS = 0.5;
 const ASSET_WAIT_TIMEOUT_MS = 12000;
+// After assets download, kick off the (async) shader compiles and hold the reveal until the scenes
+// report warm — capped so a machine that never reports can't trap the loader — then a short settle so
+// the reveal always begins on a smooth beat rather than on the tail of a compile.
+const WARMUP_WAIT_MAX_MS = 3000;
+const WARMUP_SETTLE_MS = 250;
 
 // The sun is sized to a little over the "o" glyph so it reads as filling it.
 const SUN_IN_O_RATIO = 1.3;
@@ -79,6 +85,11 @@ export default function IntroSequence() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
+    // Tell the hero an intro is actually running (so it extends its reveal-fallback and doesn't fire
+    // early during a legitimate slow load). The hero's effect runs before this one, so its listener
+    // is already registered.
+    window.dispatchEvent(new Event(INTRO_ACTIVE_EVENT));
+
     const revealHero = () => window.dispatchEvent(new Event(REVEAL_EVENT));
     const sunLayer = document.querySelector(SUN_LAYER_SELECTOR);
     const sunFlight = document.querySelector(SUN_FLIGHT_SELECTOR);
@@ -176,33 +187,72 @@ export default function IntroSequence() {
       });
     };
 
-    // The gate only "opens" once the timeline has reached the pre-handoff hold AND the assets are in
-    // (or the safety timeout fires). Reaching the gate before assets are ready parks the timeline
-    // there; the progress listener / timeout resume it. warmAndProceed fires exactly once.
+    // The gate opens in two stages once the timeline reaches the pre-handoff hold: first wait for the
+    // assets to download, THEN kick off their shader compiles and wait for the scenes to report warm
+    // (both capped by timeouts). The reveal resumes exactly once, only after everything is smooth.
     let gateReached = false;
-    let hasProceeded = false;
+    let warmupStarted = false;
+    let hasResumed = false;
     let assetsTimedOut = false;
     let resumeFrame = 0;
-    const warmAndProceed = () => {
-      if (hasProceeded) return;
-      hasProceeded = true;
-      // Compile the scenes' shaders NOW, during this static hold — so the compile stall is invisible
-      // rather than janking the loading animation or hitching the reveal.
-      window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
-      // Resume on the next frame, never synchronously inside addPause's own callback (where GSAP can
-      // swallow an immediate resume and leave the loader frozen), and after the warm-up has a beat.
+    let warmupWaitTimeout = 0;
+    // While we WAIT at the gate (for assets to download, then for their shaders to compile), breathe
+    // the accent underline so the hold reads as "loading" and alive — the 5%-opacity ghost counter
+    // alone is too faint to signal it. Idempotent so repeated calls don't stack tweens.
+    const startHoldPulse = () => {
+      gsap.killTweensOf(".intro-underline");
+      gsap.to(".intro-underline", {
+        opacity: 0.35, duration: 0.85, repeat: -1, yoyo: true, ease: "sine.inOut",
+      });
+    };
+    const stopHoldPulse = () => {
+      gsap.killTweensOf(".intro-underline");
+      gsap.set(".intro-underline", { opacity: 1 });
+    };
+
+    // Resume the timeline into the handoff/reveal. Deferred a frame so it never runs inside addPause's
+    // own callback (GSAP can swallow that) — and only ever once the scenes are actually warm.
+    const resumeReveal = () => {
+      if (hasResumed) return;
+      hasResumed = true;
+      window.clearTimeout(warmupWaitTimeout);
+      stopHoldPulse();
       resumeFrame = requestAnimationFrame(() => timeline.resume());
     };
-    const tryProceed = () => {
-      if (gateReached && (areAssetsReady() || assetsTimedOut)) warmAndProceed();
+
+    // Scenes report when their shaders have finished compiling; once both are warm, wait a short
+    // settle (a beat of smooth animation) then reveal — so the reveal never starts on the tail of a
+    // compile. This is what stops the loader "stopping" as it hands off.
+    const checkWarmup = () => {
+      if (warmupStarted && !hasResumed && areWarmupsDone()) {
+        window.clearTimeout(warmupWaitTimeout);
+        warmupWaitTimeout = window.setTimeout(resumeReveal, WARMUP_SETTLE_MS);
+      }
     };
+
+    // Assets are in → kick off the async shader compiles and keep holding on the wordmark until the
+    // scenes report warm (capped, so a machine that never reports can't trap the loader).
+    const beginWarmupThenReveal = () => {
+      if (warmupStarted) return;
+      warmupStarted = true;
+      startHoldPulse();
+      window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
+      warmupWaitTimeout = window.setTimeout(resumeReveal, WARMUP_WAIT_MAX_MS);
+      checkWarmup();
+    };
+
+    const tryBeginWarmup = () => {
+      if (gateReached && (areAssetsReady() || assetsTimedOut)) beginWarmupThenReveal();
+    };
+
     const stopAssetProgress = onAssetProgress(() => {
       syncCounterToAssets();
-      tryProceed();
+      tryBeginWarmup(); // assets finished downloading → start compiling
+      checkWarmup();    // a scene reported its shaders warm → maybe settle + reveal
     });
     const assetWaitTimeout = window.setTimeout(() => {
       assetsTimedOut = true;
-      tryProceed();
+      tryBeginWarmup();
     }, ASSET_WAIT_TIMEOUT_MS);
     syncCounterToAssets(); // paint whatever has already loaded before the first new report
 
@@ -302,7 +352,8 @@ export default function IntroSequence() {
     // resumes on the same frame, so a fast / cached load feels exactly like before.
     timeline.addPause(">", () => {
       gateReached = true;
-      tryProceed();
+      if (areAssetsReady() || assetsTimedOut) beginWarmupThenReveal();
+      else startHoldPulse(); // still downloading — show life; the warm-up begins once assets are in
     });
 
     // 6. Handoff — chrome leaves, the dark veil lifts to reveal the cream hero,
@@ -349,8 +400,10 @@ export default function IntroSequence() {
       unlockScroll();
       stopAssetProgress();
       window.clearTimeout(assetWaitTimeout);
+      window.clearTimeout(warmupWaitTimeout);
       cancelAnimationFrame(resumeFrame);
       gsap.killTweensOf(counterDisplay);
+      gsap.killTweensOf(".intro-underline");
     };
   }, []);
 

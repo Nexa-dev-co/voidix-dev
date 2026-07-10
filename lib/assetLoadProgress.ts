@@ -15,7 +15,13 @@
 const EXPECTED_SOURCES = ['deck', 'works'] as const;
 export type AssetSource = (typeof EXPECTED_SOURCES)[number];
 
+// Weight the combined progress by each source's rough download weight so the counter climbs at an
+// honest pace. The fleet is ~8.5 MB of vessels, the field ~0.6 MB — an unweighted average would leap
+// to 50% the instant the tiny field finished, then crawl. Weights sum to 1.
+const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.93, works: 0.07 };
+
 const progressBySource = new Map<AssetSource, number>();
+const warmedSources = new Set<AssetSource>();
 const listeners = new Set<() => void>();
 
 /**
@@ -34,16 +40,31 @@ export function reportAssetProgress(source: AssetSource, value: number): void {
   listeners.forEach((listener) => listener());
 }
 
-/** Combined 0..1 across every expected source (a source that hasn't reported yet counts as 0). */
+/** Combined 0..1 across every expected source, weighted by download size (missing source = 0). */
 export function getAssetProgress(): number {
-  let total = 0;
-  for (const source of EXPECTED_SOURCES) total += progressBySource.get(source) ?? 0;
-  return total / EXPECTED_SOURCES.length;
+  let progress = 0;
+  for (const source of EXPECTED_SOURCES) {
+    progress += (progressBySource.get(source) ?? 0) * SOURCE_WEIGHTS[source];
+  }
+  return progress;
 }
 
 /** True once every expected source has fully loaded. */
 export function areAssetsReady(): boolean {
   return EXPECTED_SOURCES.every((source) => (progressBySource.get(source) ?? 0) >= 1);
+}
+
+/** A scene reports here once its shaders + bloom pipeline have actually finished compiling, so the
+ *  intro can hold the reveal until it's genuinely smooth rather than guessing at a delay. */
+export function reportWarmupDone(source: AssetSource): void {
+  if (warmedSources.has(source)) return;
+  warmedSources.add(source);
+  listeners.forEach((listener) => listener());
+}
+
+/** True once every expected source has reported its shaders compiled. */
+export function areWarmupsDone(): boolean {
+  return EXPECTED_SOURCES.every((source) => warmedSources.has(source));
 }
 
 /** Subscribe to progress changes; returns an unsubscribe fn. */

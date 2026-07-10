@@ -14,7 +14,7 @@ import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
-import { reportAssetProgress, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
+import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
 // ── Framing ─────────────────────────────────────────────────────────────
@@ -136,6 +136,12 @@ const EXIT_PROGRESS_START = 0.88; // handoff progress where the off-screen whoos
 const EXIT_PROGRESS_END   = 1.0;  // …fully off-screen by progress 1 (parked on project 01's stop)
 const EXIT_DELTA = new THREE.Vector3(-2, -3.5, 9); // dives down-left and PAST the camera → off-screen
 const EXIT_SCALE_GAIN = 0.25; // a touch bigger as it powers past
+// Fully parked at works browsing (handoff at 1): the ship has whooshed off-screen and the camera has
+// tracked so far left (near x=−15) that the pad at the origin sits well outside its frustum — so the
+// deck draws nothing. Stop paying for its bloom pipeline past this; it resumes the instant a
+// scroll-back eases the handoff below 1 and the ship flies back on. (Verified from the flight-path
+// geometry in lib/handoffFlightPath.ts, not guessed.)
+const DECK_PARKED_THRESHOLD = 0.999;
 
 // ── Heading — the nose points where the ship is actually going ──
 // Yaw is derived from the ship's own per-frame velocity, so the nose tracks its travel: screen-left
@@ -610,16 +616,25 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
-    // Compile every material + the bloom pipeline up front, while the deck is still hidden behind
-    // the loader, so the first *visible* frame at reveal doesn't stall on shader compilation — that
-    // stall showed up as a ~0.2s hitch right as the square finished filling. renderer.compile() is
-    // frustum-independent so off-stage vessels warm too; the one composer.render() warms the bloom
-    // passes. The canvas is at opacity:0 here, so this draws nothing the user can see. The intro
-    // fires ASSETS_WARMUP_EVENT during its static pre-reveal hold, so the compile lands on a still
-    // beat instead of janking the loading animation.
+    // Warm the shaders + bloom pipeline before the deck is ever shown, so its first visible frame at
+    // the services reveal doesn't stall on compilation. The intro fires ASSETS_WARMUP_EVENT once
+    // assets are in; we compile ASYNCHRONOUSLY (KHR_parallel_shader_compile where available) so the
+    // build runs on the driver's background threads instead of blocking the main thread — a
+    // synchronous compile here froze ~0.2s right as the reveal began. The deck isn't shown until the
+    // user scrolls to services, so there's ample time; the single composer.render() that warms the
+    // bloom passes lands after the promise resolves, while the deck is still hidden.
+    let disposed = false;
     const prewarmPipeline = () => {
-      renderer.compile(scene, camera);
-      composer.render();
+      renderer
+        .compileAsync(scene, camera)
+        .then(() => {
+          if (disposed) return;
+          // Forces the bloom passes to compile too (this is the only part that can still block, and
+          // only on a GPU with no parallel-compile extension — during the intro hold, never at reveal).
+          composer.render();
+          reportWarmupDone('deck'); // the intro holds the reveal until this fires
+        })
+        .catch(() => { if (!disposed) reportWarmupDone('deck'); });
     };
     window.addEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
 
@@ -936,12 +951,19 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // Only pay for the bloom pipeline when the deck is actually visible (and the tab is in the
       // foreground). Everything above still ran, so the pose is current — we just skipped the GPU
       // draw while it was hidden behind the hero.
-      if (deckShouldRender && !document.hidden) {
+      // Once fully parked at works browsing the deck shows nothing (see DECK_PARKED_THRESHOLD), so
+      // skip its whole bloom pipeline there — halving the GPU cost while the user browses projects.
+      const parkedAtWorks = departState.current >= DECK_PARKED_THRESHOLD;
+      if (deckShouldRender && !document.hidden && !parkedAtWorks) {
         composer.render();
         // Adaptive resolution: measure THIS drawn frame, and re-size if the shared ratio has shifted.
-        // Only sampled while actually drawing, so idle frames never fake headroom.
-        sampleFrame(deltaSeconds);
-        if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+        // Only sampled while actually drawing (idle frames never fake headroom), and frozen through the
+        // handoff so a target reallocation can never hitch the ship's fly-in.
+        const handoffActive = departState.current > 0.001 && departState.current < 0.999;
+        if (!handoffActive) {
+          sampleFrame(deltaSeconds);
+          if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+        }
       }
     };
     renderFrame();
@@ -995,6 +1017,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     }
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
       destroyGui?.();

@@ -4,7 +4,7 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { ScrollToPlugin } from 'gsap/ScrollToPlugin';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
-import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
+import { REVEAL_EVENT, INTRO_ACTIVE_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT, GOTO_SERVICES_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
 import { HANDOFF_PROGRESS_EVENT, type HandoffProgressDetail } from '@/lib/handoffEvents';
 
@@ -70,10 +70,12 @@ const SUB_FADE_DURATION    = 0.6;
 const FILL_START           = 0.25; // begins just after the headline starts rising
 const FULL_CLIP  = 'inset(0% 0 0 0)';
 const EMPTY_CLIP = 'inset(100% 0 0 0)';
-// If the intro never fires its reveal (e.g. it was bypassed), reveal anyway. The intro now holds its
-// reveal until assets load (capped by its own ASSET_WAIT_TIMEOUT_MS), so this net must sit safely
-// beyond that worst case — otherwise it would fire mid-load and race the intro's real handoff.
-const REVEAL_FALLBACK_MS = 16000;
+// If the intro never fires its reveal, reveal anyway. Two nets: a SHORT one for when the intro is
+// absent / crashed on mount (recover fast), swapped for a LONG ultimate one the moment the intro
+// signals it's alive (INTRO_ACTIVE_EVENT) — because a running intro legitimately holds its reveal
+// until assets load (its own ASSET_WAIT_TIMEOUT_MS), so the net must clear that worst case.
+const REVEAL_FALLBACK_NO_INTRO_MS = 7000;
+const REVEAL_FALLBACK_WITH_INTRO_MS = 20000;
 
 const SUN_LAYER_SELECTOR    = '.hero-sun-layer';
 const DECK_SELECTOR         = '.services-deck';
@@ -441,7 +443,14 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
 
     window.addEventListener(REVEAL_EVENT, runReveal);
-    const fallbackTimeout = window.setTimeout(runReveal, REVEAL_FALLBACK_MS);
+    // Start with the short net; if the intro announces itself, swap to the long one (it will drive the
+    // real reveal itself). Reassigned, so the cleanup clears whichever timer is live.
+    let fallbackTimeout = window.setTimeout(runReveal, REVEAL_FALLBACK_NO_INTRO_MS);
+    const onIntroActive = () => {
+      window.clearTimeout(fallbackTimeout);
+      fallbackTimeout = window.setTimeout(runReveal, REVEAL_FALLBACK_WITH_INTRO_MS);
+    };
+    window.addEventListener(INTRO_ACTIVE_EVENT, onIntroActive);
 
     // The navbar "Services" link asks the pin to scroll to the revealed fleet (craft 0).
     const onGotoServices = () => goToCraftImplRef.current(0);
@@ -471,6 +480,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
     return () => {
       window.removeEventListener(REVEAL_EVENT, runReveal);
+      window.removeEventListener(INTRO_ACTIVE_EVENT, onIntroActive);
       window.removeEventListener(GOTO_SERVICES_EVENT, onGotoServices);
       window.clearTimeout(fallbackTimeout);
       gsap.killTweensOf(window);
