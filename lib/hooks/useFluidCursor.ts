@@ -129,8 +129,9 @@ export function useFluidCursor(
     const renderFrame = () => {
       animationFrame = requestAnimationFrame(renderFrame);
 
-      // Idle the whole sim while the hero is off screen — nothing to draw, no work.
-      if (!isHeroVisible) return;
+      // Idle the whole sim while the hero is off screen, or the tab is backgrounded — nothing to
+      // draw, no work.
+      if (!isHeroVisible || document.hidden) return;
 
       const now = performance.now();
       const deltaSeconds = Math.min((now - lastFrameTime) / 1000, MAX_FRAME_SECONDS);

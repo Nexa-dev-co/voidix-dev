@@ -148,7 +148,9 @@ export default function SunCanvas() {
 
       sunUniforms.uTime.value = flowTime;
       sunUniforms.uIntensity.value = intensity;
-      renderer.render(scene, camera);
+      // The sun is on screen for the whole journey (it's the hero centrepiece, and it stays visible
+      // behind the fleet/field), so it only skips drawing when the tab is backgrounded.
+      if (!document.hidden) renderer.render(scene, camera);
     };
     animate();
 

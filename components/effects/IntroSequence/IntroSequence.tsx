@@ -3,6 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import gsap from "gsap";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
+import {
+  getAssetProgress,
+  areAssetsReady,
+  onAssetProgress,
+  ASSETS_WARMUP_EVENT,
+} from "@/lib/assetLoadProgress";
 import { REVEAL_EVENT } from "./introEvents";
 
 // The shared sun lives in HeroSun. The intro only drives it:
@@ -24,7 +30,6 @@ const CYCLE_WORDS = [
 const ACCENT_WORD = "ORBIT";
 
 // ── Timing (seconds) ───────────────────────────────────────────────────
-const COUNTER_DURATION = 1.95;
 const WORD_STEP = 0.2;
 const WORD_START = 0.15;
 const RESOLVE_DURATION = 0.9;
@@ -36,6 +41,12 @@ const VEIL_FADE_OUT = 0.7;
 const SUN_FLIGHT_DURATION = 1.1;
 const SETTLE_AFTER_REVEAL = 0.4;
 const REDUCED_MOTION_DELAY = 0.3;
+
+// Loader gate: how smoothly the counter chases real load progress, and the longest we'll hold the
+// reveal waiting for assets before proceeding anyway (a safety net so a stalled asset can't trap the
+// user at the loader). Kept well under the hero's REVEAL fallback so the intro always reveals first.
+const COUNTER_EASE_SECONDS = 0.5;
+const ASSET_WAIT_TIMEOUT_MS = 12000;
 
 // The sun is sized to a little over the "o" glyph so it reads as filling it.
 const SUN_IN_O_RATIO = 1.3;
@@ -136,7 +147,6 @@ export default function IntroSequence() {
       };
     }
 
-    const counterProgress = { value: 0 };
     // Release the scroll lock when the intro actually finishes (the component returns
     // null but stays mounted, so the effect cleanup can't be relied on to unlock).
     const timeline = gsap.timeline({
@@ -145,6 +155,56 @@ export default function IntroSequence() {
         setDone(true);
       },
     });
+
+    // ── Honest loader: real asset progress + hold the reveal until it's in ──
+    // The counter now reflects what's actually loading (eased so it climbs smoothly), and the intro
+    // pauses at the pre-handoff beat until every asset the entry needs is loaded — or a safety
+    // timeout elapses — so the reveal never lands on a half-built scene. See lib/assetLoadProgress.
+    const counterDisplay = { value: 0 };
+    const paintCounter = () => {
+      if (counterRef.current) {
+        counterRef.current.textContent = String(Math.round(counterDisplay.value));
+      }
+    };
+    const syncCounterToAssets = () => {
+      gsap.to(counterDisplay, {
+        value: Math.round(getAssetProgress() * 100),
+        duration: COUNTER_EASE_SECONDS,
+        ease: "power1.out",
+        overwrite: true,
+        onUpdate: paintCounter,
+      });
+    };
+
+    // The gate only "opens" once the timeline has reached the pre-handoff hold AND the assets are in
+    // (or the safety timeout fires). Reaching the gate before assets are ready parks the timeline
+    // there; the progress listener / timeout resume it. warmAndProceed fires exactly once.
+    let gateReached = false;
+    let hasProceeded = false;
+    let assetsTimedOut = false;
+    let resumeFrame = 0;
+    const warmAndProceed = () => {
+      if (hasProceeded) return;
+      hasProceeded = true;
+      // Compile the scenes' shaders NOW, during this static hold — so the compile stall is invisible
+      // rather than janking the loading animation or hitching the reveal.
+      window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
+      // Resume on the next frame, never synchronously inside addPause's own callback (where GSAP can
+      // swallow an immediate resume and leave the loader frozen), and after the warm-up has a beat.
+      resumeFrame = requestAnimationFrame(() => timeline.resume());
+    };
+    const tryProceed = () => {
+      if (gateReached && (areAssetsReady() || assetsTimedOut)) warmAndProceed();
+    };
+    const stopAssetProgress = onAssetProgress(() => {
+      syncCounterToAssets();
+      tryProceed();
+    });
+    const assetWaitTimeout = window.setTimeout(() => {
+      assetsTimedOut = true;
+      tryProceed();
+    }, ASSET_WAIT_TIMEOUT_MS);
+    syncCounterToAssets(); // paint whatever has already loaded before the first new report
 
     // 1. Editorial frame + corner chrome settle in. (fromTo, not from, so the end
     //    state is explicit — a bare from() mis-captures its end value under React
@@ -162,22 +222,7 @@ export default function IntroSequence() {
       0,
     );
 
-    // 2. Ghost counter climbs throughout.
-    timeline.to(
-      counterProgress,
-      {
-        value: 100,
-        duration: COUNTER_DURATION,
-        ease: "power1.inOut",
-        onUpdate: () => {
-          if (counterRef.current)
-            counterRef.current.textContent = String(
-              Math.round(counterProgress.value),
-            );
-        },
-      },
-      0.1,
-    );
+    // 2. (The counter is driven by real asset progress above, not a scripted climb.)
 
     // 3. Slot-machine word cycle, each ripping up through the centre.
     const cycle = cycleRef.current;
@@ -253,6 +298,13 @@ export default function IntroSequence() {
 
     timeline.to({}, { duration: HOLD_BEFORE_HANDOFF });
 
+    // Hold here until the assets are in (or the safety timeout fires). If they're already loaded this
+    // resumes on the same frame, so a fast / cached load feels exactly like before.
+    timeline.addPause(">", () => {
+      gateReached = true;
+      tryProceed();
+    });
+
     // 6. Handoff — chrome leaves, the dark veil lifts to reveal the cream hero,
     //    and the sun shrinks + flies from the "o" into the hero square.
     const handoffLabel = "handoff";
@@ -295,6 +347,10 @@ export default function IntroSequence() {
     return () => {
       timeline.kill();
       unlockScroll();
+      stopAssetProgress();
+      window.clearTimeout(assetWaitTimeout);
+      cancelAnimationFrame(resumeFrame);
+      gsap.killTweensOf(counterDisplay);
     };
   }, []);
 

@@ -70,8 +70,10 @@ const SUB_FADE_DURATION    = 0.6;
 const FILL_START           = 0.25; // begins just after the headline starts rising
 const FULL_CLIP  = 'inset(0% 0 0 0)';
 const EMPTY_CLIP = 'inset(100% 0 0 0)';
-// If the intro never fires its reveal (e.g. it was bypassed), reveal anyway.
-const REVEAL_FALLBACK_MS = 7000;
+// If the intro never fires its reveal (e.g. it was bypassed), reveal anyway. The intro now holds its
+// reveal until assets load (capped by its own ASSET_WAIT_TIMEOUT_MS), so this net must sit safely
+// beyond that worst case — otherwise it would fire mid-load and race the intro's real handoff.
+const REVEAL_FALLBACK_MS = 16000;
 
 const SUN_LAYER_SELECTOR    = '.hero-sun-layer';
 const DECK_SELECTOR         = '.services-deck';

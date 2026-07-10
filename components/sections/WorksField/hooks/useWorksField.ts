@@ -14,6 +14,8 @@ import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
 import { WORKS_PROJECTS } from '../worksProjects';
 import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
+import { reportAssetProgress, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
+import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
 // ── Textures ────────────────────────────────────────────────────────────
 const TEXTURE_STONE  = '/textures/meteor/stone.jpg';
@@ -83,6 +85,12 @@ const FLOAT_SPEED       = 0.9;
 // composite as one continuous space. Eased at the same rate as the deck so the cameras stay locked
 // together (any drift between them would make the ship shimmer against the field).
 const FLIGHT_CAMERA_SMOOTHING = 0.09;
+
+// Below this handoff progress the field is still fully transparent — useHeroAnimation fades
+// .works-field in over [0.33, 0.55] — so there's nothing on screen to draw. Kept a touch under 0.33
+// for margin so the first visible frame is never clipped. (Only gates the DRAW; the loop keeps
+// easing every frame so the field camera stays locked to the deck ship through the handoff.)
+const WORKS_RENDER_THRESHOLD = 0.28;
 
 // ── Meteor arrival — real, FAR rocks that ALL fly in the same way as the flight completes ──
 // The field's meteors stay hidden through most of the flight (only debris + streaking stars show).
@@ -408,7 +416,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
     // ── Renderer ──
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
+    renderer.setPixelRatio(getPixelRatio());
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -521,7 +530,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     disposableTextures.push(normalMap);
 
     loadingManager.onProgress = (_url, loaded, total) => {
-      onStatus({ isLoading: true, percent: Math.round((loaded / Math.max(total, 1)) * 100) });
+      const fraction = loaded / Math.max(total, 1);
+      // Cap below 1 until buildField runs — 'works' only counts as ready once its meteor / fire /
+      // shard materials actually exist, so the intro never warms or reveals before they're built.
+      reportAssetProgress('works', Math.min(0.99, fraction));
+      onStatus({ isLoading: true, percent: Math.round(fraction * 100) });
     };
 
     // Build the bodies once the textures AND the meteor model are in (the meteors need both).
@@ -616,6 +629,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Light the focused meteor immediately (no cross-fade on first build).
       applyFocus(activeIndexRef.current, true);
       onStatus({ isLoading: false, percent: 100 });
+      // Fully built → mark the field ready for the intro's loader gate. The shader warm-up itself is
+      // deferred to ASSETS_WARMUP_EVENT (fired during the intro's static pre-reveal hold) so the
+      // compile stall never lands mid loading-animation.
+      reportAssetProgress('works', 1);
     };
 
     // The meteor model and the textures load in parallel; build only when BOTH are ready. tryBuild
@@ -701,11 +718,26 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // worksCamera = sharedCamera − meteorOffset.
     const meteorOffset = new THREE.Vector3().fromArray(METEOR_SHARED_POSITION);
     const flightLookTarget = new THREE.Vector3();
+    // Gate the expensive bloom draw to when the field is actually on screen (see
+    // WORKS_RENDER_THRESHOLD). The render loop keeps running regardless, so flightState eases in
+    // lockstep with the deck's camera and nothing desyncs — we skip only the composer draw.
+    let worksShouldRender = false;
     const onHandoffProgress = (event: Event) => {
-      flightState.target = readHandoffProgress(event);
+      const progress = readHandoffProgress(event);
+      flightState.target = progress;
       flightState.engaged = true;
+      worksShouldRender = progress > WORKS_RENDER_THRESHOLD;
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+
+    // Compile the meteor / fire / shard materials + bloom pipeline on the intro's warm-up beat (a
+    // static hold), not when buildField runs mid-intro — so the compile stall stays out of the
+    // loading animation. Draws nothing visible (the field is hidden here).
+    const warmUpField = () => {
+      renderer.compile(scene, camera);
+      composer.render();
+    };
+    window.addEventListener(ASSETS_WARMUP_EVENT, warmUpField);
 
     // ── Meteor arrival (driven by handoff progress; fully reversible) ──
     // 0 = hidden/far, 1 = landed. Recomputed each frame in the render loop from the eased flight
@@ -743,6 +775,28 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     canvas.addEventListener('pointerdown', handlePointerDown);
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
+
+    // Push the shared adaptive pixel ratio + current CSS size onto BOTH the renderer and the
+    // composer (the composer caches its own pixel ratio, so it must be told separately or the bloom
+    // targets stay at the old density). Also owns the portrait pull-back. Used for real resizes and
+    // whenever the adaptive controller shifts the ratio; defined before the loop so it can call it.
+    let appliedPixelRatio = getPixelRatio();
+    const applyRendererSize = () => {
+      const width  = canvas.clientWidth  || canvas.offsetWidth;
+      const height = canvas.clientHeight || canvas.offsetHeight;
+      if (!width || !height) return;
+      const aspect = width / height;
+      const ratio = getPixelRatio();
+      appliedPixelRatio = ratio;
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+      // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
+      distanceScale = aspect < 1 ? THREE.MathUtils.clamp(1 / aspect, 1, 1.9) : 1;
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(width, height, false);
+      composer.setPixelRatio(ratio);
+      composer.setSize(width, height);
+    };
 
     // ── Render loop ──
     const clock = new THREE.Clock();
@@ -875,25 +929,22 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         }
       }
 
-      composer.render();
+      // Skip the bloom pipeline whenever the field isn't on screen (and when the tab is
+      // backgrounded). The loop above still ran, so state is current and the first visible frame is
+      // already right.
+      if (worksShouldRender && !document.hidden) {
+        composer.render();
+        // Adaptive resolution: measure THIS drawn frame, and re-size if the shared ratio has shifted.
+        // Only sampled while actually drawing, so idle frames never fake headroom.
+        sampleFrame(deltaSeconds);
+        if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+      }
     };
     renderFrame();
 
     // ── Resize ──
-    const handleResize = () => {
-      const width  = canvas.clientWidth  || canvas.offsetWidth;
-      const height = canvas.clientHeight || canvas.offsetHeight;
-      if (!width || !height) return;
-      const aspect = width / height;
-      camera.aspect = aspect;
-      camera.updateProjectionMatrix();
-      // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
-      distanceScale = aspect < 1 ? THREE.MathUtils.clamp(1 / aspect, 1, 1.9) : 1;
-      renderer.setSize(width, height, false);
-      composer.setSize(width, height);
-    };
-    handleResize();
-    const resizeObserver = new ResizeObserver(handleResize);
+    applyRendererSize();
+    const resizeObserver = new ResizeObserver(applyRendererSize);
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
     // ── Dev tuning panel (?tune) — the focused fire + the bloom ──
@@ -929,6 +980,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+      window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
 
       meteorRigs.forEach((rig) => {
         gsap.killTweensOf(rig.fireUniforms.uIgnite);

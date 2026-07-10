@@ -12,8 +12,10 @@ import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
 import { DECK_SERVICES } from '../deckServices';
-import { DECK_REVEAL_EVENT } from '../deckEvents';
+import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
+import { reportAssetProgress, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
+import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
 // ── Framing ─────────────────────────────────────────────────────────────
 const CAMERA_FOV      = 34;
@@ -304,7 +306,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     // ── Renderer ──
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
+    renderer.setPixelRatio(getPixelRatio());
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES
     // does — the fleet read flat/grey under ACES. OutputPass applies this after the composer.
     renderer.toneMapping = THREE.NeutralToneMapping;
@@ -577,6 +580,17 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     window.addEventListener(DECK_REVEAL_EVENT, replayEntrance);
 
+    // Gate the expensive bloom draw to when the deck is actually on screen. The deck reveals on
+    // DECK_REVEAL_EVENT (fill → fleet) and hides back on DECK_HIDE_EVENT (fleet → fill); it stays on
+    // screen through the whole services → works handoff (the craft flies you in). The render loop
+    // keeps running regardless — we skip only the composer draw — so ship state, tweens and the
+    // handoff scrub stay perfectly live, and the first frame after it reveals is already in pose.
+    let deckShouldRender = false;
+    const showDeck = () => { deckShouldRender = true; };
+    const hideDeck = () => { deckShouldRender = false; };
+    window.addEventListener(DECK_REVEAL_EVENT, showDeck);
+    window.addEventListener(DECK_HIDE_EVENT, hideDeck);
+
     // ── Departure state (the services → works handoff) ──
     // The hero pin scrubs the raw target; the render loop eases toward it every frame, so the
     // choreography stays smooth whether the user creeps, flicks, or the snap glides through.
@@ -595,6 +609,19 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       departState.engaged = true;
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+
+    // Compile every material + the bloom pipeline up front, while the deck is still hidden behind
+    // the loader, so the first *visible* frame at reveal doesn't stall on shader compilation — that
+    // stall showed up as a ~0.2s hitch right as the square finished filling. renderer.compile() is
+    // frustum-independent so off-stage vessels warm too; the one composer.render() warms the bloom
+    // passes. The canvas is at opacity:0 here, so this draws nothing the user can see. The intro
+    // fires ASSETS_WARMUP_EVENT during its static pre-reveal hold, so the compile lands on a still
+    // beat instead of janking the loading animation.
+    const prewarmPipeline = () => {
+      renderer.compile(scene, camera);
+      composer.render();
+    };
+    window.addEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
 
     // ── Load the landing pad (once) ──
     const dracoLoader = new DRACOLoader();
@@ -644,7 +671,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const emitStatus = () => {
       const isDone = loadProgress.every((value) => value >= 1);
       const summed = loadProgress.reduce((total, value) => total + value, 0);
-      onStatus({ isLoading: !isDone, percent: isDone ? 100 : Math.round((summed / ships.length) * 100) });
+      const fraction = summed / ships.length;
+      // Feed the intro's honest loader (combined with the works field) so the reveal can wait for
+      // the fleet to actually be in.
+      reportAssetProgress('deck', fraction);
+      onStatus({ isLoading: !isDone, percent: isDone ? 100 : Math.round(fraction * 100) });
     };
     emitStatus();
 
@@ -753,6 +784,26 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     canvas.addEventListener('pointerdown', handlePointerDown);
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
+
+    // Push the shared adaptive pixel ratio + current CSS size onto BOTH the renderer and the
+    // composer. The composer caches its own pixel ratio (captured at construction), so it must be
+    // told separately or the bloom targets stay at the old density. Used for real window resizes and
+    // whenever the adaptive controller shifts the ratio. Defined before the render loop so the loop
+    // can call it without a forward reference.
+    let appliedPixelRatio = getPixelRatio();
+    const applyRendererSize = () => {
+      const width  = canvas.clientWidth  || canvas.offsetWidth;
+      const height = canvas.clientHeight || canvas.offsetHeight;
+      if (!width || !height) return;
+      const ratio = getPixelRatio();
+      appliedPixelRatio = ratio;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(width, height, false);
+      composer.setPixelRatio(ratio);
+      composer.setSize(width, height);
+    };
 
     // ── Render loop ──
     const clock = new THREE.Clock();
@@ -882,22 +933,22 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         }
       }
 
-      composer.render();
+      // Only pay for the bloom pipeline when the deck is actually visible (and the tab is in the
+      // foreground). Everything above still ran, so the pose is current — we just skipped the GPU
+      // draw while it was hidden behind the hero.
+      if (deckShouldRender && !document.hidden) {
+        composer.render();
+        // Adaptive resolution: measure THIS drawn frame, and re-size if the shared ratio has shifted.
+        // Only sampled while actually drawing, so idle frames never fake headroom.
+        sampleFrame(deltaSeconds);
+        if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+      }
     };
     renderFrame();
 
     // ── Resize ──
-    const handleResize = () => {
-      const width  = canvas.clientWidth  || canvas.offsetWidth;
-      const height = canvas.clientHeight || canvas.offsetHeight;
-      if (!width || !height) return;
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-      renderer.setSize(width, height, false);
-      composer.setSize(width, height);
-    };
-    handleResize();
-    const resizeObserver = new ResizeObserver(handleResize);
+    applyRendererSize();
+    const resizeObserver = new ResizeObserver(applyRendererSize);
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
     // ── Dev tuning panel (off by default; opened with ?tune) ──
@@ -951,6 +1002,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(DECK_REVEAL_EVENT, replayEntrance);
+      window.removeEventListener(DECK_REVEAL_EVENT, showDeck);
+      window.removeEventListener(DECK_HIDE_EVENT, hideDeck);
+      window.removeEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       // Stop any running tweens, then dispose every loaded hull's geometry + materials.
       ships.forEach((ship) => {
