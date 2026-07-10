@@ -61,7 +61,7 @@ const CAROUSEL_SETTLE_FRACTION = 0.06;
 // once the square has filled we take the wheel/touch over and step exactly ONE stop per gesture,
 // locking further input until the glide settles. The fill phase stays free native scroll (see the
 // progress < fillFraction guards) so the square-grow keeps its continuous scrub.
-const CAROUSEL_STEP_COOLDOWN_MS = 700; // one gesture → one stop; ignore further input for this long
+const STEP_REARM_IDLE_MS = 300; // wheel/touch must go quiet this long before the next step can fire
 const WHEEL_STEP_THRESHOLD = 24; // accumulated |deltaY| before a wheel gesture counts as a step
 const TOUCH_STEP_THRESHOLD_PX = 42; // vertical swipe travel (px) that counts as one step
 // A normal stop step is a quick glide, but the last-craft ↔ project-01 step crosses the wide handoff
@@ -345,22 +345,26 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     let lastProject = -1;
 
     // Discrete-scroll state. `currentStop` is the stop the carousel is committed to (kept in sync by
-    // the pin's onUpdate); the wheel/touch handlers step it by ±1 and hold `stepLocked` for a cooldown
-    // so one gesture can only ever move one stop.
+    // the pin's onUpdate); the wheel/touch handlers step it by ±1 and hold `stepLocked` until the
+    // input goes quiet, so one continuous scroll can only ever move one stop.
     let currentStop = 0;
     let stepLocked = false;
     let wheelAccum = 0;
     let touchStartY = 0;
     let touchActive = false;
-    let stepUnlockTimer = 0;
-    const releaseStepLockAfterCooldown = (
-      holdMs = CAROUSEL_STEP_COOLDOWN_MS,
-    ) => {
-      window.clearTimeout(stepUnlockTimer);
-      stepUnlockTimer = window.setTimeout(() => {
+    let stepMinUnlockAt = 0; // timestamp the lock can't lift before (covers the in-flight glide)
+    let rearmTimer = 0;
+    // Re-arm the stepper only after the wheel/touch has gone QUIET for STEP_REARM_IDLE_MS. Every
+    // intercepted event pushes this out (see the handlers), so holding a spin or spamming the wheel
+    // never advances more than one stop — you have to stop and scroll again. The current glide's own
+    // duration is also honoured (stepMinUnlockAt) so a step can't re-arm mid-flight even if you pause.
+    const scheduleRearm = () => {
+      window.clearTimeout(rearmTimer);
+      const wait = Math.max(STEP_REARM_IDLE_MS, stepMinUnlockAt - performance.now());
+      rearmTimer = window.setTimeout(() => {
         stepLocked = false;
         wheelAccum = 0;
-      }, holdMs);
+      }, wait);
     };
 
     // Where the square + sun must travel/scale to fill the viewport. Measured from the square's
@@ -633,17 +637,20 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       wheelAccum = 0;
       goToStop(target, durationSeconds);
       currentStop = target; // optimistic; onUpdate reconfirms as the glide lands
-      const glideMs = reduceMotion ? 0 : durationSeconds * 1000;
-      releaseStepLockAfterCooldown(
-        Math.max(CAROUSEL_STEP_COOLDOWN_MS, glideMs + 150),
-      );
+      // The lock can't lift before the glide has landed (+ a small settle); the quiet-gap debounce in
+      // scheduleRearm then requires the input to actually stop before the next step is allowed.
+      const glideMs = reduceMotion ? 0 : durationSeconds * 1000 + 150;
+      stepMinUnlockAt = performance.now() + glideMs;
+      scheduleRearm();
     };
     // True only while the pin is live AND past the fill — i.e. in the discrete carousel region.
     const carouselDirection = (rawDelta: number): number => {
       if (!hasRevealed || rawDelta === 0) return 0;
       const trigger = scrollTimeline?.scrollTrigger;
-      if (!trigger || !trigger.isActive || trigger.progress < fillFraction)
-        return 0;
+      // Deliberately NOT gated on trigger.isActive: the last works stop sits at progress 1 (the pin's
+      // very end), where isActive flips false — gating on it there let native momentum leak in and spam
+      // past projects (works-section only). Progress bounds + the per-end guards below decide it instead.
+      if (!trigger || trigger.progress < fillFraction) return 0;
       const direction = rawDelta > 0 ? 1 : -1;
       // Let the two ends spill back to native scroll so entering/leaving the carousel stays seamless.
       if (direction < 0 && currentStop <= 0) return 0;
@@ -655,7 +662,12 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const direction = carouselDirection(event.deltaY);
       if (direction === 0) return; // fill phase or an end → native scroll handles it
       event.preventDefault(); // we own carousel movement now
-      if (stepLocked) return;
+      // Keep the lock alive while you keep scrolling — this is what makes one continuous spin move
+      // exactly one stop no matter how hard/long you scroll; the lock only re-arms after a quiet gap.
+      if (stepLocked) {
+        scheduleRearm();
+        return;
+      }
       wheelAccum += event.deltaY;
       if (Math.abs(wheelAccum) < WHEEL_STEP_THRESHOLD) return;
       stepBy(wheelAccum > 0 ? 1 : -1);
@@ -672,7 +684,11 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const direction = carouselDirection(deltaY);
       if (direction === 0) return;
       event.preventDefault();
-      if (stepLocked) return;
+      // Same as the wheel: a held/continuous swipe keeps the lock alive so it only ever moves one stop.
+      if (stepLocked) {
+        scheduleRearm();
+        return;
+      }
       if (Math.abs(deltaY) < TOUCH_STEP_THRESHOLD_PX) return;
       touchStartY = event.touches[0].clientY; // reset so each step needs a fresh swipe of travel
       stepBy(direction);
@@ -695,7 +711,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       window.removeEventListener("touchmove", handleTouchMove);
       window.removeEventListener("touchend", handleTouchEnd);
       window.clearTimeout(fallbackTimeout);
-      window.clearTimeout(stepUnlockTimer);
+      window.clearTimeout(rearmTimer);
       gsap.killTweensOf(window);
       scrollTimeline?.scrollTrigger?.kill();
       scrollTimeline?.kill();
