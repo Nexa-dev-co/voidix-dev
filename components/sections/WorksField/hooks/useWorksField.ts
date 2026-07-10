@@ -5,6 +5,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -451,6 +452,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     );
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
+    // Smooth the meteor / shard edges the bloom pipeline leaves rough — a composer ignores the
+    // renderer's own `antialias` flag, so this is the only geometry AA on the final image. Runs last,
+    // on the LDR result after tone mapping. Sized by the composer, so it follows the adaptive resolution.
+    const smaaPass = new SMAAPass();
+    composer.addPass(smaaPass);
 
     // ── Starfield (dots + warp streaks) ──
     const starSystem = createStarSystem();
@@ -1024,6 +1030,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       scene.environment?.dispose();
       // EffectComposer.dispose() doesn't free added passes — release the bloom pyramid explicitly.
       bloomPass.dispose();
+      smaaPass.dispose();
       composer.dispose();
       renderer.dispose();
     };

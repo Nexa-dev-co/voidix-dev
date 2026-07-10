@@ -7,6 +7,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
@@ -356,6 +357,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     );
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
+    // Smooth the hull edges the bloom pipeline leaves rough — a composer ignores the renderer's own
+    // `antialias` flag, so this is the only geometry AA on the final image. Runs last, on the LDR
+    // result after tone mapping. Sized by the composer, so it follows the adaptive resolution.
+    const smaaPass = new SMAAPass();
+    composer.addPass(smaaPass);
 
     // ── Starfield ──
     const starfield = createStarfield();
@@ -1067,6 +1073,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // EffectComposer.dispose() only frees its own targets + copy pass, not added passes —
       // so free the bloom pass's render-target pyramid explicitly to avoid a GPU leak on unmount.
       bloomPass.dispose();
+      smaaPass.dispose();
       composer.dispose();
       renderer.dispose();
     };

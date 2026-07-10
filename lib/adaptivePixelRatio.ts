@@ -13,10 +13,17 @@
  * between the two frame-rate thresholds, so it settles instead of oscillating between two levels.
  */
 
-const FLOOR = 0.7;              // lowest density — upscaled, softer, but a big fill saving
+// Quality-first + "spend power for quality": never render BELOW native (base 1×, so models are always
+// at least crisp), and let a capable GPU render ABOVE native (super-sampling → down-sampled = extra
+// clean) up to the cap. Starts at the BASE (fast, light first paint) and climbs toward the cap only
+// if there's headroom.
+const BASE_PIXEL_RATIO = 1;    // floor — 1 device pixel per CSS pixel; never softer than native
+const SUPERSAMPLE_CEIL = 1.5;  // minimum ceiling: even a 1× panel may render up to 1.5× for crispness
+const MAX_PIXEL_RATIO = 2;     // hard cap (retina native)
 const STEP = 0.2;               // how far the ratio moves per adjustment
-const SLOW_FPS = 45;            // sustained below this → step down
-const FAST_FPS = 58;            // sustained above this → step up (dead zone 45–58 = no change)
+const SLOW_FPS = 30;            // sustained below this → step down. 30 = "cinematic" floor: hold the
+                                // higher resolution/quality unless the GPU genuinely can't keep up
+const FAST_FPS = 58;            // sustained above this → step up (dead zone 30–58 = hold, no change)
 const SETTLE_DOWN_SECONDS = 0.8; // react to slowness fairly quickly (protect the frame rate)
 const SETTLE_UP_SECONDS = 2;     // …reclaim sharpness after a shorter-but-still-cautious calm stretch
 const RECENT_STEP_UP_SECONDS = 3.5; // a drop this soon after a step-up means that level was too costly
@@ -26,7 +33,8 @@ const MAX_SANE_DT = 0.5;         // ignore absurd deltas (tab-restore, breakpoin
 
 let initialised = false;
 let ceil = 2;
-let softCeil = 2;            // dynamic cap ≤ ceil; lowered when a higher level proves too expensive, so
+let floor = BASE_PIXEL_RATIO; // lowest density we'll drop to (base 1×)
+let softCeil = 2;           // dynamic cap ≤ ceil; lowered when a higher level proves too expensive, so
                             // the controller settles instead of oscillating in and out of it
 let pixelRatio = 1;
 let emaFrameSeconds = 1 / 60;
@@ -40,11 +48,12 @@ function ensureInitialised(): void {
   if (initialised) return;
   initialised = true;
   const deviceRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-  ceil = Math.min(deviceRatio, 2);
+  ceil = Math.min(MAX_PIXEL_RATIO, Math.max(deviceRatio, SUPERSAMPLE_CEIL));
+  floor = BASE_PIXEL_RATIO;
   softCeil = ceil;
-  // Start conservative (near 1×, never above the device ceiling) so the first heavy reveal is smooth
-  // on a weak machine; the controller then climbs toward `ceil` only if the frame budget allows.
-  pixelRatio = Math.min(ceil, 1);
+  // Start at the BASE (native 1×) so the first reveal is light and loads fast — already sharp, since
+  // the floor is native — then climb toward the super-sampled ceiling only if the GPU has the headroom.
+  pixelRatio = floor;
 }
 
 /** The current shared pixel ratio. Read once per frame; apply to renderer + composer when it moves. */
@@ -77,13 +86,13 @@ export function sampleFrame(dtSeconds: number): void {
 
   const effectiveCeil = Math.min(ceil, softCeil);
 
-  if (slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > FLOOR) {
+  if (slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
     // A drop this soon after a step-up means that higher level was too expensive — cap below it so we
     // don't climb straight back into it. This turns endless oscillation into a single detect-and-settle.
     if (elapsed - lastStepUpAt < RECENT_STEP_UP_SECONDS) {
-      softCeil = Math.max(FLOOR, pixelRatio - STEP);
+      softCeil = Math.max(floor, pixelRatio - STEP);
     }
-    pixelRatio = Math.max(FLOOR, pixelRatio - STEP);
+    pixelRatio = Math.max(floor, pixelRatio - STEP);
     slowFor = 0;
     fastFor = 0;
   } else if (fastFor >= SETTLE_UP_SECONDS && pixelRatio < effectiveCeil) {
