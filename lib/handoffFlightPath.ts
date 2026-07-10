@@ -107,7 +107,12 @@ export function createFlightPose(): FlightPose {
   };
 }
 
-// Smootherstep-interpolate a Vector3 across keyframes; flat-holds outside the first/last stop.
+// LINEARLY interpolate a Vector3 across keyframes; flat-holds outside the first/last stop.
+// NB: we intentionally do NOT ease each segment (no smootherstep). A per-segment smoothstep eases to
+// ZERO velocity at both ends of every segment, so the ship decelerates to a near-stop at each interior
+// keyframe (0.3, 0.55, …) and re-accelerates — a stutter you only notice once the crossing is slow.
+// Linear segments hold a constant velocity; the joints (speed changes) are then rounded by each
+// scene's own per-frame progress smoothing, so the whole flight reads as one continuous motion.
 function sampleVector3(
   keyframes: Vector3Keyframe[],
   progress: number,
@@ -126,7 +131,7 @@ function sampleVector3(
     const from = keyframes[index];
     const to = keyframes[index + 1];
     if (progress <= to.at) {
-      const t = THREE.MathUtils.smootherstep(progress, from.at, to.at);
+      const t = (progress - from.at) / (to.at - from.at);
       out.set(
         THREE.MathUtils.lerp(from.value[0], to.value[0], t),
         THREE.MathUtils.lerp(from.value[1], to.value[1], t),
@@ -137,6 +142,7 @@ function sampleVector3(
   }
 }
 
+// Linear counterpart for the scalar tracks (fov / scale) — same no-per-segment-easing reasoning.
 function sampleScalar(keyframes: ScalarKeyframe[], progress: number): number {
   const lastIndex = keyframes.length - 1;
   if (progress <= keyframes[0].at) return keyframes[0].value;
@@ -145,7 +151,7 @@ function sampleScalar(keyframes: ScalarKeyframe[], progress: number): number {
     const from = keyframes[index];
     const to = keyframes[index + 1];
     if (progress <= to.at) {
-      const t = THREE.MathUtils.smootherstep(progress, from.at, to.at);
+      const t = (progress - from.at) / (to.at - from.at);
       return THREE.MathUtils.lerp(from.value, to.value, t);
     }
   }
