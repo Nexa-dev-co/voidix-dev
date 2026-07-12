@@ -37,11 +37,15 @@ const CAMERA_OFFSET = new THREE.Vector3(0, 1.0, 7.0);
 // The trip is time-based (not a constant lerp) so it launches, cruises, then arrives: the eased
 // progress means the camera accelerates out of one planet and decelerates into the next. That speed
 // curve then drives the star-streaks and an FOV kick, so the three read as one warp.
-const TRAVEL_DURATION = 0.9;        // seconds per hop, regardless of distance
+// Paced to read as a real trip between planets rather than a cut: with the scroll now stepping one
+// project per gesture, this warp IS the transition the user sees, so it gets room to breathe. The
+// hero pin holds its input lock (STAGE_STEP_HOLD_MS) across roughly this long.
+const TRAVEL_DURATION = 1.6;        // seconds per hop, regardless of distance
 const TRAVEL_EASE = 'power3.inOut'; // accelerate → cruise → decelerate (the launch/arrive arc)
-// Camera speed (world units/second) that maps to a full-intensity warp. Tuned so a typical hop
-// between neighbouring meteors peaks near full streak without pinning there.
-const WARP_REFERENCE_SPEED = 22;
+// Camera speed (world units/second) that maps to a full-intensity warp. Scaled DOWN in step with the
+// longer TRAVEL_DURATION: a slower hop means a lower peak camera speed, so leaving this at its old
+// value would leave the streaks and the FOV kick barely registering.
+const WARP_REFERENCE_SPEED = 12;
 const WARP_SMOOTHING = 0.22;        // ease the measured speed so streaks/FOV don't flicker frame to frame
 const FOV_KICK = 8;                 // degrees the FOV widens at peak warp (38 → 46), punching the launch
 // Star-streaks: at peak warp each star stretches into a light-line this long (view-space units) and
@@ -73,8 +77,8 @@ const METEOR_MODEL_PATH = '/models/meteor.glb'; // the real meteor body every pr
 const DRACO_DECODER_PATH = '/draco/';
 const METEOR_DETAIL = 1;        // icosahedron subdivisions — the fallback shape if the model won't load
 const FIRE_SHELL_SCALE = 1.03;  // the fire mesh sits just outside the stone so it fully envelops it
-const IGNITE_DURATION = 0.7;    // cross-fade a meteor to fire
-const COOL_DURATION   = 0.5;    // …and back to stone
+const IGNITE_DURATION = 1.1;    // cross-fade a meteor to fire (paced with the slower TRAVEL_DURATION)
+const COOL_DURATION   = 0.9;    // …and back to stone
 const METEOR_SPIN_SPEED = 0.25; // rad/s slow turntable on the focused meteor
 const FLOAT_AMPLITUDE   = 0.12; // gentle vertical bob on the focused meteor
 const FLOAT_SPEED       = 0.9;

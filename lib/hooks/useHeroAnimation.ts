@@ -49,8 +49,10 @@ const DECK_REVEAL_DURATION = 0.6;
 const DECK_HIDE_DURATION = 0.4;
 const WORKS_HIDE_DURATION = 0.4;
 const GOTO_DURATION = 0.6; // programmatic scroll when a label/arrow jumps to a stop
+// Snap is only a SAFETY NET now (the discrete stepper below owns all carousel movement) — it just
+// tidies up after a native scroll, so these are short, distance-scaled settles.
 const SNAP_DURATION = 0.5; // how quickly the carousel settles onto the nearest stop
-const SNAP_DURATION_MAX = 2.2; // long snaps (across the handoff span) glide rather than lurch
+const SNAP_DURATION_MAX = 2.2; // a longer settle glides rather than lurches
 // The carousel stops start a touch *past* the fill, so stop 0 lands on the fully revealed fleet
 // instead of the fill/transition edge (which read as the section scrolling away).
 const CAROUSEL_SETTLE_FRACTION = 0.06;
@@ -67,6 +69,16 @@ const TOUCH_STEP_THRESHOLD_PX = 42; // vertical swipe travel (px) that counts as
 // A normal stop step is a quick glide, but the last-craft ↔ project-01 step crosses the wide handoff
 // span — the whole services → works flight — so it gets a long, cinematic glide instead of a snap.
 const HANDOFF_STEP_DURATION = 4.0; // seconds to fly across the services → works handoff on one step
+const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the flight fully lands
+// The scroll glide between two stops is INVISIBLE (the deck + works are fixed overlays) — what you
+// actually see is the scene transition it triggers: the deck's craft swap, or the works' camera warp.
+// So the input stays locked well past the glide, giving that transition room to play out before
+// another step can interrupt it. Keep this roughly in step with the scene durations in
+// useServicesDeck (SWAP_*) and useWorksField (TRAVEL_DURATION).
+const STAGE_STEP_HOLD_MS = 1400;
+// Entering the carousel out of the free-scrolling fill: glide onto craft 01 and hold, so a hard flick
+// through the fill can never dump the user on craft 02 (see the arrival branch in onUpdate).
+const CAROUSEL_ARRIVAL_DURATION = 0.5;
 
 // ── The services → works handoff ────────────────────────────────────────
 // One long scrubbed span between the last craft stop and project 01. The craft's departure and
@@ -271,10 +283,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         (value - fadeRange[0]) / (fadeRange[1] - fadeRange[0]),
       );
 
-    // Last scroll direction (1 down, -1 up), read from the pin's onUpdate. The snap "chasm" below
-    // resolves in this direction so a commitment either way carries the user all the way across.
-    let scrollDirection = 1;
-
     let lastHandoffProgress = -1;
     const applyHandoff = (progress: number) => {
       const handoffProgress = gsap.utils.clamp(
@@ -315,28 +323,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       );
     };
 
-    // Free scrub through the fill, then snap to the nearest stop. The stops aren't uniform (the
-    // handoff span is wider than a normal gap), so snap against the laid-out positions.
-    const snapProgress = (value: number) => {
-      if (value <= carouselStart) return value; // free scrub through the fill + settle zone
-      // The handoff is a "chasm" — there is NO resting stop inside it. Any commitment resolves in the
-      // direction of travel, so ONE flick past the last craft auto-glides the entire flight to
-      // project 01 (and a flick back returns to the fleet). This is what carries the user across
-      // "right away", and — because you can never come to rest mid-flight — it's also what stops the
-      // progress-driven meteor entrance from being skipped: you always land on project 01 (progress
-      // 1 = meteor fully arrived) or back on the fleet, never in between.
-      if (value > handoffStartProgress && value < handoffEndProgress) {
-        return scrollDirection >= 0 ? handoffEndProgress : handoffStartProgress;
-      }
-      let nearest = stopProgressValues[0];
-      for (const stopProgressValue of stopProgressValues) {
-        if (Math.abs(value - stopProgressValue) < Math.abs(value - nearest)) {
-          nearest = stopProgressValue;
-        }
-      }
-      return nearest;
-    };
-
     // 2. The single pin — built lazily at reveal, never on mount (Contract 2). While the loader
     //    plays the page is locked at the top, but the binding must not exist at all: a restored or
     //    stray scroll would otherwise drive the sun/square while it's still flying in.
@@ -344,20 +330,25 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     let lastCraft = -1;
     let lastProject = -1;
 
-    // Discrete-scroll state. `currentStop` is the stop the carousel is committed to (kept in sync by
-    // the pin's onUpdate); the wheel/touch handlers step it by ±1 and hold `stepLocked` until the
-    // input goes quiet, so one continuous scroll can only ever move one stop.
+    // ── Discrete-scroll state ──
+    // `currentStop` is the stop the carousel is COMMITTED to. A step or a jump commits its target up
+    // front — so the craft swap / meteor warp begins on the same frame you scroll, instead of waiting
+    // for the scroll glide's midpoint — and raises `committedGlide` while the scroll animates there.
+    // Only when nothing is committed (native scroll through the fill, a resize) does the pin fall back
+    // to picking the nearest stop from the raw scroll position.
     let currentStop = 0;
+    let committedGlide = false;
+    let wasInFill = true;
     let stepLocked = false;
     let wheelAccum = 0;
     let touchStartY = 0;
     let touchActive = false;
-    let stepMinUnlockAt = 0; // timestamp the lock can't lift before (covers the in-flight glide)
+    let stepMinUnlockAt = 0; // timestamp the lock can't lift before (covers the in-flight transition)
     let rearmTimer = 0;
     // Re-arm the stepper only after the wheel/touch has gone QUIET for STEP_REARM_IDLE_MS. Every
     // intercepted event pushes this out (see the handlers), so holding a spin or spamming the wheel
-    // never advances more than one stop — you have to stop and scroll again. The current glide's own
-    // duration is also honoured (stepMinUnlockAt) so a step can't re-arm mid-flight even if you pause.
+    // never advances more than one stop — you have to stop and scroll again. The in-flight
+    // transition's hold is also honoured (stepMinUnlockAt), so a step can't re-arm mid-transition.
     const scheduleRearm = () => {
       window.clearTimeout(rearmTimer);
       const wait = Math.max(STEP_REARM_IDLE_MS, stepMinUnlockAt - performance.now());
@@ -365,6 +356,74 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         stepLocked = false;
         wheelAccum = 0;
       }, wait);
+    };
+    const lockStepping = (holdMs: number) => {
+      stepLocked = true;
+      wheelAccum = 0;
+      stepMinUnlockAt = performance.now() + holdMs;
+      scheduleRearm();
+    };
+
+    // Commit a stop — this is what actually swaps the craft on the pad / focuses the project meteor.
+    // Called up front by goToStop, and by the pin's onUpdate whenever no glide is committed.
+    const commitStop = (stop: number) => {
+      currentStop = stop;
+      if (stop < craftCount) {
+        if (stop !== lastCraft) {
+          lastCraft = stop;
+          setActiveCraftRef.current(stop);
+        }
+        return;
+      }
+      const project = stop - craftCount;
+      if (project !== lastProject) {
+        lastProject = project;
+        setActiveProjectRef.current(project);
+      }
+    };
+
+    // Jump to a stop by scrolling to its snap point. The target is committed IMMEDIATELY (so the scene
+    // transition begins on the same frame as the scroll, not at the glide's midpoint), and
+    // `committedGlide` stops both onUpdate and the snap from second-guessing it while the scroll
+    // animates. Before the pin exists (a reduced-motion bypass) this degrades to just setting the index.
+    const goToStop = (stop: number, durationSeconds = GOTO_DURATION) => {
+      commitStop(stop);
+      const trigger = scrollTimeline?.scrollTrigger;
+      if (!trigger) return;
+      committedGlide = true;
+      const targetProgress = stopProgressValues[stop];
+      const targetScroll =
+        trigger.start + targetProgress * (trigger.end - trigger.start);
+      gsap.to(window, {
+        scrollTo: targetScroll,
+        duration: reduceMotion ? 0 : durationSeconds,
+        ease: "power2.inOut",
+        overwrite: true,
+        onComplete: () => {
+          committedGlide = false;
+        },
+      });
+    };
+
+    // Free scrub through the fill, then settle on the nearest stop.
+    //
+    // There is deliberately NO "chasm" rule here any more. It used to force any value inside the
+    // services→works span to that span's far end in the direction of travel — but the LAST CRAFT'S
+    // STOP *IS* that span's lower edge, so landing on it (via goToStop) with a sub-pixel rounding
+    // overshoot read as "inside the chasm" and catapulted the user straight on into the works section.
+    // The discrete stepper owns all carousel movement now, so snap is only a safety net for native
+    // scroll; and while a glide is committed it can only agree with that target, never yank us back to
+    // a stop we happen to be passing through.
+    const snapProgress = (value: number) => {
+      if (committedGlide) return stopProgressValues[currentStop];
+      if (value <= carouselStart) return value; // free scrub through the fill + settle zone
+      let nearest = stopProgressValues[0];
+      for (const stopProgressValue of stopProgressValues) {
+        if (Math.abs(value - stopProgressValue) < Math.abs(value - nearest)) {
+          nearest = stopProgressValue;
+        }
+      }
+      return nearest;
     };
 
     // Where the square + sun must travel/scale to fill the viewport. Measured from the square's
@@ -409,7 +468,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
               : undefined,
           onUpdate: (self) => {
             const progress = self.progress;
-            scrollDirection = self.direction;
             // Feed the navbar "home" meter with the fill phase only.
             document.documentElement.style.setProperty(
               "--nav-progress-home",
@@ -421,6 +479,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             applyHandoff(progress);
 
             if (progress < fillFraction) {
+              wasInFill = true;
               setStage("fill");
               document.documentElement.style.setProperty(
                 "--nav-progress-work",
@@ -429,36 +488,43 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
               return;
             }
 
-            // Nearest stop across the non-uniform layout.
-            let stop = 0;
-            for (
-              let stopIndex = 1;
-              stopIndex < stopProgressValues.length;
-              stopIndex += 1
-            ) {
-              if (
-                Math.abs(progress - stopProgressValues[stopIndex]) <
-                Math.abs(progress - stopProgressValues[stop])
-              ) {
-                stop = stopIndex;
-              }
+            // First update past the fill. The fill is free native scroll, so the flick that carried us
+            // here is still delivering momentum — absorb it: lock the stepper (the wheel/touch handlers
+            // then preventDefault the rest of that gesture, killing the momentum) and glide onto craft
+            // 01. Without this, one hard scroll from the hero overshoots and dumps you on craft 02.
+            if (wasInFill) {
+              wasInFill = false;
+              lockStepping(CAROUSEL_ARRIVAL_DURATION * 1000);
+              goToStop(0, CAROUSEL_ARRIVAL_DURATION);
             }
-            // The committed stop the discrete wheel/touch stepping measures its ±1 from.
-            currentStop = stop;
 
-            if (stop < craftCount) {
+            // A committed glide's target is authoritative. Only without one (native scroll, a resize)
+            // do we resolve the nearest stop across the non-uniform layout and commit that.
+            if (!committedGlide) {
+              let nearest = 0;
+              for (
+                let stopIndex = 1;
+                stopIndex < stopProgressValues.length;
+                stopIndex += 1
+              ) {
+                if (
+                  Math.abs(progress - stopProgressValues[stopIndex]) <
+                  Math.abs(progress - stopProgressValues[nearest])
+                ) {
+                  nearest = stopIndex;
+                }
+              }
+              commitStop(nearest);
+            }
+
+            if (currentStop < craftCount) {
               setStage("services");
               document.documentElement.style.setProperty(
                 "--nav-progress-work",
                 "0",
               );
-              if (stop !== lastCraft) {
-                lastCraft = stop;
-                setActiveCraftRef.current(stop);
-              }
             } else {
               setStage("works");
-              const project = stop - craftCount;
               // Fill the "work" meter across the project stops.
               const worksMeter =
                 worksMeterSpan > 0
@@ -473,10 +539,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
                 "--nav-progress-work",
                 String(worksMeter),
               );
-              if (project !== lastProject) {
-                lastProject = project;
-                setActiveProjectRef.current(project);
-              }
             }
           },
         },
@@ -589,25 +651,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     const onGotoServices = () => goToCraftImplRef.current(0);
     window.addEventListener(GOTO_SERVICES_EVENT, onGotoServices);
 
-    // Jump to a stop by scrolling to its snap point; onUpdate then re-stages it. Before the pin
-    // exists (e.g. reduced-motion bypass), fall back to setting the index directly.
-    const goToStop = (stop: number, durationSeconds = GOTO_DURATION) => {
-      const trigger = scrollTimeline?.scrollTrigger;
-      if (!trigger) {
-        if (stop < craftCount) setActiveCraftRef.current(stop);
-        else setActiveProjectRef.current(stop - craftCount);
-        return;
-      }
-      const targetProgress = stopProgressValues[stop];
-      const targetScroll =
-        trigger.start + targetProgress * (trigger.end - trigger.start);
-      gsap.to(window, {
-        scrollTo: targetScroll,
-        duration: reduceMotion ? 0 : durationSeconds,
-        ease: "power2.inOut",
-        overwrite: true,
-      });
-    };
     goToCraftImplRef.current = (index) =>
       goToStop(gsap.utils.clamp(0, craftCount - 1, index));
     goToProjectImplRef.current = (index) =>
@@ -624,41 +667,54 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         totalStops - 1,
         currentStop + direction,
       );
-      // The last-craft ↔ project-01 step crosses the handoff span — the whole flight — so it glides
-      // slowly instead of the quick per-stop snap, and the input lock is held for the full flight so a
-      // second gesture can't cut it short.
+      // The last-craft ↔ project-01 step crosses the handoff span — the whole services → works flight
+      // — so it glides slowly and stays locked for the full flight, and a second gesture can't cut it
+      // short. A normal stage step's scroll glide is quick (the scroll itself is invisible: the deck
+      // and works are fixed overlays), but the lock is held for STAGE_STEP_HOLD_MS so the craft swap /
+      // meteor warp it kicks off gets to play out before another step can interrupt it.
+      // NB: read `currentStop` before goToStop — that commits the target and moves it.
       const crossesHandoff =
         (currentStop === craftCount - 1 && target === craftCount) ||
         (currentStop === craftCount && target === craftCount - 1);
       const durationSeconds = crossesHandoff
         ? HANDOFF_STEP_DURATION
         : GOTO_DURATION;
-      stepLocked = true;
-      wheelAccum = 0;
+      const holdMs = reduceMotion
+        ? 0
+        : crossesHandoff
+          ? durationSeconds * 1000 + HANDOFF_SETTLE_MS
+          : STAGE_STEP_HOLD_MS;
       goToStop(target, durationSeconds);
-      currentStop = target; // optimistic; onUpdate reconfirms as the glide lands
-      // The lock can't lift before the glide has landed (+ a small settle); the quiet-gap debounce in
-      // scheduleRearm then requires the input to actually stop before the next step is allowed.
-      const glideMs = reduceMotion ? 0 : durationSeconds * 1000 + 150;
-      stepMinUnlockAt = performance.now() + glideMs;
-      scheduleRearm();
+      lockStepping(holdMs);
     };
-    // True only while the pin is live AND past the fill — i.e. in the discrete carousel region.
-    const carouselDirection = (rawDelta: number): number => {
-      if (!hasRevealed || rawDelta === 0) return 0;
+    // The pin is live and we're past the fill — i.e. inside the discrete carousel region.
+    // Deliberately NOT gated on trigger.isActive: the last works stop sits at progress 1 (the pin's
+    // very end), where isActive flips false — gating on it there let native momentum leak in and spam
+    // past projects (works-section only). Progress bounds + the per-end guards decide it instead.
+    const inCarouselRegion = () => {
+      if (!hasRevealed) return false;
       const trigger = scrollTimeline?.scrollTrigger;
-      // Deliberately NOT gated on trigger.isActive: the last works stop sits at progress 1 (the pin's
-      // very end), where isActive flips false — gating on it there let native momentum leak in and spam
-      // past projects (works-section only). Progress bounds + the per-end guards below decide it instead.
-      if (!trigger || trigger.progress < fillFraction) return 0;
+      return !!trigger && trigger.progress >= fillFraction;
+    };
+    const carouselDirection = (rawDelta: number): number => {
+      if (rawDelta === 0 || !inCarouselRegion()) return 0;
       const direction = rawDelta > 0 ? 1 : -1;
       // Let the two ends spill back to native scroll so entering/leaving the carousel stays seamless.
       if (direction < 0 && currentStop <= 0) return 0;
       if (direction > 0 && currentStop >= totalStops - 1) return 0;
       return direction;
     };
+    // A committed glide owns the scroll outright, so swallow the gesture — including at the two ends,
+    // where we'd otherwise hand back to native and let a native scroll fight the running tween.
+    const swallowDuringGlide = (event: Event) => {
+      if (!committedGlide || !inCarouselRegion()) return false;
+      event.preventDefault();
+      scheduleRearm();
+      return true;
+    };
 
     const handleWheel = (event: WheelEvent) => {
+      if (swallowDuringGlide(event)) return;
       const direction = carouselDirection(event.deltaY);
       if (direction === 0) return; // fill phase or an end → native scroll handles it
       event.preventDefault(); // we own carousel movement now
@@ -680,6 +736,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
     const handleTouchMove = (event: TouchEvent) => {
       if (!touchActive) return;
+      if (swallowDuringGlide(event)) return;
       const deltaY = touchStartY - event.touches[0].clientY; // swipe up = go forward
       const direction = carouselDirection(deltaY);
       if (direction === 0) return;

@@ -105,9 +105,12 @@ const BLOOM_MSAA_SAMPLES   = 4;    // MSAA on the composer target (antialias:tru
 // The two halves are sequenced — the outgoing craft fully clears the pad before the incoming one
 // arrives — so they never overlap/clip through each other at centre. Each banks + warps in scale
 // for a more cinematic hand-off.
-const SWAP_OUT_DURATION = 0.5;  // the leaving craft's exit
-const SWAP_GAP          = 0.06; // empty beat on the pad between the two
-const SWAP_IN_DURATION  = 0.62; // the arriving craft's entrance
+// Paced to read as a deliberate hand-off, not a snap: with the scroll now stepping one craft per
+// gesture, the swap IS the transition the user sees, so it gets room to breathe. The hero pin holds
+// its input lock (STAGE_STEP_HOLD_MS) across roughly this long so a new step can't cut it short.
+const SWAP_OUT_DURATION = 0.8;  // the leaving craft's exit
+const SWAP_GAP          = 0.12; // empty beat on the pad between the two
+const SWAP_IN_DURATION  = 1.0;  // the arriving craft's entrance
 const SWAP_OFFSET_X     = 3.6;  // how far to the side a craft sits while off-stage
 const SWAP_OFFSET_Y     = 0.55; // lift as it leaves / arrives so it arcs rather than slides flat
 const SWAP_BANK         = 0.5;  // radians the craft rolls (banks) as it slides off / in
