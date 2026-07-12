@@ -473,11 +473,23 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             totalStops > 1
               ? {
                   snapTo: snapProgress,
-                  // Distance-scaled: a normal stop settles quickly, the wide handoff span glides.
+                  // Distance-scaled: a normal stop settles quickly, a longer one glides.
                   duration: reduceMotion
                     ? 0
                     : { min: SNAP_DURATION, max: SNAP_DURATION_MAX },
                   ease: "power2.inOut",
+                  // BOTH of these default to TRUE in GSAP, and both are actively harmful now that the
+                  // discrete stepper owns carousel movement:
+                  //   inertia    — projects the landing point from the scroll VELOCITY. On a slow
+                  //                machine a dropped frame makes goToStop's last step a big jump, so
+                  //                the velocity reads huge and snap projects far past the stop.
+                  //   directional — only snaps in the direction of travel. Land on the LAST craft
+                  //                (whose stop is the lower edge of the handoff span) while moving
+                  //                forward, and the next snap point forward is project 01 — so it
+                  //                carried the user straight on into works.
+                  // We already know exactly where we want to be, so: no projection, no direction bias.
+                  inertia: false,
+                  directional: false,
                 }
               : undefined,
           onUpdate: (self) => {

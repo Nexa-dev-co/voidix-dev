@@ -964,25 +964,24 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const isDrawing = worksShouldRender && !document.hidden;
       if (isDrawing) composer.render();
 
-      // ── Adaptive resolution, applied only where it can't be seen ──
-      // Same rule as the deck (see useServicesDeck): applying a new pixel ratio reallocates the whole
-      // composer — the bloom target pyramid + the SMAA buffers — which hitches a frame and pops the
-      // sharpness. Frozen entirely through the handoff so it can never hitch the fly-in.
+      // ── Adaptive resolution: only ever re-sized while this scene is NOT being drawn ──
+      // Same rule as the deck (see useServicesDeck). Applying a new pixel ratio reallocates the whole
+      // composer (bloom pyramid + SMAA buffers) and blocks for a frame or more. It must NOT be hidden
+      // behind motion: the warp hop between two meteors is a real-time tween, so a stall mid-hop makes
+      // the camera skip straight to the far end — the hop reads as a freeze then a jump. So we only
+      // ever do it on a genuinely idle frame: the field off screen (services / the fill) or the tab
+      // backgrounded. Also frozen entirely through the handoff.
       if (!handoffActive) {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
           // In sync → measure this frame. Only frames we actually DREW, so idle frames can't fake
           // headroom and trick the controller into ramping the resolution up.
           if (isDrawing) sampleFrame(deltaSeconds);
-        } else {
-          // Queued change: stop sampling until it lands (measuring at the old ratio while the
-          // controller thinks it's at the new one would make it over-climb). A DROP rescues a tanking
-          // frame rate, so it goes in now; a CLIMB waits for cover — the field off screen, the tab
-          // backgrounded, or the motion of a warp hop between projects.
-          const isDrop = targetRatio < appliedPixelRatio;
-          const masked = !worksShouldRender || document.hidden || travelActive;
-          if (isDrop || masked) applyRendererSize();
+        } else if (!isDrawing) {
+          applyRendererSize();
         }
+        // Else: a change is queued but we're on screen — hold it, and deliberately STOP sampling
+        // until it lands, so the controller never measures at one ratio while believing it's at another.
       }
     };
     renderFrame();
