@@ -192,7 +192,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     );
     const handoffStartProgress = stopProgressValues[craftCount - 1];
     const handoffEndProgress = stopProgressValues[craftCount] ?? 1;
-    // Progress span the project stops cover — feeds the navbar "work" meter.
+    // Progress spans each carousel section covers — these feed the navbar's per-section meters
+    // (--nav-progress-services / --nav-progress-work), which fill as you cycle that section's stops.
+    const servicesMeterSpan =
+      stopProgressValues[craftCount - 1] - stopProgressValues[0];
     const worksMeterSpan =
       stopProgressValues[totalStops - 1] - stopProgressValues[craftCount];
 
@@ -426,6 +429,17 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       return nearest;
     };
 
+    // Feed one of the navbar's per-section scroll meters. Each nav item's cyan fill scales to
+    // --nav-progress-<key> (see Navbar / useNavbarAnimation), and it's the owning section's job to
+    // publish it — the hero pin owns "home" (the fill), "services" (the craft stops) and "work" (the
+    // project stops).
+    const setNavMeter = (key: string, value: number) => {
+      document.documentElement.style.setProperty(
+        `--nav-progress-${key}`,
+        String(value),
+      );
+    };
+
     // Where the square + sun must travel/scale to fill the viewport. Measured from the square's
     // *untransformed* layout and recomputed on every ScrollTrigger refresh — see invalidateOnRefresh
     // / onRefreshInit below. This keeps the sun locked to the square on resize.
@@ -468,11 +482,8 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
               : undefined,
           onUpdate: (self) => {
             const progress = self.progress;
-            // Feed the navbar "home" meter with the fill phase only.
-            document.documentElement.style.setProperty(
-              "--nav-progress-home",
-              String(Math.min(progress / fillFraction, 1)),
-            );
+            // The "home" meter tracks the fill phase only.
+            setNavMeter("home", Math.min(progress / fillFraction, 1));
 
             // Scrub the services→works handoff in every stage, so even a jump from the top of the
             // page to the last project passes through (and lands in) the right state.
@@ -481,10 +492,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             if (progress < fillFraction) {
               wasInFill = true;
               setStage("fill");
-              document.documentElement.style.setProperty(
-                "--nav-progress-work",
-                "0",
-              );
+              // Neither carousel section has been entered yet.
+              setNavMeter("services", 0);
+              setNavMeter("work", 0);
               return;
             }
 
@@ -519,12 +529,21 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
             if (currentStop < craftCount) {
               setStage("services");
-              document.documentElement.style.setProperty(
-                "--nav-progress-work",
-                "0",
-              );
+              // Fill the "services" meter across the craft stops (craft 01 → the last craft).
+              const servicesMeter =
+                servicesMeterSpan > 0
+                  ? gsap.utils.clamp(
+                      0,
+                      1,
+                      (progress - stopProgressValues[0]) / servicesMeterSpan,
+                    )
+                  : 1;
+              setNavMeter("services", servicesMeter);
+              setNavMeter("work", 0);
             } else {
               setStage("works");
+              // Services is behind us (we're mid-handoff or in works) — hold its meter full.
+              setNavMeter("services", 1);
               // Fill the "work" meter across the project stops.
               const worksMeter =
                 worksMeterSpan > 0
@@ -535,10 +554,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
                         worksMeterSpan,
                     )
                   : 1;
-              document.documentElement.style.setProperty(
-                "--nav-progress-work",
-                String(worksMeter),
-              );
+              setNavMeter("work", worksMeter);
             }
           },
         },
