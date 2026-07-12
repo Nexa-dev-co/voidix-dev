@@ -117,6 +117,15 @@ const SWAP_BANK         = 0.5;  // radians the craft rolls (banks) as it slides 
 const SWAP_ENTER_SCALE  = 0.6;  // the craft warps in from this scale
 const SWAP_EXIT_SCALE   = 0.7;  // and shrinks to this as it leaves
 
+// ── Masking the adaptive-resolution change ──
+// Applying a new pixel ratio reallocates the WHOLE composer — the UnrealBloom target pyramid and the
+// SMAA buffers — which both hitches a frame and visibly pops the sharpness. Doing that on a settled,
+// static view is exactly the glitch you see. So a queued CLIMB waits for a moment that already hides
+// it: the deck off screen, the tab backgrounded, or the motion of a craft swap. This window covers a
+// whole swap, so a change that lands mid-swap still gets applied under its cover. (A DROP is a rescue
+// — frames are already tanking — so that one is applied immediately; see the render loop.)
+const RESOLUTION_MASK_SECONDS = SWAP_OUT_DURATION + SWAP_GAP + SWAP_IN_DURATION;
+
 // ── Departure — the services → works flight (the ship no longer exits; it flies you in) ──
 // Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT. The ship's motion + the camera come from the
 // shared choreography in lib/handoffFlightPath.ts (see docs/services-to-works-flight.md); here we own
@@ -552,12 +561,18 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // (+1 next / −1 prev) decides which side each enters/leaves from, so the swap reads as the
     // carousel moving. The arrival is delayed past the exit so the two never collide at centre.
     const enterDelay = SWAP_OUT_DURATION + SWAP_GAP;
+    // While a swap's motion is on screen, a queued pixel-ratio change can be applied unnoticed.
+    let resolutionMaskUntil = 0;
+    const openResolutionMask = () => {
+      resolutionMaskUntil = performance.now() + RESOLUTION_MASK_SECONDS * 1000;
+    };
     const setStage = (nextIndex: number) => {
       if (nextIndex === stagedIndex && ships[nextIndex]?.presence.value === 1) return;
       const direction = nextIndex > stagedIndex ? 1 : -1;
       const previousIndex = stagedIndex;
       stagedIndex = nextIndex;
       applyShipLighting(nextIndex);
+      openResolutionMask();
 
       ships.forEach((ship, index) => {
         const isCenter  = index === nextIndex;
@@ -582,6 +597,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const index = activeIndexRef.current;
       stagedIndex = index;
       applyShipLighting(index);
+      openResolutionMask(); // the fly-in is motion too — good cover for a queued resolution change
       ships.forEach((ship, shipIndex) => {
         if (shipIndex !== index) {
           parkShip(ship, SWAP_OFFSET_X);
@@ -963,15 +979,27 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // Once fully parked at works browsing the deck shows nothing (see DECK_PARKED_THRESHOLD), so
       // skip its whole bloom pipeline there — halving the GPU cost while the user browses projects.
       const parkedAtWorks = departState.current >= DECK_PARKED_THRESHOLD;
-      if (deckShouldRender && !document.hidden && !parkedAtWorks) {
-        composer.render();
-        // Adaptive resolution: measure THIS drawn frame, and re-size if the shared ratio has shifted.
-        // Only sampled while actually drawing (idle frames never fake headroom), and frozen through the
-        // handoff so a target reallocation can never hitch the ship's fly-in.
-        const handoffActive = departState.current > 0.001 && departState.current < 0.999;
-        if (!handoffActive) {
-          sampleFrame(deltaSeconds);
-          if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+      const handoffActive = departState.current > 0.001 && departState.current < 0.999;
+      const isDrawing = deckShouldRender && !document.hidden && !parkedAtWorks;
+      if (isDrawing) composer.render();
+
+      // ── Adaptive resolution, applied only where it can't be seen ──
+      // Frozen entirely through the handoff: a target reallocation must never hitch the ship's flight.
+      if (!handoffActive) {
+        const targetRatio = getPixelRatio();
+        if (targetRatio === appliedPixelRatio) {
+          // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
+          // (gated-off) frames can never fake headroom and trick it into ramping the resolution up.
+          if (isDrawing) sampleFrame(deltaSeconds);
+        } else {
+          // A change is queued. We deliberately stop sampling until it lands — measuring at the old
+          // ratio while the controller believes it's at the new one would feed it a lie and make it
+          // over-climb. A DROP is a rescue (frames are already tanking) so it goes in immediately; a
+          // CLIMB is cosmetic, so it waits for cover — see RESOLUTION_MASK_SECONDS.
+          const isDrop = targetRatio < appliedPixelRatio;
+          const masked =
+            !deckShouldRender || document.hidden || performance.now() < resolutionMaskUntil;
+          if (isDrop || masked) applyRendererSize();
         }
       }
     };

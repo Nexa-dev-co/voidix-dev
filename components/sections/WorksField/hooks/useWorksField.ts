@@ -960,15 +960,28 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Skip the bloom pipeline whenever the field isn't on screen (and when the tab is
       // backgrounded). The loop above still ran, so state is current and the first visible frame is
       // already right.
-      if (worksShouldRender && !document.hidden) {
-        composer.render();
-        // Adaptive resolution: measure THIS drawn frame, and re-size if the shared ratio has shifted.
-        // Only sampled while actually drawing (idle frames never fake headroom), and frozen through the
-        // handoff so a target reallocation can never hitch the fly-in.
-        const handoffActive = flightState.current > 0.001 && flightState.current < 0.999;
-        if (!handoffActive) {
-          sampleFrame(deltaSeconds);
-          if (getPixelRatio() !== appliedPixelRatio) applyRendererSize();
+      const handoffActive = flightState.current > 0.001 && flightState.current < 0.999;
+      const isDrawing = worksShouldRender && !document.hidden;
+      if (isDrawing) composer.render();
+
+      // ── Adaptive resolution, applied only where it can't be seen ──
+      // Same rule as the deck (see useServicesDeck): applying a new pixel ratio reallocates the whole
+      // composer — the bloom target pyramid + the SMAA buffers — which hitches a frame and pops the
+      // sharpness. Frozen entirely through the handoff so it can never hitch the fly-in.
+      if (!handoffActive) {
+        const targetRatio = getPixelRatio();
+        if (targetRatio === appliedPixelRatio) {
+          // In sync → measure this frame. Only frames we actually DREW, so idle frames can't fake
+          // headroom and trick the controller into ramping the resolution up.
+          if (isDrawing) sampleFrame(deltaSeconds);
+        } else {
+          // Queued change: stop sampling until it lands (measuring at the old ratio while the
+          // controller thinks it's at the new one would make it over-climb). A DROP rescues a tanking
+          // frame rate, so it goes in now; a CLIMB waits for cover — the field off screen, the tab
+          // backgrounded, or the motion of a warp hop between projects.
+          const isDrop = targetRatio < appliedPixelRatio;
+          const masked = !worksShouldRender || document.hidden || travelActive;
+          if (isDrop || masked) applyRendererSize();
         }
       }
     };
