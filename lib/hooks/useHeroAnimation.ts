@@ -5,6 +5,10 @@ import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import { measureUntransformedRect } from "@/lib/measureUntransformedRect";
 import {
+  computeCarouselLayout,
+  type CarouselSectionGeometry,
+} from "@/lib/carouselLayout";
+import {
   REVEAL_EVENT,
   INTRO_ACTIVE_EVENT,
 } from "@/components/effects/IntroSequence/introEvents";
@@ -17,6 +21,10 @@ import {
   HANDOFF_PROGRESS_EVENT,
   type HandoffProgressDetail,
 } from "@/lib/handoffEvents";
+import {
+  CHAMBER_PROGRESS_EVENT,
+  type ChamberProgressDetail,
+} from "@/lib/chamberEvents";
 
 // Marks the hero while a full-black scene (fleet or works) is on screen. Scopes the layering (sun
 // drops behind, intervening hero layers go transparent) so it never touches the fill phase.
@@ -32,12 +40,12 @@ ScrollTrigger.config({ ignoreMobileResize: true });
 // A single pinned ScrollTrigger owns the whole homepage journey so there's never a second pinned
 // section glued on with a seam:
 //   phase 1 (scrubbed) — the black square fills the screen, the sun rises
-//   at fill = 1         — a carousel of "stops" begins, all on the now-full-black screen:
-//     stops 0..craftCount-1        → the services fleet (one craft each)
-//     stops craftCount..end        → the works field (one project meteor each)
-//   Between the last craft and the first project sits the HANDOFF — a wide scrubbed span where
-//   the craft grows, turns and exits screen-right while the meteor field rises beneath it (see
-//   the handoff constants below). So the stops are NOT uniformly spaced.
+//   at fill = 1         — a carousel of "stops" begins, all on the now-full-black screen: one stop
+//                         per craft, then one per project meteor.
+//   Between two sections sits a CROSSING — a wide scrubbed span (the services→works flight) where
+//   the two scenes hand over. So the stops are NOT uniformly spaced.
+// The stop layout is DATA (see the carousel section list below + lib/carouselLayout.ts), not
+// arithmetic spread through this file: adding a section or a crossing is one entry in that list.
 const SCROLL_SCRUB = 1.8;
 const FILL_SCROLL_VH = 120; // viewport-heights of scroll the square takes to fill
 const STAGE_SCROLL_VH = 100; // ...and per carousel stop after it (a craft, or a project meteor)
@@ -66,10 +74,6 @@ const CAROUSEL_SETTLE_FRACTION = 0.06;
 const STEP_REARM_IDLE_MS = 300; // wheel/touch must go quiet this long before the next step can fire
 const WHEEL_STEP_THRESHOLD = 24; // accumulated |deltaY| before a wheel gesture counts as a step
 const TOUCH_STEP_THRESHOLD_PX = 42; // vertical swipe travel (px) that counts as one step
-// A normal stop step is a quick glide, but the last-craft ↔ project-01 step crosses the wide handoff
-// span — the whole services → works flight — so it gets a long, cinematic glide instead of a snap.
-const HANDOFF_STEP_DURATION = 4.0; // seconds to fly across the services → works handoff on one step
-const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the flight fully lands
 // The scroll glide between two stops is INVISIBLE (the deck + works are fixed overlays) — what you
 // actually see is the scene transition it triggers: the deck's craft swap, or the works' camera warp.
 // So the input stays locked well past the glide, giving that transition room to play out before
@@ -80,14 +84,17 @@ const STAGE_STEP_HOLD_MS = 1400;
 // through the fill can never dump the user on craft 02 (see the arrival branch in onUpdate).
 const CAROUSEL_ARRIVAL_DURATION = 0.5;
 
-// ── The services → works handoff ────────────────────────────────────────
-// One long scrubbed span between the last craft stop and project 01. The craft's departure and
-// the meteor's arrival live in the two WebGL scenes (fed the same 0..1 via HANDOFF_PROGRESS_EVENT);
-// here we own the DOM cross-fades, each a window (start..end fraction) inside the span: the deck
-// UI drops out first, the field (backdrop + canvas) rises under the still-flying craft, and the
-// works UI settles only once the meteor has landed.
-// The handoff is auto-played by the snap "chasm" below (one flick carries the user across), so it no
-// longer needs to be a long manual scrub — a tighter span keeps the committed glide snappy.
+// ── Crossings — the wide scrubbed spans between two sections ─────────────
+// One long span between the last stop of one section and the first of the next. The scene-side
+// choreography lives in the WebGL scenes (fed the same 0..1 via the crossing's event); here we own
+// the DOM cross-fades, each a window (start..end fraction) inside the span.
+//
+// A crossing is auto-played by the stepper (one flick carries the user across on a long cinematic
+// glide), so it doesn't need to be a long manual scrub — a tighter span keeps the committed glide
+// snappy.
+
+// The services → works flight: the deck UI drops out first, the field (backdrop + canvas) rises
+// under the still-flying craft, and the works UI settles only once the meteor has landed.
 const HANDOFF_SCROLL_VH = 180;
 const HANDOFF_CLASS = "is-handoff"; // raises the deck over the works field mid-handoff (CSS)
 const HANDOFF_DECK_UI_FADE: [number, number] = [0.05, 0.24];
@@ -96,14 +103,41 @@ const HANDOFF_DECK_UI_FADE: [number, number] = [0.05, 0.24];
 // stars + debris come in from the left as we fly.
 const HANDOFF_FIELD_FADE: [number, number] = [0.33, 0.55];
 const HANDOFF_WORKS_UI_FADE: [number, number] = [0.8, 0.94];
-// Project 01's stop IS the handoff span's upper edge, and browsers round the settled scroll to
-// device pixels — so a glide "onto" that stop can leave the pin a hair inside the span and the
-// clamp below yields 0.999… instead of 1. Both WebGL scenes hand their camera back to normal
-// browsing only on an EXACT boundary value (the contract in handoffEvents.ts), so that near-miss
-// left the works flight camera engaged forever: warping to project 02 cross-faded the fire but the
-// camera never flew. Snap anything this close to an edge onto it before dispatch. ~0.005 of the
-// span is ≈5px of scroll — far above rounding noise, far below the nearest fade window (0.05/0.94).
-const HANDOFF_SNAP_EPSILON = 0.005;
+// A crossing's step is a long, cinematic glide — the whole flight on one gesture — so it stays
+// locked for the full duration and a second gesture can't cut it short.
+const HANDOFF_STEP_DURATION = 4.0; // seconds to fly across the services → works handoff on one step
+const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the flight fully lands
+
+// ── The works → chamber reveal ──
+// The camera backs out of the space and it turns out to have been a display in a room all along. The
+// camera move itself lives in the WebGL scene (fed this same 0..1); the DOM this crossing owns is the
+// works UI dropping out — and the SUN.
+//
+// The sun has to go, and this is the only place that can do it. It's a fixed DOM billboard sitting
+// BEHIND the canvas (which is why it shows through the empty space between the meteors). The moment
+// the display starts shrinking, a full-size sun would still be pinned to the middle of the viewport,
+// hanging in front of the room. So it fades out over the same fast window in which the display's dark
+// turns opaque (see OPAQUE_WINDOW in chamberScene) — early, while the display still fills the frame,
+// so all you can actually perceive is a light dimming rather than the site's anchor vanishing.
+const REVEAL_SCROLL_VH = 140;
+const REVEAL_WORKS_UI_FADE: [number, number] = [0.02, 0.16];
+const REVEAL_SUN_FADE: [number, number] = [0.0, 0.12]; // keep in step with chamberScene's OPAQUE_WINDOW
+const REVEAL_STEP_DURATION = 3.2; // seconds to pull all the way back on one gesture
+const REVEAL_SETTLE_MS = 150;
+const SUN_FLIGHT_SELECTOR = ".hero-sun-flight";
+// The chamber is one stop for now: the reveal lands, you're standing in the room. What the room is FOR
+// (the Process steps) is a separate build — when it arrives, this becomes its step count and nothing
+// else here has to change.
+const CHAMBER_STOP_COUNT = 1;
+
+// The far edge of a crossing IS the next section's first stop, and browsers round the settled scroll
+// to device pixels — so a glide "onto" that stop can leave the pin a hair inside the span and the
+// clamp below yields 0.999… instead of 1. The WebGL scenes hand their camera back to normal browsing
+// only on an EXACT boundary value (the contract in handoffEvents.ts), so that near-miss left the works
+// flight camera engaged forever: warping to project 02 cross-faded the fire but the camera never flew.
+// Snap anything this close to an edge onto it before dispatch. ~0.005 of the span is ≈5px of scroll —
+// far above rounding noise, far below the nearest fade window (0.05/0.94).
+const CROSSING_SNAP_EPSILON = 0.005;
 
 // ── Reveal (runs when the intro lands the sun in the square) ───────────
 const TEXT_WIPE_DURATION = 0.9;
@@ -120,13 +154,39 @@ const EMPTY_CLIP = "inset(100% 0 0 0)";
 const REVEAL_FALLBACK_NO_INTRO_MS = 7000;
 const REVEAL_FALLBACK_WITH_INTRO_MS = 20000;
 
+// Indices into the carousel section list built in the effect — the sections the public jump API
+// (the deck's labels, the works arrows, the navbar's Services link) targets.
+const SERVICES_SECTION_INDEX = 0;
+const WORKS_SECTION_INDEX = 1;
+
 const SUN_LAYER_SELECTOR = ".hero-sun-layer";
 const DECK_SELECTOR = ".services-deck";
 const DECK_OVERLAY_SELECTOR = ".deck-overlay";
 const WORKS_SELECTOR = ".works-field";
 const WORKS_OVERLAY_SELECTOR = ".works-overlay";
 
-type Stage = "fill" | "services" | "works";
+/** The full-black scene currently on screen — "fill" plus one name per carousel section. */
+type Stage = "fill" | "services" | "work" | "process";
+
+/** What a crossing owns, beyond the scroll length the layout needs. */
+interface CrossingSpec {
+  scrollVh: number;
+  /** Seconds the committed glide across this crossing takes (one long cinematic step). */
+  stepDurationSeconds: number;
+  /** Grace on the input lock after that glide, so the flight fully lands. */
+  settleMs: number;
+  /** Drive everything this crossing owns from its 0..1 progress (already boundary-snapped). */
+  apply: (progress: number) => void;
+}
+
+/** One carousel section: its stops, the navbar meter it feeds, and the crossing out of it. */
+interface CarouselSectionSpec extends CarouselSectionGeometry {
+  /** Doubles as the stage name and the navbar meter key (--nav-progress-<key>). */
+  key: Stage;
+  /** Commit a stop within this section — the index is section-local. */
+  setActiveStop: (index: number) => void;
+  crossingAfter?: CrossingSpec;
+}
 
 interface HeroAnimationRefs {
   sectionRef: RefObject<HTMLElement | null>;
@@ -172,41 +232,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
     const reduceMotion = prefersReducedMotion();
 
-    // The carousel is one flat list of stops: [craft 0..N] then [project 0..M] — but NOT uniformly
-    // spaced: normal neighbours sit STAGE_SCROLL_VH apart, while the gap between the last craft and
-    // project 0 is the wide handoff span. Lay the stops out in vh first, then map them into the
-    // pin's progress space.
-    const totalStops = craftCount + projectCount;
-    const stopVhOffsets: number[] = [];
-    for (let craftStop = 0; craftStop < craftCount; craftStop += 1) {
-      stopVhOffsets.push(craftStop * STAGE_SCROLL_VH);
-    }
-    const handoffStartVh = (craftCount - 1) * STAGE_SCROLL_VH;
-    for (let projectStop = 0; projectStop < projectCount; projectStop += 1) {
-      stopVhOffsets.push(
-        handoffStartVh + HANDOFF_SCROLL_VH + projectStop * STAGE_SCROLL_VH,
-      );
-    }
-    const carouselVhTotal = stopVhOffsets[stopVhOffsets.length - 1] || 1;
-    const totalVh = FILL_SCROLL_VH + carouselVhTotal;
-    // The fraction of the pin the square-fill occupies; the carousel owns the rest.
-    const fillFraction = FILL_SCROLL_VH / totalVh;
-    // Stops sit in [carouselStart, 1] — a touch past the fill so stop 0 isn't on the reveal edge.
-    const carouselStart =
-      fillFraction + (1 - fillFraction) * CAROUSEL_SETTLE_FRACTION;
-    const carouselSpan = 1 - carouselStart;
-    const stopProgressValues = stopVhOffsets.map(
-      (stopVh) => carouselStart + (stopVh / carouselVhTotal) * carouselSpan,
-    );
-    const handoffStartProgress = stopProgressValues[craftCount - 1];
-    const handoffEndProgress = stopProgressValues[craftCount] ?? 1;
-    // Progress spans each carousel section covers — these feed the navbar's per-section meters
-    // (--nav-progress-services / --nav-progress-work), which fill as you cycle that section's stops.
-    const servicesMeterSpan =
-      stopProgressValues[craftCount - 1] - stopProgressValues[0];
-    const worksMeterSpan =
-      stopProgressValues[totalStops - 1] - stopProgressValues[craftCount];
-
     const textInners = heroSection.querySelectorAll(".hero-mask-inner");
     const squareFill = heroSection.querySelector(".hero-sun-fill");
     const subline = heroSection.querySelector(".hero-sub");
@@ -228,6 +253,117 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     if (deck) gsap.set(deck, { autoAlpha: 0 });
     if (works) gsap.set(works, { autoAlpha: 0 });
 
+    // 0..1 inside a fade window, clamped flat outside it — keeps each beat of a crossing in sequence.
+    const fadeWindow = (fadeRange: [number, number], value: number) =>
+      gsap.utils.clamp(
+        0,
+        1,
+        (value - fadeRange[0]) / (fadeRange[1] - fadeRange[0]),
+      );
+
+    // ── The services → works handoff ──
+    // One 0..1 across the span drives everything: the DOM cross-fades here, and — via the event —
+    // the craft's departure (deck scene) + the meteor's arrival (field scene).
+    const applyServicesToWorksHandoff = (progress: number) => {
+      // Mid-handoff the deck must outrank the works field so the craft flies OVER the incoming
+      // meteors (see .is-handoff in globals.css).
+      heroSection.classList.toggle(HANDOFF_CLASS, progress > 0 && progress < 1);
+
+      if (deckOverlay) {
+        gsap.set(deckOverlay, {
+          autoAlpha: 1 - fadeWindow(HANDOFF_DECK_UI_FADE, progress),
+        });
+      }
+      if (works) {
+        gsap.set(works, {
+          autoAlpha: fadeWindow(HANDOFF_FIELD_FADE, progress),
+        });
+      }
+      if (worksOverlay) {
+        gsap.set(worksOverlay, {
+          autoAlpha: fadeWindow(HANDOFF_WORKS_UI_FADE, progress),
+        });
+      }
+
+      window.dispatchEvent(
+        new CustomEvent<HandoffProgressDetail>(HANDOFF_PROGRESS_EVENT, {
+          detail: { progress },
+        }),
+      );
+    };
+
+    // ── The works → chamber reveal ──
+    // The camera move is in the WebGL scene; here we drop the works UI and retire the sun.
+    const sunFlight = document.querySelector<HTMLElement>(SUN_FLIGHT_SELECTOR);
+    const applyWorksToChamberReveal = (progress: number) => {
+      if (worksOverlay) {
+        gsap.set(worksOverlay, {
+          autoAlpha: 1 - fadeWindow(REVEAL_WORKS_UI_FADE, progress),
+        });
+      }
+      // Driven on the INNER sun element on purpose: HeroSun owns the outer layer's opacity for its
+      // resize hide/settle, and two owners of one property is how you get a sun that flickers back on
+      // when the window is nudged.
+      if (sunFlight) {
+        gsap.set(sunFlight, {
+          opacity: 1 - fadeWindow(REVEAL_SUN_FADE, progress),
+        });
+      }
+
+      window.dispatchEvent(
+        new CustomEvent<ChamberProgressDetail>(CHAMBER_PROGRESS_EVENT, {
+          detail: { progress },
+        }),
+      );
+    };
+
+    // ── The carousel, as data ──
+    // Everything the pin needs to know about the journey past the fill. Adding a section (or the
+    // crossing into it) is one entry here — the stop layout, the crossing spans and the navbar
+    // meters all derive from it (see lib/carouselLayout.ts).
+    const carouselSections: CarouselSectionSpec[] = [
+      {
+        key: "services",
+        stopCount: craftCount,
+        setActiveStop: (index) => setActiveCraftRef.current(index),
+        crossingAfter: {
+          scrollVh: HANDOFF_SCROLL_VH,
+          stepDurationSeconds: HANDOFF_STEP_DURATION,
+          settleMs: HANDOFF_SETTLE_MS,
+          apply: applyServicesToWorksHandoff,
+        },
+      },
+      {
+        key: "work",
+        stopCount: projectCount,
+        setActiveStop: (index) => setActiveProjectRef.current(index),
+        crossingAfter: {
+          scrollVh: REVEAL_SCROLL_VH,
+          stepDurationSeconds: REVEAL_STEP_DURATION,
+          settleMs: REVEAL_SETTLE_MS,
+          apply: applyWorksToChamberReveal,
+        },
+      },
+      {
+        key: "process",
+        stopCount: CHAMBER_STOP_COUNT,
+        // Nothing to select yet — the chamber is a single stop until the Process content is built.
+        setActiveStop: () => {},
+      },
+    ];
+    // Crossings in the same order the layout resolves them (both walk the sections in order).
+    const crossingSpecs = carouselSections.flatMap((section) =>
+      section.crossingAfter ? [section.crossingAfter] : [],
+    );
+
+    const layout = computeCarouselLayout(carouselSections, {
+      fillScrollVh: FILL_SCROLL_VH,
+      stageScrollVh: STAGE_SCROLL_VH,
+      settleFraction: CAROUSEL_SETTLE_FRACTION,
+    });
+    const { fillFraction, carouselStart, stopProgressValues, totalStops } =
+      layout;
+
     // ── Stage transitions — which full-black scene is on screen ──
     // The sun's "behind + energised" state is turned on when the fleet first reveals and stays on
     // through works; it's only turned back off (sun forward, calm) when we scroll back to the fill.
@@ -241,7 +377,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       });
     };
 
-    let currentStage: Stage = "fill";
     const enterFill = () => {
       heroSection.classList.remove(SERVICES_CLASS);
       fade(deck, 0, DECK_HIDE_DURATION);
@@ -261,7 +396,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // Coming back down out of works the handoff scrub owns everything — it flies the craft back
       // onto the pad and fades the field away — so replaying the deck entrance would double the
       // motion and yank the returning craft.
-      if (fromStage === "works") return;
+      if (fromStage === "work") return;
       fade(works, 0, WORKS_HIDE_DURATION);
       // Replay the centred craft's entrance + drop the sun behind the fleet / energise it.
       window.dispatchEvent(new Event(DECK_REVEAL_EVENT));
@@ -274,76 +409,56 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // Keep the hero tagline hidden here too (hero-only).
       fade(subline, 0, DECK_REVEAL_DURATION);
     };
+
+    const enterChamber = () => {
+      // You're in the room now, but it's still the works canvas drawing it — so the layering doesn't
+      // change at all. Every visual of the reveal is scrubbed from its span, so there is nothing to
+      // tween here; this only holds the hero's own elements down.
+      heroSection.classList.add(SERVICES_CLASS);
+      fade(subline, 0, DECK_REVEAL_DURATION);
+    };
+
+    const enterStage: Record<Stage, (fromStage: Stage) => void> = {
+      fill: enterFill,
+      services: enterServices,
+      work: enterWorks,
+      process: enterChamber,
+    };
+    let currentStage: Stage = "fill";
     const setStage = (stage: Stage) => {
       if (stage === currentStage) return;
       const fromStage = currentStage;
       currentStage = stage;
-      if (stage === "fill") enterFill();
-      else if (stage === "services") enterServices(fromStage);
-      else enterWorks();
+      enterStage[stage](fromStage);
     };
 
-    // ── The handoff scrub ──
-    // One 0..1 value across the services→works span drives everything: the DOM cross-fades here,
-    // and — via the event — the craft's departure (deck scene) + the meteor's arrival (field
-    // scene). Runs on every pin update so snaps and programmatic jumps land in the right state.
-    const fadeWindow = (fadeRange: [number, number], value: number) =>
-      gsap.utils.clamp(
-        0,
-        1,
-        (value - fadeRange[0]) / (fadeRange[1] - fadeRange[0]),
-      );
-
-    let lastHandoffProgress = -1;
-    const applyHandoff = (progress: number) => {
-      let handoffProgress = gsap.utils.clamp(
-        0,
-        1,
-        (progress - handoffStartProgress) /
-          (handoffEndProgress - handoffStartProgress),
-      );
-      // Honour the boundary contract (see HANDOFF_SNAP_EPSILON): a settle that rounds to just
-      // inside the span still reads as "span exited", so the scenes always get a clean 0 / 1.
-      if (handoffProgress < HANDOFF_SNAP_EPSILON) handoffProgress = 0;
-      else if (handoffProgress > 1 - HANDOFF_SNAP_EPSILON) handoffProgress = 1;
-      if (handoffProgress === lastHandoffProgress) return;
-      lastHandoffProgress = handoffProgress;
-
-      // Mid-handoff the deck must outrank the works field so the craft flies OVER the incoming
-      // meteors (see .is-handoff in globals.css).
-      heroSection.classList.toggle(
-        HANDOFF_CLASS,
-        handoffProgress > 0 && handoffProgress < 1,
-      );
-
-      if (deckOverlay) {
-        gsap.set(deckOverlay, {
-          autoAlpha: 1 - fadeWindow(HANDOFF_DECK_UI_FADE, handoffProgress),
-        });
-      }
-      if (works)
-        gsap.set(works, {
-          autoAlpha: fadeWindow(HANDOFF_FIELD_FADE, handoffProgress),
-        });
-      if (worksOverlay) {
-        gsap.set(worksOverlay, {
-          autoAlpha: fadeWindow(HANDOFF_WORKS_UI_FADE, handoffProgress),
-        });
-      }
-
-      window.dispatchEvent(
-        new CustomEvent<HandoffProgressDetail>(HANDOFF_PROGRESS_EVENT, {
-          detail: { progress: handoffProgress },
-        }),
-      );
+    // ── The crossing scrubs ──
+    // Run on every pin update — so snaps and programmatic jumps land in the right state — but a
+    // crossing only re-applies when its own progress actually moved.
+    const lastCrossingProgress = layout.crossings.map(() => -1);
+    const applyCrossings = (progress: number) => {
+      layout.crossings.forEach((crossing, crossingIndex) => {
+        let crossingProgress = gsap.utils.clamp(
+          0,
+          1,
+          (progress - crossing.startProgress) /
+            (crossing.endProgress - crossing.startProgress),
+        );
+        // Honour the boundary contract (see CROSSING_SNAP_EPSILON): a settle that rounds to just
+        // inside the span still reads as "span exited", so the scenes always get a clean 0 / 1.
+        if (crossingProgress < CROSSING_SNAP_EPSILON) crossingProgress = 0;
+        else if (crossingProgress > 1 - CROSSING_SNAP_EPSILON)
+          crossingProgress = 1;
+        if (crossingProgress === lastCrossingProgress[crossingIndex]) return;
+        lastCrossingProgress[crossingIndex] = crossingProgress;
+        crossingSpecs[crossingIndex].apply(crossingProgress);
+      });
     };
 
     // 2. The single pin — built lazily at reveal, never on mount (Contract 2). While the loader
     //    plays the page is locked at the top, but the binding must not exist at all: a restored or
     //    stray scroll would otherwise drive the sun/square while it's still flying in.
     let scrollTimeline: ReturnType<typeof gsap.timeline> | null = null;
-    let lastCraft = -1;
-    let lastProject = -1;
 
     // ── Discrete-scroll state ──
     // `currentStop` is the stop the carousel is COMMITTED to. A step or a jump commits its target up
@@ -366,7 +481,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // transition's hold is also honoured (stepMinUnlockAt), so a step can't re-arm mid-transition.
     const scheduleRearm = () => {
       window.clearTimeout(rearmTimer);
-      const wait = Math.max(STEP_REARM_IDLE_MS, stepMinUnlockAt - performance.now());
+      const wait = Math.max(
+        STEP_REARM_IDLE_MS,
+        stepMinUnlockAt - performance.now(),
+      );
       rearmTimer = window.setTimeout(() => {
         stepLocked = false;
         wheelAccum = 0;
@@ -380,21 +498,16 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
 
     // Commit a stop — this is what actually swaps the craft on the pad / focuses the project meteor.
-    // Called up front by goToStop, and by the pin's onUpdate whenever no glide is committed.
+    // Called up front by goToStop, and by the pin's onUpdate whenever no glide is committed. Each
+    // section remembers its own last committed index, so re-entering a section doesn't re-fire it.
+    const lastCommittedIndex = carouselSections.map(() => -1);
     const commitStop = (stop: number) => {
       currentStop = stop;
-      if (stop < craftCount) {
-        if (stop !== lastCraft) {
-          lastCraft = stop;
-          setActiveCraftRef.current(stop);
-        }
-        return;
-      }
-      const project = stop - craftCount;
-      if (project !== lastProject) {
-        lastProject = project;
-        setActiveProjectRef.current(project);
-      }
+      const sectionIndex = layout.sectionIndexOfStop(stop);
+      const localIndex = stop - layout.sections[sectionIndex].firstStop;
+      if (lastCommittedIndex[sectionIndex] === localIndex) return;
+      lastCommittedIndex[sectionIndex] = localIndex;
+      carouselSections[sectionIndex].setActiveStop(localIndex);
     };
 
     // Jump to a stop by scrolling to its snap point. The target is committed IMMEDIATELY (so the scene
@@ -420,12 +533,20 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       });
     };
 
+    // Jump to a stop by its section-local index (what the deck's labels and the works arrows ask for).
+    const goToStopInSection = (sectionIndex: number, localIndex: number) => {
+      const { firstStop, lastStop } = layout.sections[sectionIndex];
+      goToStop(
+        firstStop + gsap.utils.clamp(0, lastStop - firstStop, localIndex),
+      );
+    };
+
     // Free scrub through the fill, then settle on the nearest stop.
     //
-    // There is deliberately NO "chasm" rule here any more. It used to force any value inside the
-    // services→works span to that span's far end in the direction of travel — but the LAST CRAFT'S
-    // STOP *IS* that span's lower edge, so landing on it (via goToStop) with a sub-pixel rounding
-    // overshoot read as "inside the chasm" and catapulted the user straight on into the works section.
+    // There is deliberately NO "chasm" rule here any more. It used to force any value inside a
+    // crossing's span to that span's far end in the direction of travel — but the LAST STOP OF THE
+    // SECTION *IS* that span's lower edge, so landing on it (via goToStop) with a sub-pixel rounding
+    // overshoot read as "inside the chasm" and catapulted the user straight on into the next section.
     // The discrete stepper owns all carousel movement now, so snap is only a safety net for native
     // scroll; and while a glide is committed it can only agree with that target, never yank us back to
     // a stop we happen to be passing through.
@@ -443,13 +564,39 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
     // Feed one of the navbar's per-section scroll meters. Each nav item's cyan fill scales to
     // --nav-progress-<key> (see Navbar / useNavbarAnimation), and it's the owning section's job to
-    // publish it — the hero pin owns "home" (the fill), "services" (the craft stops) and "work" (the
-    // project stops).
+    // publish it — the hero pin owns "home" (the fill) plus one key per carousel section.
     const setNavMeter = (key: string, value: number) => {
       document.documentElement.style.setProperty(
         `--nav-progress-${key}`,
         String(value),
       );
+    };
+    // Fill the meter of every section behind us, empty every section ahead, and track the one we're
+    // in across its own stops.
+    const setSectionNavMeters = (
+      progress: number,
+      currentSectionIndex: number,
+    ) => {
+      layout.sections.forEach((sectionLayout, sectionIndex) => {
+        const key = carouselSections[sectionIndex].key;
+        if (sectionIndex < currentSectionIndex) {
+          setNavMeter(key, 1);
+        } else if (sectionIndex > currentSectionIndex) {
+          setNavMeter(key, 0);
+        } else {
+          setNavMeter(
+            key,
+            sectionLayout.meterSpan > 0
+              ? gsap.utils.clamp(
+                  0,
+                  1,
+                  (progress - sectionLayout.firstStopProgress) /
+                    sectionLayout.meterSpan,
+                )
+              : 1,
+          );
+        }
+      });
     };
 
     // Where the square + sun must travel/scale to fill the viewport. Measured from the square's
@@ -473,7 +620,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         scrollTrigger: {
           trigger: heroSection,
           start: "top top",
-          end: `+=${totalVh}%`,
+          end: `+=${layout.totalScrollVh}%`,
           pin: true,
           scrub: SCROLL_SCRUB,
           anticipatePin: 1,
@@ -495,10 +642,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
                   //   inertia    — projects the landing point from the scroll VELOCITY. On a slow
                   //                machine a dropped frame makes goToStop's last step a big jump, so
                   //                the velocity reads huge and snap projects far past the stop.
-                  //   directional — only snaps in the direction of travel. Land on the LAST craft
-                  //                (whose stop is the lower edge of the handoff span) while moving
-                  //                forward, and the next snap point forward is project 01 — so it
-                  //                carried the user straight on into works.
+                  //   directional — only snaps in the direction of travel. Land on a section's LAST
+                  //                stop (which is the lower edge of a crossing span) while moving
+                  //                forward, and the next snap point forward is the next section's
+                  //                first stop — so it carried the user straight on across.
                   // We already know exactly where we want to be, so: no projection, no direction bias.
                   inertia: false,
                   directional: false,
@@ -509,16 +656,15 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             // The "home" meter tracks the fill phase only.
             setNavMeter("home", Math.min(progress / fillFraction, 1));
 
-            // Scrub the services→works handoff in every stage, so even a jump from the top of the
-            // page to the last project passes through (and lands in) the right state.
-            applyHandoff(progress);
+            // Scrub every crossing in every stage, so even a jump from the top of the page to the
+            // last project passes through (and lands in) the right state.
+            applyCrossings(progress);
 
             if (progress < fillFraction) {
               wasInFill = true;
               setStage("fill");
-              // Neither carousel section has been entered yet.
-              setNavMeter("services", 0);
-              setNavMeter("work", 0);
+              // No carousel section has been entered yet.
+              carouselSections.forEach((section) => setNavMeter(section.key, 0));
               return;
             }
 
@@ -551,35 +697,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
               commitStop(nearest);
             }
 
-            if (currentStop < craftCount) {
-              setStage("services");
-              // Fill the "services" meter across the craft stops (craft 01 → the last craft).
-              const servicesMeter =
-                servicesMeterSpan > 0
-                  ? gsap.utils.clamp(
-                      0,
-                      1,
-                      (progress - stopProgressValues[0]) / servicesMeterSpan,
-                    )
-                  : 1;
-              setNavMeter("services", servicesMeter);
-              setNavMeter("work", 0);
-            } else {
-              setStage("works");
-              // Services is behind us (we're mid-handoff or in works) — hold its meter full.
-              setNavMeter("services", 1);
-              // Fill the "work" meter across the project stops.
-              const worksMeter =
-                worksMeterSpan > 0
-                  ? gsap.utils.clamp(
-                      0,
-                      1,
-                      (progress - stopProgressValues[craftCount]) /
-                        worksMeterSpan,
-                    )
-                  : 1;
-              setNavMeter("work", worksMeter);
-            }
+            const sectionIndex = layout.sectionIndexOfStop(currentStop);
+            setStage(carouselSections[sectionIndex].key);
+            setSectionNavMeters(progress, sectionIndex);
           },
         },
       });
@@ -692,37 +812,44 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     window.addEventListener(GOTO_SERVICES_EVENT, onGotoServices);
 
     goToCraftImplRef.current = (index) =>
-      goToStop(gsap.utils.clamp(0, craftCount - 1, index));
+      goToStopInSection(SERVICES_SECTION_INDEX, index);
     goToProjectImplRef.current = (index) =>
-      goToStop(craftCount + gsap.utils.clamp(0, projectCount - 1, index));
+      goToStopInSection(WORKS_SECTION_INDEX, index);
 
     // ── One stop per wheel/touch gesture (carousel only) ──
     // Take the gesture over once the square has filled: preventDefault so native momentum can't drive
     // the pin, then step exactly one stop and lock further input for a cooldown. In the fill phase, and
     // at the carousel's two ends (scroll up off stop 0 → back into the fill; scroll down off the last
     // stop → out the bottom), we let native scroll through so those boundaries feel continuous.
+    //
+    // A step that crosses a CROSSING is the exception: it glides slowly across the whole flight and
+    // stays locked for its full duration, so a second gesture can't cut the cinematic short.
+    const crossingBetween = (fromStop: number, toStop: number) =>
+      layout.crossings.findIndex(
+        (crossing) =>
+          (crossing.fromStop === fromStop && crossing.toStop === toStop) ||
+          (crossing.fromStop === toStop && crossing.toStop === fromStop),
+      );
     const stepBy = (direction: number) => {
       const target = gsap.utils.clamp(
         0,
         totalStops - 1,
         currentStop + direction,
       );
-      // The last-craft ↔ project-01 step crosses the handoff span — the whole services → works flight
-      // — so it glides slowly and stays locked for the full flight, and a second gesture can't cut it
-      // short. A normal stage step's scroll glide is quick (the scroll itself is invisible: the deck
-      // and works are fixed overlays), but the lock is held for STAGE_STEP_HOLD_MS so the craft swap /
-      // meteor warp it kicks off gets to play out before another step can interrupt it.
       // NB: read `currentStop` before goToStop — that commits the target and moves it.
-      const crossesHandoff =
-        (currentStop === craftCount - 1 && target === craftCount) ||
-        (currentStop === craftCount && target === craftCount - 1);
-      const durationSeconds = crossesHandoff
-        ? HANDOFF_STEP_DURATION
+      const crossingIndex = crossingBetween(currentStop, target);
+      const crossing =
+        crossingIndex >= 0 ? crossingSpecs[crossingIndex] : undefined;
+      // A normal stage step's scroll glide is quick (the scroll itself is invisible: the deck and works
+      // are fixed overlays), but the lock is held for STAGE_STEP_HOLD_MS so the craft swap / meteor warp
+      // it kicks off gets to play out before another step can interrupt it.
+      const durationSeconds = crossing
+        ? crossing.stepDurationSeconds
         : GOTO_DURATION;
       const holdMs = reduceMotion
         ? 0
-        : crossesHandoff
-          ? durationSeconds * 1000 + HANDOFF_SETTLE_MS
+        : crossing
+          ? durationSeconds * 1000 + crossing.settleMs
           : STAGE_STEP_HOLD_MS;
       goToStop(target, durationSeconds);
       lockStepping(holdMs);

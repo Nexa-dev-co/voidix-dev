@@ -1,6 +1,7 @@
 import Hero from '@/components/sections/Hero/Hero';
 import HeroSun from '@/components/sections/Hero/HeroSun';
 import IntroSequence from '@/components/effects/IntroSequence/IntroSequence';
+import ChamberTuner from '@/components/sections/Chamber/ChamberTuner';
 
 export default function HomePage() {
   return (
@@ -12,6 +13,9 @@ export default function HomePage() {
       {/* The single shared sun — flown by the intro, expanded by hero scroll */}
       <HeroSun />
       <IntroSequence />
+      {/* On-screen controls for the chamber reveal — every number in it was authored without being
+          able to see the scene. Renders nothing outside localhost / ?tune. */}
+      <ChamberTuner />
     </main>
   );
 }

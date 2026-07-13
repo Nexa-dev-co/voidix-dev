@@ -62,6 +62,34 @@ export function getPixelRatio(): number {
   return pixelRatio;
 }
 
+/** A read-only view of what this controller has actually MEASURED on this machine. */
+export interface PerformanceSnapshot {
+  /** Seconds of real, drawn frames sampled so far. 0 = nothing measured yet, so nothing to conclude. */
+  sampledSeconds: number;
+  /** Smoothed frame rate across those samples. */
+  framesPerSecond: number;
+  /** True once the GPU has proven a density too expensive to hold (the controller capped itself). */
+  hasHitLimit: boolean;
+  /** True while still pinned at the lowest density — it never found any headroom at all. */
+  isAtFloor: boolean;
+}
+
+/**
+ * What the frame-time samples say about this machine. Exposed so callers can make their own quality
+ * decisions off real measurements rather than a device sniff — the chamber picks its texture tier this
+ * way (see lib/performanceTier.ts), and by the time it asks, the heavy scenes have been drawing for a
+ * minute. This module only reports; deciding what to do about it belongs to the caller.
+ */
+export function getPerformanceSnapshot(): PerformanceSnapshot {
+  ensureInitialised();
+  return {
+    sampledSeconds: elapsed,
+    framesPerSecond: 1 / emaFrameSeconds,
+    hasHitLimit: softCeil < ceil,
+    isAtFloor: pixelRatio <= floor,
+  };
+}
+
 /**
  * Feed one real render frame time (seconds). Call only on frames a heavy scene actually drew, so idle
  * (gated-off) frames can't trick the controller into ramping the resolution up.

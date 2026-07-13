@@ -1,11 +1,17 @@
-// Compresses the raw spaceship GLBs (kept in /models-src) into web-ready GLBs
-// in /public/models. Re-runnable: it always reads the pristine source, so tuning
-// a setting and re-running never compounds compression artifacts.
+// Compresses the raw GLBs (kept in /models-src) into web-ready GLBs in /public/models.
+// Re-runnable: it always reads the pristine source, so tuning a setting and re-running never
+// compounds compression artifacts.
 //
-// The raw Sketchfab exports ship 4K PNG textures (~90 MB of VRAM *each*) and
-// junk UV channels. The Services section loads all four ships at once, so the
-// real budget is GPU memory, not just download size — hence the hard cap on
-// texture resolution below.
+// The raw Sketchfab exports ship 4K PNG textures (~90 MB of VRAM *each*) and junk UV channels. The
+// Services section loads all four ships at once, so the real budget is GPU memory, not just download
+// size — hence the hard cap on texture resolution below.
+//
+// Usage:
+//   npm run optimize:models                 → every source in /models-src
+//   npm run optimize:models -- chamber.glb  → only the sources you name
+//
+// Name the sources explicitly when you only mean to (re)build one. Reprocessing a model you didn't
+// intend to touch re-encodes textures and geometry that were already lossily compressed once.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, statSync } from "node:fs";
@@ -16,18 +22,46 @@ const OUTPUT_DIRECTORY = "public/models";
 
 // 1024² keeps each texture at ~5.6 MB VRAM (vs ~90 MB at 4K) — invisible on
 // ships that never fill the screen. WebP collapses the PNG bloat on disk.
-const TEXTURE_SIZE = 1024;
+const DISPLAY_TEXTURE_SIZE = 1024;
 const TEXTURE_FORMAT = "webp";
 const GEOMETRY_COMPRESSION = "draco";
 
-// Some models are loaded for their GEOMETRY ONLY — the runtime discards their
-// embedded materials and skins the mesh with its own textures (the meteor field
-// applies public/textures/meteor/* over the mesh, so the model's own 4K PBR maps
-// are never sampled). For those, the baked-in textures are pure dead weight, so we
-// crush them to a negligible size instead of the display cap above. The meteor
-// alone drops from ~70 MB to ~65 KB this way.
+// Textures on a model whose maps are never sampled (see the meteor recipe) — crushed to nothing
+// rather than merely capped.
 const GEOMETRY_ONLY_TEXTURE_SIZE = 8;
-const GEOMETRY_ONLY_MODELS = new Set(["meteor.glb"]);
+
+// Per-model treatment. Anything not listed here gets the defaults: DISPLAY_TEXTURE_SIZE, geometry
+// simplification on, and one output keeping its source filename.
+const MODEL_RECIPES = {
+  "meteor.glb": {
+    // Loaded for its GEOMETRY ONLY — the works field skins the mesh with its own textures
+    // (public/textures/meteor/*), so the model's baked-in PBR maps are never sampled and are pure
+    // dead weight. Drops it from ~70 MB to ~65 KB.
+    textureSizes: [GEOMETRY_ONLY_TEXTURE_SIZE],
+  },
+
+  "cloning_tank_chamber_jfg_-_roblox_pbr_showcase.glb": {
+    outputName: "chamber",
+    // Every one of its 36 maps is already 1024², so a 1024 cap resizes nothing and leaves ~192 MB of
+    // VRAM resident. That is far too much to force on every machine — and a resize is the ONLY thing
+    // that can claw it back, because the adaptive-resolution controller scales the framebuffer, not
+    // textures. So it ships at two tiers and the runtime picks one from measured frame times:
+    //   512  → ~48 MB VRAM   (the default; the room is dim and mostly seen at a distance)
+    //   1024 → ~192 MB VRAM  (only where the GPU has demonstrated the headroom)
+    textureSizes: [512, 1024],
+    // 6,952 verts for the entire room — there is nothing worth reclaiming by decimating it, and
+    // plenty to lose: simplification rounds off the long flat walls and hard edges this model is made
+    // of. The whole win here is in the textures.
+    simplify: false,
+  },
+
+  "sci-fi_screen_-_3d_model.glb": {
+    outputName: "screen",
+    // 497 verts, and it's a bezel the camera ends up looking straight at — decimating it would visibly
+    // round its corners for no meaningful saving.
+    simplify: false,
+  },
+};
 
 function formatMegabytes(byteCount) {
   return `${(byteCount / 1024 / 1024).toFixed(2)} MB`;
@@ -35,42 +69,65 @@ function formatMegabytes(byteCount) {
 
 mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
 
-const modelFileNames = readdirSync(SOURCE_DIRECTORY).filter((fileName) =>
+const requestedFileNames = process.argv.slice(2);
+const availableFileNames = readdirSync(SOURCE_DIRECTORY).filter((fileName) =>
   fileName.endsWith(".glb"),
 );
 
-for (const fileName of modelFileNames) {
+for (const requested of requestedFileNames) {
+  if (!availableFileNames.includes(requested)) {
+    console.error(`✗ no such source: ${join(SOURCE_DIRECTORY, requested)}`);
+    process.exit(1);
+  }
+}
+
+const sourceFileNames = requestedFileNames.length
+  ? requestedFileNames
+  : availableFileNames;
+
+for (const fileName of sourceFileNames) {
+  const recipe = MODEL_RECIPES[fileName] ?? {};
+  const textureSizes = recipe.textureSizes ?? [DISPLAY_TEXTURE_SIZE];
+  const baseName = recipe.outputName ?? fileName.replace(/\.glb$/, "");
+  const isTiered = textureSizes.length > 1;
+
   const inputPath = join(SOURCE_DIRECTORY, fileName);
-  const outputPath = join(OUTPUT_DIRECTORY, fileName);
   const sizeBefore = statSync(inputPath).size;
 
-  const textureSize = GEOMETRY_ONLY_MODELS.has(fileName)
-    ? GEOMETRY_ONLY_TEXTURE_SIZE
-    : TEXTURE_SIZE;
+  for (const textureSize of textureSizes) {
+    // A tiered model needs the tier in its name so both variants can sit side by side; a single-output
+    // model keeps a clean name.
+    const outputFileName = isTiered
+      ? `${baseName}-${textureSize}.glb`
+      : `${baseName}.glb`;
+    const outputPath = join(OUTPUT_DIRECTORY, outputFileName);
 
-  execFileSync(
-    "npx",
-    [
-      "--yes",
-      "@gltf-transform/cli@latest",
-      "optimize",
-      inputPath,
-      outputPath,
-      "--texture-size",
-      String(textureSize),
-      "--texture-compress",
-      TEXTURE_FORMAT,
-      "--compress",
-      GEOMETRY_COMPRESSION,
-    ],
-    { stdio: "inherit", shell: true },
-  );
+    execFileSync(
+      "npx",
+      [
+        "--yes",
+        "@gltf-transform/cli@latest",
+        "optimize",
+        inputPath,
+        outputPath,
+        "--texture-size",
+        String(textureSize),
+        "--texture-compress",
+        TEXTURE_FORMAT,
+        "--compress",
+        GEOMETRY_COMPRESSION,
+        "--simplify",
+        String(recipe.simplify ?? true),
+      ],
+      { stdio: "inherit", shell: true },
+    );
 
-  const sizeAfter = statSync(outputPath).size;
-  const reduction = (100 * (1 - sizeAfter / sizeBefore)).toFixed(1);
-  console.log(
-    `\n✓ ${fileName}: ${formatMegabytes(sizeBefore)} → ${formatMegabytes(
-      sizeAfter,
-    )}  (−${reduction}%)\n`,
-  );
+    const sizeAfter = statSync(outputPath).size;
+    const reduction = (100 * (1 - sizeAfter / sizeBefore)).toFixed(1);
+    console.log(
+      `\n✓ ${fileName} → ${outputFileName}: ${formatMegabytes(
+        sizeBefore,
+      )} → ${formatMegabytes(sizeAfter)}  (−${reduction}%)\n`,
+    );
+  }
 }

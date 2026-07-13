@@ -15,6 +15,11 @@ import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
 import { WORKS_PROJECTS } from '../worksProjects';
 import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
+import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
+import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
+// The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
+// cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
+import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
@@ -96,6 +101,15 @@ const FLIGHT_CAMERA_SMOOTHING = 0.09;
 // for margin so the first visible frame is never clipped. (Only gates the DRAW; the loop keeps
 // easing every frame so the field camera stays locked to the deck ship through the handoff.)
 const WORKS_RENDER_THRESHOLD = 0.28;
+
+// ── The works → chamber reveal ───────────────────────────────────────────────────────────────────
+// The camera backs up and the space turns out to be a display in a room. The room is its own scene,
+// drawn by THIS renderer (a texture can't cross a WebGL context), swapped into the screen pipeline's
+// RenderPass in place of the full-bleed quad. At progress 0 the display exactly fills the frustum, so
+// the swap is invisible — see components/sections/Chamber/chamberScene.ts.
+const CHAMBER_ENGAGE_EPSILON = 0.001;
+const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
+const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
 // ── Meteor arrival — real, FAR rocks that ALL fly in the same way as the flight completes ──
 // The field's meteors stay hidden through most of the flight (only debris + streaking stars show).
@@ -441,26 +455,77 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     fillLight.position.set(-6, -2, 3);
     scene.add(keyLight, fillLight, new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY));
 
-    // ── Bloom pipeline (only the fire is bright enough to bleed) ──
-    const composerTarget = new THREE.WebGLRenderTarget(1, 1, {
+    // ── Two-stage pipeline: the space renders into a TEXTURE, then that texture is presented ──
+    //
+    // The works→chamber reveal needs the space scene as something it can paint onto a screen inside a
+    // room (see docs/works-to-chamber-reveal.md), so the space no longer draws straight to the canvas.
+    // It renders into a texture; a second, screen-facing pipeline then draws that texture back out
+    // — full-bleed while you browse projects, and onto the chamber's screen once the camera pulls back.
+    // Same texture, same material, both times. That's what makes the reveal seamless: the image never
+    // changes, only the geometry it's painted on.
+    //
+    // WHERE the split goes is the load-bearing decision. It is placed BEFORE tone mapping: everything
+    // up to that texture stays linear HDR, and there is exactly ONE OutputPass, at the very end of the
+    // screen pipeline. Tone-map the space on the way into the texture and the screen pipeline would
+    // tone-map it again on the way out — double-applying the curve and visibly shifting the whole image
+    // the moment the reveal engaged. Split before it, and the pixels that reach the canvas are the same
+    // pixels as before the split existed.
+
+    // Stage 1 — the space, in linear HDR. Bloom belongs here (it must bleed on the HDR values, before
+    // the tone curve compresses them), and nothing else does.
+    //
+    // CAREFUL — the composer's buffer roles are the opposite of what they look like. EffectComposer
+    // takes the target you hand it as its WRITE buffer and CLONES a second one to be its READ buffer.
+    // RenderPass and UnrealBloomPass both draw into the READ buffer, and neither of them swaps. So the
+    // finished space image ends up in the clone — `spaceComposer.readBuffer` — and NOT in the target
+    // constructed here. Sampling this target instead gives you a texture nothing ever wrote to: fully
+    // transparent, so the field renders as an empty void. Always read the output back off the composer.
+    const spaceBuffer = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       samples: lowPower ? 0 : BLOOM_MSAA_SAMPLES,
     });
-    const composer = new EffectComposer(renderer, composerTarget);
-    composer.addPass(new RenderPass(scene, camera));
+    const spaceComposer = new EffectComposer(renderer, spaceBuffer);
+    spaceComposer.renderToScreen = false;
+    spaceComposer.addPass(new RenderPass(scene, camera));
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(1, 1),
       lowPower ? BLOOM_STRENGTH_LOW : BLOOM_STRENGTH,
       BLOOM_RADIUS,
       BLOOM_THRESHOLD,
     );
-    composer.addPass(bloomPass);
-    composer.addPass(new OutputPass());
+    spaceComposer.addPass(bloomPass);
+    /** Whatever the space pipeline last produced. Re-read every frame rather than cached, so no
+     *  assumption about which of the composer's two buffers it landed in can rot. */
+    const spaceTexture = () => spaceComposer.readBuffer.texture;
+
+    // The surface the space gets painted onto. At rest it's a full-bleed, pixel-aligned quad, so the
+    // canvas shows exactly what stage 1 produced; during the reveal this same material is moved onto
+    // the chamber's screen. See spacePresentMaterial.ts for why it's a raw shader and not a
+    // MeshBasicMaterial (short version: MeshBasicMaterial forces alpha to 1 and would paint the pinned
+    // sun out of the site).
+    const presentScene = new THREE.Scene();
+    const presentCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const { material: presentMaterial, uniforms: presentUniforms } =
+      createSpacePresentMaterial(spaceTexture());
+    const presentGeometry = new THREE.PlaneGeometry(2, 2);
+    presentScene.add(new THREE.Mesh(presentGeometry, presentMaterial));
+
+    // Stage 2 — the screen. Tone mapping and AA happen here, once, on whatever is being shown.
+    const screenTarget = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.HalfFloatType,
+      samples: lowPower ? 0 : BLOOM_MSAA_SAMPLES,
+    });
+    const screenComposer = new EffectComposer(renderer, screenTarget);
+    // The scene this draws is swapped for the chamber once the reveal engages; today it is always the
+    // full-bleed quad.
+    const screenRenderPass = new RenderPass(presentScene, presentCamera);
+    screenComposer.addPass(screenRenderPass);
+    screenComposer.addPass(new OutputPass());
     // Smooth the meteor / shard edges the bloom pipeline leaves rough — a composer ignores the
     // renderer's own `antialias` flag, so this is the only geometry AA on the final image. Runs last,
     // on the LDR result after tone mapping. Sized by the composer, so it follows the adaptive resolution.
     const smaaPass = new SMAAPass();
-    composer.addPass(smaaPass);
+    screenComposer.addPass(smaaPass);
 
     // ── Starfield (dots + warp streaks) ──
     const starSystem = createStarSystem();
@@ -744,8 +809,35 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       flightState.target = progress;
       flightState.engaged = true;
       worksShouldRender = progress > WORKS_RENDER_THRESHOLD;
+      // Reaching Works is the cue to fetch the room — never at page load, so it stays off the intro's
+      // asset gate and off the first paint.
+      if (worksShouldRender) ensureChamber();
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+
+    // ── The chamber (built lazily; see ensureChamber) ──
+    // The pin scrubs the raw target and the loop eases toward it, exactly as the handoff does. The
+    // room is only DRAWN once it has both models — until then the screen pipeline keeps painting the
+    // full-bleed quad, which is what it would be showing at progress 0 anyway.
+    const chamberState = { target: 0, current: 0, engaged: false };
+    let chamber: ChamberScene | null = null;
+    let chamberReady = false;
+    const ensureChamber = () => {
+      if (chamber) return;
+      chamber = createChamberScene({
+        environment: scene.environment,
+        onReady: () => {
+          chamberReady = true;
+        },
+      });
+    };
+    const onChamberProgress = (event: Event) => {
+      chamberState.target = readChamberProgress(event);
+      chamberState.engaged = true;
+      // A jump straight to the end of the page can land here before Works ever rendered.
+      ensureChamber();
+    };
+    window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
 
     // Warm the meteor / fire / shard materials + bloom pipeline before the field is shown. Compiled
     // ASYNCHRONOUSLY (background threads, where the GPU supports it) so it doesn't block the main
@@ -758,9 +850,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         .compileAsync(scene, camera)
         .then(() => {
           if (disposed) return;
-          // Forces the bloom passes to compile too (the only part that can still block, and only on a
-          // GPU with no parallel-compile extension — during the intro hold, never at the reveal).
-          composer.render();
+          // Forces the bloom + present passes to compile too (the only part that can still block, and
+          // only on a GPU with no parallel-compile extension — during the intro hold, never at the reveal).
+          spaceComposer.render();
+          presentUniforms.uSpace.value = spaceTexture();
+          screenComposer.render();
           reportWarmupDone('works'); // the intro holds the reveal until this fires
         })
         .catch(() => { if (!disposed) reportWarmupDone('works'); });
@@ -809,6 +903,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // targets stay at the old density). Also owns the portrait pull-back. Used for real resizes and
     // whenever the adaptive controller shifts the ratio; defined before the loop so it can call it.
     let appliedPixelRatio = getPixelRatio();
+    // The chamber's display wears this aspect, which is what makes its cover distance exact — see
+    // chamberScene.ts.
+    let viewportAspect = 1;
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -816,14 +913,19 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const aspect = width / height;
       const ratio = getPixelRatio();
       appliedPixelRatio = ratio;
+      viewportAspect = aspect;
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
       // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
       distanceScale = aspect < 1 ? THREE.MathUtils.clamp(1 / aspect, 1, 1.9) : 1;
       renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
-      composer.setPixelRatio(ratio);
-      composer.setSize(width, height);
+      // Both stages follow the adaptive resolution. The composers resize their own buffers in place;
+      // the present quad re-reads its texture off the composer each frame, so nothing goes stale here.
+      spaceComposer.setPixelRatio(ratio);
+      spaceComposer.setSize(width, height);
+      screenComposer.setPixelRatio(ratio);
+      screenComposer.setSize(width, height);
     };
 
     // ── Render loop ──
@@ -960,9 +1062,53 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Skip the bloom pipeline whenever the field isn't on screen (and when the tab is
       // backgrounded). The loop above still ran, so state is current and the first visible frame is
       // already right.
+      // ── The reveal: back out of the display until the room is around you ──
+      // Eased per frame off the scrubbed target, like every other crossing, so it stays cinematic
+      // whether the user creeps, flicks, or the snap glides across it. Pure function of progress: it
+      // can't be outrun, and it reverses.
+      if (chamberState.engaged) {
+        chamberState.current +=
+          (chamberState.target - chamberState.current) * (reduceMotion ? 1 : CHAMBER_SMOOTHING);
+        if (Math.abs(chamberState.target - chamberState.current) < 0.001) {
+          chamberState.current = chamberState.target;
+        }
+      }
+      // The `?tune` panel can pin the reveal open at a fixed progress, ignoring the scroll — the only
+      // way to hold it still and look at it, since the scroll can only ever land on stop 0 or stop 1.
+      // Null in every other circumstance, so this costs nothing in the real thing.
+      const heldProgress = chamber?.progressOverride() ?? null;
+      const revealProgress =
+        heldProgress ?? (chamberState.engaged ? chamberState.current : 0);
+
+      // Show the room only once it's actually in. Until then the screen pipeline keeps painting the
+      // full-bleed quad — which is exactly what the chamber would be showing at progress 0 anyway, so
+      // a slow model load degrades to "the reveal hasn't started yet" rather than to a black frame.
+      const revealing =
+        !!chamber && chamberReady && revealProgress > CHAMBER_ENGAGE_EPSILON;
+
       const handoffActive = flightState.current > 0.001 && flightState.current < 0.999;
+      const revealScrubbing = revealing && revealProgress < CHAMBER_SCRUB_END;
       const isDrawing = worksShouldRender && !document.hidden;
-      if (isDrawing) composer.render();
+      if (isDrawing) {
+        // Stage 1 into the texture, stage 2 out to the canvas. Never one without the other — the
+        // screen pipeline paints whatever the space pipeline last produced.
+        spaceComposer.render();
+        const space = spaceTexture();
+
+        if (revealing && chamber) {
+          // The room, with the space showing on its display. Same texture, same shader as the
+          // full-bleed quad — only the geometry it's painted on has changed.
+          chamber.setSpaceTexture(space);
+          chamber.update(revealProgress, viewportAspect);
+          screenRenderPass.scene = chamber.scene;
+          screenRenderPass.camera = chamber.camera;
+        } else {
+          presentUniforms.uSpace.value = space;
+          screenRenderPass.scene = presentScene;
+          screenRenderPass.camera = presentCamera;
+        }
+        screenComposer.render();
+      }
 
       // ── Adaptive resolution: only ever re-sized while this scene is NOT being drawn ──
       // Same rule as the deck (see useServicesDeck). Applying a new pixel ratio reallocates the whole
@@ -970,8 +1116,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // behind motion: the warp hop between two meteors is a real-time tween, so a stall mid-hop makes
       // the camera skip straight to the far end — the hop reads as a freeze then a jump. So we only
       // ever do it on a genuinely idle frame: the field off screen (services / the fill) or the tab
-      // backgrounded. Also frozen entirely through the handoff.
-      if (!handoffActive) {
+      // backgrounded. Also frozen entirely through either crossing.
+      if (!handoffActive && !revealScrubbing) {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
           // In sync → measure this frame. Only frames we actually DREW, so idle frames can't fake
@@ -1025,7 +1171,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+      window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
+      chamber?.dispose();
 
       meteorRigs.forEach((rig) => {
         gsap.killTweensOf(rig.fireUniforms.uIgnite);
@@ -1044,10 +1192,15 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       starSystem.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();
+      presentGeometry.dispose();
+      presentMaterial.dispose();
       // EffectComposer.dispose() doesn't free added passes — release the bloom pyramid explicitly.
+      // Each composer owns (and disposes) both of its read/write targets, so the buffers handed to
+      // them — and the clones they made — are freed with them.
       bloomPass.dispose();
       smaaPass.dispose();
-      composer.dispose();
+      spaceComposer.dispose();
+      screenComposer.dispose();
       renderer.dispose();
     };
     // Setup runs once; focus changes are read live via activeIndexRef / the selection effect below.
