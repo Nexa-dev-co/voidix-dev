@@ -96,6 +96,14 @@ const HANDOFF_DECK_UI_FADE: [number, number] = [0.05, 0.24];
 // stars + debris come in from the left as we fly.
 const HANDOFF_FIELD_FADE: [number, number] = [0.33, 0.55];
 const HANDOFF_WORKS_UI_FADE: [number, number] = [0.8, 0.94];
+// Project 01's stop IS the handoff span's upper edge, and browsers round the settled scroll to
+// device pixels — so a glide "onto" that stop can leave the pin a hair inside the span and the
+// clamp below yields 0.999… instead of 1. Both WebGL scenes hand their camera back to normal
+// browsing only on an EXACT boundary value (the contract in handoffEvents.ts), so that near-miss
+// left the works flight camera engaged forever: warping to project 02 cross-faded the fire but the
+// camera never flew. Snap anything this close to an edge onto it before dispatch. ~0.005 of the
+// span is ≈5px of scroll — far above rounding noise, far below the nearest fade window (0.05/0.94).
+const HANDOFF_SNAP_EPSILON = 0.005;
 
 // ── Reveal (runs when the intro lands the sun in the square) ───────────
 const TEXT_WIPE_DURATION = 0.9;
@@ -288,12 +296,16 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
     let lastHandoffProgress = -1;
     const applyHandoff = (progress: number) => {
-      const handoffProgress = gsap.utils.clamp(
+      let handoffProgress = gsap.utils.clamp(
         0,
         1,
         (progress - handoffStartProgress) /
           (handoffEndProgress - handoffStartProgress),
       );
+      // Honour the boundary contract (see HANDOFF_SNAP_EPSILON): a settle that rounds to just
+      // inside the span still reads as "span exited", so the scenes always get a clean 0 / 1.
+      if (handoffProgress < HANDOFF_SNAP_EPSILON) handoffProgress = 0;
+      else if (handoffProgress > 1 - HANDOFF_SNAP_EPSILON) handoffProgress = 1;
       if (handoffProgress === lastHandoffProgress) return;
       lastHandoffProgress = handoffProgress;
 

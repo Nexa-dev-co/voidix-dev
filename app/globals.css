@@ -544,6 +544,10 @@ body {
   position: relative;
   z-index: 5;
   mix-blend-mode: difference;
+  /* Return direction only (services → fill): the is-services rule hides the mask with NO
+     transition (see there for why), so this base transition is what fades the headline back in
+     when the class is removed. Opacity here is CSS-driven only — GSAP animates .hero-mask-inner. */
+  transition: opacity 0.4s ease;
 }
 .hero-mask-inner {
   display: inline-block;
@@ -591,21 +595,29 @@ body {
   opacity: 0;
   transition: opacity 0.5s ease;
 }
-/* The hero headline ("we build worlds") and tagline belong to the hero only — fade them out in
+/* The hero headline ("we build worlds") and tagline belong to the hero only — hide them in
    services so they don't bleed through the (transparent) fleet layers. The square itself is not
-   a .hero-mask, so it stays as the sun's backdrop. */
+   a .hero-mask, so it stays as the sun's backdrop.
+   The hide must be INSTANT (transition: none), not a fade: the hero bg above goes transparent in
+   one frame, and against the now-black page bg the difference blend flips these grey glyphs from
+   near-black to BRIGHT grey — a fading headline reads as "we build worlds" flashing over the
+   services screen. Hiding it the same frame the cream vanishes kills the flash; the fade back in
+   on returning to the fill comes from the base .hero-mask transition (GSAP re-fades .hero-sub). */
 .hero-section.is-services .hero-mask,
 .hero-section.is-services .hero-sub {
   opacity: 0 !important;
-  transition: opacity 0.4s ease;
+  transition: none;
 }
-/* The instrument HUD + the square's ring belong to the hero only — fade them with the headline
+/* The instrument HUD + the square's ring belong to the hero only — hide them with the headline
    so nothing bleeds over the (transparent) fleet layers. (The ring's own fade already zeroes it by
-   the time services begins; this just keeps it there.) */
+   the time services begins; this just keeps it there.) Instant for the same reason as the headline:
+   the HUD labels are difference-blended too, so they'd flash bright the frame the cream vanishes.
+   The return fades come from the base .hero-hud / .constellation-dust transitions. */
 .hero-section.is-services .hero-hud,
 .hero-section.is-services .hero-sun-frame,
 .hero-section.is-services .constellation-dust {
   opacity: 0;
+  transition: none;
 }
 /* The dust is a canvas that draws its own alpha; a transition keeps the services fade smooth. */
 .constellation-dust {
@@ -627,7 +639,7 @@ body {
   justify-content: center;
   gap: clamp(0.85rem, 2.1vh, 1.7rem);
   pointer-events: none;
-  transition: opacity 0.4s ease; /* for the is-services fade (both directions) */
+  transition: opacity 0.4s ease; /* return fade only — entering services hides instantly (see .is-services) */
 }
 .hero-hud--left {
   left: clamp(1.5rem, 3.6vw, 3.75rem);
