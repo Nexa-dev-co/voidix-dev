@@ -3,21 +3,26 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { getPerformanceTier } from '@/lib/performanceTier';
-import { getChamberTuning, subscribeChamberTuning } from '@/lib/chamberTuning';
+import {
+  getChamberTuning,
+  reportChamberParts,
+  setChamberTuning,
+  type ChamberPart,
+} from '@/lib/chamberTuning';
 
 /**
- * The room the whole thing turns out to have been happening in.
+ * The place the whole thing turns out to have been happening in.
  *
  * Scroll past the last project and the camera BACKS UP: the space you've been flying through shrinks
- * into a display, and the display turns out to be mounted in a cloning-tank chamber you've been
- * standing in all along (see docs/works-to-chamber-reveal.md).
+ * into a display, and the display turns out to be a screen standing in a room you've been in all along
+ * (see docs/works-to-chamber-reveal.md).
  *
  * ── Why the seam is free ──────────────────────────────────────────────────────────────────────────
  * The trick is entirely in the framing. The display's aspect is set to the VIEWPORT's aspect, and at
  * progress 0 the camera sits at exactly the distance where it fills the frustum — so the canvas shows
- * the space texture 1:1, pixel for pixel, and everything else is outside the frame. There is no
- * cross-fade and nothing is faked. The reveal is nothing but the camera moving away from a quad it was
- * pressed against.
+ * the space texture 1:1, pixel for pixel, and the whole set is outside the frame. There is no cross-fade
+ * and nothing is faked. The reveal is nothing but the camera moving away from a quad it was pressed
+ * against.
  *
  * Because the display's aspect matches the viewport's, the distance that covers the frame vertically
  * also covers it horizontally — one number, exact at every aspect ratio:
@@ -28,45 +33,29 @@ import { getChamberTuning, subscribeChamberTuning } from '@/lib/chamberTuning';
  * The scene, its camera, and the pose for a given progress. It does NOT own:
  *  - the renderer or the space texture — it is drawn by the works field's renderer, because a GPU
  *    texture cannot cross a WebGL context and the space is rendered over there;
- *  - the numbers — every one of them was authored without being able to see the scene, so they live in
+ *  - the numbers — every one was authored without being able to see the scene, so they live in
  *    lib/chamberTuning.ts and are dragged into place from an on-screen panel (localhost only).
  */
 
 // ── Models ───────────────────────────────────────────────────────────────────────────────────────
-// The chamber's 36 maps are all 1024², so the two tiers really are ~48 MB vs ~192 MB of resident VRAM.
-// Which one we fetch is decided from measured frame times, not a device sniff (see performanceTier).
-const CHAMBER_MODEL_LOW = '/models/chamber-512.glb';
-const CHAMBER_MODEL_HIGH = '/models/chamber-1024.glb';
-const SCREEN_MODEL = '/models/screen.glb';
+// The podium shipped with 27 maps at 4096² — 2.3 GB of VRAM untouched, which is not a heavy model but an
+// unusable one. Capped it's 31 MB / 122 MB, so it ships at two tiers and the runtime picks one from
+// measured frame times rather than a device sniff (see performanceTier).
+const PODIUM_MODEL_LOW = '/models/podium-512.glb';
+const PODIUM_MODEL_HIGH = '/models/podium-1024.glb';
+// The table is the mirror image: one small map, all its weight in geometry. Draco handles it; one tier.
+const TABLE_MODEL = '/models/table.glb';
 const DRACO_DECODER_PATH = '/draco/';
 
 const FOV = 45;
-
-// ── Placing the room ─────────────────────────────────────────────────────────────────────────────
-//
-// ⚠ DO NOT place this model by its bounding box. That box is 1635 units tall, but the room you can
-// actually stand in is only ~410 of them: it is dominated by a floor slab dropping ~600 units BELOW the
-// walkable floor and a ceiling slab rising ~600 ABOVE it. Normalising by the box and calling its bottom
-// "the floor" buried the display and the camera inside the floor slab — which is why the reveal used to
-// finish staring at solid black. So it is anchored from measured coordinates instead.
-//
-// Raw model bounds: x −676…676, y −610…1026, z 46…1308.
-const ROOM_FLOOR_RAW_Y = 12; // the surface you'd actually stand on, in the model's own coordinates
-const ROOM_CENTRE_RAW_Z = 677; // …so world origin lands on the middle of that floor
-
-// The frame's opening is nearly square (~1.157) while the display takes the viewport's aspect, so the
-// frame is stretched to hug it. This caps how far it may be pushed from its native proportions, so an
-// extreme viewport can't squash it into nonsense.
-const BEZEL_MAX_STRETCH = 2.4;
 
 // ── Lighting ─────────────────────────────────────────────────────────────────────────────────────
 // A screen this size in a dark room IS the room's light. Without it the reveal lands on a flat, unlit
 // box and the whole thing falls apart.
 //
-// The environment matters more than it looks. The chamber shares the works field's PMREM, which is a
-// RoomEnvironment — a bright studio box — and the chamber's surfaces are metal. At any real intensity
-// that turns a dim cloning chamber into a chrome showroom, which is exactly what the first pass did.
-// So it's dialled right down by default and left on a knob.
+// The environment matters more than it looks. The scene shares the works field's PMREM, which is a
+// RoomEnvironment — a bright studio box — and these props are metal. At any real intensity that turns a
+// dim room into a chrome showroom. So it's dialled right down by default and left on a knob.
 const SCREEN_LIGHT_COLOR = 0x6fd9ff;
 const SCREEN_LIGHT_DISTANCE = 9;
 const SCREEN_LIGHT_OFFSET = 0.6; // sits in front of the display, throwing light back into the room
@@ -74,7 +63,7 @@ const KEY_LIGHT_COLOR = 0x9fb6d4;
 
 // The dark of space has to stop reading as transparency and start reading as an unlit panel — and the
 // pinned sun (a fixed DOM billboard behind the canvas) has to leave with it, or it would hang in the
-// middle of the screen while the room slides in behind it. Both happen inside this window, FAST, while
+// middle of the screen while the set slides in behind it. Both happen inside this window, FAST, while
 // the display still fills the frame — so the only thing you can actually see is a light dimming.
 export const OPAQUE_WINDOW: [number, number] = [0.0, 0.12];
 
@@ -92,10 +81,18 @@ export interface ChamberScene {
    * progress 0 or 1: there is no way to *stop* halfway and look at it. This is how it's pinned open.
    */
   progressOverride: () => number | null;
+  /**
+   * Tuning only: turn the object the panel's open tab is on. Returns true if it took the drag, so the
+   * host knows not to also hand it to the space camera underneath.
+   */
+  dragRotate: (deltaX: number, deltaY: number) => boolean;
   /** Drive the entire reveal from its 0..1 progress. Pure — no timers, no tweens. */
   update: (progress: number, aspect: number) => void;
   dispose: () => void;
 }
+
+/** Degrees of turn per pixel dragged. */
+const DRAG_SENSITIVITY = 0.4;
 
 interface ChamberOptions {
   /** Shared with the works field — one PMREM texture, reused rather than regenerated. */
@@ -141,13 +138,8 @@ export function createChamberScene({
   const ambientLight = new THREE.AmbientLight(0xffffff, tuning.ambient);
   scene.add(keyLight, ambientLight);
 
-  // Every standard material in the room, so the environment's strength stays adjustable.
-  const roomMaterials: THREE.MeshStandardMaterial[] = [];
-  const applyEnvIntensity = () => {
-    roomMaterials.forEach((material) => {
-      material.envMapIntensity = tuning.envIntensity;
-    });
-  };
+  // Every standard material in the set, so the environment's strength stays adjustable across all of it.
+  const setMaterials: THREE.MeshStandardMaterial[] = [];
 
   // ── Loading ──
   const dracoLoader = new DRACOLoader();
@@ -155,146 +147,107 @@ export function createChamberScene({
   const gltfLoader = new GLTFLoader();
   gltfLoader.setDRACOLoader(dracoLoader);
 
-  let roomGroup: THREE.Group | null = null;
-  let bezelGroup: THREE.Group | null = null;
-  /** The frame, inside its group — it carries the orientation that stands the model upright. */
-  let bezelModel: THREE.Object3D | null = null;
-  /** Its bounds in its OWN coordinates, unrotated. Everything else is derived from these. */
-  let bezelLocalBox: THREE.Box3 | null = null;
+  let podiumGroup: THREE.Group | null = null;
+  let tableGroup: THREE.Group | null = null;
   let disposed = false;
 
-  // The bezel alone is enough to start the reveal; the room is placed relative to it.
-  const announceReady = () => {
-    if (bezelGroup && !disposed) onReady?.();
-  };
+  /** Every switchable piece of every prop, by id — so a stray screen or ground plane can be removed. */
+  const partMeshes = new Map<string, THREE.Mesh>();
 
-  // The room can be hidden to judge the display + bezel against plain black.
-  const syncRoomVisibility = () => {
-    if (!roomGroup) return;
-    if (tuning.showRoom) scene.add(roomGroup);
-    else scene.remove(roomGroup);
-  };
-  const unsubscribe = subscribeChamberTuning(() => {
-    syncRoomVisibility();
-    applyEnvIntensity();
-  });
+  /** Load a prop into its own group. It is placed entirely from the tuning, every frame. */
+  const loadProp = (
+    model: string,
+    path: string,
+    assign: (group: THREE.Group) => void,
+  ) => {
+    gltfLoader.load(
+      path,
+      (gltf) => {
+        if (disposed) return;
+        const group = new THREE.Group();
+        group.add(gltf.scene);
 
-  // The room's geometry is trivial (~7k verts); the tier is purely about texture memory.
-  const chamberPath =
-    getPerformanceTier() === 'high' ? CHAMBER_MODEL_HIGH : CHAMBER_MODEL_LOW;
-  gltfLoader.load(
-    chamberPath,
-    (gltf) => {
-      if (disposed) return;
-      // Left at the model's own origin and simply offset in `update` — see the note above.
-      const group = new THREE.Group();
-      group.add(gltf.scene);
-      group.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
+        // Catalogue the prop's pieces so they can be switched off individually. Ids are POSITIONAL: the
+        // meshes' own names are useless (the podium's are all literally "defaultMaterial"), so the
+        // material name is what actually identifies a piece to a human.
+        const parts: ChamberPart[] = [];
+        let index = 0;
+        group.traverse((child) => {
+          if (!(child instanceof THREE.Mesh)) return;
           const materials = Array.isArray(child.material)
             ? child.material
             : [child.material];
           materials.forEach((material) => {
             if (material instanceof THREE.MeshStandardMaterial) {
-              roomMaterials.push(material);
+              setMaterials.push(material);
             }
           });
-        }
-      });
-      roomGroup = group;
-      applyEnvIntensity();
-      syncRoomVisibility();
-    },
-    undefined,
-    (error) => console.error(`Failed to load chamber: ${chamberPath}`, error),
-  );
+          const id = `${model}:${index}`;
+          const name = materials[0]?.name || child.name || `part ${index}`;
+          const vertices = child.geometry.getAttribute('position')?.count ?? 0;
+          parts.push({ id, label: `${name} · ${vertices.toLocaleString()}` });
+          partMeshes.set(id, child);
+          index += 1;
+        });
+        reportChamberParts(model, parts);
 
-  // The bezel. The model lies FLAT in its file — its face spans x/z with y as thickness — so it has to
-  // be stood upright before it can frame anything. WHICH way is up depends on how it was exported, and
-  // getting it wrong leaves you looking at the frame edge-on, so the orientation is tunable and the
-  // frame's face is re-derived from it (see applyBezelOrientation).
-  gltfLoader.load(
-    SCREEN_MODEL,
-    (gltf) => {
-      if (disposed) return;
-      bezelLocalBox = new THREE.Box3().setFromObject(gltf.scene);
-      // Work out which way it has to be turned to face the viewer, from its own proportions.
-      measureUpright(bezelLocalBox.getSize(new THREE.Vector3()));
-      const group = new THREE.Group();
-      group.add(gltf.scene);
-      scene.add(group);
-      bezelModel = gltf.scene;
-      bezelGroup = group;
-      announceReady();
-    },
-    undefined,
-    (error) => console.error(`Failed to load screen: ${SCREEN_MODEL}`, error),
-  );
-
-  // ── The bezel's orientation ──
-  //
-  // The frame is exported lying FLAT, so it has to be stood up — and which way is "up" is a property of
-  // how the artist exported it. Guessing it was a mistake: guess wrong and you're looking at the frame
-  // edge-on, or at a slab lying on its back behind the picture.
-  //
-  // So it's MEASURED instead. A frame is a flat plate: its thinnest axis is its depth and its longest is
-  // its width, whatever the file says. Turn it so the thinnest axis points at the viewer and the longest
-  // runs across, and it stands up correctly no matter how it was exported.
-  const uprightRotation = new THREE.Euler();
-  const measureUpright = (size: THREE.Vector3) => {
-    const extents = [size.x, size.y, size.z];
-    const thinnest = extents.indexOf(Math.min(...extents));
-    if (thinnest === 2) uprightRotation.set(0, 0, 0); // already face-on
-    else if (thinnest === 1) uprightRotation.set(-Math.PI / 2, 0, 0); // lying flat → tip it up
-    else uprightRotation.set(0, Math.PI / 2, 0); // standing on its edge → turn it to face us
-  };
-
-  // Whatever the measurement gives, the tuning rotation is layered ON TOP as a fine adjustment (it
-  // should now be able to stay at zero). Once the frame is standing, its FACE has to be re-derived —
-  // that's what gets stretched onto the display, and it's a different pair of axes than the file's.
-  const bezelRotation = new THREE.Euler();
-  const bezelMatrix = new THREE.Matrix4();
-  const offsetMatrix = new THREE.Matrix4();
-  const uprightMatrix = new THREE.Matrix4();
-  const bezelBox = new THREE.Box3();
-  const bezelSize = new THREE.Vector3();
-  const bezelCentre = new THREE.Vector3();
-  /** The standing frame's face: x = width, y = height. This is what gets stretched onto the display. */
-  const bezelFace = new THREE.Vector2(1, 1);
-  let appliedRotationKey = '';
-
-  const applyBezelOrientation = () => {
-    if (!bezelModel || !bezelLocalBox) return;
-    const key = `${tuning.bezelRotX},${tuning.bezelRotY},${tuning.bezelRotZ}`;
-    if (key === appliedRotationKey) return;
-    appliedRotationKey = key;
-
-    offsetMatrix.makeRotationFromEuler(
-      new THREE.Euler(
-        THREE.MathUtils.degToRad(tuning.bezelRotX),
-        THREE.MathUtils.degToRad(tuning.bezelRotY),
-        THREE.MathUtils.degToRad(tuning.bezelRotZ),
-      ),
+        scene.add(group);
+        assign(group);
+        onReady?.();
+      },
+      undefined,
+      (error) => console.error(`Failed to load ${path}`, error),
     );
-    uprightMatrix.makeRotationFromEuler(uprightRotation);
-    bezelMatrix.multiplyMatrices(offsetMatrix, uprightMatrix);
-    bezelRotation.setFromRotationMatrix(bezelMatrix);
-
-    // The frame's bounds once it's standing — Box3.applyMatrix4 turns all eight corners, so this is the
-    // real face, not the one the file happened to be authored in.
-    bezelBox.copy(bezelLocalBox).applyMatrix4(bezelMatrix);
-    bezelBox.getSize(bezelSize);
-    bezelBox.getCenter(bezelCentre);
-    bezelFace.set(bezelSize.x || 1, bezelSize.y || 1);
-
-    bezelModel.rotation.copy(bezelRotation);
-    // Re-centre it on its group after turning, so it stays hung on the rig rather than swinging off it.
-    bezelModel.position.copy(bezelCentre).negate();
   };
+
+  const highTier = getPerformanceTier() === 'high';
+  loadProp('podium', highTier ? PODIUM_MODEL_HIGH : PODIUM_MODEL_LOW, (group) => {
+    podiumGroup = group;
+  });
+  loadProp('table', TABLE_MODEL, (group) => {
+    tableGroup = group;
+  });
 
   // ── The pose ──
   const rigPosition = new THREE.Vector3();
+  const rigRotation = new THREE.Euler();
   const rigForward = new THREE.Vector3();
+  const rigUp = new THREE.Vector3();
+  const cameraUp = new THREE.Vector3();
+  const coverPosition = new THREE.Vector3(); // on the display's normal — where the reveal must begin
+  const restPosition = new THREE.Vector3(); // a place in the room — where it ends
+  const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
+  /**
+   * Every prop is placed the same way: shown/hidden, scaled, moved, turned. Rotations in degrees.
+   *
+   * Scale is PER AXIS on purpose — it's how a prop's screen is made to match the render's shape, by
+   * stretching the prop rather than distorting the picture to fit it.
+   */
+  interface PropPlacement {
+    show: boolean;
+    scaleX: number;
+    scaleY: number;
+    scaleZ: number;
+    x: number;
+    y: number;
+    z: number;
+    rotX: number;
+    rotY: number;
+    rotZ: number;
+  }
+  const placeProp = (group: THREE.Group | null, place: PropPlacement) => {
+    if (!group) return;
+    group.visible = place.show;
+    if (!place.show) return;
+    group.scale.set(place.scaleX, place.scaleY, place.scaleZ);
+    group.position.set(place.x, place.y, place.z);
+    group.rotation.set(
+      THREE.MathUtils.degToRad(place.rotX),
+      THREE.MathUtils.degToRad(place.rotY),
+      THREE.MathUtils.degToRad(place.rotZ),
+    );
+  };
 
   /** Ease the pull-back: slow off the display, slow into the room. */
   const easeReveal = (progress: number) => {
@@ -310,14 +263,40 @@ export function createChamberScene({
 
     // The rig: where the display hangs, and which way it faces. The camera is DERIVED from it, so the
     // whole shot moves as one and the cover maths below can never drift out of step with it.
+    //
+    // `rigForward` is the display's actual NORMAL, taken from its rotation rather than assembled from
+    // the yaw by hand — so tilting it can't quietly put the camera off-axis and break the seam.
     rigPosition.set(tuning.rigX, tuning.rigY, tuning.rigZ);
-    rigForward.set(Math.sin(tuning.rigYaw), 0, Math.cos(tuning.rigYaw));
+    rigRotation.set(
+      THREE.MathUtils.degToRad(tuning.rigPitch),
+      THREE.MathUtils.degToRad(tuning.rigYaw),
+      THREE.MathUtils.degToRad(tuning.rigRoll),
+    );
+    rigForward.set(0, 0, 1).applyEuler(rigRotation);
+    rigUp.set(0, 1, 0).applyEuler(rigRotation);
 
-    // The display always wears the viewport's aspect — that's what keeps `coverDistance` exact.
-    const displayWidth = tuning.displayHeight * aspect;
-    display.scale.set(displayWidth, tuning.displayHeight, 1);
+    // Trim the picture's edges. Ramped in with the pull-back, NEVER applied flat: at progress 0 the
+    // display has to show the space render 1:1 or the seam dies — a crop there opens the reveal on a
+    // zoomed picture, i.e. a visible jump. If a prop's screen doesn't fit the render's shape, stretch the
+    // PROP (its scale is per-axis) rather than distorting the picture to fit it.
+    const cropLeft = tuning.cropLeft * eased;
+    const cropRight = tuning.cropRight * eased;
+    const cropTop = tuning.cropTop * eased;
+    const cropBottom = tuning.cropBottom * eased;
+    displayUniforms.uCrop.value.set(cropLeft, cropRight, cropTop, cropBottom);
+
+    // The quad shrinks along with the trim, so the picture is CROPPED rather than squashed into a
+    // smaller frame. With no crop this is the full viewport aspect — which is what keeps `coverDistance`
+    // exact at progress 0.
+    const keptWidth = Math.max(1 - cropLeft - cropRight, 0.001);
+    const keptHeight = Math.max(1 - cropTop - cropBottom, 0.001);
+    display.scale.set(
+      tuning.displayHeight * aspect * keptWidth,
+      tuning.displayHeight * keptHeight,
+      1,
+    );
     display.position.copy(rigPosition);
-    display.rotation.y = tuning.rigYaw;
+    display.rotation.copy(rigRotation);
 
     screenLight.position
       .copy(rigPosition)
@@ -326,37 +305,41 @@ export function createChamberScene({
     ambientLight.intensity = tuning.ambient;
     keyLight.intensity = tuning.keyLight;
 
-    applyBezelOrientation();
+    placeProp(podiumGroup, {
+      show: tuning.showPodium,
+      scaleX: tuning.podiumScaleX,
+      scaleY: tuning.podiumScaleY,
+      scaleZ: tuning.podiumScaleZ,
+      x: tuning.podiumX,
+      y: tuning.podiumY,
+      z: tuning.podiumZ,
+      rotX: tuning.podiumRotX,
+      rotY: tuning.podiumRotY,
+      rotZ: tuning.podiumRotZ,
+    });
+    placeProp(tableGroup, {
+      show: tuning.showTable,
+      scaleX: tuning.tableScaleX,
+      scaleY: tuning.tableScaleY,
+      scaleZ: tuning.tableScaleZ,
+      x: tuning.tableX,
+      y: tuning.tableY,
+      z: tuning.tableZ,
+      rotX: tuning.tableRotX,
+      rotY: tuning.tableRotY,
+      rotZ: tuning.tableRotZ,
+    });
 
-    if (bezelGroup) {
-      // Stretch the standing frame onto the display's proportions. The group's own frame is the rig's,
-      // so x is the display's width and y its height regardless of how the model had to be turned.
-      const scaleX = (displayWidth * tuning.bezelOversize) / bezelFace.x;
-      const scaleY = (tuning.displayHeight * tuning.bezelOversize) / bezelFace.y;
-      const stretch = THREE.MathUtils.clamp(
-        scaleX / scaleY,
-        1 / BEZEL_MAX_STRETCH,
-        BEZEL_MAX_STRETCH,
-      );
-      // Thickness follows the smaller of the two, so a wide stretch doesn't also make the frame deep.
-      bezelGroup.scale.set(scaleY * stretch, scaleY, Math.min(scaleX, scaleY));
-      bezelGroup.rotation.y = tuning.rigYaw;
-      // Just behind (or in front of) the display, along its own facing direction.
-      bezelGroup.position
-        .copy(rigPosition)
-        .addScaledVector(rigForward, tuning.bezelZ);
-    }
+    // Pieces switched off in the panel — a prop's stray screen, a ground plane fighting the room.
+    partMeshes.forEach((mesh, id) => {
+      mesh.visible = !tuning.hiddenParts.includes(id);
+    });
 
-    if (roomGroup) {
-      roomGroup.scale.setScalar(tuning.roomScale);
-      // Put the model's (0, walkable-floor, room-centre) on the world origin. Straight from measured
-      // coordinates — its bounding box would put the floor eight units below where you stand.
-      roomGroup.position.set(
-        0,
-        -ROOM_FLOOR_RAW_Y * tuning.roomScale,
-        -ROOM_CENTRE_RAW_Z * tuning.roomScale,
-      );
-    }
+    // The environment is what turns dim metal into a chrome showroom, so it stays adjustable across
+    // everything in the set at once.
+    setMaterials.forEach((material) => {
+      material.envMapIntensity = tuning.envIntensity;
+    });
 
     // The dark of space stops being transparent, and the pinned sun leaves with it (the pin fades the
     // sun over the same window — see the reveal crossing in useHeroAnimation).
@@ -366,20 +349,40 @@ export function createChamberScene({
       OPAQUE_WINDOW[1],
     );
 
-    // …and the camera simply backs away along the display's facing direction. At progress 0 it sits
-    // exactly where the display fills the frustum, which is what makes the reveal seamless.
+    // The camera flies from the display's NORMAL to a place in the room.
+    //
+    // It has to START on the normal: that is the only spot where the display fills the frustum and the
+    // picture reads 1:1 with the live scene, and that identity IS the reveal. So rotating the display
+    // moves the first frame of the shot, and there's no way around it.
+    //
+    // But where it ends is just a position — deliberately NOT "back off along the normal". Tie the
+    // resting camera to the normal and turning the display drags the whole shot with it, which makes the
+    // display impossible to aim. This way, turning the display just turns the display: the camera stays
+    // where it was put and watches it turn.
     const coverDistance =
       tuning.displayHeight / 2 / Math.tan(THREE.MathUtils.degToRad(FOV) / 2);
-    const distance = THREE.MathUtils.lerp(
-      coverDistance,
-      tuning.restDistance,
-      eased,
-    );
-    camera.aspect = aspect;
-    camera.position
+    coverPosition
       .copy(rigPosition)
-      .addScaledVector(rigForward, distance)
-      .setY(rigPosition.y + tuning.restRise * eased);
+      .addScaledVector(rigForward, coverDistance);
+    restPosition.set(tuning.camX, tuning.camY, tuning.camZ);
+
+    camera.aspect = aspect;
+    camera.position.lerpVectors(coverPosition, restPosition, eased);
+
+    // The camera's UP starts matched to the display's, then eases back to world-up as it retreats.
+    //
+    // At progress 0 the two must agree or the seam dies: a canted display seen by an upright camera does
+    // NOT fill the frustum (its corners cut in) and the picture arrives rotated. Matching the roll keeps
+    // it exact. Easing back out then does something better than merely permitting the tilt — you begin
+    // square-on, unable to tell the screen is canted at all, and as you back away the room straightens
+    // while the screen rolls into its real mounting.
+    cameraUp.copy(rigUp).lerp(WORLD_UP, eased);
+    // Degenerate only if the display were rolled a full 180°, where the two ups cancel out. Hold the
+    // display's own up there rather than hand `lookAt` a zero-length vector.
+    camera.up.copy(
+      cameraUp.lengthSq() > 1e-6 ? cameraUp.normalize() : rigUp,
+    );
+
     camera.lookAt(rigPosition);
     camera.updateProjectionMatrix();
   };
@@ -387,18 +390,34 @@ export function createChamberScene({
   return {
     scene,
     camera,
-    isReady: () => !!bezelGroup,
+    // The display IS the reveal; the props can still be streaming in behind it, because at progress 0 it
+    // fills the frame and none of them is visible yet anyway.
+    isReady: () => true,
     setSpaceTexture: (texture) => {
       displayUniforms.uSpace.value = texture;
     },
     progressOverride: () => (tuning.holdReveal ? tuning.revealAt : null),
+    // Drag turns whichever prop the panel is open on — so the podium can be aimed by hand rather than
+    // by hunting for numbers. Writes back into the tuning, so the panel's readouts follow along and the
+    // result is in what you copy out.
+    dragRotate: (deltaX, deltaY) => {
+      const target = tuning.dragTarget;
+      if (target === 'none') return false;
+      const yawKey = target === 'podium' ? 'podiumRotY' : 'tableRotY';
+      const pitchKey = target === 'podium' ? 'podiumRotX' : 'tableRotX';
+      const round = (value: number) => Math.round(value * 10) / 10;
+      setChamberTuning({
+        [yawKey]: round(tuning[yawKey] + deltaX * DRAG_SENSITIVITY),
+        [pitchKey]: round(tuning[pitchKey] + deltaY * DRAG_SENSITIVITY),
+      });
+      return true;
+    },
     update,
     dispose: () => {
       disposed = true;
-      unsubscribe();
       displayGeometry.dispose();
       displayMaterial.dispose();
-      [roomGroup, bezelGroup].forEach((group) =>
+      [podiumGroup, tableGroup].forEach((group) =>
         group?.traverse((child) => {
           if (child instanceof THREE.Mesh) {
             child.geometry.dispose();

@@ -1,10 +1,10 @@
 /**
  * The chamber reveal's numbers, live-editable from an on-screen panel.
  *
- * Every value in the reveal — where the display hangs, where you end up standing, how big the room is,
- * how the bezel fits — had to be authored without being able to see the scene. They are all guesses
- * until someone looks. So they live here rather than as frozen constants: the scene reads this store
- * every frame, and `ChamberTuner` writes to it.
+ * Every value in the reveal — where the display hangs, where you end up standing, how the set is
+ * arranged — had to be authored without being able to see the scene. They are all guesses until someone
+ * looks. So they live here rather than as frozen constants: the scene reads this store every frame, and
+ * `ChamberTuner` writes to it.
  *
  * A store (rather than a panel that owns the state) because the two have different lifetimes: the
  * chamber scene isn't built until the visitor reaches Works, but the panel has to be on screen from the
@@ -23,91 +23,181 @@ export interface ChamberTuning {
    * still while you tune it.
    */
   holdReveal: boolean;
-  /** Where to hold it (0 = the space full-screen, 1 = standing in the room). */
+  /** Where to hold it (0 = the space full-screen, 1 = standing in the set). */
   revealAt: number;
 
-  /** The room can be hidden to judge the display + bezel against plain black. */
-  showRoom: boolean;
-
-  // The rig: where the display hangs and which way it faces. The camera is DERIVED from it — it sits
-  // out along the display's facing direction and looks back — so these move the whole shot as one.
-  // This is what walks the camera out of the cloning tank and onto clear floor.
+  // ── The rig: the display, and the camera looking at it ──
+  // The camera is DERIVED from the rig — it sits out along the display's facing direction and looks back
+  // at it — so these move the whole shot as one, and the framing maths can never drift out of step.
   rigX: number;
   rigY: number;
   rigZ: number;
-  /** Radians. Which way the display faces; the camera is always on its front. */
+  /**
+   * DEGREES, like every other rotation here. Which way the display faces; the camera is always on its
+   * front, so turning it turns the whole shot.
+   */
   rigYaw: number;
+  /** DEGREES. Tilt the display up / down. */
+  rigPitch: number;
+  /**
+   * DEGREES. Cant the display over sideways.
+   *
+   * Roll is the one rotation that interacts with the seam, so it's worth knowing what it does. At
+   * progress 0 the display must fill the frustum EXACTLY — a canted display viewed by an upright camera
+   * doesn't (its corners cut in, and the picture arrives rotated). So the camera is rolled to match it,
+   * and then eased back upright as it pulls away.
+   *
+   * Which is better than merely "allowed": you start square-on to the screen and cannot tell it's
+   * canted, and as you back off the room straightens while the screen rolls into its real mounting. The
+   * tilt becomes part of the reveal.
+   */
+  rigRoll: number;
 
   /** World height of the display. Its WIDTH follows the viewport's aspect — that's what makes the seam exact. */
   displayHeight: number;
-  /** How far the camera ends up from the display, i.e. how much of the room you see. */
-  restDistance: number;
-  /** How far it lifts on the way back, bringing the floor into view. */
-  restRise: number;
+
+  // ── Trimming the picture's edges ──
+  // Each is a 0..1 inset into the space render. The quad shrinks with them, so the picture is CROPPED
+  // rather than squashed.
+  //
+  // These are RAMPED IN with the pull-back rather than applied flat, and that is not a detail: at
+  // progress 0 the display must show the space render 1:1 or the seam dies — crop it there and the
+  // reveal opens on a zoomed picture, i.e. a visible jump. So the trim is zero at the start and full by
+  // the time you are standing in the room. (You tune at progress 1, so you see the full crop while you
+  // work.)
+  cropLeft: number;
+  cropRight: number;
+  cropTop: number;
+  cropBottom: number;
+
+  /**
+   * Meshes switched off, by id (see `getChamberParts`). Lets a prop's unwanted pieces — a stray screen,
+   * a ground plane that fights the room — be removed without touching the model.
+   */
+  hiddenParts: string[];
+
+  /** Tuning only: which object a mouse drag rotates. Follows the panel's open tab. */
+  dragTarget: 'podium' | 'table' | 'none';
+  // ── Where the camera ends up: a place in the room, and nothing to do with the display ──
+  //
+  // An ABSOLUTE world position, deliberately not "back off along the display's normal". Tie the resting
+  // camera to the normal and rotating the display drags the entire shot around with it, which makes the
+  // display impossible to aim. Here, turning the display just… turns the display. The camera stays where
+  // you put it and watches it turn.
+  //
+  // The camera still has to START on the display's normal — that is the one place the display fills the
+  // frustum and the picture reads 1:1, which is the whole seam — so rotating the display does still move
+  // the FIRST frame of the reveal. It just no longer moves the shot you're looking at.
+  //
+  // The path lerps from that normal to here, so at progress 0 this has no effect at all.
+  camX: number;
+  camY: number;
+  camZ: number;
   /** How much it creeps off the display before committing to the pull-back. */
   easePower: number;
 
-  /** How far the frame's face oversteps the display. Too small and it CROPS the picture. */
-  bezelOversize: number;
-  /** How the frame sits against the display, along its facing direction. */
-  bezelZ: number;
+  // ── The set ──
+  // Each prop is placed independently: shown/hidden, scaled, moved, turned. Rotations in DEGREES.
+  //
+  // Scale is PER AXIS, not uniform. That's the honest way to make a prop's screen match the render's
+  // shape: stretch the prop, rather than distorting the picture to fit it.
+  showPodium: boolean;
+  podiumScaleX: number;
+  podiumScaleY: number;
+  podiumScaleZ: number;
+  podiumX: number;
+  podiumY: number;
+  podiumZ: number;
+  podiumRotX: number;
+  podiumRotY: number;
+  podiumRotZ: number;
 
-  // The frame model is exported lying FLAT — its face spans x/z with y as thickness — so it has to be
-  // stood up before it can frame anything. Which way "up" is depends on how the artist exported it, and
-  // guessing wrong leaves you looking at the frame edge-on. So the orientation is a control, in DEGREES.
-  // Once it's right, these get baked into the defaults and never touched again.
-  bezelRotX: number;
-  bezelRotY: number;
-  bezelRotZ: number;
+  showTable: boolean;
+  tableScaleX: number;
+  tableScaleY: number;
+  tableScaleZ: number;
+  tableX: number;
+  tableY: number;
+  tableZ: number;
+  tableRotX: number;
+  tableRotY: number;
+  tableRotZ: number;
 
-  /** World units per raw model unit. */
-  roomScale: number;
-
-  /** The display is the room's main light source. */
+  // ── Light ──
+  /** The display is the set's main light source. */
   screenLight: number;
   ambient: number;
   keyLight: number;
   /**
-   * How hard the shared environment map hits the room's METAL. The chamber borrows the works field's
-   * PMREM, which is a bright studio box — at any real strength it turns a dim cloning chamber into a
-   * chrome showroom. Keep it low.
+   * How hard the shared environment map hits the set's METAL. The scene borrows the works field's PMREM,
+   * which is a bright studio box — at any real strength it turns a dim room into a chrome showroom.
    */
   envIntensity: number;
 }
 
-// Dialled in by eye against the real scene — these are no longer guesses.
 export const CHAMBER_TUNING_DEFAULTS: ChamberTuning = {
   holdReveal: false,
   revealAt: 1,
-  showRoom: true,
 
-  // Standing in the clear part of the room, turned to face the display. The tank and its tubes run
-  // across the middle of the chamber, so the camera must never back away through the centre.
-  rigX: 5,
-  rigY: 3,
-  rigZ: 5,
-  rigYaw: -2.17,
+  // The display laid FLAT into the table's surface (pitch 90), canted slightly. So the reveal opens
+  // looking straight down at the table's screen — which is the only place the picture reads 1:1 — and
+  // then flies out to `cam*` below.
+  rigX: -4.87,
+  rigY: 0.85,
+  rigZ: 8.15,
+  rigYaw: 180,
+  rigPitch: 90,
+  rigRoll: -10,
 
-  displayHeight: 0.85,
-  restDistance: 1.9,
-  restRise: 0.4,
-  easePower: 2.3,
+  displayHeight: 0.95,
+  // Zero, and worth keeping that way. The render and the table's screen are different shapes, and the
+  // fix for that is stretching the TABLE (its scale is per-axis) — not cropping the picture. Cropping
+  // only ever moved the problem: negative insets sample past the render's edge and smear its border
+  // pixels, and any crop at all has to be ramped in, because at progress 0 the display must show the
+  // render 1:1 or the seam dies.
+  cropLeft: 0,
+  cropRight: 0,
+  cropTop: 0,
+  cropBottom: 0,
+  hiddenParts: [],
+  dragTarget: 'none',
+  // Standing at the table, just above the screen, looking down at it — with the podium beyond.
+  camX: -4.6,
+  camY: 2.1,
+  camZ: 6.7,
+  easePower: 2.4,
 
-  bezelOversize: 1.12,
-  bezelZ: -0.1,
-  // The frame's upright orientation is now MEASURED from its own proportions rather than guessed
-  // (see chamberScene), so these are a fine adjustment on top and should be able to stay at zero.
-  bezelRotX: 0,
-  bezelRotY: 0,
-  bezelRotZ: 0,
+  // The podium's raw model is ~41 units across (it carries its own ground plane and a pyramid backdrop),
+  // so it wants scaling down; the table is ~3 units and roughly life-sized already. Both need placing by
+  // eye — that's what the panel is for.
+  showPodium: true,
+  podiumScaleX: 2,
+  podiumScaleY: 2,
+  podiumScaleZ: 2,
+  podiumX: -4.4,
+  podiumY: 0.05,
+  podiumZ: -5.9,
+  podiumRotX: 0,
+  podiumRotY: 0,
+  podiumRotZ: 0,
 
-  roomScale: 0.02,
+  showTable: true,
+  // Deliberately NOT uniform: the table is stretched so its screen matches the render's shape. This is
+  // what replaced cropping the picture — see the crop note above.
+  tableScaleX: 0.9,
+  tableScaleY: 0.85,
+  tableScaleZ: 0.77,
+  tableX: -4,
+  tableY: 0.05,
+  tableZ: 8.45,
+  tableRotX: 0,
+  tableRotY: -190,
+  tableRotZ: 0,
 
-  screenLight: 6,
-  ambient: 0.28,
-  keyLight: 0.35,
-  // Low on purpose: the room is metal, and the borrowed studio environment turns it to chrome.
-  envIntensity: 0.08,
+  screenLight: 20.5,
+  ambient: 0.48,
+  keyLight: 0.8,
+  envIntensity: 0.27,
 };
 
 const STORAGE_KEY = 'orbix:chamber-tuning';
@@ -115,6 +205,30 @@ const STORAGE_KEY = 'orbix:chamber-tuning';
 const tuning: ChamberTuning = { ...CHAMBER_TUNING_DEFAULTS };
 const listeners = new Set<() => void>();
 let restored = false;
+
+/**
+ * The pieces a loaded prop is made of, so they can be switched off one at a time.
+ *
+ * The scene has to publish these rather than the panel knowing them up front: the panel is on screen
+ * from page load, but the models aren't fetched until the visitor reaches Works. The ids are positional
+ * because the meshes' own names are useless (the podium's are all literally "defaultMaterial") — the
+ * MATERIAL names are the meaningful part, so they carry the label.
+ */
+export interface ChamberPart {
+  id: string;
+  label: string;
+}
+
+const chamberParts: Record<string, ChamberPart[]> = {};
+
+export function reportChamberParts(model: string, parts: ChamberPart[]): void {
+  chamberParts[model] = parts;
+  listeners.forEach((listener) => listener());
+}
+
+export function getChamberParts(model: string): ChamberPart[] {
+  return chamberParts[model] ?? [];
+}
 
 /** On localhost, or anywhere with `?tune`. Never in the deployed site. */
 export function isChamberTuningEnabled(): boolean {
@@ -133,7 +247,13 @@ function restoreOnce(): void {
   restored = true;
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved) Object.assign(tuning, JSON.parse(saved) as Partial<ChamberTuning>);
+    if (!saved) return;
+    // Only keys the tuning still HAS — so a stored session from an older shape of the set (when it was a
+    // cloning-tank room with a bezel) can't resurrect fields that no longer mean anything.
+    const parsed = JSON.parse(saved) as Partial<ChamberTuning>;
+    for (const key of Object.keys(CHAMBER_TUNING_DEFAULTS) as (keyof ChamberTuning)[]) {
+      if (key in parsed) Object.assign(tuning, { [key]: parsed[key] });
+    }
   } catch {
     // A corrupt entry just means we start from the defaults.
   }

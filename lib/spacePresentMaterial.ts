@@ -51,10 +51,17 @@ const FRAGMENT_SHADER = /* glsl */ `
 
   uniform sampler2D uSpace;
   uniform float uOpaque; // 0 = keep the space's transparency, 1 = a solid screen
+  uniform vec4 uCrop;    // trim the picture's edges: (left, right, top, bottom), each 0..1
   varying vec2 vUv;
 
   void main() {
-    vec4 space = texture2D(uSpace, vUv);
+    // Read from a sub-rectangle of the render rather than all of it, so the display's borders can be
+    // trimmed. All zero = the whole picture, which is what the full-bleed pass always uses.
+    vec2 uv = vec2(
+      mix(uCrop.x, 1.0 - uCrop.y, vUv.x),
+      mix(uCrop.w, 1.0 - uCrop.z, vUv.y)
+    );
+    vec4 space = texture2D(uSpace, uv);
     // The rgb is passed through untouched — no tone mapping, no encoding. It is still linear HDR at
     // this point, and the screen pipeline's OutputPass is the one and only place that gets to change it.
     gl_FragColor = vec4(space.rgb, mix(space.a, 1.0, uOpaque));
@@ -64,6 +71,8 @@ const FRAGMENT_SHADER = /* glsl */ `
 export interface SpacePresentUniforms {
   uSpace: { value: THREE.Texture | null };
   uOpaque: { value: number };
+  /** (left, right, top, bottom) edge insets, 0..1. All zero shows the whole picture. */
+  uCrop: { value: THREE.Vector4 };
 }
 
 export interface SpacePresentMaterial {
@@ -83,6 +92,7 @@ export function createSpacePresentMaterial(
   const uniforms: SpacePresentUniforms = {
     uSpace: { value: spaceTexture },
     uOpaque: { value: 0 },
+    uCrop: { value: new THREE.Vector4(0, 0, 0, 0) },
   };
 
   const material = new THREE.ShaderMaterial({

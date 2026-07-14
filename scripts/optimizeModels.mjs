@@ -40,6 +40,9 @@ const MODEL_RECIPES = {
     textureSizes: [GEOMETRY_ONLY_TEXTURE_SIZE],
   },
 
+  // NOT CURRENTLY SHIPPED — the reveal's set was rebuilt around the podium + table, so nothing loads
+  // the cloning-tank room or the sci-fi screen bezel any more. The recipes stay because the sources do:
+  // `npm run optimize:models -- cloning_tank_chamber_jfg_-_roblox_pbr_showcase.glb` puts them back.
   "cloning_tank_chamber_jfg_-_roblox_pbr_showcase.glb": {
     outputName: "chamber",
     // Every one of its 36 maps is already 1024², so a 1024 cap resizes nothing and leaves ~192 MB of
@@ -59,6 +62,25 @@ const MODEL_RECIPES = {
     outputName: "screen",
     // 497 verts, and it's a bezel the camera ends up looking straight at — decimating it would visibly
     // round its corners for no meaningful saving.
+    simplify: false,
+  },
+
+  "scifi_showcase_podium.glb": {
+    outputName: "podium",
+    // All 27 of its maps are 4096² — 138 MB of texture, and ~2.3 GB of VRAM if you load it as it ships.
+    // That is not a "heavy model", it's an unusable one: no GPU on the site's budget survives it. The
+    // cap is doing ALL of the work here (512 → ~36 MB, 1024 → ~144 MB); its geometry is a rounding error
+    // by comparison, so it ships at two tiers like the chamber and the runtime picks from measured frames.
+    textureSizes: [512, 1024],
+    // 144k verts across rings, cables and a turbine — decimation would visibly chew the concentric rings,
+    // and Draco already collapses this to almost nothing.
+    simplify: false,
+  },
+
+  "sci-fi_table.glb": {
+    outputName: "table",
+    // The mirror image of the podium: one small 1024×512 map, and ~10 MB of raw GEOMETRY across 33
+    // meshes. Nothing for the texture cap to do; Draco is the whole win.
     simplify: false,
   },
 };
