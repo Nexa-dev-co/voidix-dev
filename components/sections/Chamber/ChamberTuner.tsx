@@ -48,18 +48,18 @@ const GROUPS: Group[] = [
     // it's what gets the camera out of the cloning tank and onto clear floor.
     title: 'Rig — display + camera together',
     sliders: [
-      { key: 'rigX', label: 'rigX', min: -5, max: 5, step: 0.05, hint: 'right/left in the room' },
-      { key: 'rigY', label: 'rigY', min: 0, max: 3, step: 0.05, hint: 'height off the floor' },
-      { key: 'rigZ', label: 'rigZ', min: -5, max: 5, step: 0.05, hint: 'front/back' },
+      { key: 'rigX', label: 'rigX', min: -16, max: 16, step: 0.05, hint: 'right/left in the room' },
+      { key: 'rigY', label: 'rigY', min: 0, max: 10, step: 0.05, hint: 'height off the floor' },
+      { key: 'rigZ', label: 'rigZ', min: -16, max: 16, step: 0.05, hint: 'front/back' },
       { key: 'rigYaw', label: 'rigYaw', min: -3.15, max: 3.15, step: 0.01, hint: 'which way it faces' },
     ],
   },
   {
     title: 'Framing',
     sliders: [
-      { key: 'displayHeight', label: 'displayHeight', min: 0.4, max: 4, step: 0.05 },
-      { key: 'restDistance', label: 'restDistance', min: 1, max: 12, step: 0.1, hint: 'how much room you end up seeing' },
-      { key: 'restRise', label: 'restRise', min: -2, max: 2, step: 0.05 },
+      { key: 'displayHeight', label: 'displayHeight', min: 0.2, max: 8, step: 0.05 },
+      { key: 'restDistance', label: 'restDistance', min: 0.5, max: 30, step: 0.1, hint: 'how much room you end up seeing' },
+      { key: 'restRise', label: 'restRise', min: -3, max: 3, step: 0.05 },
       { key: 'easePower', label: 'easePower', min: 1, max: 5, step: 0.1 },
     ],
   },
@@ -78,9 +78,11 @@ const GROUPS: Group[] = [
   {
     title: 'Room + light',
     sliders: [
-      { key: 'roomScale', label: 'roomScale', min: 0.002, max: 0.02, step: 0.0002 },
-      { key: 'screenLight', label: 'screenLight', min: 0, max: 40, step: 0.5 },
+      { key: 'roomScale', label: 'roomScale', min: 0.002, max: 0.06, step: 0.0005 },
+      { key: 'screenLight', label: 'screenLight', min: 0, max: 40, step: 0.5, hint: 'the display lighting the room' },
       { key: 'ambient', label: 'ambient', min: 0, max: 1, step: 0.01 },
+      { key: 'keyLight', label: 'keyLight', min: 0, max: 3, step: 0.05 },
+      { key: 'envIntensity', label: 'envIntensity', min: 0, max: 1, step: 0.01, hint: 'high = chrome showroom. keep it low.' },
     ],
   },
 ];

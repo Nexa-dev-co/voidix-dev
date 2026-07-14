@@ -61,14 +61,16 @@ const BEZEL_MAX_STRETCH = 2.4;
 
 // ── Lighting ─────────────────────────────────────────────────────────────────────────────────────
 // A screen this size in a dark room IS the room's light. Without it the reveal lands on a flat, unlit
-// box and the whole thing falls apart. (Intensity and ambient are tunable; the first pass had them so
-// hot the floor blew out to solid white.)
+// box and the whole thing falls apart.
+//
+// The environment matters more than it looks. The chamber shares the works field's PMREM, which is a
+// RoomEnvironment — a bright studio box — and the chamber's surfaces are metal. At any real intensity
+// that turns a dim cloning chamber into a chrome showroom, which is exactly what the first pass did.
+// So it's dialled right down by default and left on a knob.
 const SCREEN_LIGHT_COLOR = 0x6fd9ff;
 const SCREEN_LIGHT_DISTANCE = 9;
 const SCREEN_LIGHT_OFFSET = 0.6; // sits in front of the display, throwing light back into the room
 const KEY_LIGHT_COLOR = 0x9fb6d4;
-const KEY_LIGHT_INTENSITY = 0.55;
-const ENV_INTENSITY = 0.35;
 
 // The dark of space has to stop reading as transparency and start reading as an unlit panel — and the
 // pinned sun (a fixed DOM billboard behind the canvas) has to leave with it, or it would hang in the
@@ -134,13 +136,18 @@ export function createChamberScene({
   );
   scene.add(screenLight);
 
-  const keyLight = new THREE.DirectionalLight(
-    KEY_LIGHT_COLOR,
-    KEY_LIGHT_INTENSITY,
-  );
+  const keyLight = new THREE.DirectionalLight(KEY_LIGHT_COLOR, tuning.keyLight);
   keyLight.position.set(3, 6, 4);
   const ambientLight = new THREE.AmbientLight(0xffffff, tuning.ambient);
   scene.add(keyLight, ambientLight);
+
+  // Every standard material in the room, so the environment's strength stays adjustable.
+  const roomMaterials: THREE.MeshStandardMaterial[] = [];
+  const applyEnvIntensity = () => {
+    roomMaterials.forEach((material) => {
+      material.envMapIntensity = tuning.envIntensity;
+    });
+  };
 
   // ── Loading ──
   const dracoLoader = new DRACOLoader();
@@ -167,7 +174,10 @@ export function createChamberScene({
     if (tuning.showRoom) scene.add(roomGroup);
     else scene.remove(roomGroup);
   };
-  const unsubscribe = subscribeChamberTuning(syncRoomVisibility);
+  const unsubscribe = subscribeChamberTuning(() => {
+    syncRoomVisibility();
+    applyEnvIntensity();
+  });
 
   // The room's geometry is trivial (~7k verts); the tier is purely about texture memory.
   const chamberPath =
@@ -186,12 +196,13 @@ export function createChamberScene({
             : [child.material];
           materials.forEach((material) => {
             if (material instanceof THREE.MeshStandardMaterial) {
-              material.envMapIntensity = ENV_INTENSITY;
+              roomMaterials.push(material);
             }
           });
         }
       });
       roomGroup = group;
+      applyEnvIntensity();
       syncRoomVisibility();
     },
     undefined,
@@ -207,6 +218,8 @@ export function createChamberScene({
     (gltf) => {
       if (disposed) return;
       bezelLocalBox = new THREE.Box3().setFromObject(gltf.scene);
+      // Work out which way it has to be turned to face the viewer, from its own proportions.
+      measureUpright(bezelLocalBox.getSize(new THREE.Vector3()));
       const group = new THREE.Group();
       group.add(gltf.scene);
       scene.add(group);
@@ -219,13 +232,30 @@ export function createChamberScene({
   );
 
   // ── The bezel's orientation ──
-  // Stand the frame up, then work out what its FACE is once it's standing — because that's what has to
-  // be stretched onto the display, and it changes with the rotation. Derived analytically from the
-  // model's own (unrotated) bounds so it never depends on the group's own scale or placement.
   //
-  // Only recomputed when the rotation actually changes: once it's dialled in, this runs once.
+  // The frame is exported lying FLAT, so it has to be stood up — and which way is "up" is a property of
+  // how the artist exported it. Guessing it was a mistake: guess wrong and you're looking at the frame
+  // edge-on, or at a slab lying on its back behind the picture.
+  //
+  // So it's MEASURED instead. A frame is a flat plate: its thinnest axis is its depth and its longest is
+  // its width, whatever the file says. Turn it so the thinnest axis points at the viewer and the longest
+  // runs across, and it stands up correctly no matter how it was exported.
+  const uprightRotation = new THREE.Euler();
+  const measureUpright = (size: THREE.Vector3) => {
+    const extents = [size.x, size.y, size.z];
+    const thinnest = extents.indexOf(Math.min(...extents));
+    if (thinnest === 2) uprightRotation.set(0, 0, 0); // already face-on
+    else if (thinnest === 1) uprightRotation.set(-Math.PI / 2, 0, 0); // lying flat → tip it up
+    else uprightRotation.set(0, Math.PI / 2, 0); // standing on its edge → turn it to face us
+  };
+
+  // Whatever the measurement gives, the tuning rotation is layered ON TOP as a fine adjustment (it
+  // should now be able to stay at zero). Once the frame is standing, its FACE has to be re-derived —
+  // that's what gets stretched onto the display, and it's a different pair of axes than the file's.
   const bezelRotation = new THREE.Euler();
   const bezelMatrix = new THREE.Matrix4();
+  const offsetMatrix = new THREE.Matrix4();
+  const uprightMatrix = new THREE.Matrix4();
   const bezelBox = new THREE.Box3();
   const bezelSize = new THREE.Vector3();
   const bezelCentre = new THREE.Vector3();
@@ -239,18 +269,22 @@ export function createChamberScene({
     if (key === appliedRotationKey) return;
     appliedRotationKey = key;
 
-    bezelRotation.set(
-      THREE.MathUtils.degToRad(tuning.bezelRotX),
-      THREE.MathUtils.degToRad(tuning.bezelRotY),
-      THREE.MathUtils.degToRad(tuning.bezelRotZ),
+    offsetMatrix.makeRotationFromEuler(
+      new THREE.Euler(
+        THREE.MathUtils.degToRad(tuning.bezelRotX),
+        THREE.MathUtils.degToRad(tuning.bezelRotY),
+        THREE.MathUtils.degToRad(tuning.bezelRotZ),
+      ),
     );
+    uprightMatrix.makeRotationFromEuler(uprightRotation);
+    bezelMatrix.multiplyMatrices(offsetMatrix, uprightMatrix);
+    bezelRotation.setFromRotationMatrix(bezelMatrix);
+
     // The frame's bounds once it's standing — Box3.applyMatrix4 turns all eight corners, so this is the
-    // real face, not the unrotated one.
-    bezelMatrix.makeRotationFromEuler(bezelRotation);
+    // real face, not the one the file happened to be authored in.
     bezelBox.copy(bezelLocalBox).applyMatrix4(bezelMatrix);
     bezelBox.getSize(bezelSize);
     bezelBox.getCenter(bezelCentre);
-
     bezelFace.set(bezelSize.x || 1, bezelSize.y || 1);
 
     bezelModel.rotation.copy(bezelRotation);
@@ -290,6 +324,7 @@ export function createChamberScene({
       .addScaledVector(rigForward, SCREEN_LIGHT_OFFSET);
     screenLight.intensity = tuning.screenLight;
     ambientLight.intensity = tuning.ambient;
+    keyLight.intensity = tuning.keyLight;
 
     applyBezelOrientation();
 

@@ -66,37 +66,48 @@ export interface ChamberTuning {
   /** The display is the room's main light source. */
   screenLight: number;
   ambient: number;
+  keyLight: number;
+  /**
+   * How hard the shared environment map hits the room's METAL. The chamber borrows the works field's
+   * PMREM, which is a bright studio box — at any real strength it turns a dim cloning chamber into a
+   * chrome showroom. Keep it low.
+   */
+  envIntensity: number;
 }
 
+// Dialled in by eye against the real scene — these are no longer guesses.
 export const CHAMBER_TUNING_DEFAULTS: ChamberTuning = {
   holdReveal: false,
   revealAt: 1,
   showRoom: true,
 
-  // The tank and its tubes stand across the MIDDLE of the room (measured from the model: raw
-  // x −626…234, z 530…750), so a camera backing away through the centre reverses straight into them.
-  // The right-hand side is clear floor at every depth — so the rig stands there, and the cloning tanks
-  // end up off to the left of frame, which is the better shot anyway.
-  rigX: 2.9,
-  rigY: 1.5,
-  rigZ: -3.2,
-  rigYaw: 0,
+  // Standing in the clear part of the room, turned to face the display. The tank and its tubes run
+  // across the middle of the chamber, so the camera must never back away through the centre.
+  rigX: 5,
+  rigY: 3,
+  rigZ: 5,
+  rigYaw: -2.17,
 
-  displayHeight: 1.6,
-  restDistance: 4.2,
-  restRise: 0.35,
-  easePower: 2.2,
+  displayHeight: 0.85,
+  restDistance: 1.9,
+  restRise: 0.4,
+  easePower: 2.3,
 
-  bezelOversize: 1.35,
-  bezelZ: -0.04,
-  bezelRotX: -90,
+  bezelOversize: 1.12,
+  bezelZ: -0.1,
+  // The frame's upright orientation is now MEASURED from its own proportions rather than guessed
+  // (see chamberScene), so these are a fine adjustment on top and should be able to stay at zero.
+  bezelRotX: 0,
   bezelRotY: 0,
   bezelRotZ: 0,
 
-  roomScale: 0.0073,
+  roomScale: 0.02,
 
-  screenLight: 9,
-  ambient: 0.14,
+  screenLight: 6,
+  ambient: 0.28,
+  keyLight: 0.35,
+  // Low on purpose: the room is metal, and the borrowed studio environment turns it to chrome.
+  envIntensity: 0.08,
 };
 
 const STORAGE_KEY = 'orbix:chamber-tuning';
