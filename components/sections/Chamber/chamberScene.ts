@@ -152,6 +152,10 @@ const TOUR_START = 0.55;
 // The DOM hologram unseals once the tour has walked you all the way up to the podium — the very top of the
 // span — and re-seals the instant you scroll back off it.
 const HOLO_OPEN_PROGRESS = 0.999;
+// The handheld sway lives only in the tour, so it has to be gone by the time the tour hands the camera to
+// the pull-back at the table, or it drops off in a step. Fade it out across the last sliver of the tour
+// (this fraction of it, at the table end) so there's nothing left to pop.
+const SWAY_TOUR_FADE = 0.08;
 
 // ── The tour as one continuous curve ──
 // The tour used to be a GSAP timeline of per-key hops, each eased in and out, which braked the camera to a
@@ -744,47 +748,112 @@ export function createChamberScene({
     }
   };
 
-  // ── Arc-length pacing for the way out ──
+  // ── Arc-length pacing for the way out, from a DENSE table ──
   // A uniform spline spends one flat slice of time per key. On the way out that's wrong: the dwell and the
   // turns barely move the camera (they mostly just swing the aim), while the last segment walks the whole
-  // room — so the podium drags and the walk to the table gets crammed into the final slice, which is the
-  // "starts slow then rushes" the return has. So the way out is re-timed by how much each segment actually
-  // MOVES — position travelled plus aim swung (weighted) — spending time in proportion to that.
-  const arcDirA = new THREE.Vector3();
-  const arcDirB = new THREE.Vector3();
-  const segmentTravel = (a: ShowcaseKey, b: ShowcaseKey) => {
-    const positionTravel = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-    arcDirA.set(a.tx - a.x, a.ty - a.y, a.tz - a.z);
-    arcDirB.set(b.tx - b.x, b.ty - b.y, b.tz - b.z);
-    // A degenerate aim (target on the camera) has no direction — count it as no swing rather than NaN.
-    const aimSwing =
-      arcDirA.lengthSq() > 1e-8 && arcDirB.lengthSq() > 1e-8
-        ? arcDirA.angleTo(arcDirB)
-        : 0;
-    return positionTravel + tuning.returnAimWeight * aimSwing;
+  // room — so the podium drags and the walk to the table gets crammed in. So the way out is re-timed by how
+  // much the shot MOVES — position travelled plus aim swung (weighted) — spending time in proportion to it.
+  //
+  // Crucially this is measured from a dense sampling of the WHOLE path, not one estimate per key. A
+  // per-key map changes pace in a STEP at every key — a >10× jump between the near-still dwell and the walk
+  // — which is exactly the judder on the way back. Inverting a fine cumulative-travel table keeps the pace,
+  // and so the speed, continuous. The table is rebuilt only when the keys / weight / range change.
+  const ARC_SAMPLES = 96;
+  const arcCumulative: number[] = new Array(ARC_SAMPLES).fill(0);
+  let arcTotal = 0;
+  let arcCacheKeys: ShowcaseKey[] | null = null;
+  let arcCacheWeight = Number.NaN;
+  let arcCacheStart = -1;
+  let arcCacheEnd = -1;
+
+  const arcPos = new THREE.Vector3();
+  const arcDir = new THREE.Vector3();
+  const arcPrevPos = new THREE.Vector3();
+  const arcPrevDir = new THREE.Vector3();
+
+  // Position + aim direction at spline param `u` over [startIndex, endIndex], into arcPos / arcDir.
+  const evalPathAt = (startIndex: number, endIndex: number, u: number) => {
+    const keys = tuning.showcaseKeys;
+    const count = endIndex - startIndex + 1;
+    if (count <= 1) {
+      const key = keys[startIndex];
+      arcPos.set(key.x, key.y, key.z);
+      arcDir.set(key.tx - key.x, key.ty - key.y, key.tz - key.z);
+      return;
+    }
+    const segments = count - 1;
+    const scaled = THREE.MathUtils.clamp(u, 0, 1) * segments;
+    const seg = Math.min(Math.floor(scaled), segments - 1);
+    const localT = scaled - seg;
+    const at = (offset: number) =>
+      keys[THREE.MathUtils.clamp(startIndex + offset, startIndex, endIndex)];
+    const k0 = at(seg - 1);
+    const k1 = at(seg);
+    const k2 = at(seg + 1);
+    const k3 = at(seg + 2);
+    const channel = (name: SplineChannel) => catmullRom(k0[name], k1[name], k2[name], k3[name], localT);
+    const x = channel('x');
+    const y = channel('y');
+    const z = channel('z');
+    arcPos.set(x, y, z);
+    arcDir.set(channel('tx') - x, channel('ty') - y, channel('tz') - z);
   };
 
-  // Map a linear 0..1 (even in TIME) to the spline parameter that makes the camera move at an even PACE
-  // across keys [startIndex, endIndex], by walking a per-segment travel budget.
-  const arcLengthParam = (startIndex: number, endIndex: number, linearU: number) => {
-    const keys = tuning.showcaseKeys;
-    const segments = endIndex - startIndex;
-    if (segments <= 0) return 0;
-    let total = 0;
-    for (let index = 0; index < segments; index += 1) {
-      total += segmentTravel(keys[startIndex + index], keys[startIndex + index + 1]);
-    }
-    if (total <= 1e-6) return THREE.MathUtils.clamp(linearU, 0, 1); // nothing moves — linear is as good as any
-    let remaining = THREE.MathUtils.clamp(linearU, 0, 1) * total;
-    for (let index = 0; index < segments; index += 1) {
-      const cost = segmentTravel(keys[startIndex + index], keys[startIndex + index + 1]);
-      if (remaining <= cost || index === segments - 1) {
-        const localT = cost > 1e-6 ? THREE.MathUtils.clamp(remaining / cost, 0, 1) : 0;
-        return (index + localT) / segments;
+  const buildArcTable = (startIndex: number, endIndex: number) => {
+    arcTotal = 0;
+    for (let sample = 0; sample < ARC_SAMPLES; sample += 1) {
+      evalPathAt(startIndex, endIndex, sample / (ARC_SAMPLES - 1));
+      if (sample > 0) {
+        const positionStep = arcPos.distanceTo(arcPrevPos);
+        const aimStep =
+          arcDir.lengthSq() > 1e-8 && arcPrevDir.lengthSq() > 1e-8
+            ? arcDir.angleTo(arcPrevDir)
+            : 0;
+        arcTotal += positionStep + tuning.returnAimWeight * aimStep;
       }
-      remaining -= cost;
+      arcCumulative[sample] = arcTotal;
+      arcPrevPos.copy(arcPos);
+      arcPrevDir.copy(arcDir);
     }
-    return 1;
+  };
+
+  const ensureArcTable = (startIndex: number, endIndex: number) => {
+    const keys = tuning.showcaseKeys;
+    if (
+      keys === arcCacheKeys &&
+      tuning.returnAimWeight === arcCacheWeight &&
+      startIndex === arcCacheStart &&
+      endIndex === arcCacheEnd
+    ) {
+      return;
+    }
+    buildArcTable(startIndex, endIndex);
+    arcCacheKeys = keys;
+    arcCacheWeight = tuning.returnAimWeight;
+    arcCacheStart = startIndex;
+    arcCacheEnd = endIndex;
+  };
+
+  // Map a linear 0..1 (even in TIME) to the spline parameter that moves at an even, CONTINUOUS pace across
+  // [startIndex, endIndex], by inverting the cumulative-travel table.
+  const arcLengthParam = (startIndex: number, endIndex: number, linearU: number) => {
+    if (endIndex <= startIndex) return 0;
+    ensureArcTable(startIndex, endIndex);
+    if (arcTotal <= 1e-6) return THREE.MathUtils.clamp(linearU, 0, 1);
+    const target = THREE.MathUtils.clamp(linearU, 0, 1) * arcTotal;
+    // The table is monotonic — binary-search the span the target falls in, then lerp the param across it.
+    let low = 0;
+    let high = ARC_SAMPLES - 1;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (arcCumulative[mid] < target) low = mid + 1;
+      else high = mid;
+    }
+    if (low === 0) return 0;
+    const spanStart = arcCumulative[low - 1];
+    const spanEnd = arcCumulative[low];
+    const spanT = spanEnd > spanStart ? (target - spanStart) / (spanEnd - spanStart) : 0;
+    return (low - 1 + spanT) / (ARC_SAMPLES - 1);
   };
 
   // Where the way in ends and the way out begins. The pivot (the podium) is shared: the way in is keys
@@ -1072,10 +1141,10 @@ export function createChamberScene({
     // further down read one consistent pose. Going in, that's the authored spline; coming out, it's the
     // re-choreographed return (close, turn, walk). freeCamera (tuning) parks the tour entirely.
     const inTour = !tuning.freeCamera && progress > TOUR_START;
+    const tourU = inTour ? (progress - TOUR_START) / (1 - TOUR_START) : 0;
     if (inTour) {
       // Start the handheld sway from rest the frame the tour engages, rather than off a stale delta.
       if (!wasInTour) hasPreviousPlayhead = false;
-      const tourU = (progress - TOUR_START) / (1 - TOUR_START);
       if (returning) sampleReturnInto(tourU);
       else sampleTourInto(tourU);
     }
@@ -1226,14 +1295,22 @@ export function createChamberScene({
     coverPosition
       .copy(rigPosition)
       .addScaledVector(rigForward, coverDistance);
-    // Where the reveal lands. With a showcase, that IS its first pose — the same pose the tour picks up
-    // from, so the two can't drift apart and the hand-off has nothing to seam. `cam*` is only the
-    // fallback for a room with no showcase recorded at all.
-    const firstKey = tuning.showcaseKeys[0];
+    // Where the pull-back lands in the room — and, going the other way, where it lifts off from. On the way
+    // IN that's the tour's first key (the table); on the way OUT it's the way-out's LAST key, so the
+    // pull-back picks up EXACTLY where the return walk set the camera down, with no pop between key 7 and
+    // key 0 (they're both "at the table" but not pixel-identical). `cam*` is the fallback for a room with no
+    // showcase recorded at all.
+    const restSplit = splitTour();
+    const restKey =
+      tuning.showcaseKeys.length === 0
+        ? undefined
+        : returning && restSplit.hasReturnKeys
+          ? tuning.showcaseKeys[restSplit.last]
+          : tuning.showcaseKeys[0];
     restPosition.set(
-      firstKey ? firstKey.x : tuning.camX,
-      firstKey ? firstKey.y : tuning.camY,
-      firstKey ? firstKey.z : tuning.camZ,
+      restKey ? restKey.x : tuning.camX,
+      restKey ? restKey.y : tuning.camY,
+      restKey ? restKey.z : tuning.camZ,
     );
 
     camera.aspect = aspect;
@@ -1253,18 +1330,20 @@ export function createChamberScene({
     } else if (inTour) {
       // The tour half: the camera rides the spline, with the handheld drift layered on top. The drift is
       // coupled to the camera's own speed, so it breathes through the walk and settles to still once you
-      // park at the podium — which is what you want for reading the FAQ.
+      // park at the podium — which is what you want for reading the FAQ. It's also faded out across the last
+      // sliver of the tour so it's fully gone by the table hand-off (SWAY_TOUR_FADE), leaving no step.
       updateSwayStrength();
       const seconds = performance.now() / 1000;
+      const swayFade = THREE.MathUtils.smoothstep(tourU, 0, SWAY_TOUR_FADE);
       camera.position.set(
-        playhead.x + swayAt(seconds, 0, 1),
-        playhead.y + swayAt(seconds, 1, 1),
-        playhead.z + swayAt(seconds, 2, 1),
+        playhead.x + swayAt(seconds, 0, 1) * swayFade,
+        playhead.y + swayAt(seconds, 1, 1) * swayFade,
+        playhead.z + swayAt(seconds, 2, 1) * swayFade,
       );
       lookTarget.set(
-        playhead.tx + swayAt(seconds, 1, SWAY_TARGET_SCALE),
-        playhead.ty + swayAt(seconds, 2, SWAY_TARGET_SCALE),
-        playhead.tz + swayAt(seconds, 0, SWAY_TARGET_SCALE),
+        playhead.tx + swayAt(seconds, 1, SWAY_TARGET_SCALE) * swayFade,
+        playhead.ty + swayAt(seconds, 2, SWAY_TARGET_SCALE) * swayFade,
+        playhead.tz + swayAt(seconds, 0, SWAY_TARGET_SCALE) * swayFade,
       );
       camera.up.copy(WORLD_UP);
       camera.lookAt(lookTarget);
@@ -1297,9 +1376,9 @@ export function createChamberScene({
       // made the screen "the pin", and meant the reveal could never land facing anything else. Now it
       // finishes looking wherever key 0 looks, which is where the tour picks up.
       restTarget.set(
-        firstKey ? firstKey.tx : tuning.camTargetX,
-        firstKey ? firstKey.ty : tuning.camTargetY,
-        firstKey ? firstKey.tz : tuning.camTargetZ,
+        restKey ? restKey.tx : tuning.camTargetX,
+        restKey ? restKey.ty : tuning.camTargetY,
+        restKey ? restKey.tz : tuning.camTargetZ,
       );
       lookTarget.lerpVectors(rigPosition, restTarget, pullBack);
       camera.lookAt(lookTarget);
