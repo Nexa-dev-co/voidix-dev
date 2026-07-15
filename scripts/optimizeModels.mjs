@@ -75,6 +75,10 @@ const MODEL_RECIPES = {
     // 144k verts across rings, cables and a turbine — decimation would visibly chew the concentric rings,
     // and Draco already collapses this to almost nothing.
     simplify: false,
+    // Keep the meshes SEPARATE. Joining merges every mesh that shares a material into one, which fused
+    // the three concentric rings into a single object — and the innermost one has to spin on its own.
+    // Costs a few draw calls on a model that is 7 of them.
+    join: false,
   },
 
   "sci-fi_table.glb": {
@@ -140,6 +144,8 @@ for (const fileName of sourceFileNames) {
         GEOMETRY_COMPRESSION,
         "--simplify",
         String(recipe.simplify ?? true),
+        "--join",
+        String(recipe.join ?? true),
       ],
       { stdio: "inherit", shell: true },
     );

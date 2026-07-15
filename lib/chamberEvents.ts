@@ -21,3 +21,24 @@ export function readChamberProgress(event: Event): number {
   const detail = (event as CustomEvent<ChamberProgressDetail>).detail;
   return typeof detail?.progress === 'number' ? detail.progress : 0;
 }
+
+/**
+ * The FAQ hologram: open, or sealed.
+ *
+ * Dispatched by the chamber SCENE, not by the pin — and that is the whole point of it existing. The
+ * panel opens when the showcase tour finishes walking you up to the podium, and only the scene knows
+ * when that is: the tour is a GSAP timeline that plays off the reveal landing, so its end is a moment in
+ * time, not a scroll position. The pin cannot name it.
+ *
+ * It closes the moment the reveal is scrubbed back off its end, so scrolling away re-seals the panel.
+ */
+export const CHAMBER_HOLOGRAM_EVENT = 'orbix:chamber-hologram';
+
+export interface ChamberHologramDetail {
+  open: boolean;
+}
+
+export function readHologramOpen(event: Event): boolean {
+  const detail = (event as CustomEvent<ChamberHologramDetail>).detail;
+  return detail?.open === true;
+}

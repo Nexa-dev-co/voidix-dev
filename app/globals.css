@@ -1458,6 +1458,319 @@ body {
   }
 }
 
+/* ─── FAQ hologram — the chamber's answer panel ──────────────────── */
+
+/* Laid out at a FIXED design width and scaled into the room by a transform (see useHologramTracking).
+   That indirection is load-bearing: at its real on-screen size, every measurement inside the panel would
+   change on every frame the camera moved, and the height tween would be chasing a target that never held
+   still. Here, the camera changes one number — the scale — and nothing inside notices.
+
+   The transform belongs to the tracking hook and to nothing else. The unseal animates heights and
+   opacities INSIDE the panel; if it touched the transform the two would fight. */
+.holo-panel {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 640px; /* = HOLOGRAM_DESIGN_WIDTH */
+  transform-origin: 0 0;
+  z-index: 9600; /* above the works canvas + the (by now faded) sun; below the navbar's 9998/9999 */
+  pointer-events: none;
+  visibility: hidden;
+  /* Overwritten from the tuning; these are only the shape of the thing before the scene is up. */
+  --holo-tint-rgb: 0, 229, 255;
+  --holo-frame-color: #04060a;
+  --holo-opacity: 0.09;
+  --holo-glow: 1;
+  --holo-scan: 0.35;
+  --holo-fringe: 1.1;
+  --holo-frame-height: 26px;
+  --holo-frame-inset: 12px;
+}
+
+/* The room is on screen and the anchor is in front of the camera. Anything else and there is nowhere
+   for the panel to be. */
+.holo-panel[data-visible='true'] {
+  visibility: visible;
+}
+
+/* The black caps. Siblings of the lit area, NOT things positioned against it — so the content parts them
+   by simply existing, and a taller answer moves them with no maths anywhere. Sealed, they meet.
+
+   Not rectangles. Each is a machined bracket: the edge that FACES the lit area is dead straight (it has
+   to be — it's the seal, and the screen's light runs along it), while the outer edge tapers away at the
+   ends and rises into a centre spine, like the housing a projector would actually be mounted in. Sealed,
+   the two lock together into one slab with a spine top and bottom.
+
+   The silhouette is a clip-path in PERCENTAGES, so it holds its proportions at every size the panel is
+   ever scaled to — and it's why the glow is a `filter: drop-shadow` rather than a `box-shadow`: a
+   box-shadow is cast by the box and would be clipped clean off, while drop-shadow traces the shape. */
+.holo-frame {
+  height: var(--holo-frame-height);
+  margin-inline: calc(var(--holo-frame-inset) * -1);
+  background: var(--holo-frame-color);
+}
+
+/* The light of the screen spilling up onto the underside of the bracket, and — the part that makes the
+   silhouette actually READ — an edge tracing it.
+ *
+ * A black bracket against a black room is invisible: the shape was there and simply could not be seen.
+ * It can't be a `border`, because clip-path cuts the box and takes the border with it on every edge that
+ * isn't straight. Zero-blur drop-shadows DO follow the clipped shape, so a pair of them offset a pixel
+ * apart draws the outline, and a wide one behind them is the glow. Each shadow in the chain is cast by
+ * the result of the last, which is why they're kept to a pixel — any further and they'd stack into a
+ * smear rather than an edge. */
+.holo-frame-top {
+  border-bottom: 1px solid rgba(var(--holo-tint-rgb), 0.55);
+  background:
+    linear-gradient(0deg, rgba(var(--holo-tint-rgb), 0.16), transparent 62%),
+    var(--holo-frame-color);
+  filter: drop-shadow(0 -1px 0 rgba(var(--holo-tint-rgb), 0.4))
+    drop-shadow(0 -1px 0 rgba(var(--holo-tint-rgb), 0.2))
+    drop-shadow(
+      0 0 calc(16px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.3 * var(--holo-glow)))
+    );
+  clip-path: polygon(
+    0% 100%,
+    100% 100%,
+    100% 44%,
+    96% 30%,
+    64% 30%,
+    60% 0%,
+    40% 0%,
+    36% 30%,
+    4% 30%,
+    0% 44%
+  );
+}
+
+.holo-frame-bottom {
+  border-top: 1px solid rgba(var(--holo-tint-rgb), 0.55);
+  background:
+    linear-gradient(180deg, rgba(var(--holo-tint-rgb), 0.16), transparent 62%),
+    var(--holo-frame-color);
+  filter: drop-shadow(0 1px 0 rgba(var(--holo-tint-rgb), 0.4))
+    drop-shadow(0 1px 0 rgba(var(--holo-tint-rgb), 0.2))
+    drop-shadow(
+      0 0 calc(16px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.3 * var(--holo-glow)))
+    );
+  clip-path: polygon(
+    0% 0%,
+    100% 0%,
+    100% 56%,
+    96% 70%,
+    64% 70%,
+    60% 100%,
+    40% 100%,
+    36% 70%,
+    4% 70%,
+    0% 56%
+  );
+}
+
+/* The lit area. Its HEIGHT is the whole animation — 0 when sealed, the content's measured height when
+   open, capped by holoMaxHeight (past which the content scrolls instead of growing the panel). */
+.holo-screen {
+  position: relative;
+  height: 0;
+  overflow: hidden;
+  background: rgba(var(--holo-tint-rgb), var(--holo-opacity));
+  border-left: 1px solid rgba(var(--holo-tint-rgb), 0.16);
+  border-right: 1px solid rgba(var(--holo-tint-rgb), 0.16);
+  box-shadow:
+    0 0 calc(60px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.18 * var(--holo-glow))),
+    inset 0 0 calc(70px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.1 * var(--holo-glow)));
+}
+
+/* Only takes the pointer once it's actually open — sealed, it's a black bar and must not swallow the
+   drag that aims the props behind it. */
+.holo-panel[data-open='true'] .holo-screen {
+  pointer-events: auto;
+}
+
+/* Scanlines. The one thing that says "projected", rather than "a dark div". Drifting slowly, because a
+   static raster reads as a texture and a moving one reads as a signal. */
+.holo-screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--holo-scan);
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(var(--holo-tint-rgb), 0.14) 0 1px,
+    transparent 1px 4px
+  );
+  animation: holo-scan-drift 7s linear infinite;
+}
+
+@keyframes holo-scan-drift {
+  from {
+    background-position-y: 0;
+  }
+  to {
+    background-position-y: 40px;
+  }
+}
+
+.holo-scroll {
+  height: 100%;
+  overflow-y: auto;
+  /* Don't chain a scroll that runs off the end of an answer out to the page. The pin is handed the
+     gesture deliberately instead — see useHologramScrollGuard. */
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--holo-tint-rgb), 0.35) transparent;
+}
+
+.holo-scroll::-webkit-scrollbar {
+  width: 3px;
+}
+
+.holo-scroll::-webkit-scrollbar-thumb {
+  background: rgba(var(--holo-tint-rgb), 0.35);
+}
+
+/* position: relative so the rows' offsets are measured against the content, not the fixed panel. */
+.holo-content {
+  position: relative;
+  padding: 30px 34px 34px;
+  color: rgba(var(--holo-tint-rgb), 0.92);
+}
+
+.holo-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(var(--holo-tint-rgb), 0.5);
+  margin-bottom: 18px;
+}
+
+.holo-rows {
+  list-style: none;
+}
+
+/* A question. The fringe is a chromatic split — projected light never resolves perfectly — and it
+   strengthens on hover and on the row you pick (--holo-row-flare, tweened by the reveal hook). */
+.holo-row {
+  --holo-row-flare: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  width: 100%;
+  padding: 14px 2px;
+  border: 0;
+  border-bottom: 1px solid rgba(var(--holo-tint-rgb), 0.14);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color 0.25s ease,
+    background 0.25s ease;
+  text-shadow:
+    calc(var(--holo-fringe) * 1px) 0 rgba(255, 40, 90, calc(0.25 + 0.4 * var(--holo-row-flare))),
+    calc(var(--holo-fringe) * -1px) 0 rgba(40, 255, 255, calc(0.25 + 0.4 * var(--holo-row-flare)));
+  background: linear-gradient(
+    90deg,
+    rgba(var(--holo-tint-rgb), calc(0.12 * var(--holo-row-flare))),
+    transparent 70%
+  );
+}
+
+.holo-row:hover,
+.holo-row:focus-visible {
+  color: #ffffff;
+  background: linear-gradient(90deg, rgba(var(--holo-tint-rgb), 0.1), transparent 70%);
+}
+
+.holo-row-index {
+  flex: none;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: rgba(var(--holo-tint-rgb), 0.45);
+}
+
+.holo-row-question {
+  flex: 1;
+  font-size: 17px;
+  line-height: 1.35;
+}
+
+.holo-row-arrow {
+  flex: none;
+  opacity: 0.35;
+  transition:
+    transform 0.25s ease,
+    opacity 0.25s ease;
+}
+
+.holo-row:hover .holo-row-arrow {
+  opacity: 1;
+  transform: translateX(4px);
+}
+
+/* ── The answer ── */
+.holo-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 22px;
+  padding: 5px 12px 5px 8px;
+  border: 1px solid rgba(var(--holo-tint-rgb), 0.28);
+  border-radius: 999px;
+  background: rgba(var(--holo-tint-rgb), 0.06);
+  color: rgba(var(--holo-tint-rgb), 0.85);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition:
+    background 0.25s ease,
+    color 0.25s ease;
+}
+
+.holo-back:hover,
+.holo-back:focus-visible {
+  background: rgba(var(--holo-tint-rgb), 0.16);
+  color: #ffffff;
+}
+
+.holo-back-arrow {
+  transition: transform 0.25s ease;
+}
+
+.holo-back:hover .holo-back-arrow {
+  transform: translateX(-3px);
+}
+
+.holo-answer-index {
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: rgba(var(--holo-tint-rgb), 0.45);
+  margin-bottom: 8px;
+}
+
+.holo-answer-question {
+  font-size: 24px;
+  line-height: 1.2;
+  margin-bottom: 18px;
+  color: #ffffff;
+  text-shadow:
+    calc(var(--holo-fringe) * 1px) 0 rgba(255, 40, 90, 0.3),
+    calc(var(--holo-fringe) * -1px) 0 rgba(40, 255, 255, 0.3);
+}
+
+.holo-answer-copy {
+  font-size: 15px;
+  line-height: 1.6;
+  color: rgba(var(--holo-tint-rgb), 0.78);
+}
+
+.holo-answer-copy + .holo-answer-copy {
+  margin-top: 14px;
+}
+
 /* ─── Reduced motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,

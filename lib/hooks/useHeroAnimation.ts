@@ -122,12 +122,26 @@ const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the fligh
 const REVEAL_SCROLL_VH = 140;
 const REVEAL_WORKS_UI_FADE: [number, number] = [0.02, 0.16];
 const REVEAL_SUN_FADE: [number, number] = [0.0, 0.12]; // keep in step with chamberScene's OPAQUE_WINDOW
-const REVEAL_STEP_DURATION = 3.2; // seconds to pull all the way back on one gesture
-const REVEAL_SETTLE_MS = 150;
+// The reveal glide now scrubs the WHOLE chamber cinematic on one gesture — the pull-back out of the screen
+// AND the tour across the room to the podium — as a single reversible span (the TOUR_START split lives in
+// chamberScene; see docs/chamber-tour-smoothing-plan.md). So the glide is long enough to contain both:
+// ~3.2s pull-back + ~2.6s tour.
+const REVEAL_STEP_DURATION = 5.8;
+// The tour lives inside the glide now, so the forward settle only has to cover the hologram unsealing once
+// you arrive — `holoOpenSeconds` in lib/chamberTuning (1.55) plus a little grace — not the whole tour.
+const REVEAL_SETTLE_MS = 1900;
+// The return mirrors the forward cinematic in reverse (same glide length), but there is nothing to LAND on
+// the way out: the hologram is already sealing and you're heading back to the meteors. So it frees the
+// stepper almost immediately instead of holding the forward settle — this is what fixes the "can't step
+// back to the previous project for a few seconds after leaving the room" lock-out.
+const REVEAL_REVERSE_SETTLE_MS = 150;
 const SUN_FLIGHT_SELECTOR = ".hero-sun-flight";
-// The chamber is one stop for now: the reveal lands, you're standing in the room. What the room is FOR
-// (the Process steps) is a separate build — when it arrives, this becomes its step count and nothing
-// else here has to change.
+// The chamber is ONE stop, and everything in it plays off the single scroll that lands the reveal: the
+// camera backs out of the display, the showcase walks you across the room to the podium, and the FAQ
+// hologram unseals above the plinth as you arrive. One gesture, one continuous shot.
+//
+// So the pin has nothing to commit here — the chamber's beats are moments in a timeline, not scroll
+// positions, and only the scene knows when the walk-up ends. It says so itself (CHAMBER_HOLOGRAM_EVENT).
 const CHAMBER_STOP_COUNT = 1;
 
 // The far edge of a crossing IS the next section's first stop, and browsers round the settled scroll
@@ -175,6 +189,12 @@ interface CrossingSpec {
   stepDurationSeconds: number;
   /** Grace on the input lock after that glide, so the flight fully lands. */
   settleMs: number;
+  /**
+   * Grace on the input lock when crossing BACKWARD, if it should differ from the forward settle. The
+   * reveal uses this so leaving the room frees the stepper at once (there's nothing to land on the way
+   * out), instead of holding the long forward settle. Falls back to `settleMs` when unset.
+   */
+  reverseSettleMs?: number;
   /** Drive everything this crossing owns from its 0..1 progress (already boundary-snapped). */
   apply: (progress: number) => void;
 }
@@ -183,8 +203,13 @@ interface CrossingSpec {
 interface CarouselSectionSpec extends CarouselSectionGeometry {
   /** Doubles as the stage name and the navbar meter key (--nav-progress-<key>). */
   key: Stage;
-  /** Commit a stop within this section — the index is section-local. */
-  setActiveStop: (index: number) => void;
+  /**
+   * Commit a stop within this section — the index is section-local.
+   *
+   * Optional, because a single-stop section has nothing to choose between: the chamber's beats play off
+   * the reveal landing, not off a scroll position, so there is no index for the pin to hand it.
+   */
+  setActiveStop?: (index: number) => void;
   crossingAfter?: CrossingSpec;
 }
 
@@ -341,14 +366,15 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           scrollVh: REVEAL_SCROLL_VH,
           stepDurationSeconds: REVEAL_STEP_DURATION,
           settleMs: REVEAL_SETTLE_MS,
+          reverseSettleMs: REVEAL_REVERSE_SETTLE_MS,
           apply: applyWorksToChamberReveal,
         },
       },
       {
         key: "process",
         stopCount: CHAMBER_STOP_COUNT,
-        // Nothing to select yet — the chamber is a single stop until the Process content is built.
-        setActiveStop: () => {},
+        // Nothing to commit: the room, the tour and the hologram all run off the reveal landing, and the
+        // input lock that covers the lot lives on the crossing (REVEAL_SETTLE_MS).
       },
     ];
     // Crossings in the same order the layout resolves them (both walk the sections in order).
@@ -507,7 +533,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const localIndex = stop - layout.sections[sectionIndex].firstStop;
       if (lastCommittedIndex[sectionIndex] === localIndex) return;
       lastCommittedIndex[sectionIndex] = localIndex;
-      carouselSections[sectionIndex].setActiveStop(localIndex);
+      carouselSections[sectionIndex].setActiveStop?.(localIndex);
     };
 
     // Jump to a stop by scrolling to its snap point. The target is committed IMMEDIATELY (so the scene
@@ -846,10 +872,17 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const durationSeconds = crossing
         ? crossing.stepDurationSeconds
         : GOTO_DURATION;
+      // A crossing holds its lock for the whole glide plus a settle — but the settle can differ by
+      // direction: leaving a section backward has nothing to land, so a crossing can free the stepper right
+      // away instead of holding the forward cinematic's grace (see the reveal's reverseSettleMs).
+      const crossingSettleMs =
+        crossing && direction < 0
+          ? crossing.reverseSettleMs ?? crossing.settleMs
+          : crossing?.settleMs ?? 0;
       const holdMs = reduceMotion
         ? 0
         : crossing
-          ? durationSeconds * 1000 + crossing.settleMs
+          ? durationSeconds * 1000 + crossingSettleMs
           : STAGE_STEP_HOLD_MS;
       goToStop(target, durationSeconds);
       lockStepping(holdMs);

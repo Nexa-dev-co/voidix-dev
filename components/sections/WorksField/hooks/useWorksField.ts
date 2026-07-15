@@ -20,6 +20,7 @@ import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
+import { hideHologram } from '@/lib/hologramPose';
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
@@ -920,9 +921,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // targets stay at the old density). Also owns the portrait pull-back. Used for real resizes and
     // whenever the adaptive controller shifts the ratio; defined before the loop so it can call it.
     let appliedPixelRatio = getPixelRatio();
-    // The chamber's display wears this aspect, which is what makes its cover distance exact — see
-    // chamberScene.ts.
-    let viewportAspect = 1;
+    // The canvas's CSS size, which the chamber needs in full — not just as an aspect. Its display wears
+    // the aspect (that's what makes the cover distance exact), and its hologram's anchor is projected
+    // into these pixels (see lib/hologramPose.ts). Measured here rather than read off `window` on the
+    // other side, so nothing has to assume the canvas fills the viewport.
+    let viewportWidth = 1;
+    let viewportHeight = 1;
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -930,7 +934,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const aspect = width / height;
       const ratio = getPixelRatio();
       appliedPixelRatio = ratio;
-      viewportAspect = aspect;
+      viewportWidth = width;
+      viewportHeight = height;
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
       // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
@@ -1116,13 +1121,18 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // The room, with the space showing on its display. Same texture, same shader as the
           // full-bleed quad — only the geometry it's painted on has changed.
           chamber.setSpaceTexture(space);
-          chamber.update(revealProgress, viewportAspect);
+          chamber.update(revealProgress, viewportWidth, viewportHeight);
           screenRenderPass.scene = chamber.scene;
           screenRenderPass.camera = chamber.camera;
         } else {
           presentUniforms.uSpace.value = space;
           screenRenderPass.scene = presentScene;
           screenRenderPass.camera = presentCamera;
+          // Browsing projects, not standing in a room — so there is no room for the FAQ panel to be
+          // anchored in. Said out loud, because the chamber's `update` (the only thing that publishes a
+          // pose) simply stops running here, and a stale pose would leave the panel hanging over the
+          // meteor field looking perfectly valid.
+          hideHologram();
         }
         screenComposer.render();
       }
