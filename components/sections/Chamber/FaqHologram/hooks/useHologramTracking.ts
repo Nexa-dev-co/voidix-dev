@@ -4,11 +4,7 @@ import {
   toDesignPx,
   HOLOGRAM_DESIGN_WIDTH,
 } from '@/lib/hologramPose';
-import {
-  getChamberTuning,
-  subscribeChamberTuning,
-  type ChamberTuning,
-} from '@/lib/chamberTuning';
+import { getChamberTuning, type ChamberTuning } from '@/lib/chamberTuning';
 
 /**
  * Keep the panel welded to its anchor in the room.
@@ -61,9 +57,6 @@ export function useHologramTracking(
     if (!panel) return;
 
     applyTuningVariables(panel, getChamberTuning());
-    const unsubscribe = subscribeChamberTuning(() =>
-      applyTuningVariables(panel, getChamberTuning()),
-    );
 
     let frameId = 0;
     // Only touch the DOM when the answer actually changes — this runs every frame.
@@ -103,7 +96,6 @@ export function useHologramTracking(
 
     return () => {
       cancelAnimationFrame(frameId);
-      unsubscribe();
     };
   }, [panelRef]);
 }

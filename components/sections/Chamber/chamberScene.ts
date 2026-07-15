@@ -4,18 +4,12 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { getPerformanceTier } from '@/lib/performanceTier';
 import { hideHologram, publishHologramPose } from '@/lib/hologramPose';
-import gsap from 'gsap';
-import { prefersReducedMotion as reduceMotionQuery } from '@/lib/prefersReducedMotion';
 import {
   CHAMBER_HOLOGRAM_EVENT,
   type ChamberHologramDetail,
 } from '@/lib/chamberEvents';
 import {
   getChamberTuning,
-  onChamberCommand,
-  reportChamberParts,
-  setChamberTuning,
-  type ChamberPart,
   type ShowcaseKey,
 } from '@/lib/chamberTuning';
 
@@ -42,8 +36,7 @@ import {
  * The scene, its camera, and the pose for a given progress. It does NOT own:
  *  - the renderer or the space texture — it is drawn by the works field's renderer, because a GPU
  *    texture cannot cross a WebGL context and the space is rendered over there;
- *  - the numbers — every one was authored without being able to see the scene, so they live in
- *    lib/chamberTuning.ts and are dragged into place from an on-screen panel (localhost only).
+ *  - the numbers — they are the fixed values baked into lib/chamberTuning.ts.
  */
 
 // ── Models ───────────────────────────────────────────────────────────────────────────────────────
@@ -84,18 +77,6 @@ export interface ChamberScene {
   /** The display shows whatever the space pipeline last produced. */
   setSpaceTexture: (texture: THREE.Texture) => void;
   /**
-   * A progress to hold the reveal at, ignoring the scroll — otherwise null. Tuning only.
-   *
-   * The reveal is a committed glide between two scroll stops, so scrolling can only ever leave you at
-   * progress 0 or 1: there is no way to *stop* halfway and look at it. This is how it's pinned open.
-   */
-  progressOverride: () => number | null;
-  /**
-   * Tuning only: turn the object the panel's open tab is on. Returns true if it took the drag, so the
-   * host knows not to also hand it to the space camera underneath.
-   */
-  dragRotate: (deltaX: number, deltaY: number) => boolean;
-  /**
    * Drive the entire reveal from its 0..1 progress. Pure — no timers, no tweens.
    *
    * Takes the viewport in CSS PIXELS rather than just its aspect, because the hologram's anchor is
@@ -105,22 +86,6 @@ export interface ChamberScene {
   update: (progress: number, viewportWidth: number, viewportHeight: number) => void;
   dispose: () => void;
 }
-
-/** Degrees of turn per pixel dragged. */
-const DRAG_SENSITIVITY = 0.4;
-/** Radians of look per pixel dragged, when flying the scout camera. */
-const LOOK_SENSITIVITY = 0.006;
-/** Don't let the aim tip over the poles, where the up vector flips and the view snaps round. */
-const LOOK_PHI_LIMIT = 0.03;
-/** Holding shift. */
-const SPRINT_MULTIPLIER = 3;
-/**
- * The scout's pose is written back into the tuning so the panel's readouts follow it — but a store
- * write re-renders the panel, and doing that every frame while a key is held would have React fighting
- * the render loop for the frame budget. So while you're flying, the scene holds the pose and only
- * publishes it on a throttle (and immediately on release).
- */
-const FLY_PUBLISH_MS = 120;
 
 // ── The showcase's handheld drift ──
 // A camera that glides on perfect rails reads as a machine. What makes a move feel like a person is
@@ -440,12 +405,6 @@ export function createChamberScene({
         // identical and the core ring would be picked at random.
         group.updateMatrixWorld(true);
 
-        // Catalogue the prop's pieces so they can be switched off — or pivoted onto — individually. Ids
-        // are POSITIONAL: the meshes' own names are useless (the podium's are all literally
-        // "defaultMaterial"), so the MATERIAL name is what identifies a piece to a human.
-        const parts: ChamberPart[] = [];
-        const partBox = new THREE.Box3();
-        const partCentre = new THREE.Vector3();
         // A material can own SEVERAL meshes — the podium has three concentric rings and two turbine parts.
         const meshesByMaterial = new Map<string, THREE.Mesh[]>();
         // Parts baked off in the tuning are CULLED, not hidden: the set only ever needs one surface and
@@ -482,20 +441,6 @@ export function createChamberScene({
             if (model === 'table') tableMaterials.push(material);
             glowHome.set(material, material.emissiveIntensity ?? 1);
           });
-          const vertices = child.geometry.getAttribute('position')?.count ?? 0;
-          // Measured while the group is still untransformed, so this is the model's own frame — which is
-          // exactly the frame the pivot is expressed in.
-          partBox.setFromObject(child);
-          partBox.getCenter(partCentre);
-          parts.push({
-            id,
-            label: `${name} · ${vertices.toLocaleString()}`,
-            center: [
-              Math.round(partCentre.x * 100) / 100,
-              Math.round(partCentre.y * 100) / 100,
-              Math.round(partCentre.z * 100) / 100,
-            ],
-          });
           partMeshes.set(id, child);
           if (model === 'podium') {
             const sameMaterial = meshesByMaterial.get(name) ?? [];
@@ -516,8 +461,6 @@ export function createChamberScene({
             if (!survivingGeometries.has(mesh.geometry)) mesh.geometry.dispose();
           });
         }
-
-        reportChamberParts(model, parts);
 
         // Rig the podium's assemblies so each moves as the unit it is.
         if (model === 'podium') {
@@ -583,121 +526,8 @@ export function createChamberScene({
   const restTarget = new THREE.Vector3(); // …and what it's looking at by then
   const lookTarget = new THREE.Vector3(); // free / showcase cameras aim wherever they like
   const WORLD_UP = new THREE.Vector3(0, 1, 0);
-  // ── The scout camera you fly ──
-  // Mouse aims it, WASD moves it the way it's aimed. The scene owns the live pose while you're flying
-  // (see FLY_PUBLISH_MS) and adopts the tuning's values whenever something else changes them — a slider,
-  // or jumping to a recorded pose.
-  const scoutPosition = new THREE.Vector3();
-  const scoutAim = new THREE.Vector3();
-  const scoutForward = new THREE.Vector3();
-  const scoutRight = new THREE.Vector3();
-  const lookOffset = new THREE.Vector3();
-  const lookSpherical = new THREE.Spherical();
+  // Scratch for the handheld-drift speed measurement (see updateSwayStrength).
   const swayScratch = new THREE.Vector3();
-  const heldKeys = new Set<string>();
-  let lastFlyFrame = performance.now();
-  let lastPublish = 0;
-  /** What we last wrote to the tuning — so an edit from anywhere else is recognisable as external. */
-  let published = { x: NaN, y: NaN, z: NaN, tx: NaN, ty: NaN, tz: NaN };
-
-  const round = (value: number) => Math.round(value * 100) / 100;
-
-  const publishScout = () => {
-    published = {
-      x: round(scoutPosition.x),
-      y: round(scoutPosition.y),
-      z: round(scoutPosition.z),
-      tx: round(scoutAim.x),
-      ty: round(scoutAim.y),
-      tz: round(scoutAim.z),
-    };
-    setChamberTuning({
-      scoutX: published.x,
-      scoutY: published.y,
-      scoutZ: published.z,
-      scoutTargetX: published.tx,
-      scoutTargetY: published.ty,
-      scoutTargetZ: published.tz,
-    });
-    lastPublish = performance.now();
-  };
-
-  /** Adopt the tuning's pose if anything OTHER than our own flying changed it. */
-  const adoptExternalScout = () => {
-    const changedElsewhere =
-      tuning.scoutX !== published.x ||
-      tuning.scoutY !== published.y ||
-      tuning.scoutZ !== published.z ||
-      tuning.scoutTargetX !== published.tx ||
-      tuning.scoutTargetY !== published.ty ||
-      tuning.scoutTargetZ !== published.tz;
-    if (!changedElsewhere) return;
-    scoutPosition.set(tuning.scoutX, tuning.scoutY, tuning.scoutZ);
-    scoutAim.set(tuning.scoutTargetX, tuning.scoutTargetY, tuning.scoutTargetZ);
-    published = {
-      x: tuning.scoutX, y: tuning.scoutY, z: tuning.scoutZ,
-      tx: tuning.scoutTargetX, ty: tuning.scoutTargetY, tz: tuning.scoutTargetZ,
-    };
-  };
-
-  /** WASD to move, QE for up/down, shift to sprint. */
-  const flyScout = () => {
-    const now = performance.now();
-    const deltaSeconds = Math.min((now - lastFlyFrame) / 1000, 0.1);
-    lastFlyFrame = now;
-    if (heldKeys.size === 0) return;
-
-    const step =
-      tuning.flySpeed *
-      deltaSeconds *
-      (heldKeys.has('shift') ? SPRINT_MULTIPLIER : 1);
-
-    scoutForward.subVectors(scoutAim, scoutPosition).normalize();
-    scoutRight.crossVectors(scoutForward, WORLD_UP).normalize();
-
-    // Move the aim with the camera, so flying never changes where you're pointed.
-    const travel = (direction: THREE.Vector3, distance: number) => {
-      scoutPosition.addScaledVector(direction, distance);
-      scoutAim.addScaledVector(direction, distance);
-    };
-    if (heldKeys.has('w')) travel(scoutForward, step);
-    if (heldKeys.has('s')) travel(scoutForward, -step);
-    if (heldKeys.has('d')) travel(scoutRight, step);
-    if (heldKeys.has('a')) travel(scoutRight, -step);
-    if (heldKeys.has('e')) travel(WORLD_UP, step);
-    if (heldKeys.has('q')) travel(WORLD_UP, -step);
-
-    if (now - lastPublish > FLY_PUBLISH_MS) publishScout();
-  };
-
-  const FLY_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'shift']);
-  const handleKeyDown = (event: KeyboardEvent) => {
-    // Never while typing a value into the panel.
-    if (
-      event.target instanceof HTMLInputElement ||
-      event.target instanceof HTMLTextAreaElement
-    ) {
-      return;
-    }
-    if (!tuning.freeCamera) return;
-    const key = event.key.toLowerCase();
-    if (!FLY_KEYS.has(key)) return;
-    event.preventDefault();
-    heldKeys.add(key);
-  };
-  const handleKeyUp = (event: KeyboardEvent) => {
-    const key = event.key.toLowerCase();
-    if (!heldKeys.delete(key)) return;
-    // Land the exact pose the moment you stop, rather than wherever the throttle happened to leave it.
-    if (heldKeys.size === 0) publishScout();
-  };
-  const handleBlur = () => heldKeys.clear();
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('blur', handleBlur);
-  }
 
   // ── The tour ──
   // A recorded camera path. `playhead` is the pose read every frame while the tour owns the shot; it's no
@@ -924,61 +754,6 @@ export function createChamberScene({
     );
   };
 
-  // ── Tuner preview ──
-  // "Play tour" used to run a GSAP timeline; with the tour folded into the scrubbed reveal progress there
-  // is no timeline to run, so the button sweeps the progress OVERRIDE through the whole shot instead. The
-  // designer watches the exact path the scroll will drive — pull-back, tour, and the hologram unsealing at
-  // the end — rather than a separate approximation of it. Recording keys is untouched; they're just the
-  // spline's control points now.
-  const preview = { progress: 0, active: false };
-  const stopPreview = () => {
-    gsap.killTweensOf(preview);
-    preview.active = false;
-  };
-  const playPreview = () => {
-    stopPreview();
-    preview.active = true;
-    preview.progress = 0;
-    // showcaseSeconds is the TOUR's share of the sweep, so the pull-back's share is added on to match the
-    // real glide's total. Linear, because the easing already lives in the path and the progress mapping —
-    // easing the sweep too would double it up.
-    const duration = reduceMotionQuery() ? 0 : tuning.showcaseSeconds / (1 - TOUR_START);
-    gsap.to(preview, { progress: 1, duration, ease: 'none' });
-  };
-
-
-  // MEASURE the mesh where it actually is. The panel can't compute this — it would have to reproduce the
-  // whole transform chain, and it would be wrong the moment the part sits inside a moved assembly.
-  const centreOfPart = (partId: string): THREE.Vector3 | null => {
-    const mesh = partMeshes.get(partId);
-    if (!mesh) return null;
-    return new THREE.Box3().setFromObject(mesh).getCenter(new THREE.Vector3());
-  };
-
-  const unsubscribeCommands = onChamberCommand((command) => {
-    if (command.type === 'showcase:play') playPreview();
-    else if (command.type === 'showcase:stop') stopPreview();
-    else if (command.type === 'screen:to-part') {
-      const centre = centreOfPart(command.partId);
-      if (!centre) return;
-      const round = (value: number) => Math.round(value * 100) / 100;
-      setChamberTuning({
-        rigX: round(centre.x),
-        rigY: round(centre.y),
-        rigZ: round(centre.z),
-      });
-    } else if (command.type === 'holo:to-part') {
-      const centre = centreOfPart(command.partId);
-      if (!centre) return;
-      const round = (value: number) => Math.round(value * 100) / 100;
-      setChamberTuning({
-        holoX: round(centre.x),
-        holoY: round(centre.y),
-        holoZ: round(centre.z),
-      });
-    }
-  });
-
   // How fast the camera is actually travelling, smoothed — the drift rides on this, so a parked camera
   // is perfectly still and a moving one is alive.
   const previousPlayhead = new THREE.Vector3();
@@ -1124,12 +899,8 @@ export function createChamberScene({
     const eased = easeReveal(progress);
 
     // Which way we're scrubbing — the return re-choreographs the tour rather than time-reversing it. Read
-    // from the change in progress, EXCEPT while the tuner is holding the reveal still: a frozen progress
-    // isn't moving, so there's nothing to read a direction from, and the panel says which one it wants to
-    // look at (holdReturning). This is what makes "freeze at the hologram and tune the way out" work.
-    if (tuning.holdReveal) {
-      returning = tuning.holdReturning;
-    } else if (progress > previousProgress + PROGRESS_DIRECTION_EPS) {
+    // from the change in progress.
+    if (progress > previousProgress + PROGRESS_DIRECTION_EPS) {
       returning = false;
     } else if (progress < previousProgress - PROGRESS_DIRECTION_EPS) {
       returning = true;
@@ -1139,8 +910,8 @@ export function createChamberScene({
     // The reveal's span carries both motions: the pull-back on [0, TOUR_START], the tour on the rest.
     // Sample the tour into `playhead` up front so the screen placement below and the camera placement
     // further down read one consistent pose. Going in, that's the authored spline; coming out, it's the
-    // re-choreographed return (close, turn, walk). freeCamera (tuning) parks the tour entirely.
-    const inTour = !tuning.freeCamera && progress > TOUR_START;
+    // re-choreographed return (close, turn, walk).
+    const inTour = progress > TOUR_START;
     const tourU = inTour ? (progress - TOUR_START) / (1 - TOUR_START) : 0;
     if (inTour) {
       // Start the handheld sway from rest the frame the tour engages, rather than off a stale delta.
@@ -1237,13 +1008,6 @@ export function createChamberScene({
       pivotZ: tuning.tablePivotZ,
     });
 
-    // Parts baked off in the tuning are already gone (culled at load — see loadProp), so this only
-    // handles a piece toggled off LIVE in the panel during a tuning session; it takes effect until the
-    // next reload, which then culls it too.
-    partMeshes.forEach((mesh, id) => {
-      mesh.visible = !tuning.hiddenParts.includes(id);
-    });
-
     // The ring portal — rings, turbine and cabling, as one machine. Lifted off the ground plane it shares
     // a model with (which `podiumY` can't do, since the ground rises with it), and scaled and turned
     // around its OWN centre rather than the model's origin.
@@ -1320,14 +1084,7 @@ export function createChamberScene({
     // progress that drives everything else, so forward and back stay in sync for free.
     setHologramOpen(progress >= HOLO_OPEN_PROGRESS);
 
-    if (tuning.freeCamera) {
-      adoptExternalScout();
-      flyScout();
-      camera.position.copy(scoutPosition);
-      camera.up.copy(WORLD_UP);
-      camera.lookAt(scoutAim);
-      camera.updateProjectionMatrix();
-    } else if (inTour) {
+    if (inTour) {
       // The tour half: the camera rides the spline, with the handheld drift layered on top. The drift is
       // coupled to the camera's own speed, so it breathes through the walk and settles to still once you
       // park at the podium — which is what you want for reading the FAQ. It's also faded out across the last
@@ -1352,9 +1109,6 @@ export function createChamberScene({
       // The pull-back half: the camera backs off the display's normal into the room. Rescaled to
       // [0, TOUR_START] so it completes exactly on showcase key 0 — which is where the spline picks up, so
       // the two halves meet on the same pose with nothing to seam.
-      //
-      // Keep the fly clock honest across this spell of not flying, so re-entering the scout doesn't lurch.
-      lastFlyFrame = performance.now();
       const pullBack = easeReveal(THREE.MathUtils.clamp(progress / TOUR_START, 0, 1));
 
       camera.position.lerpVectors(coverPosition, restPosition, pullBack);
@@ -1390,9 +1144,8 @@ export function createChamberScene({
     // in the set would hang in front of the space feed — the one image the whole reveal exists to keep
     // untouched. Publishing across the whole tour (not just at the podium) lets the panel track and grow as
     // you approach; it stays hidden until the camera actually turns to face it, since `publishHologram`
-    // hides an anchor that's behind the camera. (The free camera is the tuning exception — placeable while
-    // you fly around looking for a spot for it.)
-    const canPlaceHologram = (inTour || tuning.freeCamera) && tuning.showHologram;
+    // hides an anchor that's behind the camera.
+    const canPlaceHologram = inTour && tuning.showHologram;
     if (canPlaceHologram) {
       publishHologram(viewportWidth, viewportHeight);
     } else {
@@ -1409,59 +1162,12 @@ export function createChamberScene({
     setSpaceTexture: (texture) => {
       displayUniforms.uSpace.value = texture;
     },
-    progressOverride: () =>
-      preview.active ? preview.progress : tuning.holdReveal ? tuning.revealAt : null,
-    // Drag turns whichever prop the panel is open on — so the podium can be aimed by hand rather than by
-    // hunting for numbers. Writes back into the tuning, so the panel's readouts follow and the result is
-    // in what you copy out.
-    //
-    // While the free camera is on, the props are FROZEN and the drag flies the scout instead: it orbits
-    // around whatever it's looking at, which is how you find a shot worth recording.
-    dragRotate: (deltaX, deltaY) => {
-      if (tuning.freeCamera) {
-        // MOUSE LOOK, not orbit. The camera stays put and its AIM swings — which is what makes WASD
-        // useful, because you then fly wherever you're pointed. (Orbit does the opposite: it pins the
-        // aim and swings the camera, so there's nowhere to walk to.)
-        adoptExternalScout();
-        lookOffset.subVectors(scoutAim, scoutPosition);
-        lookSpherical.setFromVector3(lookOffset);
-        lookSpherical.theta -= deltaX * LOOK_SENSITIVITY;
-        // Clamped off the poles: at phi 0 or π the up vector degenerates and the view snaps round.
-        lookSpherical.phi = THREE.MathUtils.clamp(
-          lookSpherical.phi + deltaY * LOOK_SENSITIVITY,
-          LOOK_PHI_LIMIT,
-          Math.PI - LOOK_PHI_LIMIT,
-        );
-        lookOffset.setFromSpherical(lookSpherical);
-        scoutAim.copy(scoutPosition).add(lookOffset);
-        publishScout();
-        return true;
-      }
-
-      const target = tuning.dragTarget;
-      if (target === 'none') return false;
-      const yawKey = target === 'podium' ? 'podiumRotY' : 'tableRotY';
-      const pitchKey = target === 'podium' ? 'podiumRotX' : 'tableRotX';
-      const round = (value: number) => Math.round(value * 10) / 10;
-      setChamberTuning({
-        [yawKey]: round(tuning[yawKey] + deltaX * DRAG_SENSITIVITY),
-        [pitchKey]: round(tuning[pitchKey] + deltaY * DRAG_SENSITIVITY),
-      });
-      return true;
-    },
     update,
     dispose: () => {
       disposed = true;
-      stopPreview();
-      unsubscribeCommands();
       // The room is gone; the panel anchored to it must not outlive it.
       setHologramOpen(false);
       hideHologram();
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('keydown', handleKeyDown);
-        window.removeEventListener('keyup', handleKeyUp);
-        window.removeEventListener('blur', handleBlur);
-      }
       displayGeometry.dispose();
       displayMaterial.dispose();
       [podiumGroup, tableGroup].forEach((group) =>

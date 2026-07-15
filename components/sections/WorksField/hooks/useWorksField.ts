@@ -871,10 +871,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
     // ── Drag-to-look ──
     // Only while you're actually IN the space. Once the reveal has started, the space is a picture on a
-    // screen across the room — dragging it around like a camera you're sitting behind makes no sense, and
-    // it was also swallowing the drag that should be aiming the props. So once the chamber is up, the
-    // drag goes to the chamber (which turns whichever prop the tuning panel is open on) instead.
-    const drag = { active: false, startX: 0, startY: 0, lastX: 0, lastY: 0 };
+    // screen across the room — dragging it around like a camera you're sitting behind makes no sense — so
+    // once the chamber is up, a drag does nothing.
+    const drag = { active: false, startX: 0, startY: 0 };
     /** True once the space is being shown on a screen rather than flown through. */
     const inChamber = () => !!chamber && chamberState.current > CHAMBER_ENGAGE_EPSILON;
 
@@ -883,20 +882,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       drag.active = true;
       drag.startX = event.clientX;
       drag.startY = event.clientY;
-      drag.lastX = event.clientX;
-      drag.lastY = event.clientY;
       canvas.setPointerCapture?.(event.pointerId);
     };
     const handlePointerMove = (event: PointerEvent) => {
       if (!drag.active) return;
-      if (inChamber()) {
-        // Turn the prop, not the space camera. `dragRotate` reports whether it took the drag, so with no
-        // prop selected nothing happens at all rather than the space silently swinging around behind it.
-        chamber?.dragRotate(event.clientX - drag.lastX, event.clientY - drag.lastY);
-        drag.lastX = event.clientX;
-        drag.lastY = event.clientY;
-        return;
-      }
+      // In the room the space is a picture on a screen — a drag has nothing to orbit.
+      if (inChamber()) return;
       viewYawTarget = THREE.MathUtils.clamp(
         (event.clientX - drag.startX) * DRAG_YAW_SENSITIVITY, -DRAG_YAW_CLAMP, DRAG_YAW_CLAMP,
       );
@@ -1095,12 +1086,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           chamberState.current = chamberState.target;
         }
       }
-      // The `?tune` panel can pin the reveal open at a fixed progress, ignoring the scroll — the only
-      // way to hold it still and look at it, since the scroll can only ever land on stop 0 or stop 1.
-      // Null in every other circumstance, so this costs nothing in the real thing.
-      const heldProgress = chamber?.progressOverride() ?? null;
-      const revealProgress =
-        heldProgress ?? (chamberState.engaged ? chamberState.current : 0);
+      const revealProgress = chamberState.engaged ? chamberState.current : 0;
 
       // Show the room only once it's actually in. Until then the screen pipeline keeps painting the
       // full-bleed quad — which is exactly what the chamber would be showing at progress 0 anyway, so

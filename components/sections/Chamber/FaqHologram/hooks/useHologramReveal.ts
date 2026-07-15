@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, type RefObject } from 'react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { toDesignPx } from '@/lib/hologramPose';
-import { getChamberTuning, subscribeChamberTuning } from '@/lib/chamberTuning';
+import { getChamberTuning } from '@/lib/chamberTuning';
 
 /**
  * The unseal, and the fall from a question into its answer.
@@ -117,10 +117,6 @@ export function useHologramReveal({
       scanIn.kill();
     };
   }, [isOpen, openEntry, applyHeight, contentRef]);
-
-  // The panel is sized from the tuning, and the tuning is live while the HUD is open — so a drag on
-  // `holoMaxHeight` has to re-fit it there and then, or the sliders lie.
-  useEffect(() => subscribeChamberTuning(() => applyHeight(false)), [applyHeight]);
 
   /**
    * Fall into an answer.

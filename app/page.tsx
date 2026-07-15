@@ -1,7 +1,6 @@
 import Hero from '@/components/sections/Hero/Hero';
 import HeroSun from '@/components/sections/Hero/HeroSun';
 import IntroSequence from '@/components/effects/IntroSequence/IntroSequence';
-import ChamberTuner from '@/components/sections/Chamber/ChamberTuner';
 import FaqHologram from '@/components/sections/Chamber/FaqHologram/FaqHologram';
 
 export default function HomePage() {
@@ -19,9 +18,6 @@ export default function HomePage() {
           transformed ancestor stops `position: fixed` being fixed, and the panel would drift with the
           page. It anchors itself to the room by projection instead (see lib/hologramPose.ts). */}
       <FaqHologram />
-      {/* On-screen controls for the chamber reveal — every number in it was authored without being
-          able to see the scene. Renders nothing outside localhost / ?tune. */}
-      <ChamberTuner />
     </main>
   );
 }
