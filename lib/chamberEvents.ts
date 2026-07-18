@@ -9,7 +9,7 @@
  *
  * Mirrors handoffEvents.ts — one module per crossing, so each owns its own signal.
  */
-export const CHAMBER_PROGRESS_EVENT = 'orbix:chamber-progress';
+export const CHAMBER_PROGRESS_EVENT = 'voidix:chamber-progress';
 
 export interface ChamberProgressDetail {
   /** 0..1 across the reveal span; the boundary values are re-sent when the span is exited. */
@@ -32,7 +32,7 @@ export function readChamberProgress(event: Event): number {
  *
  * It closes the moment the reveal is scrubbed back off its end, so scrolling away re-seals the panel.
  */
-export const CHAMBER_HOLOGRAM_EVENT = 'orbix:chamber-hologram';
+export const CHAMBER_HOLOGRAM_EVENT = 'voidix:chamber-hologram';
 
 export interface ChamberHologramDetail {
   open: boolean;

@@ -77,7 +77,7 @@ export default function Navbar() {
           <OrbitalMark />
           {/* Invisible wordmark — reserves the same width so the visible (blended)
               wordmark in .nav-root aligns with this cyan mark. */}
-          <span className="nav-wordmark nav-ghost">ORBIX</span>
+          <span className="nav-wordmark nav-ghost">VOIDIX</span>
         </div>
 
         {/* One cyan meter per section + one for the logo (home). JS sets each meter's
@@ -101,7 +101,7 @@ export default function Navbar() {
         <a href="/" className="nav-logo">
           {/* Transparent placeholder where the cyan mark sits in the accent layer. */}
           <span className="nav-mark-spacer" aria-hidden="true" />
-          <span className="nav-wordmark">ORBIX</span>
+          <span className="nav-wordmark">VOIDIX</span>
         </a>
 
         <nav aria-label="Main navigation">

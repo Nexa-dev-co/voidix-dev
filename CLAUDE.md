@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Project Name: Orbix
+Project Name: Voidix
 
-Orbix is a premium software company specializing in:
+Voidix is a premium software company specializing in:
 
 - Custom Web Applications
 - SaaS Platforms
@@ -13,11 +13,11 @@ Orbix is a premium software company specializing in:
 - AI Solutions
 - Digital Product Design
 
-The name "Orbix" originates from orbital systems, gravitational movement, celestial mechanics, and interconnected ecosystems.
+The name "Voidix" originates from orbital systems, gravitational movement, celestial mechanics, and interconnected ecosystems.
 
 The website is not a marketing page.
 
-The website itself must be a demonstration of Orbix's capabilities.
+The website itself must be a demonstration of Voidix's capabilities.
 
 Every interaction, animation, transition, and visual element should communicate:
 
@@ -182,9 +182,9 @@ Any concept scoring below 8 in any category should be redesigned.
 
 ---
 
-# Orbix Brand Personality
+# Voidix Brand Personality
 
-Orbix is:
+Voidix is:
 
 - Visionary
 - Intelligent
@@ -193,7 +193,7 @@ Orbix is:
 - Futuristic
 - Confident
 
-Orbix is not:
+Voidix is not:
 
 - Corporate
 - Boring
@@ -201,7 +201,7 @@ Orbix is not:
 - Minimal for the sake of minimalism
 - Trend-following
 
-Orbix should feel like a company that builds the future.
+Voidix should feel like a company that builds the future.
 
 ---
 
@@ -243,7 +243,7 @@ Avoid phrases such as:
 
 Every headline should feel distinctive and memorable.
 
-Every sentence should reinforce the Orbix universe.
+Every sentence should reinforce the Voidix universe.
 
 ---
 
@@ -272,7 +272,7 @@ Ask:
 1. Is this unique?
 2. Is this memorable?
 3. Is this technically impressive?
-4. Does it strengthen the Orbix identity?
+4. Does it strengthen the Voidix identity?
 5. Could this appear on Awwwards?
 
 If not:
@@ -281,11 +281,11 @@ Do not proceed.
 
 Create something better.
 
-# CLAUDE.md — orbix
+# CLAUDE.md — voidix
 
 This file defines how code should be written, structured, and named in this codebase. Follow these rules in every suggestion, generation, and edit. This is a **pure frontend** Next.js project — no backend, no API routes, no database.
 
-orbix is a cinematic, single-page **web-studio portfolio**: a long-scroll homepage composed of animated sections, gated behind an intro loading screen, plus an isolated **orbital-map navigation prototype** at `/prototype`.
+voidix is a cinematic, single-page **web-studio portfolio**: a long-scroll homepage composed of animated sections, gated behind an intro loading screen, plus an isolated **orbital-map navigation prototype** at `/prototype`.
 
 ---
 
@@ -363,7 +363,7 @@ Follow the patterns already in the codebase:
 
 Every load of the homepage is gated behind a single fullscreen intro: `components/effects/IntroSequence/IntroSequence.tsx`. It is **one component running one GSAP timeline** (~6s) — there is **no loader-variant registry, no `?loader=` URL switch, and no `PageLoader` orchestrator**. (Earlier docs described a multi-variant loader system; that does not exist in the code.)
 
-The intro: paints an opaque `--bg` veil over the hero, runs a counter → slot-machine word cycle → "orbix" wordmark resolve, then **hands off** by flying the one shared sun from the wordmark's "o" into the hero square. It locks scroll for its entire duration and dispatches `REVEAL_EVENT` (`orbix:reveal`) right before the sun lands — the single "site is ready" signal the hero and navbar wait for. Honours `prefers-reduced-motion` by resolving fast. See the **Intro & Hero Animation Timeline** section below for the contracts that protect it.
+The intro: paints an opaque `--bg` veil over the hero, runs a counter → slot-machine word cycle → "voidix" wordmark resolve, then **hands off** by flying the one shared sun from the wordmark's "o" into the hero square. It locks scroll for its entire duration and dispatches `REVEAL_EVENT` (`voidix:reveal`) right before the sun lands — the single "site is ready" signal the hero and navbar wait for. Honours `prefers-reduced-motion` by resolving fast. See the **Intro & Hero Animation Timeline** section below for the contracts that protect it.
 
 ---
 

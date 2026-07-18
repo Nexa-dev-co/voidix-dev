@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { useHeroAnimation } from '@/lib/hooks/useHeroAnimation';
 import { useHeroInstruments } from '@/lib/hooks/useHeroInstruments';
+import { useIsLowPowerViewport } from '@/lib/hooks/useIsLowPowerViewport';
 import FluidCursor from '@/components/effects/FluidCursor/FluidCursor';
 import ConstellationFrame from '@/components/effects/ConstellationFrame/ConstellationFrame';
 import HeroInstruments from '@/components/sections/Hero/HeroInstruments/HeroInstruments';
@@ -34,19 +35,26 @@ export default function Hero() {
   // ticking. Kept separate from the pin — it only reads --nav-progress-home for the ring fade.
   useHeroInstruments({ sectionRef: heroSectionRef });
 
+  // Phones get neither the ink trail nor the telemetry HUD, and it's the MOUNT that's gated, not the
+  // visibility. CSS already hid the HUD at this width — but hiding it left four rAF loops running
+  // against a subtree nobody could see, which is the opposite of the point. Unmounting is the only
+  // thing that actually stops the work. See useIsLowPowerViewport.
+  const isLowPowerViewport = useIsLowPowerViewport();
+
   return (
     <section ref={heroSectionRef} className="hero-section">
 
       {/* Fluid ink trail — scoped to the hero. Its absolute canvases sit between the
-          tagline (below, so the ink inverts it) and the headline/sun (above). */}
-      <FluidCursor />
+          tagline (below, so the ink inverts it) and the headline/sun (above). Desktop only. */}
+      {!isLowPowerViewport && <FluidCursor />}
 
       {/* Ambient constellation frame — graphite stars + faint links in a border band, blooming from
           the centre on reveal then drifting. Sits above the trail, below the headline (z 4). */}
       <ConstellationFrame />
 
-      {/* Telemetry HUD flanking the headline (labels invert like the headline; values stay cyan). */}
-      <HeroInstruments />
+      {/* Telemetry HUD flanking the headline (labels invert like the headline; values stay cyan).
+          Desktop only — its live readouts are four rAF loops, and it's hidden at this width anyway. */}
+      {!isLowPowerViewport && <HeroInstruments />}
 
       <div className="hero-main">
         <div

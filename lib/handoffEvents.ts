@@ -7,7 +7,7 @@
  * the choreography stays cinematic under scrubbed, snapped, or jumped scroll. Lives in lib/
  * because the one signal is shared by the hero pin and both scene hooks.
  */
-export const HANDOFF_PROGRESS_EVENT = 'orbix:handoff-progress';
+export const HANDOFF_PROGRESS_EVENT = 'voidix:handoff-progress';
 
 export interface HandoffProgressDetail {
   /** 0..1 across the handoff span; the boundary values are re-sent when the span is exited. */

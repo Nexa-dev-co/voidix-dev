@@ -13,7 +13,7 @@ import {
   type EnvironmentModule,
 } from './heroReadouts';
 
-// The hero's instrument HUD: two panels flanking the headline. The LEFT is the Orbix Core's own OS
+// The hero's instrument HUD: two panels flanking the headline. The LEFT is the Voidix Core's own OS
 // (Core Stability rides the real frame rate, Energy Output rides cursor velocity — useCoreTelemetry).
 // The RIGHT is the environment surrounding the Core — five modules of live telemetry (gravity field,
 // cursor influence, portal status, field distortion, orbital vector — useEnvironmentTelemetry). Both
@@ -86,7 +86,7 @@ export default function HeroInstruments() {
 
   return (
     <>
-      {/* ── Left panel — the Orbix Core OS ── */}
+      {/* ── Left panel — the Voidix Core OS ── */}
       <aside ref={leftPanelRef} className="hero-hud hero-hud--left" aria-hidden="true">
         {CORE_MODULES.map((coreModule, moduleIndex) => (
           <Fragment key={coreModule.label}>

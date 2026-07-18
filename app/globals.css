@@ -1477,12 +1477,19 @@ body {
   pointer-events: none;
   visibility: hidden;
   /* Overwritten from the tuning; these are only the shape of the thing before the scene is up. */
-  --holo-tint-rgb: 0, 229, 255;
+  --holo-ink-rgb: 11, 15, 18;
+  --holo-tint-rgb: 13, 127, 143;
   --holo-frame-color: #04060a;
-  --holo-opacity: 0.09;
-  --holo-glow: 1;
-  --holo-scan: 0.35;
-  --holo-fringe: 1.1;
+  --holo-opacity: 0;
+  --holo-glow: 0;
+  --holo-scan: 0;
+  --holo-fringe: 0;
+  /* A white halo behind the type. Invisible against the white room — it only does anything where the
+     panel drifts over something dark (the table, the grid), which with a fully transparent panel is the
+     one thing that could make an answer unreadable. Not a backing: it costs nothing where it isn't
+     needed. */
+  --holo-halo:
+    0 0 10px rgba(255, 255, 255, 0.9), 0 0 3px rgba(255, 255, 255, 0.95);
   --holo-frame-height: 26px;
   --holo-frame-inset: 12px;
 }
@@ -1574,8 +1581,8 @@ body {
   height: 0;
   overflow: hidden;
   background: rgba(var(--holo-tint-rgb), var(--holo-opacity));
-  border-left: 1px solid rgba(var(--holo-tint-rgb), 0.16);
-  border-right: 1px solid rgba(var(--holo-tint-rgb), 0.16);
+  border-left: 1px solid rgba(var(--holo-ink-rgb), 0.1);
+  border-right: 1px solid rgba(var(--holo-ink-rgb), 0.1);
   box-shadow:
     0 0 calc(60px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.18 * var(--holo-glow))),
     inset 0 0 calc(70px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.1 * var(--holo-glow)));
@@ -1619,7 +1626,7 @@ body {
      gesture deliberately instead — see useHologramScrollGuard. */
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: rgba(var(--holo-tint-rgb), 0.35) transparent;
+  scrollbar-color: rgba(var(--holo-ink-rgb), 0.3) transparent;
 }
 
 .holo-scroll::-webkit-scrollbar {
@@ -1627,21 +1634,22 @@ body {
 }
 
 .holo-scroll::-webkit-scrollbar-thumb {
-  background: rgba(var(--holo-tint-rgb), 0.35);
+  background: rgba(var(--holo-ink-rgb), 0.3);
 }
 
 /* position: relative so the rows' offsets are measured against the content, not the fixed panel. */
 .holo-content {
   position: relative;
   padding: 30px 34px 34px;
-  color: rgba(var(--holo-tint-rgb), 0.92);
+  color: rgba(var(--holo-ink-rgb), 0.92);
+  text-shadow: var(--holo-halo);
 }
 
 .holo-eyebrow {
   font-size: 11px;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(var(--holo-tint-rgb), 0.5);
+  color: rgb(var(--holo-tint-rgb));
   margin-bottom: 18px;
 }
 
@@ -1659,7 +1667,7 @@ body {
   width: 100%;
   padding: 14px 2px;
   border: 0;
-  border-bottom: 1px solid rgba(var(--holo-tint-rgb), 0.14);
+  border-bottom: 1px solid rgba(var(--holo-ink-rgb), 0.12);
   background: none;
   color: inherit;
   font: inherit;
@@ -1669,8 +1677,11 @@ body {
     color 0.25s ease,
     background 0.25s ease;
   text-shadow:
-    calc(var(--holo-fringe) * 1px) 0 rgba(255, 40, 90, calc(0.25 + 0.4 * var(--holo-row-flare))),
-    calc(var(--holo-fringe) * -1px) 0 rgba(40, 255, 255, calc(0.25 + 0.4 * var(--holo-row-flare)));
+    var(--holo-halo),
+    calc(var(--holo-fringe) * 1px) 0
+      rgba(255, 40, 90, calc(var(--holo-fringe) * (0.25 + 0.4 * var(--holo-row-flare)))),
+    calc(var(--holo-fringe) * -1px) 0
+      rgba(40, 255, 255, calc(var(--holo-fringe) * (0.25 + 0.4 * var(--holo-row-flare))));
   background: linear-gradient(
     90deg,
     rgba(var(--holo-tint-rgb), calc(0.12 * var(--holo-row-flare))),
@@ -1680,15 +1691,15 @@ body {
 
 .holo-row:hover,
 .holo-row:focus-visible {
-  color: #ffffff;
-  background: linear-gradient(90deg, rgba(var(--holo-tint-rgb), 0.1), transparent 70%);
+  color: rgb(var(--holo-ink-rgb));
+  background: linear-gradient(90deg, rgba(var(--holo-tint-rgb), 0.12), transparent 70%);
 }
 
 .holo-row-index {
   flex: none;
   font-size: 11px;
   letter-spacing: 0.14em;
-  color: rgba(var(--holo-tint-rgb), 0.45);
+  color: rgb(var(--holo-tint-rgb));
 }
 
 .holo-row-question {
@@ -1699,7 +1710,8 @@ body {
 
 .holo-row-arrow {
   flex: none;
-  opacity: 0.35;
+  color: rgb(var(--holo-tint-rgb));
+  opacity: 0.5;
   transition:
     transform 0.25s ease,
     opacity 0.25s ease;
@@ -1717,10 +1729,10 @@ body {
   gap: 8px;
   margin-bottom: 22px;
   padding: 5px 12px 5px 8px;
-  border: 1px solid rgba(var(--holo-tint-rgb), 0.28);
+  border: 1px solid rgba(var(--holo-tint-rgb), 0.45);
   border-radius: 999px;
-  background: rgba(var(--holo-tint-rgb), 0.06);
-  color: rgba(var(--holo-tint-rgb), 0.85);
+  background: rgba(var(--holo-tint-rgb), 0.08);
+  color: rgba(var(--holo-ink-rgb), 0.85);
   font: inherit;
   font-size: 12px;
   letter-spacing: 0.06em;
@@ -1732,8 +1744,8 @@ body {
 
 .holo-back:hover,
 .holo-back:focus-visible {
-  background: rgba(var(--holo-tint-rgb), 0.16);
-  color: #ffffff;
+  background: rgba(var(--holo-tint-rgb), 0.18);
+  color: rgb(var(--holo-ink-rgb));
 }
 
 .holo-back-arrow {
@@ -1747,7 +1759,7 @@ body {
 .holo-answer-index {
   font-size: 11px;
   letter-spacing: 0.3em;
-  color: rgba(var(--holo-tint-rgb), 0.45);
+  color: rgb(var(--holo-tint-rgb));
   margin-bottom: 8px;
 }
 
@@ -1755,16 +1767,17 @@ body {
   font-size: 24px;
   line-height: 1.2;
   margin-bottom: 18px;
-  color: #ffffff;
+  color: rgb(var(--holo-ink-rgb));
   text-shadow:
-    calc(var(--holo-fringe) * 1px) 0 rgba(255, 40, 90, 0.3),
-    calc(var(--holo-fringe) * -1px) 0 rgba(40, 255, 255, 0.3);
+    var(--holo-halo),
+    calc(var(--holo-fringe) * 1px) 0 rgba(255, 40, 90, calc(var(--holo-fringe) * 0.3)),
+    calc(var(--holo-fringe) * -1px) 0 rgba(40, 255, 255, calc(var(--holo-fringe) * 0.3));
 }
 
 .holo-answer-copy {
   font-size: 15px;
   line-height: 1.6;
-  color: rgba(var(--holo-tint-rgb), 0.78);
+  color: rgba(var(--holo-ink-rgb), 0.78);
 }
 
 .holo-answer-copy + .holo-answer-copy {

@@ -1,234 +1,202 @@
-# The Reveal — "it was a screen all along"
+# Works → Chamber — "it was a screen all along"
 
-> The camera backs up. The space you have been flying through for the last three sections turns out to
-> be a **feed on a screen**, and the screen is mounted in a **cloning-tank chamber** you have been
-> standing in the whole time. Same image, same instant — you just weren't where you thought you were.
+> **Living state doc.** The reveal is built and working. This is what it is, why it's built the way it
+> is, and every trap that cost us a round to find. Read §3 before changing anything.
 
-This doc is the **design spec**. Implementation follows it in ordered steps; nothing here is code.
-
----
-
-## 1. Why this is the right call
-
-The cockpit plan needed a first-person camera system, an interior that no model in the project
-actually has, a hull dissolve, and a whole new way of showing content. This needs **one camera move**.
-
-It is also the better *idea*. A cockpit is a place you go. A screen is a **reframe of everything you
-already saw** — it re-reads three sections retroactively. That's a genuine plot twist, and it costs
-less code than the thing it replaces.
+Scroll past the last project and the camera **backs up**: the space you've been flying through for
+three sections shrinks into a **screen laid flat in a table**, and the table turns out to be in a room
+you've been standing in the whole time — with a ring-portal podium across from you. Then the camera
+tours the room. One scroll, one continuous shot.
 
 ```
    what you thought you were doing          what you were actually doing
    ┌───────────────────────────┐            ┌───────────────────────────────┐
-   │                           │            │  ┌─┐                          │
-   │      ●  flying through    │            │  │ │   ╔═══════════╗   ┌─┐    │
-   │         deep space        │    ───►    │  │ │   ║  ●        ║   │ │    │
-   │                           │            │  │ │   ╚═══════════╝   │ │    │
-   │                           │            │  └─┘   a screen, in a  └─┘    │
-   └───────────────────────────┘            │        cloning chamber        │
-                                            └───────────────────────────────┘
+   │                           │            │      ((( ● )))                │
+   │      ●  flying through    │    ───►    │       podium                  │
+   │         deep space        │            │                    ╔════╗     │
+   │                           │            │                    ║ ●  ║ ← the table
+   └───────────────────────────┘            └───────────────────────────────┘
 ```
 
 ---
 
-## 2. The trick, and why the seam is free
+## 1. How it works
 
-Render the space scene into a **texture** instead of onto the canvas. Put that texture on a **quad**.
-Start the chamber camera at the exact distance where the quad **fills the frustum**. Dolly back.
+The space scene renders into a **texture** instead of onto the canvas. That texture is painted onto a
+**quad**. The chamber camera starts at exactly the distance where the quad **fills the frustum**, and
+then dollies away.
 
 ```
-   p = 0                    p = 0.4                  p = 1
+   progress 0               progress 0.4             progress 1
    ┌───────────────┐        ┌───────────────┐        ┌───────────────┐
-   │               │        │  ┌─────────┐  │        │ ▐  ┌─────┐  ▌ │
-   │      ●        │        │  │    ●    │  │        │ ▐  │  ●  │  ▌ │
-   │               │        │  └─────────┘  │        │ ▐  └─────┘  ▌ │
+   │               │        │  ┌─────────┐  │        │  ((●))   ╔══╗ │
+   │      ●        │        │  │    ●    │  │        │  podium  ║● ║ │
+   │               │        │  └─────────┘  │        │          ╚══╝ │
    └───────────────┘        └───────────────┘        └───────────────┘
-   quad fills the frame     bezel appears            the chamber
-   → pixel-identical to     around it                around it
-     the live scene
+   the quad fills the        the table appears        you're in the room
+   frame → pixel-identical   around it
+   to the live scene
 ```
 
-**There is no cross-fade and no cheat.** At `p = 0` the quad covers the viewport exactly, the texture
-is the canvas-resolution render of the very same scene, and the material is unlit — so the pixels
-*are* the pixels. The reveal is nothing but the camera moving. That's what makes it feel like a trick
-rather than a transition.
+**There is no cross-fade and nothing is faked.** At progress 0 the quad covers the viewport exactly,
+the texture is the canvas-resolution render of the very same scene, and the material is unlit — so the
+pixels *are* the pixels. The reveal is nothing but the camera moving.
 
-Two things must hold for that to be true, and both are cheap:
-
-- **The screen material is unlit** (`MeshBasicMaterial`, `toneMapped: false`). Otherwise the room's
-  lighting would tint the feed.
-- **The chamber's bloom ramps in from zero.** The space scene already blooms its own fire; if the
-  chamber's bloom hit the quad at `p = 0` we'd be blooming it twice and the image would shift.
-
----
-
-## 3. ⚠ The blocker I found: a texture cannot cross a WebGL context
-
-**This decides the whole architecture, so it goes first.**
-
-The space you see today is composited from **two separate canvases** — the works field (meteors,
-debris, stars) and the deck (the ship). Two canvases means two `WebGLRenderer`s means **two WebGL
-contexts**, and a GPU texture rendered by one context **cannot be sampled by another**. There is no
-flag for this; it's how the browser works.
-
-So whatever ends up on the tablet screen has to be rendered by **one renderer**.
+Because the display's aspect is set to the **viewport's** aspect, the distance that covers the frame
+vertically also covers it horizontally. One number, exact at every aspect ratio:
 
 ```
-   TODAY                                  WHAT THE REVEAL NEEDS
-   ┌────────────────┐                     ┌────────────────────────────┐
-   │ deck canvas    │ ← the ship          │  ONE renderer              │
-   ├────────────────┤                     │   ├─ space scene → texture │
-   │ works canvas   │ ← the field         │   └─ chamber scene → canvas│
-   └────────────────┘                     │        (quad samples it)   │
-   two contexts. cannot                   └────────────────────────────┘
-   share a texture.
+  coverDistance = (displayHeight / 2) / tan(fov / 2)
 ```
 
-The works field can render itself into a texture today with no trouble. **The ship cannot** — it
-lives in the other context. Which forces a question only you can answer (see §8).
-
 ---
 
-## 4. The screen, and the one honest compromise
+## 2. The pieces
 
-I inspected both models rather than guessing:
-
-| | verts | textures | note |
-|---|---|---|---|
-| `sci-fi_screen` | **497**, 1 mesh, 1 material | 3 PNG (1.2 MB) | a hollow **frame** — no display surface at all |
-| `cloning_tank_chamber` | **6,952**, 15 meshes | **36 images, 29 MB** | geometry is nothing; it's *all* texture |
-
-The screen model has **no screen** — it's a bezel with an empty middle. So we supply the display
-ourselves as a quad, which is what we wanted anyway (we control its aspect).
-
-**The compromise:** the quad must be the *viewport's* aspect (that's what makes `p = 0` pixel-exact
-and free). The bezel's opening is roughly **1.157** (nearly square). Those don't match.
-
-The fix, in order of preference, applied automatically:
-
-1. **Stretch the bezel** to the viewport's aspect. On desktop that turns a squarish frame into a
-   widescreen one — which is exactly what a sci-fi console looks like. The frame is 497 verts of
-   simple geometry; it takes the stretch without complaint.
-2. **Clamp the stretch** so a phone can't squash it into nonsense.
-3. **A black backing plate** fills whatever the clamp leaves over, so the screen letterboxes inside
-   its housing instead of showing a hole through to the room. Perfectly believable on a device.
-
-The quad's exact placement inside the bezel gets dialled in with the existing `?tune` panel and baked
-into constants — the same way the deck and the field were tuned.
-
----
-
-## 5. Performance — this section should make the site *faster*
-
-The user's instinct is right: this is the cheap option.
-
-- **The chamber's 29 MB is all texture, and it must not ship as-is.** Move both models to
-  `models-src/` and run `npm run optimize:models`. The existing pipeline (Draco + WebP + a texture
-  cap) is built for exactly this. At a 512 cap the chamber should land near ~3 MB. Its *geometry*
-  (6,952 verts) is free.
-- **Lazy-load the chamber.** It's needed at the very end of the page and nowhere else — it must not
-  join the intro's asset gate or the first paint. Load it when the user reaches Works.
-- **Rendering to a texture costs the same as rendering to the canvas.** We're not adding a pass, we're
-  redirecting one. The chamber itself is 15 meshes.
-- **After the reveal settles, shrink the texture.** Once you're back in the room the feed occupies a
-  small part of the screen, so it doesn't need canvas resolution. Drop the target then — on a settled,
-  idle frame, never mid-motion (the composer realloc blocks for a frame, and this codebase has already
-  been bitten by exactly that).
-- **The deck canvas is already dormant** by this point (it parks itself once the handoff completes),
-  so nothing is competing.
-
----
-
-## 6. The scroll
-
-Same rule as always: **one pin**. The reveal is another crossing inside it.
-
-```
-  fill ─┬─ craft 0..3 ══HANDOFF══ proj 0..3 ══REVEAL══ chamber 0..N
-                         (180vh)              (~140vh)
-```
-
-Which means the stop layout has to stop being hardcoded — it currently bakes in *one* crossing and
-*three* meter keys, and this is the second crossing with a Contact section still to come. That's the
-small data-driven refactor of `useHeroAnimation` from before: sections and crossings become a list,
-and everything derives from it. It ships on its own, proves the live site is unchanged, and then the
-reveal lands on clean ground.
-
-Everything in the reveal is a **pure function of the scrubbed progress** — no timed tweens, no
-sentinels. It can't be outrun, it can't be skipped, and it reverses for free. (This is the lesson from
-the handoff's multi-clock rebuild; it is not negotiable.)
-
----
-
-## 7. What the chamber is *for*
-
-Once you're standing in the room, the room is the stage for what comes next (Process, then Contact).
-The content can live on the chamber's own surfaces — the tank glass, wall panels, the screen itself —
-or as a DOM overlay, exactly like every other section. **Not decided here**; the reveal lands on a
-stable camera pose either way, so this is a later conversation.
-
----
-
-## 8. Decisions (locked 2026-07-13)
-
-**No ship.** The reveal runs straight off the last project — the screen shows project 04's burning
-meteor. Nothing has to move between renderers, the deck canvas is already dormant by then, and the
-twist lands just as hard: it's the *reframe* that shocks, not the ship. The cockpit plan
-(`works-to-process-boarding.md`) is superseded.
-
-**Texture resolution scales with the machine.** Not a fixed cap and not a `deviceMemory` guess — by
-the time anyone reaches the chamber, `lib/adaptivePixelRatio.ts` has been measuring this machine's
-*real* frame times for a minute (the deck and the field have been rendering the entire way down the
-page). So the tier is picked from observed performance on this exact GPU:
-
-```
-   the build emits two variants        the lazy load picks one, late
-   ┌──────────────────────────┐        ┌───────────────────────────────┐
-   │ chamber-512.glb   ~3 MB  │        │  measured frames say the GPU  │
-   │ chamber-1024.glb  ~6 MB  │  ───►  │  has headroom  → 1024         │
-   └──────────────────────────┘        │  …or it's struggling → 512    │
-                                       └───────────────────────────────┘
-   only ONE is ever downloaded — the choice is made at the Works section,
-   long before the chamber is needed, off real data rather than a sniff.
-```
-
-This needs one small addition to the adaptive module: it already tracks a smoothed frame time and a
-soft ceiling, so it can expose a performance tier without any new measurement.
-
----
-
-## 9. Implementation order (review gate between each)
-
-1. **This doc.** ✅
-2. **Compress the models.** ✅ `chamber-512.glb` (813 KB / ~48 MB VRAM), `chamber-1024.glb` (2.57 MB /
-   ~192 MB VRAM), `screen.glb` (156 KB). 29.4 MB → under 1 MB at the default tier. Geometry verified
-   intact (nothing decimated; `join` actually cut the chamber from 15 meshes to 12). The optimizer now
-   takes per-model recipes and explicit filename args — **do not re-run it over everything**, the
-   `models-src` copy of `star_aventure` is already an optimized file and would be double-compressed.
-   *(The tier is still chosen manually — the measured-performance selector lands with the lazy load in
-   step 5, where it's actually used.)*
-3. **Data-driven sections/crossings** in `useHeroAnimation`. ✅ Proved bit-for-bit identical to the old
-   hardcoded arithmetic across six section configurations (`Object.is`, not an epsilon compare).
-4. **Space → texture.** ✅ The works scene now renders into `spaceTarget` and a second pipeline paints
-   it back out full-bleed. See §2 for why the split sits *before* tone mapping.
-5. **The chamber + the dolly.** ✅ The room, the bezel, the display, the pull-back, the reveal crossing
-   in the pin, the sun's exit, and the lazy tiered load. **Needs tuning by eye** — see below.
-6. **Polish.** Whatever the first look throws up (framing, bezel fit, room lighting), plus: bloom on the
-   room, texture downscale once the reveal settles, reduced motion, reverse-scroll, portrait.
-
----
-
-## 10. Numbers to tune (all named constants in `chamberScene.ts`)
-
-Nothing here could be judged without seeing it, so it's all one-line knobs:
-
-| Constant | What it does |
+| File | Job |
 |---|---|
-| `DISPLAY_HEIGHT` | how big the display is in the room — and therefore how far back `coverDistance` starts |
-| `REST_DISTANCE` | how far the camera ends up; i.e. how much room you see around the display |
-| `REST_RISE` | how far it lifts on the way back (brings the floor into view) |
-| `REVEAL_EASE_POWER` | how much it creeps off the display before committing to the pull-back |
-| `ROOM_WIDTH` / `ROOM_Z_OFFSET` | the room's scale, and how far back it sits so the camera ends up *inside* it |
-| `BEZEL_OVERSIZE` / `BEZEL_Z` | how far the frame oversteps the display, and how it sits against it |
-| `SCREEN_LIGHT_*` | the display lighting the room — the reveal falls flat if the room isn't lit by it |
-| `OPAQUE_WINDOW` | how fast the dark of space stops being see-through (keep in step with `REVEAL_SUN_FADE`) |
+| `lib/spacePresentMaterial.ts` | The shader that paints the space onto a surface. Raw passthrough — see §3.1. |
+| `lib/chamberEvents.ts` | `CHAMBER_PROGRESS_EVENT` (the scrubbed reveal), `CHAMBER_STOP_EVENT`. |
+| `lib/chamberTuning.ts` | Every number in the reveal + the showcase path, as **fixed constants**. The single source of truth. |
+| `lib/performanceTier.ts` | Which texture tier to fetch, from **measured** frame times. |
+| `lib/carouselLayout.ts` | The pin's stops/crossings, as data. |
+| `lib/hooks/useHeroAnimation.ts` | The one pin. Owns the reveal crossing + the chamber section. |
+| `components/sections/Chamber/chamberScene.ts` | The room: props, camera, showcase, spin, colour. |
+| `components/sections/WorksField/hooks/useWorksField.ts` | Renders the space **and hosts the chamber**. |
+
+### Why the chamber lives inside the works field
+
+**A GPU texture cannot cross a WebGL context.** The deck (ship) and the works field are separate
+canvases = separate renderers. The space is rendered by the works renderer, so anything that *displays*
+it must be drawn by that same renderer. That is the whole reason `useWorksField` hosts the chamber
+rather than the chamber having its own canvas. Do not "tidy" this.
+
+### The render path
+
+```
+  space scene ──► spaceComposer (RenderPass + bloom) ──► texture, LINEAR HDR
+                                                              │
+                        ┌─────────────────────────────────────┘
+                        ▼
+     reveal == 0:  full-bleed quad ──┐
+     reveal  > 0:  chamber scene   ──┴──► screenComposer (OutputPass + SMAA) ──► canvas
+```
+
+The split sits **before tone mapping**, and exactly one `OutputPass` exists, at the very end. Tone-map
+into the texture and the screen pipeline tone-maps it *again* — the whole image shifts the instant the
+reveal engages.
+
+---
+
+## 3. Traps — every one of these cost a round to find
+
+### 3.1 `MeshBasicMaterial` would paint the sun out of the site
+The works canvas is transparent; the pinned sun shows *through* the space. `MeshBasicMaterial` with
+`transparent: false` compiles with three's `OPAQUE` define, which forces `gl_FragColor.a = 1.0`. Hence
+the raw passthrough shader in `spacePresentMaterial.ts`. It also does no tone mapping and no colour-space
+transform, which is what keeps the pixels identical.
+
+### 3.2 EffectComposer's buffer roles are backwards from what they look like
+`new EffectComposer(renderer, target)` makes `target` the **write** buffer and **clones a second one**
+for the **read** buffer. `RenderPass` and `UnrealBloomPass` both draw into the **read** buffer and
+neither swaps. So the finished image is in `composer.readBuffer`, *not* in the target you constructed it
+with. Sampling the wrong one gives a fully transparent texture and the field renders as an empty void.
+**Always read the output back off the composer.**
+
+### 3.3 The crop must never be applied flat
+At progress 0 the display must show the render **1:1**. Any crop there opens the reveal on a zoomed,
+panned picture — a visible jump. The crop is therefore ramped in with the pull-back. If a prop's screen
+doesn't match the render's shape, **stretch the prop** (its scale is per-axis) rather than distorting the
+picture. That's why `tableScale*` is deliberately non-uniform and all four crops are 0.
+
+### 3.4 A rig's `position` is local to its PARENT
+Measure a centre in world space, assign it to a rig nested inside another rig, and the origin lands
+offset by the parent's own centre. **The mesh still draws in the right place** — the two errors cancel —
+so nothing looks wrong until you *rotate* it, and then it swings around a point out in space. Use
+`parent.worldToLocal(...)`. This bit us on the spinning core ring.
+
+### 3.5 The models' bounding boxes lie
+The cloning-tank chamber's box was 1635 units tall but its walkable room only ~410 — dominated by a floor
+slab dropping 600 below and a ceiling slab rising 600 above. Normalising by it buried the camera *inside
+the floor*. **Place models from measured coordinates, not their bbox.** (That model is no longer used, but
+the lesson stands.)
+
+### 3.6 The set is lit ENTIRELY by its own emissives
+Every light is at **zero** — `screenLight`, `ambient`, `keyLight`, `envIntensity`. That is deliberate: in
+a black room the only thing throwing light is the screen you're looking at. Adding a key light or an
+environment washes it out instantly. It also means **tinting a colour only works if you tint the
+emissive** — the cables' colour *is* their glow.
+
+### 3.7 The optimizer's `join` fuses meshes that share a material
+It welded all three concentric rings into one object, so there was no core ring to spin alone. The podium
+is built with **`join: false`** for that reason (`scripts/optimizeModels.mjs`). The three rings are the
+same geometry at different **node scales**, so their raw vertex bounds are identical — the core can only
+be found by measuring the *placed* size, with world matrices refreshed first.
+
+### 3.8 Everything is a pure function of scroll — except the two GSAP moves
+The reveal is scrubbed. The showcase is a GSAP timeline fired when the reveal *lands*. Do not add a third
+clock. (This site has already been rebuilt once because a crossing ran on three clocks and fast scroll
+desynced them — see `docs/services-to-works-flight.md`.)
+
+---
+
+## 4. The scroll
+
+```
+  fill ─┬─ craft 0..3 ══HANDOFF══ proj 0..3 ══REVEAL══ chamber
+                        (180vh)              (140vh)   (1 stop)
+```
+
+The chamber is **one stop**. The reveal is a scrubbed crossing (`CHAMBER_PROGRESS_EVENT`); when it
+reaches 1, the chamber scene plays the **whole showcase** as one GSAP timeline. One gesture, one shot.
+
+`REVEAL_SETTLE_MS` (in `useHeroAnimation`) locks input across the reveal **plus** the tour. If
+`showcaseSeconds` grows past ~3s, raise it or a second scroll will cut the tour short.
+
+### The hand-off has no seam because there is nothing to seam
+The reveal's resting pose **is** showcase key 0. Literally the same pose twice. Don't let `camX/camY/camZ`
+drift from it — those are only the fallback for a room with no showcase.
+
+---
+
+## 5. The set
+
+Two models, both from `models-src` via `npm run optimize:models -- <file>`:
+
+| | raw | shipped | VRAM |
+|---|---|---|---|
+| `podium-512 / -1024` | **153 MB** (27 × 4096² maps!) | 988 KB / 1.4 MB | 2298 MB → **31 MB** |
+| `table` | 10.9 MB | 636 KB | 3 MB |
+
+The podium is not a podium — it's a **whole set**: a ground plane, a small plinth, a ring portal, cabling,
+and two pyramids 27 units back and 41 wide. Its pieces are rigged as **one assembly** (`Rings` + `Turbine`
++ `Cables` + `Cable_Joiners`) so they move together; the **core ring** spins alone inside that.
+
+The chamber-room and sci-fi-screen models were **dropped** (`chamber-*.glb`, `screen.glb` deleted). Their
+recipes remain in the optimizer if they're ever wanted back.
+
+---
+
+## 6. Tuning
+
+**The numbers are now fixed constants.** There was once an on-screen `ChamberTuner` panel (with HOLD,
+a free-fly scout camera, pose recording, per-part ▣/⌖ helpers, and a JSON export) that wrote to a live
+store; it and the store's editable layer have been removed. `chamberScene` reads the values once and
+the FAQ hologram reads its `holo*` values — both via `getChamberTuning()`.
+
+To retune, edit `CHAMBER_TUNING` / `SHOWCASE_KEYS` in `lib/chamberTuning.ts` directly. (If you need the
+old drag-to-place/record workflow back, restore `ChamberTuner.tsx` and the store from git history.)
+
+---
+
+## 7. What's still open
+
+1. **The seam has never been confirmed by eye.** Everything is built so the image should sit still while
+   the camera retreats. Nobody has said out loud that it does. If it *jumps* at the very first frame, the
+   pipeline split is wrong and that's a correctness bug, not a cosmetic one.
+2. **The hologram.** Every showcase pose already carries the screen's own position/rotation/size, so the
+   feed can **lift out of the table and settle into the ring portal** as the camera walks to it. That's
+   what the portal is for. It just needs the poses re-recorded with the screen ▣'d into the rings.
+3. **What the room is FOR.** The chamber is one stop. The Process content — steps on the podium? on the
+   table's screen? a DOM overlay? — is undecided.
+4. **Reduced motion / portrait** have not been exercised on this section.

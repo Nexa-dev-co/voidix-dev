@@ -3,7 +3,7 @@
 // the panels stay presentational and the numbers are easy to retune. Labels render uppercased via
 // CSS, so store them in natural case.
 
-// Left panel — the Orbix Core operating system. Five modules, top to bottom. `value` is the
+// Left panel — the Voidix Core operating system. Five modules, top to bottom. `value` is the
 // resting state the markup renders; `live` marks the two readouts useCoreTelemetry drives with
 // real telemetry after the reveal (omit = static text for the whole hero).
 export interface CoreModule {

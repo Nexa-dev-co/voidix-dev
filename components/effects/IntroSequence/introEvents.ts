@@ -4,7 +4,7 @@
  * mask-wipe + square "water fill" + sun crossfade). Shared so both sides agree
  * on the handoff name.
  */
-export const REVEAL_EVENT = 'orbix:reveal';
+export const REVEAL_EVENT = 'voidix:reveal';
 
 /**
  * Fired once, synchronously, when the IntroSequence effect mounts — i.e. an intro is actually on the
@@ -13,4 +13,4 @@ export const REVEAL_EVENT = 'orbix:reveal';
  * or crashed on mount, so the hero recovers fast; if it does, the hero trusts the intro and only
  * keeps a long ultimate safety net.
  */
-export const INTRO_ACTIVE_EVENT = 'orbix:intro-active';
+export const INTRO_ACTIVE_EVENT = 'voidix:intro-active';

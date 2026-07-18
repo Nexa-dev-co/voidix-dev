@@ -20,4 +20,4 @@ export const DECK_HIDE_EVENT = 'deck:hide';
  * listens for this and scrolls to the revealed fleet (craft 0) — a plain `#services` anchor would
  * just jump to the top of the hero without driving the fill → reveal transition.
  */
-export const GOTO_SERVICES_EVENT = 'orbix:goto-services';
+export const GOTO_SERVICES_EVENT = 'voidix:goto-services';

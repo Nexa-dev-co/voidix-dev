@@ -9,7 +9,7 @@
 ## Context
 
 The homepage (`app/page.tsx`) currently ends after the hero with a `100vh` placeholder.
-The next section is **Services**. Per `CLAUDE.md`, it must *demonstrate* Orbix rather than
+The next section is **Services**. Per `CLAUDE.md`, it must *demonstrate* Voidix rather than
 list bullets: a landing **deck** of four spacecraft sitting dormant, each labelled with a
 service. Hovering a ship ignites its lights; clicking it powers the ship up — it steps
 forward, lifts into a floating hover, tracks the mouse, and reveals that service's

@@ -1,4 +1,4 @@
-# Orbix — Edits Backlog
+# Voidix — Edits Backlog
 
 > **Living list.** Each entry is a planned edit: the problem, the clean target behavior, the
 > approach (no "cover-up" hacks), the files involved, and what must be preserved. Every edit is

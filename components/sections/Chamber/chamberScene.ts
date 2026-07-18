@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
-import { getPerformanceTier } from '@/lib/performanceTier';
+import { createGroundGrid } from './groundGrid';
+import { createChamberWalls } from './chamberWalls';
+import { applySurfaceLighting } from './chamberSurfaceLighting';
 import { hideHologram, publishHologramPose } from '@/lib/hologramPose';
 import {
   CHAMBER_HOLOGRAM_EVENT,
@@ -40,12 +42,12 @@ import {
  */
 
 // ── Models ───────────────────────────────────────────────────────────────────────────────────────
-// The podium shipped with 27 maps at 4096² — 2.3 GB of VRAM untouched, which is not a heavy model but an
-// unusable one. Capped it's 31 MB / 122 MB, so it ships at two tiers and the runtime picks one from
-// measured frame times rather than a device sniff (see performanceTier).
-const PODIUM_MODEL_LOW = '/models/podium-512.glb';
-const PODIUM_MODEL_HIGH = '/models/podium-1024.glb';
-// The table is the mirror image: one small map, all its weight in geometry. Draco handles it; one tier.
+// The table is the only prop left. One small map, all its weight in geometry — Draco handles it, so
+// unlike the (now removed) podium it needs no texture tiering.
+//
+// The podium and its ring portal are gone on purpose: the hologram no longer floats over a plinth
+// across the room, it sits with the table. What fills the space behind it is the ground (below), which
+// costs no download at all.
 const TABLE_MODEL = '/models/table.glb';
 const DRACO_DECODER_PATH = '/draco/';
 
@@ -84,6 +86,17 @@ export interface ChamberScene {
    * from `window.innerHeight` on the other side would be quietly assuming the canvas fills the window.
    */
   update: (progress: number, viewportWidth: number, viewportHeight: number) => void;
+  /**
+   * Dev only (`?tune`): hand the camera to something else.
+   *
+   * The camera is otherwise a pure function of the reveal's progress, which means the only poses it can
+   * ever reach are the ones the current tour already visits — useless for authoring a NEW tour. While an
+   * override is set, `update` poses everything else as normal (the set, the display, the hologram) and
+   * leaves the camera alone. Pass `null` to give it back.
+   */
+  setCameraOverride: (
+    drive: ((deltaSeconds: number, camera: THREE.PerspectiveCamera) => void) | null,
+  ) => void;
   dispose: () => void;
 }
 
@@ -214,6 +227,29 @@ export function createChamberScene({
   const display = new THREE.Mesh(displayGeometry, displayMaterial);
   scene.add(display);
 
+  // ── The ground ──
+  // The room's floor. Added here rather than loaded, because it's two triangles and a shader — see
+  // groundGrid.ts for why a modelled floor can't work in a set whose lights are all at zero.
+  //
+  // It cannot break the seam at progress 0, and the reason is worth stating because it isn't obvious.
+  // At progress 0 the display fills the frustum exactly, and its material is OPAQUE-queued with
+  // `depthWrite` on — so it writes depth across the whole frame, including where the dark of space is
+  // still fully transparent (`uOpaque` is 0 there). The ground is transparent-queued, so it draws
+  // AFTER, and every one of its fragments fails the depth test against the display. The floor is
+  // therefore invisible until the pull-back actually moves the camera off the display's normal, which
+  // is exactly when a floor should first appear.
+  const groundGrid = createGroundGrid();
+  // Drawn after the walls: neither writes depth, so at the join the later one wins and the floor is
+  // the surface that belongs in front (see the matching renderOrder in chamberWalls).
+  groundGrid.mesh.renderOrder = 1;
+  scene.add(groundGrid.mesh);
+
+  // ── The walls ──
+  // One inward-facing cylinder wearing the same grid, fading out as it rises so there is no ceiling and
+  // no corner. Same depth reasoning as the floor, so it likewise can't intrude on the seam at progress 0.
+  const chamberWalls = createChamberWalls();
+  scene.add(chamberWalls.mesh);
+
   const screenLight = new THREE.PointLight(
     SCREEN_LIGHT_COLOR,
     tuning.screenLight,
@@ -229,8 +265,6 @@ export function createChamberScene({
   // Every standard material in the set, so the environment's strength stays adjustable across all of it.
   const setMaterials: THREE.MeshStandardMaterial[] = [];
   /** Materials that get repainted, by the name the panel knows them by. */
-  const cableMaterials: THREE.MeshStandardMaterial[] = [];
-  const joinerMaterials: THREE.MeshStandardMaterial[] = [];
   const tableMaterials: THREE.MeshStandardMaterial[] = [];
   /** What each repainted material's glow shipped at, so the slider scales it instead of replacing it. */
   const glowHome = new Map<THREE.MeshStandardMaterial, number>();
@@ -241,8 +275,8 @@ export function createChamberScene({
    *
    * The colour MULTIPLIES the model's own maps rather than replacing them — that's what keeps the surface
    * detail. And it has to hit the EMISSIVE too: this set is lit entirely by its own emissives (every light
-   * is at zero), so the cables' orange comes out of their emissive map. Tint only the base colour and they
-   * stay stubbornly orange, because the glow is what you're actually looking at.
+   * is at zero), so a prop's shipped colour comes out of its emissive map. Tint only the base colour and
+   * it stays stubbornly that colour, because the glow is what you're actually looking at.
    *
    * Which is also why the glow's STRENGTH is a separate control. Tint an emissive and nothing tempers it —
    * you get a flat, saturated wash. The strength is what turns a colour back into a light.
@@ -267,8 +301,6 @@ export function createChamberScene({
   const gltfLoader = new GLTFLoader();
   gltfLoader.setDRACOLoader(dracoLoader);
 
-  let podiumGroup: THREE.Group | null = null;
-  let podiumPivot: THREE.Group | null = null;
   let tableGroup: THREE.Group | null = null;
   let tablePivot: THREE.Group | null = null;
   let disposed = false;
@@ -276,115 +308,14 @@ export function createChamberScene({
   /** Every switchable piece of every prop, by id — so a stray screen or ground plane can be removed. */
   const partMeshes = new Map<string, THREE.Mesh>();
 
-  // ── Assemblies within the podium ──
-  //
-  // The podium's pieces belong to each other in groups: the RING PORTAL is the rings plus the turbine
-  // that sits in their mouth; the CABLING is the cables plus their joiners. Move one without the other
-  // and the model comes apart. So they're rigged as units.
-  //
-  // They need a RIG rather than being moved directly, because the optimizer bakes node transforms into
-  // the geometry: every mesh sits at the model's origin with its vertices out in model space. Scale or
-  // turn such a mesh and it pivots around the model's ORIGIN and swings across the room. A rig placed at
-  // the assembly's own centre makes it scale and turn on the spot.
-  // One assembly: the rings, the turbine in their mouth, and the cabling that feeds them. They are one
-  // machine — move or scale any of it alone and the model comes apart.
-  const PODIUM_ASSEMBLIES: Record<string, string[]> = {
-    rings: ['Rings', 'Turbine', 'Cables', 'Cable_Joiners'],
-  };
-
-  interface Assembly {
-    rig: THREE.Group;
-    /** Where it started, so an offset is applied to it rather than accumulating on it. */
-    home: THREE.Vector3;
-    meshes: THREE.Mesh[];
-  }
-  const assemblies = new Map<string, Assembly>();
-
-  /**
-   * ONLY the core ring spins — the innermost of the three concentric rings. The outer two, the turbine and
-   * the cabling all hold still, which is what makes the spin read as a mechanism rather than the whole
-   * prop rotating.
-   *
-   * It needs a SECOND rig, nested inside the assembly's and centred on that ring alone: the assembly's
-   * centre takes in the turbine and the cabling, so spinning at that level would swing the ring around the
-   * whole machine instead of turning it on the spot.
-   *
-   * (This is also why the podium is built with `join: false` — the optimizer fuses meshes that share a
-   * material, and it had welded all three rings into one object. There was no core ring to spin.)
-   */
-  let ringsSpinRig: THREE.Group | null = null;
-  let lastSpinFrame = performance.now();
-
-  /**
-   * Lift a set of meshes onto one rig, centred on the group they form — so it scales and turns on the
-   * spot rather than around the model's origin.
-   *
-   * The centre is measured in WORLD space but has to be *expressed* in the parent's — a rig's `position`
-   * is local to its parent. Get that wrong and the rig's origin lands somewhere else entirely, the meshes
-   * still draw in the right place (the two errors cancel), and nothing looks wrong until you ROTATE it:
-   * then it swings around a point off in space instead of turning on its own axis.
-   */
-  const rigMeshes = (meshes: THREE.Mesh[]) => {
-    const parent = meshes[0]?.parent;
-    if (!parent || meshes.length === 0) return null;
-
-    const box = new THREE.Box3();
-    meshes.forEach((mesh) => box.expandByObject(mesh));
-    const home = parent.worldToLocal(box.getCenter(new THREE.Vector3()));
-
-    const rig = new THREE.Group();
-    rig.position.copy(home);
-    parent.add(rig);
-    meshes.forEach((mesh) => {
-      // Each mesh keeps drawing exactly where it was: the rig moved TO the centre, so they step back by it.
-      mesh.position.sub(home);
-      rig.add(mesh);
-    });
-    return { rig, home };
-  };
-
-  const rigAssembly = (name: string, meshes: THREE.Mesh[]) => {
-    const rigged = rigMeshes(meshes);
-    if (rigged) assemblies.set(name, { ...rigged, meshes });
-  };
-
-  /** Place an assembly from its tuning: shown/hidden, moved, scaled and turned about its own centre. */
-  const placeAssembly = (
-    name: string,
-    show: boolean,
-    x: number,
-    y: number,
-    z: number,
-    scale: number,
-    rotX: number,
-    rotY: number,
-    rotZ: number,
-  ) => {
-    const assembly = assemblies.get(name);
-    if (!assembly) return;
-    assembly.rig.visible = show;
-    if (!show) return;
-    assembly.rig.position.set(
-      assembly.home.x + x,
-      assembly.home.y + y,
-      assembly.home.z + z,
-    );
-    assembly.rig.scale.setScalar(scale);
-    assembly.rig.rotation.set(
-      THREE.MathUtils.degToRad(rotX),
-      THREE.MathUtils.degToRad(rotY),
-      THREE.MathUtils.degToRad(rotZ),
-    );
-  };
-
   /**
    * Load a prop into its own group. It is placed entirely from the tuning, every frame.
    *
    * The nesting is `group → pivot → model`. The pivot exists because a model's origin is wherever the
-   * artist exported from and is rarely anywhere useful — the podium's sits out by its rings, so scaling
-   * and turning it swing the whole thing around a point nobody cares about. Shifting the model inside
-   * the pivot moves the point the OUTER group transforms around, so it can be re-anchored onto the
-   * podium itself.
+   * artist exported from and is rarely anywhere useful — put it off to one side of the mesh and scaling
+   * or turning the prop swings the whole thing around a point nobody cares about. Shifting the model
+   * inside the pivot moves the point the OUTER group transforms around, so it can be re-anchored onto
+   * the prop itself.
    */
   const loadProp = (
     model: string,
@@ -399,20 +330,15 @@ export function createChamberScene({
         const pivot = new THREE.Group();
         pivot.add(gltf.scene);
         group.add(pivot);
-        // Everything below MEASURES this model — part centres, assembly centres, which ring is the core.
-        // Those measurements read `matrixWorld`, and the podium's nodes carry real transforms (its three
-        // rings are the same geometry at three different scales), so without this they'd all come back
-        // identical and the core ring would be picked at random.
+        // The part ids below are positional, and a mesh's own transform decides where it ends up — so the
+        // hierarchy has to be resolved before anything measures or catalogues it.
         group.updateMatrixWorld(true);
 
-        // A material can own SEVERAL meshes — the podium has three concentric rings and two turbine parts.
-        const meshesByMaterial = new Map<string, THREE.Mesh[]>();
-        // Parts baked off in the tuning are CULLED, not hidden: the set only ever needs one surface and
-        // the ring portal, so the podium's ground plane / backdrop and the table's extra pieces are dead
-        // weight in memory and in the render traversal. We collect them here and remove them once the
-        // traverse is done (you can't restructure the tree mid-traverse), and skip every registration —
-        // materials, part catalogue, assembly grouping — so nothing downstream holds a reference to a mesh
-        // that's about to be gone.
+        // Parts baked off in the tuning are CULLED, not hidden: the set only ever needs the one surface,
+        // so the table's extra pieces are dead weight in memory and in the render traversal. We collect
+        // them here and remove them once the traverse is done (you can't restructure the tree
+        // mid-traverse), and skip every registration — materials, part catalogue — so nothing downstream
+        // holds a reference to a mesh that's about to be gone.
         const hiddenPartIds = tuning.hiddenParts;
         const culledMeshes: THREE.Mesh[] = [];
         let index = 0;
@@ -430,29 +356,19 @@ export function createChamberScene({
           const materials = Array.isArray(child.material)
             ? child.material
             : [child.material];
-          const name = materials[0]?.name || child.name || `part ${partIndex}`;
           materials.forEach((material) => {
             if (!(material instanceof THREE.MeshStandardMaterial)) return;
             setMaterials.push(material);
-            // The cable RUNS get repainted — NOT their joiners, which are the dark connectors and want to
-            // stay dark. Everything else keeps the colour it shipped with.
-            if (model === 'podium' && name === 'Cables') cableMaterials.push(material);
-            if (model === 'podium' && name === 'Cable_Joiners') joinerMaterials.push(material);
             if (model === 'table') tableMaterials.push(material);
             glowHome.set(material, material.emissiveIntensity ?? 1);
           });
           partMeshes.set(id, child);
-          if (model === 'podium') {
-            const sameMaterial = meshesByMaterial.get(name) ?? [];
-            sameMaterial.push(child);
-            meshesByMaterial.set(name, sameMaterial);
-          }
         });
 
         // Drop the culled meshes now that the survivors are known. Their geometry is freed unless a
-        // surviving mesh shares it — the podium's three rings are the same geometry at different scales, so
-        // a blind dispose could pull a buffer out from under a piece that's still on screen. Materials are
-        // left alone: they're shared across the set and disposed with everything else on teardown.
+        // surviving mesh shares it — a model can reuse one buffer across several nodes, so a blind
+        // dispose could pull it out from under a piece that's still on screen. Materials are left alone:
+        // they're shared across the set and disposed with everything else on teardown.
         if (culledMeshes.length > 0) {
           const survivingGeometries = new Set<THREE.BufferGeometry>();
           partMeshes.forEach((mesh) => survivingGeometries.add(mesh.geometry));
@@ -460,40 +376,6 @@ export function createChamberScene({
             mesh.removeFromParent();
             if (!survivingGeometries.has(mesh.geometry)) mesh.geometry.dispose();
           });
-        }
-
-        // Rig the podium's assemblies so each moves as the unit it is.
-        if (model === 'podium') {
-          Object.entries(PODIUM_ASSEMBLIES).forEach(([name, materials]) => {
-            const meshes = materials.flatMap(
-              (material) => meshesByMaterial.get(material) ?? [],
-            );
-            rigAssembly(name, meshes);
-          });
-          // Reparenting moved things; re-measure from the new hierarchy.
-          group.updateMatrixWorld(true);
-
-          // …then give the CORE ring — the innermost of the three — a rig of its own inside that, so it
-          // can turn without dragging the outer rings, the turbine and the cabling round with it.
-          //
-          // "Innermost" is MEASURED, not assumed: the three rings are identical geometry at different
-          // node scales, so their raw vertex bounds are the same and only their placed size tells them
-          // apart. The smallest is the core.
-          const rings = meshesByMaterial.get('Rings') ?? [];
-          const core = rings.reduce<{ mesh: THREE.Mesh; size: number } | null>((smallest, mesh) => {
-            const size = new THREE.Box3()
-              .setFromObject(mesh)
-              .getSize(new THREE.Vector3())
-              .length();
-            return !smallest || size < smallest.size ? { mesh, size } : smallest;
-          }, null);
-
-          if (core) {
-            // Same rigging, and the same trap: the centre must be expressed in the PARENT's space (which
-            // by now is the assembly's rig, not the model root), or the ring turns around a point off in
-            // space instead of on its own axis.
-            ringsSpinRig = rigMeshes([core.mesh])?.rig ?? null;
-          }
         }
 
         scene.add(group);
@@ -505,11 +387,6 @@ export function createChamberScene({
     );
   };
 
-  const highTier = getPerformanceTier() === 'high';
-  loadProp('podium', highTier ? PODIUM_MODEL_HIGH : PODIUM_MODEL_LOW, (group, pivot) => {
-    podiumGroup = group;
-    podiumPivot = pivot;
-  });
   loadProp('table', TABLE_MODEL, (group, pivot) => {
     tableGroup = group;
     tablePivot = pivot;
@@ -730,6 +607,15 @@ export function createChamberScene({
     playhead.ty = THREE.MathUtils.lerp(podium.ty, table.ty, turnT);
     playhead.tz = THREE.MathUtils.lerp(podium.tz, table.tz, turnT);
   };
+
+  // Dev only (?tune): teardown for the authoring panel, if one was ever loaded.
+  const tunerCleanups: (() => void)[] = [];
+
+  // Dev only (?tune): while set, this flies the camera instead of the reveal's progress.
+  let cameraOverride:
+    | ((deltaSeconds: number, camera: THREE.PerspectiveCamera) => void)
+    | null = null;
+  let lastCameraOverrideFrame = performance.now();
 
   // True while the spline owns the pose (the tour half of the span). Kept so the handheld sway can start
   // from rest the frame the tour engages, rather than reading a stale playhead delta (see the guard in update).
@@ -977,21 +863,6 @@ export function createChamberScene({
     ambientLight.intensity = tuning.ambient;
     keyLight.intensity = tuning.keyLight;
 
-    placeProp(podiumGroup, podiumPivot, {
-      show: tuning.showPodium,
-      scaleX: tuning.podiumScaleX,
-      scaleY: tuning.podiumScaleY,
-      scaleZ: tuning.podiumScaleZ,
-      x: tuning.podiumX,
-      y: tuning.podiumY,
-      z: tuning.podiumZ,
-      rotX: tuning.podiumRotX,
-      rotY: tuning.podiumRotY,
-      rotZ: tuning.podiumRotZ,
-      pivotX: tuning.podiumPivotX,
-      pivotY: tuning.podiumPivotY,
-      pivotZ: tuning.podiumPivotZ,
-    });
     placeProp(tableGroup, tablePivot, {
       show: tuning.showTable,
       scaleX: tuning.tableScaleX,
@@ -1008,19 +879,40 @@ export function createChamberScene({
       pivotZ: tuning.tablePivotZ,
     });
 
-    // The ring portal — rings, turbine and cabling, as one machine. Lifted off the ground plane it shares
-    // a model with (which `podiumY` can't do, since the ground rises with it), and scaled and turned
-    // around its OWN centre rather than the model's origin.
-    placeAssembly('rings', tuning.showRings, tuning.ringsX, tuning.ringsY, tuning.ringsZ, tuning.ringsScale, tuning.ringsRotX, tuning.ringsRotY, tuning.ringsRotZ);
+    // The floor. Its glow tracks the hologram's anchor, so moving the panel moves the pool of light
+    // under it and the two can never drift apart.
+    groundGrid.mesh.visible = tuning.showGround;
+    if (tuning.showGround) {
+      groundGrid.mesh.position.y = tuning.groundY;
+      groundGrid.uniforms.uOpacity.value = tuning.groundOpacity;
+      groundGrid.uniforms.uLineColor.value.set(tuning.groundLineColor);
+      groundGrid.uniforms.uGlowColor.value.set(tuning.groundGlowColor);
+      // With walls up, the floor stops AT them; without, it dissolves into the void instead.
+      groundGrid.uniforms.uClipRadius.value = tuning.showWalls
+        ? tuning.wallRadius
+        : Number.MAX_VALUE;
+      groundGrid.uniforms.uCell.value = tuning.groundCell;
+      groundGrid.uniforms.uLineWidth.value = tuning.groundLineWidth;
+      groundGrid.uniforms.uFade.value = tuning.groundFade;
+      groundGrid.uniforms.uGlowCenter.value.set(tuning.holoX, tuning.holoY, tuning.holoZ);
+      groundGrid.uniforms.uGlowRadius.value = tuning.groundGlowRadius;
+      groundGrid.uniforms.uGlowStrength.value = tuning.groundGlowStrength;
 
-    // The rings turn on their own axis. Z, because that's the one they're flat to — they're 2.78 × 2.76
-    // across and only 0.24 thick, so Z is the axle. Driven off real elapsed time, not the frame count, so
-    // the speed is the same on any machine.
-    if (ringsSpinRig) {
-      const now = performance.now();
-      const spinDelta = Math.min((now - lastSpinFrame) / 1000, 0.1);
-      lastSpinFrame = now;
-      ringsSpinRig.rotation.z += THREE.MathUtils.degToRad(tuning.ringsSpin) * spinDelta;
+      // The room's lights, coming up as you back out of the screen. The wavefront starts at the DISPLAY
+      // — the thing you were just inside — so the light spreads from the table outward, and the room
+      // assembles itself around the one object you already knew was there.
+      applySurfaceLighting(groundGrid.uniforms, tuning, rigPosition, progress);
+    }
+
+    // The walls ride the SAME wavefront off the SAME origin, so the sweep crosses the floor line as one
+    // event rather than as two surfaces that happen to agree.
+    chamberWalls.mesh.visible = tuning.showWalls;
+    if (tuning.showWalls) {
+      chamberWalls.setShape(tuning.wallRadius, tuning.wallHeight, tuning.groundY);
+      chamberWalls.uniforms.uOpacity.value = tuning.wallOpacity;
+      chamberWalls.uniforms.uFadeStart.value = tuning.wallFadeStart;
+      chamberWalls.uniforms.uWallColor.value.set(tuning.wallColor);
+      applySurfaceLighting(chamberWalls.uniforms, tuning, rigPosition, progress);
     }
 
     // The environment is what turns dim metal into a chrome showroom, so it stays adjustable across
@@ -1029,11 +921,6 @@ export function createChamberScene({
       material.envMapIntensity = tuning.envIntensity;
     });
 
-    paint(cableMaterials, tuning.cablesColor, tuning.cablesGlow);
-    // The joiners are left exactly as they shipped unless you ask — they're hardware, not light.
-    if (tuning.paintJoiners) {
-      paint(joinerMaterials, tuning.joinersColor, tuning.joinersGlow);
-    }
     paint(tableMaterials, tuning.tableColor);
 
     // The dark of space stops being transparent, and the pinned sun leaves with it (the pin fades the
@@ -1084,7 +971,15 @@ export function createChamberScene({
     // progress that drives everything else, so forward and back stay in sync for free.
     setHologramOpen(progress >= HOLO_OPEN_PROGRESS);
 
-    if (inTour) {
+    if (cameraOverride) {
+      // Dev only: something else is flying the camera (see setCameraOverride). Everything above still
+      // ran, so the set and the display are posed exactly as they would be — only the shot is borrowed.
+      const now = performance.now();
+      const overrideDelta = Math.min((now - lastCameraOverrideFrame) / 1000, 0.1);
+      lastCameraOverrideFrame = now;
+      cameraOverride(overrideDelta, camera);
+      camera.updateProjectionMatrix();
+    } else if (inTour) {
       // The tour half: the camera rides the spline, with the handheld drift layered on top. The drift is
       // coupled to the camera's own speed, so it breathes through the walk and settles to still once you
       // park at the podium — which is what you want for reading the FAQ. It's also faded out across the last
@@ -1145,7 +1040,9 @@ export function createChamberScene({
     // untouched. Publishing across the whole tour (not just at the podium) lets the panel track and grow as
     // you approach; it stays hidden until the camera actually turns to face it, since `publishHologram`
     // hides an anchor that's behind the camera.
-    const canPlaceHologram = inTour && tuning.showHologram;
+    // While a dev override is flying the camera the tour gate doesn't apply — you're placing the panel,
+    // so you have to be able to see it from wherever you've flown to.
+    const canPlaceHologram = (inTour || !!cameraOverride) && tuning.showHologram;
     if (canPlaceHologram) {
       publishHologram(viewportWidth, viewportHeight);
     } else {
@@ -1153,7 +1050,7 @@ export function createChamberScene({
     }
   };
 
-  return {
+  const chamberScene: ChamberScene = {
     scene,
     camera,
     // The display IS the reveal; the props can still be streaming in behind it, because at progress 0 it
@@ -1163,14 +1060,23 @@ export function createChamberScene({
       displayUniforms.uSpace.value = texture;
     },
     update,
+    setCameraOverride: (drive) => {
+      cameraOverride = drive;
+      // Reset the clock, or the first frame after taking the camera gets the whole idle gap as its
+      // delta and the free-fly lurches.
+      lastCameraOverrideFrame = performance.now();
+    },
     dispose: () => {
       disposed = true;
+      tunerCleanups.forEach((cleanup) => cleanup());
       // The room is gone; the panel anchored to it must not outlive it.
       setHologramOpen(false);
       hideHologram();
       displayGeometry.dispose();
       displayMaterial.dispose();
-      [podiumGroup, tableGroup].forEach((group) =>
+      groundGrid.dispose();
+      chamberWalls.dispose();
+      [tableGroup].forEach((group) =>
         group?.traverse((child) => {
           if (child instanceof THREE.Mesh) {
             child.geometry.dispose();
@@ -1184,4 +1090,24 @@ export function createChamberScene({
       dracoLoader.dispose();
     },
   };
+
+  // ── Dev tuning panel (off by default; opened with ?tune) ──
+  // Same pattern as the fleet and the works field: dynamically imported so lil-gui — and the whole
+  // authoring surface, including its free-fly camera — never enters the normal bundle.
+  if (new URLSearchParams(window.location.search).has('tune')) {
+    import('./chamberTunerPanel')
+      .then(({ createChamberTunerPanel }) =>
+        // The scene may have been torn down while the panel's chunk was in flight; if so the panel must
+        // not attach listeners to a camera nobody is drawing any more.
+        disposed
+          ? undefined
+          : createChamberTunerPanel({
+              scene: chamberScene,
+              onDispose: (cleanup) => tunerCleanups.push(cleanup),
+            }),
+      )
+      .catch(() => {});
+  }
+
+  return chamberScene;
 }

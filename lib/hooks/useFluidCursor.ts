@@ -10,6 +10,11 @@ import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/Servic
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const MAX_FRAME_SECONDS = 1 / 60;
+// The ink dissipates within ~0.6s of the last splat (densityDissipation is very high), after which the
+// sim renders a blank, fully-transparent frame forever. Once the pointer's been still longer than this we
+// stop the solve + composite entirely until the next splat — a still cursor (and touch devices between
+// touches) then cost nothing. Comfortably past the dissipation time, so nothing visible is ever cut off.
+const IDLE_AFTER_LAST_SPLAT_MS = 900;
 
 /**
  * Drives the fluid cursor: one WebGL sim renders dark ink + stars to `inkCanvas`,
@@ -75,6 +80,9 @@ export function useFluidCursor(
     let lastClientX = 0;
     let lastClientY = 0;
     let lastPointerTime = 0;
+    // When the last splat landed — the render loop idles the sim once the trail's had time to dissipate.
+    // Starts far in the past so a still hero (no pointer yet) costs nothing until the first splat.
+    let lastSplatTime = Number.NEGATIVE_INFINITY;
 
     const handlePointerMove = (clientX: number, clientY: number) => {
       if (!isHeroVisible || inServices) return;
@@ -105,6 +113,7 @@ export function useFluidCursor(
       const forceY = -(deltaYPixels / window.innerHeight) * FLUID_CONFIG.splatForce;
 
       simulation.splat(uvX, uvY, forceX, forceY, radiusPixels);
+      lastSplatTime = now; // wakes / keeps the render loop solving
 
       lastClientX = clientX;
       lastClientY = clientY;
@@ -137,7 +146,14 @@ export function useFluidCursor(
       const deltaSeconds = Math.min((now - lastFrameTime) / 1000, MAX_FRAME_SECONDS);
       lastFrameTime = now;
 
+      // Keep resize handling live even while idle (cheap no-op when nothing changed), so the sim's
+      // buffers never fall out of step with the canvas during a still stretch.
       if (resizeCanvases()) simulation.resize();
+
+      // Idle once the trail has fully dissipated and the pointer's gone quiet — the canvas is already
+      // transparent, so skipping the solve + composite changes nothing on screen. The next splat
+      // (mouse/touch) pushes lastSplatTime forward and the loop resumes on the same frame.
+      if (now - lastSplatTime > IDLE_AFTER_LAST_SPLAT_MS) return;
 
       simulation.frame(deltaSeconds, (now - startTime) / 1000);
 

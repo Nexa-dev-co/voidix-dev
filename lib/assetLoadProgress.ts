@@ -29,7 +29,7 @@ const listeners = new Set<() => void>();
  * compile its shaders + bloom pipeline during that still beat — so the (synchronous) compile stall
  * is invisible instead of janking the loading animation or hitching the reveal.
  */
-export const ASSETS_WARMUP_EVENT = 'orbix:assets-warmup';
+export const ASSETS_WARMUP_EVENT = 'voidix:assets-warmup';
 
 /** Record a source's load fraction (0..1). Monotonic: a lower value than already seen is ignored. */
 export function reportAssetProgress(source: AssetSource, value: number): void {

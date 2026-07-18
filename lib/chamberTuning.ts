@@ -72,33 +72,8 @@ export interface ChamberTuning {
    */
   hiddenParts: string[];
 
-  // ── The ring portal ──
-  // The rings, the turbine in their mouth, and the cabling that feeds them: ONE machine, rigged as one and
-  // placed independently of the podium (it's what the hologram sits inside, and in the model it's half-buried
-  // in its own cabling). Offsets/scale are in the MODEL's coordinates, so they ride the podium's transform.
-  showRings: boolean;
-  ringsX: number;
-  ringsY: number;
-  ringsZ: number;
-  ringsScale: number;
-  ringsRotX: number;
-  ringsRotY: number;
-  ringsRotZ: number;
-  /** Degrees per second the RINGS spin, on their own axis, inside the portal. */
-  ringsSpin: number;
-
   // ── Colour ──
-  // These MULTIPLY the models' own maps rather than replacing them, so the surface detail survives. The
-  // cable runs only — NOT their joiners, the dark connectors that want to stay dark.
-  cablesColor: string;
-  /** How hard the cables glow, as a multiple of what the model shipped with — the cables are pure emissive. */
-  cablesGlow: number;
-
-  /** The joiners — the connectors along the runs. Off by default: they read as hardware, not as light. */
-  paintJoiners: boolean;
-  joinersColor: string;
-  joinersGlow: number;
-
+  // MULTIPLIES the model's own maps rather than replacing them, so the surface detail survives.
   tableColor: string;
 
   // ── The showcase: the camera's move around the room, as one continuous shot ──
@@ -138,26 +113,71 @@ export interface ChamberTuning {
   /** How much it creeps off the display before committing to the pull-back. */
   easePower: number;
 
+  // ── The ground ──
+  // A procedural grid on one plane, not a model — the room's lights are all at zero, so a lit floor
+  // would render black. See components/sections/Chamber/groundGrid.ts.
+  showGround: boolean;
+  /** Height the floor sits at. The table rests on it, so this and the table's Y move together. */
+  groundY: number;
+  /** World units between grid lines. */
+  groundCell: number;
+  /** Line thickness in PIXELS — held constant in screen space, which is what stops distant lines aliasing. */
+  groundLineWidth: number;
+  /** World radius at which the floor has faded to nothing, so the room never shows an edge. */
+  groundFade: number;
+  /** The floor before its cell has struck — the dark room. */
+  groundColor: string;
+  /** …and after. The colour arriving IS the room's lights coming on. Shared with the walls. */
+  groundColorLit: string;
+  /** The grid drawn ON the lit floor. Dark lines on a pale surface, not glowing lines in a void. */
+  groundLineColor: string;
+  /** The tint pooled under the hologram — a colour wash, since a pale floor has no headroom to brighten. */
+  groundGlowColor: string;
+  groundOpacity: number;
+  /** The floor lifts under the hologram, so the panel reads as hanging above a surface. */
+  groundGlowRadius: number;
+  groundGlowStrength: number;
+
+  // ── The lights coming on ──
+  // A wavefront spreading out from the display, each floor cell striking on its own. Driven by the
+  // reveal's own progress, so it is reversible for free: scroll back and the room goes dark again.
+  /** Reveal progress at which the first cell strikes. */
+  groundPowerStart: number;
+  /** …and at which the furthest one has. */
+  groundPowerEnd: number;
+  /** World distance the wavefront has travelled at full power. Larger = the sweep reaches further out. */
+  groundIgniteRadius: number;
+  /** How far out of turn a cell may fire. 0 = a clean expanding circle, which reads as a graphic. */
+  groundIgniteJitter: number;
+  /** How gradually one cell comes up. Small = a hard click on. */
+  groundIgniteSoftness: number;
+  /** The over-bright flare as a cell strikes, like a tube striking before it settles. */
+  groundSurge: number;
+
+  // ── The walls ──
+  // One inward-facing cylinder of plain white — no grid, that belongs to the floor — riding the floor's
+  // ignition. No corners and no ceiling: it fades out as it rises, so the room encloses you at eye level
+  // without ever measuring itself. See chamberWalls.ts.
+  showWalls: boolean;
+  /** How far out the wall stands. Keep inside `groundFade` or the floor dies before it reaches the wall. */
+  wallRadius: number;
+  /** How far up it has faded to nothing. There is no ceiling — this is where it stops being visible. */
+  wallHeight: number;
+  /** Fraction of the height held at full strength before the rising fade starts. */
+  wallFadeStart: number;
+  wallOpacity: number;
+  /**
+   * THE WALL COLOUR. Kept separate from the floor's white rather than derived from it, so the two read
+   * as different surfaces — a wall and a floor at the same value collapse into one seamless tube.
+   */
+  wallColor: string;
+
   // ── Pivots — the point, in the MODEL's own coordinates, a prop scales and turns around ──
-  podiumPivotX: number;
-  podiumPivotY: number;
-  podiumPivotZ: number;
   tablePivotX: number;
   tablePivotY: number;
   tablePivotZ: number;
 
-  // ── The set — each prop placed independently: shown/hidden, scaled (PER AXIS), moved, turned (DEGREES) ──
-  showPodium: boolean;
-  podiumScaleX: number;
-  podiumScaleY: number;
-  podiumScaleZ: number;
-  podiumX: number;
-  podiumY: number;
-  podiumZ: number;
-  podiumRotX: number;
-  podiumRotY: number;
-  podiumRotZ: number;
-
+  // ── The set — the table, placed: shown/hidden, scaled (PER AXIS), moved, turned (DEGREES) ──
   showTable: boolean;
   tableScaleX: number;
   tableScaleY: number;
@@ -192,8 +212,19 @@ export interface ChamberTuning {
   holoFrameInset: number;
   holoFrameColor: string;
 
+  /**
+   * The TEXT. Near-black, because the room is white now — the panel is transparent, so its type sits
+   * directly on the room and has to be read against it.
+   */
+  holoInk: string;
+  /**
+   * The accent: indices, arrows, rules, hover washes. This is where the cyan survives.
+   *
+   * Deliberately NOT the brand's electric `--accent` (#00e5ff) — that's a colour for glowing on black
+   * and it's illegible on white. This is the same hue taken down far enough to hold its own.
+   */
   holoTint: string;
-  /** The cyan wash's strength. This is a hologram: it should be barely there. */
+  /** The panel's own background wash. Zero = fully transparent, which is what a white room wants. */
   holoOpacity: number;
   holoGlow: number;
   holoScanlines: number;
@@ -219,6 +250,11 @@ export interface ChamberTuning {
 
 /**
  * The showcase: the camera's move around the room, as ONE continuous shot the reveal progress scrubs.
+ *
+ * ⚠ STALE — these keys walk to a podium that no longer exists. The podium and its ring portal were
+ * removed and the hologram moved to the table, so every pose below aims at empty space. They are kept
+ * only so the scene still has a path to sample while the new tour is authored in the `?tune` panel;
+ * replace this array wholesale with the recorded keys. The comments on each key describe the OLD tour.
  *
  * A ROUND TRIP. Keys up to the podium are the way IN (table → podium); keys from the podium on are the way
  * OUT (podium → turn → table). They SHARE the podium key — the pivot — so the two never seam, and
@@ -261,14 +297,9 @@ const CHAMBER_TUNING: ChamberTuning = {
   cropRight: 0,
   cropTop: 0,
   cropBottom: 0,
-  // The podium's ground plane / backdrop and the table's extra pieces — everything but the one surface and
-  // the ring portal the room needs. CULLED at load (removed and their geometry freed), not drawn invisibly.
+  // The table's extra pieces — everything but the one surface the room needs. CULLED at load (removed and
+  // their geometry freed), not drawn invisibly.
   hiddenParts: [
-    'podium:8',
-    'podium:7',
-    'podium:6',
-    'podium:5',
-    'podium:4',
     'table:7',
     'table:6',
     'table:5',
@@ -278,23 +309,6 @@ const CHAMBER_TUNING: ChamberTuning = {
     'table:1',
   ],
 
-  showRings: true,
-  ringsX: 0,
-  ringsY: -0.85,
-  ringsZ: 0.7,
-  ringsScale: 0.63,
-  ringsRotX: 0,
-  ringsRotY: 0,
-  ringsRotZ: 0,
-  ringsSpin: 10,
-
-  // A deep navy that reads as a cold light in the dark rather than as blue paint — the cables are pure
-  // emissive, so the colour IS the glow.
-  cablesColor: '#000e2e',
-  cablesGlow: 1,
-  paintJoiners: false,
-  joinersColor: '#000000',
-  joinersGlow: 1,
   tableColor: '#3b3e43',
 
   showcaseKeys: SHOWCASE_KEYS,
@@ -316,23 +330,48 @@ const CHAMBER_TUNING: ChamberTuning = {
   camTargetZ: 8.15,
   easePower: 2.4,
 
-  podiumPivotX: 0,
-  podiumPivotY: 0,
-  podiumPivotZ: 0,
+  showGround: true,
+  groundY: 0,
+  groundCell: 1,
+  groundLineWidth: 1.5,
+  groundFade: 26,
+  // A desaturated teal — the brand cyan cooled right down, so it reads as a dim light on a floor
+  // rather than as a neon grid. It is additive, so this colour IS its brightness.
+  // Near-black: before the lights reach it, a patch of room is simply not there yet.
+  groundColor: '#08090a',
+  // White. The room powering up to a bright studio is the reveal's last beat.
+  groundColorLit: '#f4f5f6',
+  groundLineColor: '#0a0a0a',
+  groundGlowColor: '#4fd8e8',
+  groundOpacity: 1,
+  groundGlowRadius: 4,
+  groundGlowStrength: 0.35,
+
+  // Starts once the pull-back has actually left the display (before that the floor is depth-hidden
+  // behind it anyway) and completes as the tour gets going, so the room is lit by the time you walk.
+  groundPowerStart: 0.1,
+  groundPowerEnd: 0.62,
+  groundIgniteRadius: 18,
+  groundIgniteJitter: 0.35,
+  groundIgniteSoftness: 0.18,
+  groundSurge: 1.6,
+
+  showWalls: true,
+  // Comfortably inside groundFade (26), so the floor is still alive where it meets the wall.
+  wallRadius: 14,
+  wallHeight: 9,
+  wallFadeStart: 0.15,
+  wallOpacity: 1,
+  // The HERO's cream (#e2dfd2 — see `.hero-section` in globals.css). The room resolves to the colour the
+  // site opened on, so the last thing you see is the first thing you saw: you were never anywhere else.
+  //
+  // Keep the two in step BY HAND. The hero is CSS and this is a WebGL scene, so there is no shared token
+  // that could carry the value across — change one and the rhyme quietly dies.
+  wallColor: '#e2dfd2',
+
   tablePivotX: 0,
   tablePivotY: 0,
   tablePivotZ: 0,
-
-  showPodium: true,
-  podiumScaleX: 2,
-  podiumScaleY: 2,
-  podiumScaleZ: 2,
-  podiumX: -4.4,
-  podiumY: 0.05,
-  podiumZ: -5.9,
-  podiumRotX: 0,
-  podiumRotY: 0,
-  podiumRotZ: 0,
 
   showTable: true,
   // Deliberately NOT uniform: the table is stretched so its screen matches the render's shape (this is what
@@ -347,8 +386,8 @@ const CHAMBER_TUNING: ChamberTuning = {
   tableRotY: -190,
   tableRotZ: 0,
 
-  // Floating above the plinth, in front of the ring portal — so the rings glow around it as a backdrop
-  // rather than fighting it for the frame.
+  // Floating with the table. The podium and its ring portal that used to back it are gone; the ground's
+  // grid is the backdrop now. These coordinates are the OLD plinth's and are re-authored in the ?tune panel.
   showHologram: true,
   holoX: -4.4,
   holoY: 1.65,
@@ -362,11 +401,18 @@ const CHAMBER_TUNING: ChamberTuning = {
   holoFrameInset: 0.06,
   holoFrameColor: '#000000',
 
-  holoTint: '#26abba',
-  holoOpacity: 0.035,
-  holoGlow: 2,
-  holoScanlines: 0.56,
-  holoFringe: 1.3,
+  holoInk: '#0b0f12',
+  // The brand cyan, deepened until it reads as ink rather than as light.
+  holoTint: '#0d7f8f',
+  // The three below are all a hologram's "projected light" vocabulary, and every one of them reads as
+  // dirt once the backdrop is white: a glow has nothing to glow against, scanlines become a grey haze
+  // over the type, and the chromatic fringe turns dark text muddy — it stops looking like projection and
+  // starts looking like a printing misregistration. The panel earns its presence from the black frames
+  // and the type now. Left as live knobs rather than deleted, in case the room ever goes dark again.
+  holoOpacity: 0,
+  holoGlow: 0,
+  holoScanlines: 0,
+  holoFringe: 0,
 
   holoOpenSeconds: 1.55,
   holoRowStagger: 0.06,
@@ -380,5 +426,17 @@ const CHAMBER_TUNING: ChamberTuning = {
 
 /** The chamber's fixed numbers. Read once by the scene and the hologram; never mutated. */
 export function getChamberTuning(): Readonly<ChamberTuning> {
+  return CHAMBER_TUNING;
+}
+
+/**
+ * The same object, writable — for the `?tune` panel and nothing else.
+ *
+ * The scene reads the tuning ONCE and holds the reference, so mutating this object in place is what
+ * makes the panel's sliders take effect on the next frame with nothing to rebuild. Separated from
+ * {@link getChamberTuning} so the readonly type stays the default everywhere in the app path, and
+ * reaching for a writable handle has to be deliberate.
+ */
+export function getWritableChamberTuning(): ChamberTuning {
   return CHAMBER_TUNING;
 }

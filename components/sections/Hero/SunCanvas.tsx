@@ -33,6 +33,13 @@ const NOISE_SCALE      = 2.4;
 const FLOW_SPEED       = 0.5;
 const SURFACE_CONTRAST = 1.35;
 
+// Demand-render thresholds. The sun animates only as the calm hero sun (churn + slow spin) and while
+// `intensity` eases between states; once energised it freezes (stillness → 0) and its image is identical
+// every frame for the whole services → works → chamber span. Past these, the frame wouldn't change, so we
+// stop re-rendering it — same pixels, none of the 5-octave FBM cost.
+const INTENSITY_SETTLE_EPSILON = 0.0005; // |intensity − target| below this → the ramp is done
+const STILLNESS_EPSILON        = 0.001;  // no churn/spin left → the surface is frozen
+
 export default function SunCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -40,7 +47,15 @@ export default function SunCanvas() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    // preserveDrawingBuffer so the last frame keeps compositing while we're NOT drawing (the sun is
+    // frozen for most of the scroll — see the demand-render gate in the loop). Without it an un-preserved
+    // buffer's contents are undefined once we stop rendering, which could blank the sun in the room.
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      preserveDrawingBuffer: true,
+    });
     // The surface is procedural, so it stays sharp at any scale without texture
     // supersampling — a plain DPR clamp keeps the fragment shader affordable when
     // the scroll expansion blows the sun up to fill the hero.
@@ -77,6 +92,9 @@ export default function SunCanvas() {
 
     // ── Resize (also re-applied on services enter/leave to change the render resolution) ──
     let renderScale = 1; // 1 = calm/low-res; SERVICES_RENDER_SCALE in services so the big sun is crisp
+    // A resize reallocates the drawing buffer, so a frozen (non-drawing) sun must redraw once at the new
+    // size. Set on resize / services-scale changes and consumed by the next loop tick.
+    let forceRender = true;
     const applySize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -87,6 +105,7 @@ export default function SunCanvas() {
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      forceRender = true;
     };
     const observer = new ResizeObserver(applySize);
     observer.observe(canvas.parentElement ?? canvas);
@@ -107,10 +126,15 @@ export default function SunCanvas() {
     window.addEventListener(DECK_HIDE_EVENT, deEnergise);
 
     // ── Render loop ────────────────────────────────────────────────
+    // A backgrounded tab may drop even a preserved buffer; redraw once on the first visible frame.
+    const onVisibility = () => { if (!document.hidden) forceRender = true; };
+    document.addEventListener('visibilitychange', onVisibility);
+
     const clock = new THREE.Clock();
     let flowTime = 0;   // "surface time"; sprints during the fast-spin window so the plasma churns faster
     let intensity = 0;  // eased toward targetIntensity each frame
     let cycleTime = 0;  // position within the idle→spin rhythm (only advances while energised)
+    let wasAnimating = true; // so the FINAL settled frame is drawn once before we stop (falling edge)
     let rafId: number;
     const animate = () => {
       rafId = requestAnimationFrame(animate);
@@ -148,15 +172,28 @@ export default function SunCanvas() {
 
       sunUniforms.uTime.value = flowTime;
       sunUniforms.uIntensity.value = intensity;
-      // The sun is on screen for the whole journey (it's the hero centrepiece, and it stays visible
-      // behind the fleet/field), so it only skips drawing when the tab is backgrounded.
-      if (!document.hidden) renderer.render(scene, camera);
+
+      // Demand-render: only draw while the image is actually changing. It changes while `intensity` is
+      // still easing (the state ramp) or while the surface is churning/spinning (stillness > 0 — the calm
+      // hero sun). Once energised it freezes to an identical frame for the whole services → works →
+      // chamber span, so we stop redrawing it there. `wasAnimating` draws the one final settled frame on
+      // the falling edge; `forceRender` covers a resize / tab-restore. The preserved buffer keeps the last
+      // frame on screen while we skip.
+      const animating =
+        Math.abs(targetIntensity - intensity) > INTENSITY_SETTLE_EPSILON ||
+        stillness > STILLNESS_EPSILON;
+      if (!document.hidden && (animating || wasAnimating || forceRender)) {
+        renderer.render(scene, camera);
+        forceRender = false;
+      }
+      wasAnimating = animating;
     };
     animate();
 
     return () => {
       cancelAnimationFrame(rafId);
       observer.disconnect();
+      document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener(DECK_REVEAL_EVENT, energise);
       window.removeEventListener(DECK_HIDE_EVENT, deEnergise);
       renderer.dispose();

@@ -1,4 +1,4 @@
-# Orbix — Project Baseline (Frozen Reference)
+# Voidix — Project Baseline (Frozen Reference)
 
 > **Snapshot date:** 2026-06-25 · **Branch:** `enhancement`
 >
@@ -20,7 +20,7 @@
 ## 1. Stack & Configuration
 
 ### `package.json`
-- `name` `orbix` · `version` `0.1.0` · `private` true
+- `name` `voidix` · `version` `0.1.0` · `private` true
 - **Scripts:** `dev` → `next dev` · `build` → `next build` · `start` → `next start` ·
   `lint` → `next lint` · `optimize:models` → `node scripts/optimizeModels.mjs`
 - **Dependencies:** `@gsap/react ^2.1.1`, `@types/three ^0.184.1`, `gsap ^3.12.5`,
@@ -84,8 +84,8 @@ color `--hero-invert-text: #c0c0c0` (set on `.hero-section`); `::selection` back
 ## 2. App Pages
 
 ### `app/layout.tsx` — `RootLayout({ children })` (default export)
-Exports `metadata` (title `orbix — software with gravity`, description, `metadataBase
-https://orbix.studio`, OpenGraph). Renders `<html lang="en">` with both font variable
+Exports `metadata` (title `voidix — software with gravity`, description, `metadataBase
+https://voidix.studio`, OpenGraph). Renders `<html lang="en">` with both font variable
 classes, `<body>` containing `<Navbar />` then `{children}`.
 
 ### `app/page.tsx` — `HomePage()` (default export)
@@ -93,7 +93,7 @@ Renders `<main>` with, in order: `<Hero />`, `<ServicesDeck />`, `<HeroSun />`,
 `<IntroSequence />`.
 
 ### `app/services/page.tsx` — `ServicesPage()` (default export)
-Exports `metadata` (title `orbix — the fleet`). Renders `<main><ServicesFleet /></main>`.
+Exports `metadata` (title `voidix — the fleet`). Renders `<main><ServicesFleet /></main>`.
 
 ---
 
@@ -126,7 +126,7 @@ with four `.cta-corner` brackets.
 ## 4. Effects
 
 ### `components/effects/IntroSequence/introEvents.ts`
-- `REVEAL_EVENT = 'orbix:reveal'` — fired when the sun lands in the hero square.
+- `REVEAL_EVENT = 'voidix:reveal'` — fired when the sun lands in the hero square.
 
 ### `components/effects/IntroSequence/IntroSequence.tsx` — `IntroSequence()` (default export)
 State: single `done` boolean (returns `null` when done but stays mounted). Refs: `rootRef`,
@@ -411,7 +411,7 @@ State `status: FleetViewerStatus` (initial `{ isLoading: true, percent: -1 }`). 
 ### Custom events
 | Event | Constant | Fired by | Listened by |
 |---|---|---|---|
-| `orbix:reveal` | `REVEAL_EVENT` | `IntroSequence` (sun lands) | `useHeroAnimation`, `useNavbarAnimation`, `useDeckCarousel`, `HeroSun` |
+| `voidix:reveal` | `REVEAL_EVENT` | `IntroSequence` (sun lands) | `useHeroAnimation`, `useNavbarAnimation`, `useDeckCarousel`, `HeroSun` |
 | `deck:reveal` | `DECK_REVEAL_EVENT` | `useDeckCarousel` (section reveal/re-entry) | `useServicesDeck` (replays staged craft entrance) |
 
 ### Scroll-lock (intro)

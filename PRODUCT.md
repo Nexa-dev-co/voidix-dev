@@ -10,7 +10,7 @@ Prospective clients (founders, product leads, CTOs) evaluating a premium softwar
 
 ## Product Purpose
 
-Orbix's single-page portfolio site. Not a marketing page — the site is the product demo: every interaction, animation, and visual must communicate innovation, technical excellence, precision engineering, and premium quality. Success = "could realistically compete on Awwwards."
+Voidix's single-page portfolio site. Not a marketing page — the site is the product demo: every interaction, animation, and visual must communicate innovation, technical excellence, precision engineering, and premium quality. Success = "could realistically compete on Awwwards."
 
 ## Brand Personality
 

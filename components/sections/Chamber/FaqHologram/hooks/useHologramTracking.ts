@@ -31,6 +31,7 @@ function toRgbTriplet(hex: string): string {
 
 function applyTuningVariables(panel: HTMLElement, tuning: ChamberTuning): void {
   const style = panel.style;
+  style.setProperty('--holo-ink-rgb', toRgbTriplet(tuning.holoInk));
   style.setProperty('--holo-tint-rgb', toRgbTriplet(tuning.holoTint));
   style.setProperty('--holo-frame-color', tuning.holoFrameColor);
   style.setProperty('--holo-opacity', String(tuning.holoOpacity));

@@ -60,7 +60,7 @@ where the models actually weigh.
 
 | Asset | Used by | Shipped size | VRAM | Load | Notes |
 |---|---|---|:---:|:---:|---|
-| **podium-512 / -1024** | Chamber | 0.99 MB / 1.4 MB | ●●●●● | ●●●●○ | The heavyweight. Raw was 153 MB (27×4096² maps); capped to two tiers. VRAM ranges from ~tens of MB (512²) to ~192 MB (1024²) — **the runtime picks the tier from *measured* fps** (`performanceTier.ts`), the one true device-adaptive asset decision on the site. |
+| **podium-512 / -1024** | Chamber | 0.99 MB / 1.4 MB | ●●●●● | ●●●●○ | The heavyweight — **entirely because of textures, not geometry or screen size**. It carries **27 maps at 4096²** ≈ **2.3 GB** of VRAM as authored. The resolution cap does all the work: **512 → ~36 MB**, **1024 → ~144 MB**, and the runtime picks the tier from *measured* fps (`performanceTier.ts`) — the one true device-adaptive asset decision on the site. Its 144k verts are a rounding error next to that. ⚠️ `performanceTier.ts`'s comment still quotes "36 maps / ~192 MB", which are the **dropped cloning-tank chamber's** numbers, not the podium's. |
 | **table.glb** | Chamber | 0.64 MB | ●●○○○ | ●●○○○ | Geometry-heavy (raw 10.9 MB), one small map. ~3 MB VRAM. |
 | **meteor.glb** | WorksField | Draco | ●○○○○ | ●●○○○ | One shared body, normalized to unit radius and cloned for all 4 projects. |
 | **ship glbs ×4** (`spaceship`, `spaceship3`, `cargo_spaceship`, `star_…fighter`) | ServicesDeck | Draco each | ●●○○○ | ●●●○○ | Loaded per active craft on swap, not all at once. |
