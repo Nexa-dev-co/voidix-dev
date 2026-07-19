@@ -13,6 +13,23 @@ import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/l
 import { createStoneMaterial } from '../meteorMaterial';
 import { createMeteorGeometry, createMeteorMaterial } from '../meteorBody';
 import { getWorksTuning } from '../worksTuning';
+import { WORKS_PROJECTS, type ProjectRock } from '../worksProjects';
+import {
+  SPIN_RAMP_SECONDS,
+  SPIN_PEAK_HOLD_SECONDS,
+  SPIN_DECAY_SECONDS,
+  SPIN_PEAK_DEGREES_PER_SECOND,
+  ENVIRONMENT_COUNTER_SPIN_DEGREES_PER_SECOND,
+  MORPH_SECONDS,
+  MORPH_SWELL_UNITS,
+  MORPH_EMISSIVE_FLARE,
+} from '../worksTransition';
+import {
+  enableMeteorMorph,
+  attachMorphTarget,
+  bakeMorphTarget,
+  type MeteorMorphUniforms,
+} from '../meteorMorph';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
@@ -678,6 +695,56 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     surfaceMap.wrapT = THREE.RepeatWrapping;
     disposableTextures.push(surfaceMap);
 
+    // The rock gets its OWN view of that image. `repeat` is a property of the texture, not of the
+    // material, and the debris shards are drawn with `surfaceMap` too — so setting the meteor's grain
+    // on the shared map would rescale every shard in the field along with it. A clone shares the same
+    // uploaded GPU image (no extra VRAM, no second decode) while owning its own repeat.
+    const meteorMap = surfaceMap.clone();
+    meteorMap.needsUpdate = true;
+    disposableTextures.push(meteorMap);
+
+    // ── The rock, per project ──
+    // Geometry-baked values (seed, size) need a re-carve; material values (colour, grain) are pushed
+    // every frame like the rest of the tuning. A project without a profile falls back to the global
+    // tuning, so the tuner still drives the rock when nothing overrides it.
+    const fallbackRock = (): ProjectRock => ({
+      seed: tuning.meteorSeed,
+      sizeScale: 1,
+      color: tuning.meteorColor,
+      textureRepeat: tuning.meteorTextureRepeat,
+    });
+    // Which rock is CURRENTLY carved — deliberately lagging the active project. The index changes the
+    // instant you scroll, but the body must not: the colour and grain are pushed every frame, so
+    // reading the live index here would repaint the rock before the spin had a chance to hide it. This
+    // only advances at the peak of the wind-up, in step with the re-carve (see scheduleRockSwap).
+    let renderedRockIndex = activeIndexRef.current;
+    const rockAt = (index: number): ProjectRock =>
+      WORKS_PROJECTS[index]?.rock ?? fallbackRock();
+    const activeRock = (): ProjectRock => rockAt(renderedRockIndex);
+
+    // ── Morph state ──
+    // The shape lerps on the GPU (see meteorMorph.ts); the material properties that AREN'T geometry —
+    // the tint and the texture grain — have to be blended here in step with it, or the rock would
+    // change colour instantly while its silhouette was still halfway there.
+    let meteorMorphUniforms: MeteorMorphUniforms | null = null;
+    let morphTargetIndex = renderedRockIndex;
+    let morphTween: gsap.core.Tween | null = null;
+    // Hoisted: these are written every frame, and allocating two Colors per frame is exactly the kind
+    // of garbage that shows up as jitter once the bloom pass is already competing for the budget.
+    const morphColorFrom = new THREE.Color();
+    const morphColorTo = new THREE.Color();
+
+    // Survives a rebuild so the re-carve doesn't snap the body's spin back to zero (see buildMeteor).
+    let meteorYaw = 0;
+    // The counter-rotation the debris + stars have accumulated. Integrated per frame rather than
+    // derived from `elapsed`, because the rate is not constant — it swells and fades with the spin
+    // envelope, and a value computed from elapsed time would jump the instant the rate changed.
+    let environmentCounterYaw = 0;
+    // 0 = the idle drift authored in `meteorSpin`, 1 = SPIN_PEAK_DEGREES_PER_SECOND. Tweened by the
+    // project-change timeline; the render loop just reads it. Same `{ value }` + gsap.to pattern the
+    // travel and arrival already use.
+    const spinBoost = { value: 0 };
+
     loadingManager.onProgress = (_url, loaded, total) => {
       const fraction = loaded / Math.max(total, 1);
       // Cap below 1 until buildField runs — 'works' only counts as ready once the rock and the shard
@@ -705,20 +772,29 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       });
       meteorRigs.length = 0;
 
+      const rock = activeRock();
       const geometry = createMeteorGeometry({
-        radius: tuning.meteorRadius,
+        radius: tuning.meteorRadius * rock.sizeScale,
         detail: tuning.meteorDetail,
-        seed: tuning.meteorSeed,
+        seed: rock.seed,
         stretchX: tuning.meteorStretchX,
         stretchY: tuning.meteorStretchY,
         stretchZ: tuning.meteorStretchZ,
       });
-      const material = createMeteorMaterial(surfaceMap, tuning.meteorFlatShading);
+      const material = createMeteorMaterial(meteorMap, tuning.meteorFlatShading);
       // Transparent so the arrival can fade it up out of the far dark.
       material.transparent = true;
+      // Teach it to interpolate between shapes. Done here rather than inside createMeteorMaterial so
+      // the material stays a plain MeshStandardMaterial for anything else that wants one.
+      meteorMorphUniforms = enableMeteorMorph(material);
+      morphTargetIndex = renderedRockIndex;
 
       const group = new THREE.Group();
       group.position.set(tuning.meteorX, tuning.meteorY, tuning.meteorZ);
+      // Carry the spin across a rebuild. Without this a re-carve snaps the body back to 0 rad — which
+      // is a hard visible jump at the exact moment the swap is supposed to be invisible, and a jump
+      // every time the ?tune panel nudges the shape.
+      group.rotation.y = meteorYaw;
       group.add(new THREE.Mesh(geometry, material));
       scene.add(group);
 
@@ -803,15 +879,154 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // Nothing ignites and nothing cools any more — there is one rock, and a project is a place to stand
     // and look at it from. So focusing a project is simply travelling to its stop on the path.
     let stagedIndex = activeIndexRef.current;
+
+    // ── The re-carve, hidden inside the spin ──
+    // Winding the rock up to a blur, swapping the body at the peak, then letting it settle. The swap
+    // itself is a full teardown + rebuild (buildMeteor already does exactly this for the tuner), which
+    // is only affordable because it happens once per project change, on the one frame where the body
+    // is turning too fast to read.
+    let spinTimeline: gsap.core.Timeline | null = null;
+    // The duration is passed in rather than derived from `spinBoost` inside, because the two callers
+    // read it at different times: the interrupt branch runs immediately (so the live value is right),
+    // while the swap branch is queued behind the ramp and will always start from a full spin.
+    const windDownSpin = (
+      timeline: gsap.core.Timeline,
+      durationSeconds: number,
+      /** GSAP position: seconds from the timeline's start, or a relative string like `+=0.3`. */
+      at?: number | string,
+    ) =>
+      timeline.to(spinBoost, {
+        value: 0,
+        duration: durationSeconds,
+        // Sheds the bulk of the speed quickly, then a long gentle tail into the idle drift — so it
+        // comes to rest instead of stopping.
+        ease: 'power3.out',
+      }, at);
+
+    /** Finish any morph still in flight right now, so a new one can be armed from a settled shape. */
+    const settleMorph = () => {
+      const rig = meteorRigs[0];
+      morphTween?.kill();
+      morphTween = null;
+      if (!rig || !meteorMorphUniforms) return;
+      if (meteorMorphUniforms.uMorph.value > 0) bakeMorphTarget(rig.geometry);
+      meteorMorphUniforms.uMorph.value = 0;
+      meteorMorphUniforms.uSwell.value = 0;
+      renderedRockIndex = morphTargetIndex;
+    };
+
+    /**
+     * Start the rock reshaping into `index`. Returns false if the two shapes can't be interpolated —
+     * only possible if `meteorDetail` changed between builds, which the tuner can do — so the caller
+     * can fall back to the old hard swap rather than draw a torn body.
+     */
+    const startMorph = (index: number): boolean => {
+      const rig = meteorRigs[0];
+      if (!rig || !meteorMorphUniforms) return false;
+
+      // A morph already running would have its target overwritten mid-flight, which reads as the rock
+      // snapping. Land it first, then reshape from there.
+      settleMorph();
+      if (index === renderedRockIndex) return true;
+
+      const rock = rockAt(index);
+      const targetGeometry = createMeteorGeometry({
+        radius: tuning.meteorRadius * rock.sizeScale,
+        detail: tuning.meteorDetail,
+        seed: rock.seed,
+        stretchX: tuning.meteorStretchX,
+        stretchY: tuning.meteorStretchY,
+        stretchZ: tuning.meteorStretchZ,
+      });
+      const armed = attachMorphTarget(rig.geometry, targetGeometry);
+      // Its buffers have been copied into the live geometry's attributes; the geometry itself was only
+      // ever scaffolding.
+      targetGeometry.dispose();
+      if (!armed) return false;
+
+      morphTargetIndex = index;
+      const uniforms = meteorMorphUniforms;
+      // The shader shapes the swell's curve (a sine over uMorph); this only sets its height, so it's
+      // a one-off, not something to write every frame.
+      uniforms.uSwell.value = MORPH_SWELL_UNITS;
+      morphTween = gsap.to(uniforms.uMorph, {
+        value: 1,
+        duration: MORPH_SECONDS,
+        // Eases out of the old shape and into the new one, so neither end has a visible start/stop —
+        // the linear middle is where the swell does its work.
+        ease: 'power1.inOut',
+        onComplete: () => {
+          renderedRockIndex = index;
+          uniforms.uMorph.value = 0;
+          uniforms.uSwell.value = 0;
+          bakeMorphTarget(rig.geometry);
+          morphTween = null;
+        },
+      });
+      return true;
+    };
+
+    const scheduleRockSwap = (index: number) => {
+      const needsRecarve = index !== renderedRockIndex || index !== morphTargetIndex;
+      // Already showing this rock and already at rest — nothing to do.
+      if (!needsRecarve && spinBoost.value === 0) return;
+
+      spinTimeline?.kill();
+      spinTimeline = gsap.timeline();
+
+      // Stepping forward then straight back lands on the rock that's already carved. There's no shape
+      // change to make, but the previous wind-up is still spinning — so just bring it back to rest.
+      // Without this branch the killed timeline would leave `spinBoost` parked mid-ramp and the rock
+      // would spin fast forever.
+      if (!needsRecarve) {
+        // Scaled by how much speed is actually left, so winding down a half-spun rock doesn't crawl
+        // through a full-length decay.
+        windDownSpin(spinTimeline, SPIN_DECAY_SECONDS * spinBoost.value);
+        return;
+      }
+
+      // From wherever the spin currently is — an interrupted change keeps its momentum instead of
+      // restarting the wind-up from the idle drift.
+      const rampSeconds = SPIN_RAMP_SECONDS * (1 - spinBoost.value) || SPIN_RAMP_SECONDS;
+
+      // Positioned absolutely rather than chained, because the morph owns its own tween (it has to be
+      // able to not exist, if the shapes turn out to be incompatible) and so can't sit in this
+      // timeline's sequence.
+      spinTimeline.to(spinBoost, {
+        value: 1,
+        duration: rampSeconds,
+        // Barely moves for the first third, then runs away. The slow start is what makes the wind-up
+        // feel like something building rather than like a speed being switched on.
+        ease: 'power3.in',
+      }, 0);
+
+      spinTimeline.call(() => {
+        if (startMorph(index)) return;
+        // Incompatible shapes — no morph is possible, so fall back to the original hard swap.
+        renderedRockIndex = index;
+        buildMeteor();
+      }, [], rampSeconds);
+
+      windDownSpin(spinTimeline, SPIN_DECAY_SECONDS, rampSeconds + SPIN_PEAK_HOLD_SECONDS);
+    };
+
     const applyFocus = (index: number, instant: boolean) => {
       stagedIndex = index;
       const targetU = stopKeyIndex[index] ?? 0;
       travelToU = targetU;
       if (instant || reduceMotion) {
         pathU = targetU;
+        // No spin to hide behind, so the rock just becomes the new one.
+        if (renderedRockIndex !== index) {
+          renderedRockIndex = index;
+          if (meteorRigs.length > 0) buildMeteor();
+        }
         updateCamera(true);
         return;
       }
+      // Always called, even when the rock is already the right one — a step forward and straight back
+      // still has a wind-up in flight that has to be brought to rest. scheduleRockSwap decides.
+      scheduleRockSwap(index);
       startTravel(targetU);
     };
 
@@ -986,25 +1201,65 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const deltaSeconds = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
       const elapsed = clock.elapsedTime;
 
-      starSystem.group.rotation.y = elapsed * STAR_DRIFT;
+      // ── The field whirls the other way ──
+      // The rock spins +Y, so this goes -Y: during a project change the debris and stars sweep against
+      // it, and the two rates add into the apparent speed. Outside a change `spinBoost` is 0 and this
+      // contributes nothing, so the resting drift is exactly what it always was.
+      if (!reduceMotion) {
+        environmentCounterYaw -=
+          THREE.MathUtils.degToRad(ENVIRONMENT_COUNTER_SPIN_DEGREES_PER_SECOND) *
+          spinBoost.value *
+          deltaSeconds;
+      }
+
+      starSystem.group.rotation.y = elapsed * STAR_DRIFT + environmentCounterYaw;
       shardMeshes.forEach((mesh, meshIndex) => {
         // Opposite drift on the two fields gives the debris a parallax shimmer.
-        mesh.rotation.y = elapsed * SHARD_DRIFT_SPEED * (meshIndex === 0 ? 1 : -1);
+        mesh.rotation.y =
+          elapsed * SHARD_DRIFT_SPEED * (meshIndex === 0 ? 1 : -1) + environmentCounterYaw;
       });
 
       // The rock turns on its own axis and breathes, whichever stop you're parked at — it is the same
       // object seen from different places, so it never stops being alive.
+      // Idle drift most of the time; during a project change the boost lifts it to a blur and back.
+      const spinDegreesPerSecond = THREE.MathUtils.lerp(
+        tuning.meteorSpin,
+        SPIN_PEAK_DEGREES_PER_SECOND,
+        spinBoost.value,
+      );
+      // The shape is mid-morph on the GPU; the tint and grain have to travel the same 0..1 so the rock
+      // arrives at its new look and its new silhouette together.
+      const morph = meteorMorphUniforms?.uMorph.value ?? 0;
+      const fromRock = activeRock();
+      const toRock = rockAt(morphTargetIndex);
+      morphColorFrom.set(fromRock.color);
+      morphColorTo.set(toRock.color);
+      morphColorFrom.lerp(morphColorTo, morph);
+      // Sine, not the raw morph: the flare peaks with the swell in the molten middle and is back to
+      // the authored value at both ends, so a settled rock is exactly as hot as the tuner says.
+      const flare = 1 + MORPH_EMISSIVE_FLARE * Math.sin(morph * Math.PI);
+
       meteorRigs.forEach((rig) => {
         if (reduceMotion) return;
-        rig.group.rotation.y += THREE.MathUtils.degToRad(tuning.meteorSpin) * deltaSeconds;
+        rig.group.rotation.y += THREE.MathUtils.degToRad(spinDegreesPerSecond) * deltaSeconds;
+        meteorYaw = rig.group.rotation.y;
         rig.group.position.y =
           rig.basePosition.y + Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE;
         rig.material.emissive.set(tuning.meteorEmissiveColor);
-        rig.material.emissiveIntensity = tuning.meteorEmissive;
-        rig.material.color.set(tuning.meteorColor);
+        rig.material.emissiveIntensity = tuning.meteorEmissive * flare;
+        rig.material.color.copy(morphColorFrom);
         rig.material.roughness = tuning.meteorRoughness;
         rig.material.metalness = tuning.meteorMetalness;
       });
+      // The meteor's grain comes from the active project; the shards keep the global tuning value.
+      const activeRepeat = THREE.MathUtils.lerp(
+        fromRock.textureRepeat,
+        toRock.textureRepeat,
+        morph,
+      );
+      if (meteorMap.repeat.x !== activeRepeat) {
+        meteorMap.repeat.setScalar(activeRepeat);
+      }
       if (surfaceMap.repeat.x !== tuning.meteorTextureRepeat) {
         surfaceMap.repeat.setScalar(tuning.meteorTextureRepeat);
       }
@@ -1229,6 +1484,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       shardMeshes = [];
       disposableTextures.forEach((texture) => texture.dispose());
       gsap.killTweensOf(travel);
+      spinTimeline?.kill();
+      morphTween?.kill();
       starSystem.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();

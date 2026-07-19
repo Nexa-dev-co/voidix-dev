@@ -1320,11 +1320,12 @@ body {
   color: var(--fg);
 }
 
-/* Active-project detail — top-right. Re-mounts on selection (keyed in JSX), so it re-reveals. */
+/* Active-project detail — top-right. The entrance is GSAP's now (useWorksTextTransition shears both
+   head blocks out and back on every project change), so there is no CSS animation here: a keyframe
+   would restart on class/content change and fight the tween for the same transform. */
 .works-detail {
   max-width: 34ch;
   text-align: left;
-  animation: works-detail-in 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 
 .works-detail-title {
@@ -1366,17 +1367,6 @@ body {
   font-size: var(--fs-tiny);
   letter-spacing: 0.04em;
   color: rgba(235, 232, 224, 0.6);
-}
-
-@keyframes works-detail-in {
-  from {
-    opacity: 0;
-    transform: translateY(0.75rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 /* Arrow nav — two arrows step the focus; a counter sits between them. The overlay's only

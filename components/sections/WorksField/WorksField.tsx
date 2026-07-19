@@ -1,7 +1,9 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { useRef } from 'react';
 import { WORKS_PROJECTS } from './worksProjects';
+import { useWorksTextTransition } from './hooks/useWorksTextTransition';
 
 // The field owns a WebGL context, so keep it out of the server graph.
 const FieldCanvas = dynamic(() => import('./FieldCanvas/FieldCanvas'), { ssr: false });
@@ -17,7 +19,20 @@ interface WorksFieldProps {
 // fleet carousel finishes, then revealed on the same black. Scroll drives the focused project (the
 // hero pin maps its works stops to an index); the arrows jump by scrolling the pin (see goTo).
 export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
-  const activeProject = WORKS_PROJECTS[activeIndex];
+  const headIntroRef = useRef<HTMLDivElement>(null);
+  const detailRef    = useRef<HTMLDivElement>(null);
+
+  // The copy on screen trails the committed project: the old text has to shear away before the new
+  // text can arrive, and the rock re-carves in the gap between them. See useWorksTextTransition.
+  const displayedIndex = useWorksTextTransition({
+    leftRef: headIntroRef,
+    rightRef: detailRef,
+    activeIndex,
+  });
+
+  const activeProject = WORKS_PROJECTS[displayedIndex];
+  // The arrows reflect where the pin has COMMITTED, not what's still on screen — otherwise the "next"
+  // arrow stays enabled for half a second after you've already reached the last project.
   const isFirst = activeIndex === 0;
   const isLast  = activeIndex === WORKS_PROJECTS.length - 1;
 
@@ -30,15 +45,19 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
 
       <div className="works-overlay">
         <header className="works-head">
-          <div className="works-head-intro">
+          {/* Both blocks shear away and back on every project change (their direct children are the
+              lines that stagger). The copy here is static — it leaves and returns unchanged — because
+              the gesture is the whole overlay resetting around the new rock, not just the detail. */}
+          <div className="works-head-intro" ref={headIntroRef}>
             <p className="eyebrow">Selected Work</p>
             <h2 className="works-title font-display">
               Four fires.<br />One field.
             </h2>
           </div>
 
-          {/* Active-project detail — keyed so it re-mounts and re-reveals on every change. */}
-          <div className="works-detail" key={activeProject.index}>
+          {/* Active-project detail. NOT keyed: GSAP owns the entrance now, so the nodes have to be
+              stable — remounting them would tear the running tween off its targets mid-flight. */}
+          <div className="works-detail" ref={detailRef}>
             <p className="works-detail-title font-display">{activeProject.title}</p>
             <p className="works-detail-meta">{activeProject.client} · {activeProject.year}</p>
             <p className="works-detail-copy">{activeProject.description}</p>
