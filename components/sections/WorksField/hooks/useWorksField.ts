@@ -6,15 +6,13 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
-import { WORKS_PROJECTS } from '../worksProjects';
-import { createStoneMaterial, createFireMaterial, type FireMeteorUniforms } from '../meteorMaterial';
+import { createStoneMaterial } from '../meteorMaterial';
+import { createMeteorGeometry, createMeteorMaterial } from '../meteorBody';
+import { getWorksTuning } from '../worksTuning';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
@@ -25,19 +23,18 @@ import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/li
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
 // ── Textures ────────────────────────────────────────────────────────────
-const TEXTURE_STONE  = '/textures/meteor/stone.jpg';
-const TEXTURE_STONE2 = '/textures/meteor/stone2.webp';
-const TEXTURE_NORMAL = '/textures/meteor/normal.jpg';
-const TEXTURE_FIRE   = '/textures/meteor/fire_meteor.jpg';
+// ONE texture for the whole field: dark basalt shot through with glowing lava veins. The meteor wears
+// it as both albedo AND emissive map, which is what replaced the fire shader (see meteorBody.ts); the
+// debris wears it as plain rock. There is no normal map any more — the carving is real geometry.
+const TEXTURE_SURFACE = '/textures/meteor/basalt-magma.png';
 
 // ── Camera / framing ────────────────────────────────────────────────────
-// This resting framing is exactly where the services→works left-flight lands (the shared camera at
-// progress 1 resolves to `meteor + CAMERA_OFFSET`), so browsing takes over without a jump. Derived
-// from the flight's end pose: sharedCam(1) − METEOR_SHARED_POSITION = (0, 1.0, 7).
+// The fallback field of view. Every authored key carries its own (see worksTuning), so this is only
+// what the camera starts at before the path has been sampled.
 const CAMERA_FOV = 38;
-// Where the camera sits relative to the focused meteor: back + a touch above, looking at it. As
-// the focus travels between meteors the camera flies through the field and neighbours pass by.
-const CAMERA_OFFSET = new THREE.Vector3(0, 1.0, 7.0);
+// How finely the camera path is measured for even pacing. The path is short and smooth, so this is
+// plenty — it only has to beat the eye's ability to notice a speed change.
+const PATH_ARC_SAMPLES = 128;
 
 // ── Warp travel — the "punch between planets" feeling ────────────────────
 // The trip is time-based (not a constant lerp) so it launches, cruises, then arrives: the eased
@@ -46,11 +43,11 @@ const CAMERA_OFFSET = new THREE.Vector3(0, 1.0, 7.0);
 // Paced to read as a real trip between planets rather than a cut: with the scroll now stepping one
 // project per gesture, this warp IS the transition the user sees, so it gets room to breathe. The
 // hero pin holds its input lock (STAGE_STEP_HOLD_MS) across roughly this long.
-const TRAVEL_DURATION = 1.6;        // seconds per hop, regardless of distance
+// How long a hop takes is authored (`travelSeconds` in worksTuning); this is only its shape.
 const TRAVEL_EASE = 'power3.inOut'; // accelerate → cruise → decelerate (the launch/arrive arc)
-// Camera speed (world units/second) that maps to a full-intensity warp. Scaled DOWN in step with the
-// longer TRAVEL_DURATION: a slower hop means a lower peak camera speed, so leaving this at its old
-// value would leave the streaks and the FOV kick barely registering.
+// Camera speed (world units/second) that maps to a full-intensity warp. Kept in step with the hop
+// duration: a slower hop means a lower peak camera speed, so raising this leaves the streaks and the
+// FOV kick barely registering.
 const WARP_REFERENCE_SPEED = 12;
 const WARP_SMOOTHING = 0.22;        // ease the measured speed so streaks/FOV don't flicker frame to frame
 const FOV_KICK = 8;                 // degrees the FOV widens at peak warp (38 → 46), punching the launch
@@ -66,28 +63,13 @@ const DRAG_YAW_CLAMP   = 0.6;
 const DRAG_PITCH_CLAMP = 0.4;
 const VIEW_RETURN_EASE = 0.06; // spring the look-offset back to centre on release
 
-// ── The project meteors — a loose constellation across depth ─────────────
-// Each project is one meteor; the focused one burns. Positions are hand-placed so neighbours stay
-// on screen (you can see the rest of the field around the active one).
-interface MeteorLayout {
-  position: [number, number, number];
-  radius: number;
-}
-const METEOR_LAYOUT: MeteorLayout[] = [
-  { position: [0, 0, 0],          radius: 1.3 },
-  { position: [7.6, 1.9, -4.5],   radius: 1.05 },
-  { position: [-6.8, -1.5, -8],   radius: 1.45 },
-  { position: [4.6, 2.7, -13.5],  radius: 1.15 },
-];
-const METEOR_MODEL_PATH = '/models/meteor.glb'; // the real meteor body every project is carved from
-const DRACO_DECODER_PATH = '/draco/';
-const METEOR_DETAIL = 1;        // icosahedron subdivisions — the fallback shape if the model won't load
-const FIRE_SHELL_SCALE = 1.03;  // the fire mesh sits just outside the stone so it fully envelops it
-const IGNITE_DURATION = 1.1;    // cross-fade a meteor to fire (paced with the slower TRAVEL_DURATION)
-const COOL_DURATION   = 0.9;    // …and back to stone
-const METEOR_SPIN_SPEED = 0.25; // rad/s slow turntable on the focused meteor
-const FLOAT_AMPLITUDE   = 0.12; // gentle vertical bob on the focused meteor
-const FLOAT_SPEED       = 0.9;
+// ── The one meteor ───────────────────────────────────────────────────────
+// There used to be four rocks and the camera flew between them. Now there is ONE, and the camera moves
+// around it — so a project is a camera POSE rather than a place (see worksTuning.ts). The rock itself is
+// procedural, carved the same way as the debris that surrounds it, and it has no fire shell: its lava
+// veins come out of the texture's emissive channel and glow through the bloom pass.
+const FLOAT_AMPLITUDE = 0.12; // gentle vertical bob
+const FLOAT_SPEED     = 0.9;
 
 // ── The services → works flight (the CAMERA flies in; the meteors + debris stay put) ──
 // During the handoff the field camera rides the SAME shared path as the deck ship (see
@@ -121,16 +103,10 @@ const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as
 // onto the pad, so the whole handoff cleanly undoes. Perspective grows each rock as it nears (NOT
 // scaled up from a speck, so it never reads as spawning). They stay far/small until the ship has
 // cleared frame-centre (see EXIT_PROGRESS_* in useServicesDeck), so ship and rocks never clash.
-const METEOR_ARRIVE_PROGRESS_START = 0.8;  // handoff progress where the rocks begin their approach (earlier = slower/longer)
-const METEOR_ARRIVE_OFFSET = new THREE.Vector3(0, 0.5, -42); // how far behind its own spot each rock starts (field-local)
-const METEOR_APPEAR_FRACTION = 0.12; // gentle fade-up from the far dark as they emerge
-const METEOR_IGNITE_START = 0.5;     // fraction of the approach after which it gains its fire
-const METEOR_VISIBLE_EPSILON = 0.001; // below this the meteors are hidden (during the flight)
-
-// ── Fire "breathing" (idle → flare rhythm, like the sun) ─────────────────
-const FLARE_BASE      = 0.6;
-const FLARE_AMPLITUDE = 0.35;
-const FLARE_SPEED     = 1.4;
+const METEOR_ARRIVE_PROGRESS_START = 0.8;  // handoff progress where the rock begins its approach
+const METEOR_ARRIVE_OFFSET = new THREE.Vector3(0, 0.5, -42); // how far behind its spot it starts
+const METEOR_APPEAR_FRACTION = 0.12; // gentle fade-up from the far dark as it emerges
+const METEOR_VISIBLE_EPSILON = 0.001; // below this the rock is hidden (during the flight)
 
 // ── Shards — irregular ambient debris (NOT projects) ─────────────────────
 const SHARD_COUNT       = 260;
@@ -141,8 +117,8 @@ const SHARD_MIN_SCALE   = 0.05;
 const SHARD_MAX_SCALE   = 0.28; // capped so a chunk never reads as a giant boulder
 const SHARD_DRIFT_SPEED = 0.012; // rad/s slow yaw drift on the whole debris field
 const SHARD_TINT        = 0x1c2530; // darker than the meteors so the projects read as the subjects
-// Debris keeps clear of a sphere around each meteor's camera rest spot (base + CAMERA_OFFSET), so a
-// chunk never spawns right on top of the lens and blows up huge in perspective when you focus a project.
+// Debris keeps clear of a sphere around every pose the camera can hold, so a chunk never spawns right
+// on top of the lens and blows up huge in perspective when you arrive at a stop.
 const SHARD_CAMERA_KEEPOUT  = 5;
 const SHARD_PLACEMENT_TRIES = 8; // retries to find a spot clear of the keep-out before accepting one
 // Silhouette: start from a subdivided icosphere, then carve it with layered directional lobes so
@@ -197,13 +173,12 @@ interface FieldOptions {
   onStatus: (status: FieldStatus) => void;
 }
 
+/** The one rock: its rig, the carved body, and the surface that glows in its cracks. */
 interface MeteorRig {
   group: THREE.Group;
   basePosition: THREE.Vector3;
   geometry: THREE.BufferGeometry;
-  stoneMaterial: THREE.MeshStandardMaterial;
-  fireMaterial: THREE.ShaderMaterial;
-  fireUniforms: FireMeteorUniforms;
+  material: THREE.MeshStandardMaterial;
 }
 
 // The live uniforms the render loop drives on the streak layer as the camera warps.
@@ -373,49 +348,6 @@ function createShardGeometry(seed: number, detail: number): THREE.BufferGeometry
   return geometry;
 }
 
-// Flatten a loaded glb into one buffer geometry the meteors can wear: bake every mesh's world
-// transform, keep only position/normal/uv (so primitives with different attribute sets still merge),
-// then centre it and normalise to a unit radius. Each meteor later clones this and scales it to its
-// own layout radius — so the model's absolute size and pivot don't matter. The fire shader only uses
-// normalize(localPosition), which is scale-invariant, so the flame maps onto the model unchanged.
-function meteorGeometryFromModel(root: THREE.Object3D): THREE.BufferGeometry {
-  root.updateWorldMatrix(true, true);
-
-  const parts: THREE.BufferGeometry[] = [];
-  root.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    let baked = child.geometry.clone();
-    baked.applyMatrix4(child.matrixWorld);
-    if (baked.index) baked = baked.toNonIndexed();
-    if (!baked.getAttribute('normal')) baked.computeVertexNormals();
-
-    const trimmed = new THREE.BufferGeometry();
-    trimmed.setAttribute('position', baked.getAttribute('position'));
-    trimmed.setAttribute('normal', baked.getAttribute('normal'));
-    const uv = baked.getAttribute('uv');
-    // Some meteor models have no unwrap; give a zeroed uv so merge + the fire's uMap sample don't NaN.
-    trimmed.setAttribute(
-      'uv',
-      uv ?? new THREE.BufferAttribute(new Float32Array(baked.getAttribute('position').count * 2), 2),
-    );
-    parts.push(trimmed);
-    baked.dispose();
-  });
-
-  // No mesh in the file → fall back to the faceted crystal so the section still builds.
-  if (!parts.length) return new THREE.IcosahedronGeometry(1, METEOR_DETAIL);
-  const merged = (parts.length === 1 ? parts[0] : mergeGeometries(parts, false)) ?? parts[0];
-
-  merged.computeBoundingBox();
-  const center = merged.boundingBox!.getCenter(new THREE.Vector3());
-  merged.translate(-center.x, -center.y, -center.z);
-  merged.computeBoundingSphere();
-  const radius = merged.boundingSphere?.radius || 1;
-  merged.scale(1 / radius, 1 / radius, 1 / radius);
-  merged.computeVertexNormals();
-  return merged;
-}
-
 export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions) {
   // The render loop + handlers read the freshest focus through a ref, so the persistent setup
   // effect never re-runs when the active project changes.
@@ -532,52 +464,200 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const starSystem = createStarSystem();
     scene.add(starSystem.group);
 
-    // ── Camera rig state ──
-    // The camera looks at `focusCurrent`. On a focus change it *warps* from where it is to the new
-    // meteor along a time-based eased hop (launch → cruise → arrive); drag adds a clamped yaw/pitch
-    // orbit offset that springs back on release.
-    const focusCurrent = new THREE.Vector3().fromArray(METEOR_LAYOUT[activeIndexRef.current].position);
-    const focusTarget  = focusCurrent.clone();
+    // ── The camera path ──
+    // A project is a POSE now, not a place. Every entry in PROJECT_VIEW_KEYS is a camera pose; the ones
+    // tagged with a `stop` are where a project parks, and the untagged ones are pass-through bends the
+    // camera splines on its way. One Catmull-Rom over the whole list, parameterised by `pathU` in
+    // [0, keys.length - 1], means a journey and its arrival are the same curve — so the camera never
+    // brakes to a halt at an intermediate key the way a chain of per-leg tweens would.
+    const tuning = getWorksTuning();
+    // Held by reference: the `?tune` panel splices this array, then calls rebuildPath().
+    const viewKeys = tuning.keys;
+    // Where each project's stop sits in the key list, by project index. Rebuilt with the path.
+    let stopKeyIndex: number[] = [];
+
     let viewYaw = 0, viewPitch = 0, viewYawTarget = 0, viewPitchTarget = 0;
-    // On portrait/narrow aspect the camera pulls back so the meteor stays framed instead of clipping.
+    // On portrait/narrow aspect the camera pulls back so the rock stays framed instead of clipping.
     let distanceScale = 1;
 
-    // The warp hop: focusCurrent = lerp(travelFrom, travelTo, easedProgress). GSAP eases the progress
-    // so the speed curve (and thus the streaks + FOV kick) is the launch/arrive arc, not a flat drift.
-    const travelFrom = focusCurrent.clone();
-    const travelTo   = focusCurrent.clone();
-    const travelProgress = { value: 1 }; // 1 = arrived / idle
+    // Standard Catmull-Rom (tension 0.5), clamped at the ends so the curve can't fly off past the
+    // first and last keys.
+    const splineAt = (values: number[], u: number) => {
+      const lastIndex = values.length - 1;
+      if (lastIndex <= 0) return values[0] ?? 0;
+      const clamped = THREE.MathUtils.clamp(u, 0, lastIndex);
+      const segment = Math.min(Math.floor(clamped), lastIndex - 1);
+      const t = clamped - segment;
+      const at = (index: number) => values[THREE.MathUtils.clamp(index, 0, lastIndex)];
+      const p0 = at(segment - 1), p1 = at(segment), p2 = at(segment + 1), p3 = at(segment + 2);
+      const m1 = 0.5 * (p2 - p0);
+      const m2 = 0.5 * (p3 - p1);
+      const t2 = t * t;
+      const t3 = t2 * t;
+      return (2 * p1 - 2 * p2 + m1 + m2) * t3 + (-3 * p1 + 3 * p2 - 2 * m1 - m2) * t2 + m1 * t + p1;
+    };
+    // Split into per-channel arrays, so the spline isn't re-reading objects every frame. Rebuilt only
+    // when the keys actually change, which outside the tuner is never.
+    const channelOf = (pick: (key: (typeof viewKeys)[number]) => number) => viewKeys.map(pick);
+    let keyX: number[] = [];
+    let keyY: number[] = [];
+    let keyZ: number[] = [];
+    let keyTx: number[] = [];
+    let keyTy: number[] = [];
+    let keyTz: number[] = [];
+    let keyFov: number[] = [];
+
+    const pathPosition = new THREE.Vector3();
+    const pathTarget = new THREE.Vector3();
+    const pathOffset = new THREE.Vector3();
+    const ORBIT_UP = new THREE.Vector3(0, 1, 0);
+    const ORBIT_RIGHT = new THREE.Vector3(1, 0, 0);
+    const samplePath = (u: number) => {
+      pathPosition.set(splineAt(keyX, u), splineAt(keyY, u), splineAt(keyZ, u));
+      pathTarget.set(splineAt(keyTx, u), splineAt(keyTy, u), splineAt(keyTz, u));
+    };
+
+    // ── Even pacing ──
+    // A uniform walk along the spline spends one flat slice of time per SEGMENT, so a leg carrying two
+    // transit keys crawls while a leg carrying none races. Measuring real travelled distance and moving
+    // at a constant rate through it is what fixes that.
+    const arcDistances: number[] = new Array(PATH_ARC_SAMPLES).fill(0);
+    const arcScratch = new THREE.Vector3();
+    let lastKeyIndex = Math.max(viewKeys.length - 1, 1);
+    const buildArcTable = () => {
+      let travelled = 0;
+      for (let sample = 0; sample < PATH_ARC_SAMPLES; sample += 1) {
+        samplePath((sample / (PATH_ARC_SAMPLES - 1)) * lastKeyIndex);
+        if (sample > 0) travelled += pathPosition.distanceTo(arcScratch);
+        arcScratch.copy(pathPosition);
+        arcDistances[sample] = travelled;
+      }
+    };
+    /**
+     * Re-derive everything the path is made of from the key list. Called once at setup, and again by the
+     * tuner whenever it edits a key — which is the only thing that can change them.
+     */
+    const rebuildPath = () => {
+      stopKeyIndex = [];
+      viewKeys.forEach((key, keyIndex) => {
+        if (key.stop !== null) stopKeyIndex[key.stop] = keyIndex;
+      });
+      // Say so loudly if the stops don't form a complete run 0..n−1. A gap fails SILENTLY otherwise —
+      // the missing stop resolves to key 0, so that project quietly shows you the first project's shot
+      // and nothing looks broken enough to investigate. This is the mistake authoring will actually make.
+      const stopCount = viewKeys.filter((key) => key.stop !== null).length;
+      for (let stop = 0; stop < stopCount; stop += 1) {
+        if (stopKeyIndex[stop] === undefined) {
+          console.warn(
+            `[works] camera path has ${stopCount} stops but none tagged stop:${stop} — that project will fall back to the first key.`,
+          );
+        }
+      }
+      keyX = channelOf((key) => key.x);
+      keyY = channelOf((key) => key.y);
+      keyZ = channelOf((key) => key.z);
+      keyTx = channelOf((key) => key.tx);
+      keyTy = channelOf((key) => key.ty);
+      keyTz = channelOf((key) => key.tz);
+      keyFov = channelOf((key) => key.fov);
+      lastKeyIndex = Math.max(viewKeys.length - 1, 1);
+      buildArcTable();
+    };
+    rebuildPath();
+
+    /** Distance travelled along the path by parameter `u`. */
+    const arcAt = (u: number) => {
+      const position =
+        (THREE.MathUtils.clamp(u, 0, lastKeyIndex) / lastKeyIndex) * (PATH_ARC_SAMPLES - 1);
+      const low = Math.min(Math.floor(position), PATH_ARC_SAMPLES - 2);
+      return THREE.MathUtils.lerp(arcDistances[low], arcDistances[low + 1], position - low);
+    };
+    /** ...and its inverse, so a constant rate of distance maps back to a parameter. */
+    const uAtArc = (distance: number) => {
+      const total = arcDistances[PATH_ARC_SAMPLES - 1];
+      if (total <= 1e-6) return 0;
+      const target = THREE.MathUtils.clamp(distance, 0, total);
+      let low = 0;
+      let high = PATH_ARC_SAMPLES - 1;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (arcDistances[mid] < target) low = mid + 1;
+        else high = mid;
+      }
+      if (low === 0) return 0;
+      const spanStart = arcDistances[low - 1];
+      const spanEnd = arcDistances[low];
+      const withinSpan = spanEnd > spanStart ? (target - spanStart) / (spanEnd - spanStart) : 0;
+      return ((low - 1 + withinSpan) / (PATH_ARC_SAMPLES - 1)) * lastKeyIndex;
+    };
+
+    // Dev only (?tune): while set, this flies the camera instead of the authored path. Same contract as
+    // the chamber's — everything else still updates, only the shot is borrowed.
+    let cameraOverride:
+      | ((deltaSeconds: number, camera: THREE.PerspectiveCamera) => void)
+      | null = null;
+    let lastOverrideFrame = performance.now();
+
+    // Where the camera is on the path, and the hop that moves it.
+    let pathU = stopKeyIndex[activeIndexRef.current] ?? 0;
+    const travel = { value: 1 }; // 1 = arrived / idle
+    let travelFromU = pathU;
+    let travelToU = pathU;
     let travelActive = false;
-    const startTravel = () => {
-      travelFrom.copy(focusCurrent);
-      travelTo.copy(focusTarget);
-      travelProgress.value = 0;
+
+    const startTravel = (toU: number) => {
+      travelFromU = pathU;
+      travelToU = toU;
+      travel.value = 0;
       travelActive = true;
-      gsap.killTweensOf(travelProgress);
-      gsap.to(travelProgress, {
+      gsap.killTweensOf(travel);
+      gsap.to(travel, {
         value: 1,
-        duration: TRAVEL_DURATION,
+        duration: tuning.travelSeconds,
         ease: TRAVEL_EASE,
         onComplete: () => { travelActive = false; },
       });
     };
 
     const updateCamera = (instant: boolean) => {
+      if (cameraOverride) {
+        const now = performance.now();
+        const overrideDelta = Math.min((now - lastOverrideFrame) / 1000, 0.1);
+        lastOverrideFrame = now;
+        cameraOverride(overrideDelta, camera);
+        camera.updateProjectionMatrix();
+        return;
+      }
       if (instant || reduceMotion) {
-        focusCurrent.copy(focusTarget);
+        pathU = travelToU;
         travelActive = false;
       } else if (travelActive) {
-        focusCurrent.lerpVectors(travelFrom, travelTo, travelProgress.value);
+        pathU = tuning.evenPacing
+          // Move at an even rate through DISTANCE rather than through parameter, so every leg travels
+          // at the same speed regardless of how many keys it happens to contain.
+          ? uAtArc(THREE.MathUtils.lerp(arcAt(travelFromU), arcAt(travelToU), travel.value))
+          : THREE.MathUtils.lerp(travelFromU, travelToU, travel.value);
       }
+
       viewYaw   += (viewYawTarget   - viewYaw)   * VIEW_RETURN_EASE;
       viewPitch += (viewPitchTarget - viewPitch) * VIEW_RETURN_EASE;
 
-      const offset = CAMERA_OFFSET.clone();
-      offset.z *= distanceScale;
-      offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), viewYaw);
-      offset.applyAxisAngle(new THREE.Vector3(1, 0, 0), viewPitch);
-      camera.position.copy(focusCurrent).add(offset);
-      camera.lookAt(focusCurrent);
+      samplePath(pathU);
+      // Drag-to-look ORBITS the authored pose about whatever it aims at, rather than replacing it — so a
+      // peek around the rock always springs back onto the shot the key describes.
+      pathOffset.copy(pathPosition).sub(pathTarget).multiplyScalar(distanceScale);
+      pathOffset.applyAxisAngle(ORBIT_UP, viewYaw);
+      pathOffset.applyAxisAngle(ORBIT_RIGHT, viewPitch);
+      camera.position.copy(pathTarget).add(pathOffset);
+      camera.lookAt(pathTarget);
+
+      // FOV is authored per key, so a stop can be a tight portrait or a wide establishing shot. The
+      // warp kick in the render loop rides on top of whatever this resolves to.
+      const fov = splineAt(keyFov, pathU);
+      if (Math.abs(camera.fov - fov) > 0.01) {
+        camera.fov = fov;
+        camera.updateProjectionMatrix();
+      }
     };
 
     // ── Load textures, then build the meteors + shards ──
@@ -586,33 +666,26 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const shardGeometries: THREE.BufferGeometry[] = [];
     const shardMaterials: THREE.MeshStandardMaterial[] = [];
     const disposableTextures: THREE.Texture[] = [];
-    // The normalised meteor model, shared by all four project bodies. Set once the glb arrives; the
-    // field only builds after both this and the textures are in (see the coordinator below).
-    let meteorBaseGeometry: THREE.BufferGeometry | null = null;
 
     const loadingManager = new THREE.LoadingManager();
     const textureLoader = new THREE.TextureLoader(loadingManager);
 
-    const loadAlbedo = (path: string) => {
-      const texture = textureLoader.load(path);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      disposableTextures.push(texture);
-      return texture;
-    };
-    const stoneMap  = loadAlbedo(TEXTURE_STONE);
-    const stone2Map = loadAlbedo(TEXTURE_STONE2);
-    const fireMap   = loadAlbedo(TEXTURE_FIRE);
-    const normalMap = textureLoader.load(TEXTURE_NORMAL); // linear data — leave colorSpace as-is
-    disposableTextures.push(normalMap);
+    // One surface for everything in the field. It tiles, because the rock is far larger than the image
+    // and a single stretched copy would smear across it.
+    const surfaceMap = textureLoader.load(TEXTURE_SURFACE);
+    surfaceMap.colorSpace = THREE.SRGBColorSpace;
+    surfaceMap.wrapS = THREE.RepeatWrapping;
+    surfaceMap.wrapT = THREE.RepeatWrapping;
+    disposableTextures.push(surfaceMap);
 
     loadingManager.onProgress = (_url, loaded, total) => {
       const fraction = loaded / Math.max(total, 1);
-      // Cap below 1 until buildField runs — 'works' only counts as ready once its meteor / fire /
-      // shard materials actually exist, so the intro never warms or reveals before they're built.
+      // Cap below 1 until buildField runs — 'works' only counts as ready once the rock and the shard
+      // materials actually exist, so the intro never warms or reveals before they're built.
       reportAssetProgress('works', Math.min(0.99, fraction));
       onStatus({ isLoading: true, percent: Math.round(fraction * 100) });
     };
-    // If a texture/model fails, onLoad never fires, so buildField never runs — don't let that trap the
+    // If the texture fails, onLoad never fires, so buildField never runs — don't let that trap the
     // intro's loader gate waiting on a source that will never be ready. Report the field "ready" so the
     // reveal proceeds; the section degrades gracefully (it shows its own empty/loader state).
     loadingManager.onError = (url) => {
@@ -621,39 +694,44 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
 
     // Build the bodies once the textures AND the meteor model are in (the meteors need both).
-    const buildField = () => {
-      if (!meteorBaseGeometry) return;
-      // Project meteors — a stone shell with a fire shell nested inside it for the ignite cross-fade.
-      METEOR_LAYOUT.forEach((layout, index) => {
-        const project = WORKS_PROJECTS[index];
-        // Each meteor is the shared model geometry, cloned and grown to its own layout radius.
-        const geometry = meteorBaseGeometry!.clone().scale(layout.radius, layout.radius, layout.radius);
-
-        const stoneMaterial = createStoneMaterial(index % 2 === 0 ? stoneMap : stone2Map, normalMap, {
-          flatShading: true,
-        });
-        const stoneMesh = new THREE.Mesh(geometry, stoneMaterial);
-
-        const { material: fireMaterial, uniforms: fireUniforms } = createFireMaterial(fireMap, project.accent);
-        const fireMesh = new THREE.Mesh(geometry, fireMaterial);
-        fireMesh.scale.setScalar(FIRE_SHELL_SCALE);
-
-        const group = new THREE.Group();
-        group.position.fromArray(layout.position);
-        // Random resting tilt so the crystals don't all sit the same way up.
-        group.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        group.add(stoneMesh, fireMesh);
-        scene.add(group);
-
-        meteorRigs.push({
-          group,
-          basePosition: new THREE.Vector3().fromArray(layout.position),
-          geometry,
-          stoneMaterial,
-          fireMaterial,
-          fireUniforms,
-        });
+    // Carve the rock and put it in the scene. Split out from buildField because the tuner re-runs it:
+    // the silhouette is baked into geometry, so changing the seed or the stretch means a new body.
+    const buildMeteor = () => {
+      // Tear down whatever is there first, or retuning the shape leaks a mesh per nudge.
+      meteorRigs.forEach((rig) => {
+        scene.remove(rig.group);
+        rig.geometry.dispose();
+        rig.material.dispose();
       });
+      meteorRigs.length = 0;
+
+      const geometry = createMeteorGeometry({
+        radius: tuning.meteorRadius,
+        detail: tuning.meteorDetail,
+        seed: tuning.meteorSeed,
+        stretchX: tuning.meteorStretchX,
+        stretchY: tuning.meteorStretchY,
+        stretchZ: tuning.meteorStretchZ,
+      });
+      const material = createMeteorMaterial(surfaceMap, tuning.meteorFlatShading);
+      // Transparent so the arrival can fade it up out of the far dark.
+      material.transparent = true;
+
+      const group = new THREE.Group();
+      group.position.set(tuning.meteorX, tuning.meteorY, tuning.meteorZ);
+      group.add(new THREE.Mesh(geometry, material));
+      scene.add(group);
+
+      meteorRigs.push({
+        group,
+        basePosition: group.position.clone(),
+        geometry,
+        material,
+      });
+    };
+
+    const buildField = () => {
+      buildMeteor();
 
       // Ambient shard debris — two irregular base shapes, each instanced across the field.
       const totalShards = lowPower ? SHARD_COUNT_LOW : SHARD_COUNT;
@@ -663,10 +741,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const shardScale = new THREE.Vector3();
       const shardPosition = new THREE.Vector3();
 
-      // Where the camera rests when focused on each meteor (base + offset) — debris keeps clear of a
-      // sphere around each of these so nothing spawns right on the lens and blows up huge.
-      const cameraAnchors = METEOR_LAYOUT.map((layout) =>
-        new THREE.Vector3().fromArray(layout.position).add(CAMERA_OFFSET),
+      // Every pose the camera ever holds — debris keeps clear of a sphere around each of them, so a
+      // chunk never spawns right on the lens and blows up huge as you arrive at a stop.
+      const cameraAnchors = viewKeys.map(
+        (key) => new THREE.Vector3(key.x, key.y, key.z),
       );
       const isClearOfCameras = (position: THREE.Vector3) =>
         cameraAnchors.every((anchor) => anchor.distanceTo(position) >= SHARD_CAMERA_KEEPOUT);
@@ -676,7 +754,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           baseIndex + 1,
           lowPower ? SHARD_GEOMETRY_DETAIL_LOW : SHARD_GEOMETRY_DETAIL,
         );
-        const material = createStoneMaterial(baseIndex === 0 ? stoneMap : stone2Map, normalMap, {
+        const material = createStoneMaterial(surfaceMap, {
           tint: SHARD_TINT,
           flatShading: true,
         });
@@ -718,70 +796,23 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       reportAssetProgress('works', 1);
     };
 
-    // The meteor model and the textures load in parallel; build only when BOTH are ready. tryBuild
-    // is called from each side so whichever finishes last triggers the build (order-independent).
-    let texturesReady = false;
-    const tryBuild = () => {
-      if (texturesReady && meteorBaseGeometry) buildField();
-    };
-    loadingManager.onLoad = () => { texturesReady = true; tryBuild(); };
+    // The rock is procedural, so the texture is the only thing to wait for.
+    loadingManager.onLoad = buildField;
 
-    // Load the meteor body (Draco-compressed). Routed through the same manager so its bytes count
-    // toward the loading percentage. On failure we fall back to the faceted crystal so Works still builds.
-    const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
-    const gltfLoader = new GLTFLoader(loadingManager);
-    gltfLoader.setDRACOLoader(dracoLoader);
-    gltfLoader.load(
-      METEOR_MODEL_PATH,
-      (gltf) => {
-        meteorBaseGeometry = meteorGeometryFromModel(gltf.scene);
-        tryBuild();
-      },
-      undefined,
-      (error) => {
-        console.error(`Failed to load meteor model: ${METEOR_MODEL_PATH}`, error);
-        meteorBaseGeometry = new THREE.IcosahedronGeometry(1, METEOR_DETAIL);
-        tryBuild();
-      },
-    );
-
-    // ── Ignite / cool ──
-    const igniteMeteor = (rig: MeteorRig, instant: boolean) => {
-      gsap.killTweensOf(rig.fireUniforms.uIgnite);
-      gsap.killTweensOf(rig.stoneMaterial);
-      if (instant || reduceMotion) {
-        rig.fireUniforms.uIgnite.value = 1;
-        rig.stoneMaterial.opacity = 0;
-        return;
-      }
-      gsap.to(rig.fireUniforms.uIgnite, { value: 1, duration: IGNITE_DURATION, ease: 'power2.out', overwrite: true });
-      gsap.to(rig.stoneMaterial, { opacity: 0, duration: IGNITE_DURATION, ease: 'power2.out', overwrite: true });
-    };
-    const coolMeteor = (rig: MeteorRig, instant: boolean) => {
-      gsap.killTweensOf(rig.fireUniforms.uIgnite);
-      gsap.killTweensOf(rig.stoneMaterial);
-      if (instant || reduceMotion) {
-        rig.fireUniforms.uIgnite.value = 0;
-        rig.stoneMaterial.opacity = 1;
-        return;
-      }
-      gsap.to(rig.fireUniforms.uIgnite, { value: 0, duration: COOL_DURATION, ease: 'power2.in', overwrite: true });
-      gsap.to(rig.stoneMaterial, { opacity: 1, duration: COOL_DURATION, ease: 'power2.in', overwrite: true });
-    };
-
-    // Focus a project: warp the camera to its meteor, ignite it, cool the rest.
+    // ── Focus a project ──
+    // Nothing ignites and nothing cools any more — there is one rock, and a project is a place to stand
+    // and look at it from. So focusing a project is simply travelling to its stop on the path.
     let stagedIndex = activeIndexRef.current;
     const applyFocus = (index: number, instant: boolean) => {
       stagedIndex = index;
-      focusTarget.fromArray(METEOR_LAYOUT[index].position);
-      // Launch the eased warp hop from wherever the camera is now to the new meteor.
-      if (!instant && !reduceMotion) startTravel();
-      meteorRigs.forEach((rig, rigIndex) => {
-        if (rigIndex === index) igniteMeteor(rig, instant);
-        else coolMeteor(rig, instant);
-      });
-      if (instant) updateCamera(true);
+      const targetU = stopKeyIndex[index] ?? 0;
+      travelToU = targetU;
+      if (instant || reduceMotion) {
+        pathU = targetU;
+        updateCamera(true);
+        return;
+      }
+      startTravel(targetU);
     };
 
     const setFocus = (index: number) => {
@@ -961,20 +992,22 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         mesh.rotation.y = elapsed * SHARD_DRIFT_SPEED * (meshIndex === 0 ? 1 : -1);
       });
 
-      const focused = activeIndexRef.current;
-      meteorRigs.forEach((rig, rigIndex) => {
-        const isFocused = rigIndex === focused && !reduceMotion;
-        // Only the burning meteor animates; the rest hold their resting tilt.
-        if (isFocused) {
-          rig.group.rotation.y += METEOR_SPIN_SPEED * deltaSeconds;
-          rig.group.position.y = rig.basePosition.y + Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE;
-          rig.fireUniforms.uTime.value += deltaSeconds;
-          rig.fireUniforms.uFlare.value = FLARE_BASE + Math.sin(elapsed * FLARE_SPEED) * FLARE_AMPLITUDE;
-        } else if (rig.group.position.y !== rig.basePosition.y) {
-          // Settle a just-unfocused meteor back onto its resting height (it may have frozen mid-bob).
-          rig.group.position.y = rig.basePosition.y;
-        }
+      // The rock turns on its own axis and breathes, whichever stop you're parked at — it is the same
+      // object seen from different places, so it never stops being alive.
+      meteorRigs.forEach((rig) => {
+        if (reduceMotion) return;
+        rig.group.rotation.y += THREE.MathUtils.degToRad(tuning.meteorSpin) * deltaSeconds;
+        rig.group.position.y =
+          rig.basePosition.y + Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE;
+        rig.material.emissive.set(tuning.meteorEmissiveColor);
+        rig.material.emissiveIntensity = tuning.meteorEmissive;
+        rig.material.color.set(tuning.meteorColor);
+        rig.material.roughness = tuning.meteorRoughness;
+        rig.material.metalness = tuning.meteorMetalness;
       });
+      if (surfaceMap.repeat.x !== tuning.meteorTextureRepeat) {
+        surfaceMap.repeat.setScalar(tuning.meteorTextureRepeat);
+      }
 
       // ── Meteor 01 arrival (sentinel-driven) ──
       // Every meteor stays HIDDEN until the ship has arrived + left the screen — so the flight shows
@@ -986,28 +1019,26 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const arrival = THREE.MathUtils.smoothstep(flightState.current, METEOR_ARRIVE_PROGRESS_START, 1);
       meteorArrival.value = arrival;
       const meteorsVisible = arrival > METEOR_VISIBLE_EPSILON;
-      const focusedIndex = activeIndexRef.current;
       if (arrival < 0.999) {
-        // EVERY meteor flies in the same way — a real, distant rock travelling in from far behind its
-        // own spot; perspective grows it as it nears (NO scale inflation, so it never reads as
-        // spawning). It fades up from the far dark, and the focused one gains its fire as it lands.
+        // The rock travels in from far behind its spot, and perspective grows it as it nears — NOT a
+        // scale inflation, so it never reads as spawning. It fades up out of the far dark as it comes.
         const appear = THREE.MathUtils.smoothstep(arrival, 0, METEOR_APPEAR_FRACTION);
-        meteorRigs.forEach((rig, rigIndex) => {
+        meteorRigs.forEach((rig) => {
           rig.group.visible = meteorsVisible;
           if (!meteorsVisible) return;
           meteorArriveFrom.copy(rig.basePosition).add(METEOR_ARRIVE_OFFSET);
           rig.group.position.lerpVectors(meteorArriveFrom, rig.basePosition, arrival);
           rig.group.position.y += Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE * arrival;
-          rig.group.scale.setScalar(1);
-          const ignite = rigIndex === focusedIndex ? THREE.MathUtils.smoothstep(arrival, METEOR_IGNITE_START, 1) : 0;
-          rig.fireUniforms.uIgnite.value = ignite;
-          rig.stoneMaterial.opacity = appear * (1 - ignite);
+          rig.material.opacity = appear;
         });
       } else {
-        // Landed → hand back to the focus/float system (owns position, spin, ignite from here).
+        // Landed → the spin/float block above owns it from here.
         meteorRigs.forEach((rig) => {
           rig.group.visible = meteorsVisible;
-          rig.group.scale.setScalar(1);
+          rig.material.opacity = 1;
+          rig.basePosition.set(tuning.meteorX, tuning.meteorY, tuning.meteorZ);
+          rig.group.position.x = rig.basePosition.x;
+          rig.group.position.z = rig.basePosition.z;
         });
       }
 
@@ -1063,13 +1094,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       starSystem.streakUniforms.uStreakLength.value = warp * STREAK_MAX_LENGTH;
       starSystem.streakUniforms.uOpacity.value = warp * STREAK_MAX_OPACITY;
       starSystem.streakUniforms.uStreakDir.value.copy(streakDirection);
-      // The FOV kick is only for the focus-follow hops; during the flight the shared path owns the fov.
-      if (!flightState.engaged) {
-        const targetFov = CAMERA_FOV + warp * FOV_KICK;
-        if (Math.abs(camera.fov - targetFov) > 0.01) {
-          camera.fov = targetFov;
-          camera.updateProjectionMatrix();
-        }
+      // The warp kick rides ON TOP of whatever FOV the current key authored — updateCamera has already
+      // set the authored value this frame, so this only ever adds the punch of the hop. During the
+      // flight the shared path owns the fov outright and neither applies.
+      if (!flightState.engaged && warp > 0.001) {
+        camera.fov = splineAt(keyFov, pathU) + warp * FOV_KICK;
+        camera.updateProjectionMatrix();
       }
 
       // Skip the bloom pipeline whenever the field isn't on screen (and when the tab is
@@ -1150,28 +1180,30 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const resizeObserver = new ResizeObserver(applyRendererSize);
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
-    // ── Dev tuning panel (?tune) — the focused fire + the bloom ──
-    let destroyGui: (() => void) | undefined;
+    // ── Dev tuning panel (off by default; opened with ?tune) ──
+    // Dynamically imported so lil-gui and the whole authoring surface — including its free-fly camera —
+    // never enter the normal bundle.
+    const tunerCleanups: (() => void)[] = [];
     if (new URLSearchParams(window.location.search).has('tune')) {
-      import('lil-gui')
-        .then(({ default: GUI }) => {
-          const gui = new GUI({ title: 'Works · fire + bloom' });
-          const bloomFolder = gui.addFolder('Bloom');
-          bloomFolder.add(bloomPass, 'strength', 0, 3, 0.01);
-          bloomFolder.add(bloomPass, 'radius', 0, 2, 0.01);
-          bloomFolder.add(bloomPass, 'threshold', 0, 1, 0.01);
-
-          const focusedUniforms = () => meteorRigs[activeIndexRef.current]?.fireUniforms;
-          const fire = { noiseScale: 2.6, flowSpeed: 0.5, contrast: 1.3, mid: '#ff7a2a', hot: '#fff1c8', ember: '#3a0a02' };
-          const fireFolder = gui.addFolder('Fire (focused)');
-          fireFolder.add(fire, 'noiseScale', 0.5, 6, 0.05).onChange((value: number) => { const u = focusedUniforms(); if (u) u.uNoiseScale.value = value; });
-          fireFolder.add(fire, 'flowSpeed', 0, 2, 0.01).onChange((value: number) => { const u = focusedUniforms(); if (u) u.uFlowSpeed.value = value; });
-          fireFolder.add(fire, 'contrast', 0.5, 3, 0.01).onChange((value: number) => { const u = focusedUniforms(); if (u) u.uContrast.value = value; });
-          fireFolder.addColor(fire, 'ember').onChange((value: string) => { const u = focusedUniforms(); if (u) u.uEmber.value.set(value); });
-          fireFolder.addColor(fire, 'mid').onChange((value: string) => { const u = focusedUniforms(); if (u) u.uMid.value.set(value); });
-          fireFolder.addColor(fire, 'hot').onChange((value: string) => { const u = focusedUniforms(); if (u) u.uHot.value.set(value); });
-          destroyGui = () => gui.destroy();
-        })
+      import('../worksTunerPanel')
+        .then(({ createWorksTunerPanel }) =>
+          // The scene may have been torn down while the chunk was in flight.
+          disposed
+            ? undefined
+            : createWorksTunerPanel({
+                camera,
+                bloomPass,
+                setCameraOverride: (drive) => {
+                  cameraOverride = drive;
+                  // Reset the clock, or the first frame after taking the camera gets the whole idle gap
+                  // as its delta and the fly lurches.
+                  lastOverrideFrame = performance.now();
+                },
+                rebuildMeteor: buildMeteor,
+                rebuildPath,
+                onDispose: (cleanup) => tunerCleanups.push(cleanup),
+              }),
+        )
         .catch(() => {});
     }
 
@@ -1179,7 +1211,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
-      destroyGui?.();
+      tunerCleanups.forEach((cleanup) => cleanup());
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
@@ -1189,19 +1221,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       chamber?.dispose();
 
       meteorRigs.forEach((rig) => {
-        gsap.killTweensOf(rig.fireUniforms.uIgnite);
-        gsap.killTweensOf(rig.stoneMaterial);
         rig.geometry.dispose();
-        rig.stoneMaterial.dispose();
-        rig.fireMaterial.dispose();
+        rig.material.dispose();
       });
       shardGeometries.forEach((geometry) => geometry.dispose());
       shardMaterials.forEach((material) => material.dispose());
       shardMeshes = [];
-      meteorBaseGeometry?.dispose();
-      dracoLoader.dispose();
       disposableTextures.forEach((texture) => texture.dispose());
-      gsap.killTweensOf(travelProgress);
+      gsap.killTweensOf(travel);
       starSystem.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();

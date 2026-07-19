@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import type GUI from 'lil-gui';
-import { getWritableChamberTuning, type ShowcaseKey } from '@/lib/chamberTuning';
+import { getTunerDock, dockPanel } from '@/lib/tunerDock';
+import { formatTuningSource, registerTuningExport } from '@/lib/tunerExport';
+import { registerTuningReset } from '@/lib/tunerReset';
+import {
+  getWritableChamberTuning,
+  resetChamberTuning,
+  type ShowcaseKey,
+} from '@/lib/chamberTuning';
 import type { ChamberScene } from './chamberScene';
 
 /**
@@ -70,9 +77,10 @@ export async function createChamberTunerPanel({
   const tuning = getWritableChamberTuning();
   const camera = scene.camera;
 
-  const gui: GUI = new LilGui({ title: 'Chamber · authoring' });
-  // The panel sits over a fixed, full-screen canvas; without this it scrolls away with the page.
-  gui.domElement.style.zIndex = '10002';
+  // Docked into the shared left-hand column, so the three authoring panels stack instead of
+  // landing on top of one another in lil-gui's default top-right corner.
+  const gui: GUI = new LilGui({ title: 'Chamber · authoring', container: getTunerDock() });
+  dockPanel(gui.domElement);
 
   // ── Free-fly state ──
   const flyState = {
@@ -331,7 +339,34 @@ export async function createChamberTunerPanel({
     selectedController.updateDisplay();
   }
 
+  // Offer the whole room to the dock's "copy all" button: the scalars as an assignable block, then
+  // the showcase path as its own named const, because that is how each is written in chamberTuning.ts.
+  // ── Reset ──
+  // Restores the shipped values, then puts the PANEL back in step: lil-gui caches what it last drew,
+  // so without this the sliders keep showing the values you just discarded.
+  const resetChamber = () => {
+    resetChamberTuning();
+    refreshKeyDisplay();
+    gui.controllersRecursive().forEach((controller) => controller.updateDisplay());
+  };
+  const stopReset = registerTuningReset('chamber', resetChamber);
+  showcaseFolder.add({ reset: resetChamber }, 'reset').name('↺ reset chamber to shipped');
+
+  const stopExport = registerTuningExport('CHAMBER · lib/chamberTuning.ts', () =>
+    [
+      '// → the CHAMBER_TUNING literal',
+      formatTuningSource(tuning, ['showcaseKeys']),
+      '',
+      '// → replaces SHOWCASE_KEYS',
+      'export const SHOWCASE_KEYS: ShowcaseKey[] = [',
+      ...tuning.showcaseKeys.map(formatKey),
+      '];',
+    ].join('\n'),
+  );
+
   onDispose(() => {
+    stopExport();
+    stopReset();
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('keyup', handleKeyUp);
     window.removeEventListener('pointerdown', handlePointerDown);

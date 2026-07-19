@@ -3,6 +3,7 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
+import { isTuneScrollLocked } from "@/lib/tuneScrollLock";
 import { measureUntransformedRect } from "@/lib/measureUntransformedRect";
 import {
   computeCarouselLayout,
@@ -914,6 +915,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
 
     const handleWheel = (event: WheelEvent) => {
+      // Authoring freeze (?tune only). SWALLOWED rather than ignored: letting it through would still
+      // scroll the page, which moves the pin, which is the exact thing being frozen. Reads false on any
+      // normal load — see lib/tuneScrollLock.
+      if (isTuneScrollLocked()) {
+        event.preventDefault();
+        return;
+      }
       if (swallowDuringGlide(event)) return;
       const direction = carouselDirection(event.deltaY);
       if (direction === 0) return; // fill phase or an end → native scroll handles it
@@ -935,6 +943,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       touchActive = true;
     };
     const handleTouchMove = (event: TouchEvent) => {
+      if (isTuneScrollLocked()) {
+        event.preventDefault();
+        return;
+      }
       if (!touchActive) return;
       if (swallowDuringGlide(event)) return;
       const deltaY = touchStartY - event.touches[0].clientY; // swipe up = go forward

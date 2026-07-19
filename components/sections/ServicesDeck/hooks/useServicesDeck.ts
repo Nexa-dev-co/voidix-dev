@@ -17,31 +17,20 @@ import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
+import { getDeckTuning } from '../deckTuning';
 
-// ── Framing ─────────────────────────────────────────────────────────────
-const CAMERA_FOV      = 34;
-const CAMERA_DISTANCE = 8.2;
-const CAMERA_HEIGHT   = 1.7;
-const CAMERA_LOOK_Y   = 0.75; // look slightly down onto the pad so the craft reads as "landed"
-
-// ── Landing pad ─────────────────────────────────────────────────────────
-const GROUND_Y          = 0;   // the pad's top surface sits here; the craft hovers just above it
-const PAD_MODEL_PATH     = '/models/space_landing.glb';
-const PAD_TARGET_WIDTH   = 5.0; // largest horizontal dimension the pad is normalised to
-const PAD_Y_OFFSET       = 0.6; // raise the pad so its platform surface comes up under the craft
-                                // (the model's bounding box is taller than the visible deck)
-// Recolour the pad to fit the scene — a dark slate body with a faint cyan glow in its recesses.
-// PAD_COLOR multiplies the model's texture (detail stays; hue shifts); tune these to taste.
-const PAD_COLOR              = 0x16222b;
-const PAD_EMISSIVE_COLOR     = 0x0b3a45;
-const PAD_EMISSIVE_INTENSITY = 0.55;
+// ── Framing + the pad ───────────────────────────────────────────────────
+// The camera's pose, the pad's size and colour, and each hull's placement are all AUTHORED — they live
+// in deckTuning.ts and are pushed onto the scene every frame, so the ?tune panel can move them live.
+// Only the things that aren't adjustable stay here.
+const GROUND_Y       = 0; // the pad's top surface sits here; the craft hovers just above it
+const PAD_MODEL_PATH = '/models/space_landing.glb';
 
 // ── Starfield ───────────────────────────────────────────────────────────
 const STAR_COUNT         = 1200;
 const STAR_INNER_RADIUS  = 18;  // a spherical shell so stars wrap the scene without crowding the pad
 const STAR_OUTER_RADIUS  = 60;
 const STAR_SIZE          = 0.16;
-const STAR_OPACITY       = 0.85;
 const STAR_DRIFT         = 0.011; // radians/second of yaw drift — the "floating through space" feel
 
 // ── Fleet ───────────────────────────────────────────────────────────────
@@ -67,7 +56,6 @@ const FLIGHT_WEAVE_SWAY_SPEED  = 0.45;
 // ── Contact shadow (one soft blob on the pad, under the centred craft) ──
 const SHADOW_TEXTURE_PX = 256;
 const SHADOW_SIZE       = 2.2;
-const SHADOW_OPACITY    = 0.5;
 const SHADOW_LIFT       = 0.01; // nudge above the pad to avoid z-fighting
 
 // ── Lighting (shared stage rig; the centred craft is always powered) ──
@@ -77,7 +65,6 @@ const FILL_LIGHT_COLOR     = 0x9aa7bb; // neutral cool fill
 const FILL_LIGHT_INTENSITY = 0.5;
 const RIM_LIGHT_INTENSITY  = 0.8;      // a cyan-ish edge by default; recoloured per ship (see applyRimColor)
 const AMBIENT_INTENSITY    = 0.16;     // low so the directional key carves out contrast/texture
-const TONE_MAPPING_EXPOSURE = 1.18;
 // The active ship's edge light eases to the ship's own rim colour, so each craft feels lit for itself.
 const RIM_LIGHT_TWEEN = 0.5;
 
@@ -86,13 +73,9 @@ const RIM_LIGHT_TWEEN = 0.5;
 // is mapped onto the ship's shadow/hull/highlight tones, so it stays multi-tonal. The centred craft
 // sits bright; a craft leaving the pad dims back as it fades. The accent glow + rim live in the
 // shader; here we only drive the shared brightness uniform + the native emissive intensity.
-const DORMANT_BRIGHTNESS     = 0.4; // hull brightness as a craft leaves the pad (dim)
-const ACTIVE_BRIGHTNESS      = 1.0; // hull brightness on the centred craft
-const LIT_EMISSIVE_INTENSITY = 1.3; // any native emissive map's intensity when centred
-
-// ── Engine glow pulse (centred craft only) ──
-const EMIT_PULSE_AMPLITUDE = 0.22; // ± on the accent-glow strength
-const EMIT_PULSE_SPEED     = 1.6;
+//
+// The levels themselves are AUTHORED — brightness, emissive strength and the engine pulse all live in
+// deckTuning so the ?tune panel can dial them, and are applied every frame.
 
 // ── Selective bloom (threshold so only the bright accents/highlights glow) ──
 const BLOOM_STRENGTH       = 0.85;
@@ -198,6 +181,10 @@ interface DeckShip {
   depart: THREE.Group;
   lift: THREE.Group;
   spin: THREE.Group;
+  /** The loaded hull itself. Authored placement is applied here, on top of the normalised pose. */
+  vessel: THREE.Group | null;
+  /** Every switchable mesh of this hull, by positional id — what the panel's part list toggles. */
+  parts: Map<string, THREE.Mesh>;
   materials: THREE.Material[];
   /** Shared across this ship's hull materials → driven by litState (dim when leaving, bright when centred). */
   brightnessUniform: { value: number };
@@ -247,7 +234,7 @@ function createStarfield(): THREE.Points {
     size: STAR_SIZE,
     sizeAttenuation: true,
     transparent: true,
-    opacity: STAR_OPACITY,
+    opacity: getDeckTuning().starOpacity,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
@@ -314,6 +301,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const lowPower =
       window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
 
+    // The authored stage: camera, rig intensities, the pad, and where each hull sits. Read live every
+    // frame so the ?tune panel's sliders take effect with nothing to rebuild.
+    const tuning = getDeckTuning();
+
     // ── Renderer ──
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
@@ -321,13 +312,22 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES
     // does — the fleet read flat/grey under ACES. OutputPass applies this after the composer.
     renderer.toneMapping = THREE.NeutralToneMapping;
-    renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE;
+    renderer.toneMappingExposure = tuning.exposure;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     const scene  = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 100);
-    camera.position.set(0, CAMERA_HEIGHT, CAMERA_DISTANCE);
-    camera.lookAt(0, CAMERA_LOOK_Y, 0);
+    const camera = new THREE.PerspectiveCamera(tuning.cameraFov, 1, 0.1, 100);
+    // Re-applied every frame from the tuning, so the panel can move the shot live. Cheap: three writes
+    // and a lookAt on a camera that isn't otherwise animated while the deck is resting.
+    const applyCameraFromTuning = () => {
+      camera.position.set(0, tuning.cameraHeight, tuning.cameraDistance);
+      camera.lookAt(0, tuning.cameraLookY, 0);
+      if (Math.abs(camera.fov - tuning.cameraFov) > 0.001) {
+        camera.fov = tuning.cameraFov;
+        camera.updateProjectionMatrix();
+      }
+    };
+    applyCameraFromTuning();
 
     // Image-based lighting gives the metal real reflections without shipping an HDR.
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
@@ -341,7 +341,18 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     fillLight.position.set(-6, -1, 2);
     const rimLight = new THREE.DirectionalLight(0xffffff, RIM_LIGHT_INTENSITY);
     rimLight.position.set(-3, 3, -6);
-    scene.add(keyLight, fillLight, rimLight, new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY));
+    const ambientLight = new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY);
+    scene.add(keyLight, fillLight, rimLight, ambientLight);
+
+    // The PER-SHIP light levels, tweened by applyShipLighting as the carousel moves. Kept separate from
+    // the lights themselves so the rig's multipliers can scale them every frame without the two writers
+    // fighting — an absolute per-frame write would simply overwrite the tween and flatten every craft
+    // to the same key.
+    const shipLightLevels = {
+      key: KEY_LIGHT_INTENSITY,
+      fill: FILL_LIGHT_INTENSITY,
+      rim: RIM_LIGHT_INTENSITY,
+    };
 
     // ── Post-processing: selective bloom ──
     // A HalfFloat + MSAA target keeps the bloom precise and the edges clean; the bloom threshold
@@ -376,7 +387,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const shadowMaterial = new THREE.MeshBasicMaterial({
       map: shadowTexture,
       transparent: true,
-      opacity: SHADOW_OPACITY,
+      opacity: tuning.shadowOpacity,
       depthWrite: false,
     });
     const shadow = new THREE.Mesh(new THREE.PlaneGeometry(SHADOW_SIZE, SHADOW_SIZE), shadowMaterial);
@@ -402,8 +413,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         depart,
         lift,
         spin,
+        vessel: null,
+        parts: new Map<string, THREE.Mesh>(),
         materials: [],
-        brightnessUniform: { value: ACTIVE_BRIGHTNESS },
+        brightnessUniform: { value: tuning.activeBrightness },
         emitPulseUniform: { value: 1 },
         litState: { value: 0 },
         presence: { value: 0 },
@@ -413,11 +426,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // Push a ship's lit value (0..1) onto its (shared) hull brightness + native emissive strength.
     const applyLitState = (ship: DeckShip) => {
       ship.brightnessUniform.value = THREE.MathUtils.lerp(
-        DORMANT_BRIGHTNESS, ACTIVE_BRIGHTNESS, ship.litState.value,
+        tuning.dormantBrightness, tuning.activeBrightness, ship.litState.value,
       );
       ship.materials.forEach((material) => {
         if (material instanceof THREE.MeshStandardMaterial) {
-          material.emissiveIntensity = ship.litState.value * LIT_EMISSIVE_INTENSITY;
+          material.emissiveIntensity = ship.litState.value * tuning.litEmissiveIntensity;
         }
       });
     };
@@ -442,7 +455,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       if (instant || reduceMotion) {
         rimLight.color.copy(rimTarget);
         keyLight.color.copy(keyTarget);
-        keyLight.intensity = keyIntensity;
+        shipLightLevels.key = keyIntensity;
         fillLight.color.copy(fillTarget);
         return;
       }
@@ -454,8 +467,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         r: keyTarget.r, g: keyTarget.g, b: keyTarget.b,
         duration: RIM_LIGHT_TWEEN, ease: 'power2.out', overwrite: true,
       });
-      gsap.to(keyLight, {
-        intensity: keyIntensity,
+      gsap.to(shipLightLevels, {
+        key: keyIntensity,
         duration: RIM_LIGHT_TWEEN, ease: 'power2.out', overwrite: true,
       });
       gsap.to(fillLight.color, {
@@ -654,19 +667,27 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     gltfLoader.setDRACOLoader(dracoLoader);
 
     let padGroup: THREE.Group | null = null;
+    let padScaledHeight = 0;
+    /** Every switchable mesh of the pad, and every standard material on it — both driven by the panel. */
+    const padParts = new Map<string, THREE.Mesh>();
+    const padMaterialsAll: THREE.MeshStandardMaterial[] = [];
     gltfLoader.load(
       PAD_MODEL_PATH,
       (gltf) => {
         const loadedScene = gltf.scene;
-        // Retint the pad to the scene palette.
+        // Retint the pad to the scene palette, and catalogue its meshes so the panel can switch pieces
+        // off. Positional ids, for the same reason the ships use them: these are third-party models.
+        let padPartIndex = 0;
         loadedScene.traverse((child) => {
           if (child instanceof THREE.Mesh) {
+            const partId = `pad:${padPartIndex}`;
+            padPartIndex += 1;
+            padParts.set(partId, child);
+            if (tuning.padHiddenParts.includes(partId)) child.visible = false;
             const padMaterials = Array.isArray(child.material) ? child.material : [child.material];
             padMaterials.forEach((material) => {
               if (material instanceof THREE.MeshStandardMaterial) {
-                material.color.set(PAD_COLOR);
-                material.emissive.set(PAD_EMISSIVE_COLOR);
-                material.emissiveIntensity = PAD_EMISSIVE_INTENSITY;
+                padMaterialsAll.push(material);
               }
             });
           }
@@ -676,15 +697,16 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         const center = boundingBox.getCenter(new THREE.Vector3());
         loadedScene.position.sub(center);
 
-        const padScale = PAD_TARGET_WIDTH / (Math.max(size.x, size.z) || 1);
+        const padScale = tuning.padWidth / (Math.max(size.x, size.z) || 1);
         const scaledHeight = size.y * padScale;
         const group = new THREE.Group();
         group.scale.setScalar(padScale);
         group.add(loadedScene);
         // Align the pad's top with the ground so the craft hovers just above the surface.
-        group.position.y = GROUND_Y - scaledHeight / 2 + PAD_Y_OFFSET;
+        group.position.y = GROUND_Y - scaledHeight / 2 + tuning.padY;
         scene.add(group);
         padGroup = group;
+        padScaledHeight = scaledHeight;
       },
       undefined,
       (error) => console.error(`Failed to load landing pad: ${PAD_MODEL_PATH}`, error),
@@ -710,6 +732,18 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           const vessel = prepareVessel(gltf.scene, service.modelRotation);
           const ship = ships[index];
           ship.spin.add(vessel);
+          ship.vessel = vessel;
+          // Catalogue every mesh so the panel can switch pieces off, and honour whatever is already
+          // baked into the tuning. Switched off rather than culled: the panel has to be able to turn a
+          // piece back on, and a hull is small enough that a hidden mesh costs nothing to keep around.
+          let partIndex = 0;
+          vessel.traverse((child) => {
+            if (!(child instanceof THREE.Mesh)) return;
+            const partId = `${index}:${partIndex}`;
+            partIndex += 1;
+            ship.parts.set(partId, child);
+            if (tuning.ships[index]?.hiddenParts.includes(partId)) child.visible = false;
+          });
           // Re-skin every hull material onto this ship's graded palette + accent glow.
           ship.materials = applyHullMaterials(
             vessel,
@@ -845,6 +879,46 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const elapsed = clock.elapsedTime;
       starfield.rotation.y = elapsed * STAR_DRIFT;
 
+      // ── Push the authored stage onto the scene ──
+      // Applied every frame rather than on change, so the panel's sliders are live and there is exactly
+      // one code path whether or not the panel exists. All of it is plain property writes.
+      renderer.toneMappingExposure = tuning.exposure;
+      // Multiplied, not assigned — see shipLightLevels.
+      keyLight.intensity = shipLightLevels.key * tuning.keyMultiplier;
+      fillLight.intensity = shipLightLevels.fill * tuning.fillMultiplier;
+      rimLight.intensity = shipLightLevels.rim * tuning.rimMultiplier;
+      ambientLight.intensity = tuning.ambientIntensity;
+      // The flight owns the camera once it engages; before that the resting shot is the tuning's.
+      if (!departState.engaged) applyCameraFromTuning();
+
+      // At rest the departure isn't driving these, so the authored values apply directly.
+      if (!departState.engaged) {
+        shadowMaterial.opacity = tuning.shadowOpacity;
+        starfieldMaterial.opacity = tuning.starOpacity;
+      }
+
+      if (padGroup) {
+        padGroup.visible = tuning.showPad;
+        padGroup.position.y = GROUND_Y - padScaledHeight / 2 + tuning.padY;
+        padMaterialsAll.forEach((material) => {
+          material.color.set(tuning.padColor);
+          material.emissive.set(tuning.padEmissiveColor);
+          material.emissiveIntensity = tuning.padEmissiveIntensity;
+        });
+      }
+
+      ships.forEach((ship, shipIndex) => {
+        const placement = tuning.ships[shipIndex];
+        if (!ship.vessel || !placement) return;
+        ship.vessel.position.set(placement.x, placement.y, placement.z);
+        ship.vessel.rotation.set(
+          THREE.MathUtils.degToRad(placement.rotX),
+          THREE.MathUtils.degToRad(placement.rotY),
+          THREE.MathUtils.degToRad(placement.rotZ),
+        );
+        ship.vessel.scale.setScalar(placement.scale);
+      });
+
       // Ease toward the scrubbed handoff target (instant under reduced motion — the scroll
       // position itself is then the only animator).
       if (departState.engaged) {
@@ -873,7 +947,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         }
         // 3. Engine-glow breathing.
         ship.emitPulseUniform.value = animateCentred
-          ? 1 + Math.sin(elapsed * EMIT_PULSE_SPEED) * EMIT_PULSE_AMPLITUDE
+          ? 1 + Math.sin(elapsed * tuning.emitPulseSpeed) * tuning.emitPulseAmplitude
           : 1;
         // 4. Third-person flight weave — banks + sways the chase ship so it reads as actively flying.
         //    Ramped in by `departure` (0 during normal fleet browsing → full at the parked chase view).
@@ -945,8 +1019,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         // The pad + sun are the stationary anchors — the pad does NOT sink (the camera leaves it
         // behind by tracking away). Only the contact shadow fades as the ship lifts off, and the deck
         // starfield fades out during the fly-left so the works field's streaking stars take over.
-        shadowMaterial.opacity = SHADOW_OPACITY * (1 - departWindow(SHADOW_FADE_WINDOW, departure));
-        starfieldMaterial.opacity = STAR_OPACITY * (1 - departWindow(DECK_STAR_FADE_WINDOW, departure));
+        shadowMaterial.opacity =
+          tuning.shadowOpacity * (1 - departWindow(SHADOW_FADE_WINDOW, departure));
+        starfieldMaterial.opacity =
+          tuning.starOpacity * (1 - departWindow(DECK_STAR_FADE_WINDOW, departure));
 
         // Fully home again → the last computed pose already restored the resting camera + rig, so
         // just hand back to the swap/idle systems.
@@ -996,45 +1072,23 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
     // ── Dev tuning panel (off by default; opened with ?tune) ──
-    // Lets us dial the centred ship's palette + the bloom by eye, then bake the values into
-    // deckServices.ts. Dynamically imported so lil-gui never enters the normal bundle.
-    let destroyGui: (() => void) | undefined;
+    // Dynamically imported so lil-gui and the whole authoring surface never enter the normal bundle.
+    const tunerCleanups: (() => void)[] = [];
     if (new URLSearchParams(window.location.search).has('tune')) {
-      import('lil-gui')
-        .then(({ default: GUI }) => {
-          const gui = new GUI({ title: 'Fleet tuning · active ship' });
-          const bloomFolder = gui.addFolder('Bloom');
-          bloomFolder.add(bloomPass, 'strength', 0, 3, 0.01);
-          bloomFolder.add(bloomPass, 'radius', 0, 2, 0.01);
-          bloomFolder.add(bloomPass, 'threshold', 0, 1, 0.01);
-
-          // Write a value across every hull material of the currently-centred ship.
-          const eachActiveUniform = (mutate: (uniforms: HullShaderUniforms) => void) => {
-            activeShip()?.materials.forEach((material) => {
-              const uniforms = material.userData.hullUniforms as HullShaderUniforms | undefined;
-              if (uniforms) mutate(uniforms);
-            });
-          };
-          const palette = {
-            shadow: '#000000', hull: '#000000', highlight: '#000000', accent: '#000000', rim: '#000000',
-            gradeMid: 0.5, emitThreshold: 0.8, emitStrength: 2.4,
-            metalness: 0.35, roughness: 0.55, clearcoat: 0.15, envMapIntensity: 0.7,
-          };
-          const colorFolder = gui.addFolder('Palette');
-          colorFolder.addColor(palette, 'shadow').onChange((value: string) => eachActiveUniform((u) => u.uHullShadow.value.set(value)));
-          colorFolder.addColor(palette, 'hull').onChange((value: string) => eachActiveUniform((u) => u.uHullMid.value.set(value)));
-          colorFolder.addColor(palette, 'highlight').onChange((value: string) => eachActiveUniform((u) => u.uHullHighlight.value.set(value)));
-          colorFolder.addColor(palette, 'accent').onChange((value: string) => eachActiveUniform((u) => u.uAccent.value.set(value)));
-          colorFolder.addColor(palette, 'rim').onChange((value: string) => eachActiveUniform((u) => u.uRim.value.set(value)));
-          colorFolder.add(palette, 'gradeMid', 0, 1, 0.01).onChange((value: number) => eachActiveUniform((u) => { u.uGradeMid.value = value; }));
-          colorFolder.add(palette, 'emitThreshold', 0, 1, 0.01).onChange((value: number) => eachActiveUniform((u) => { u.uEmitThreshold.value = value; }));
-          colorFolder.add(palette, 'emitStrength', 0, 6, 0.05).onChange((value: number) => eachActiveUniform((u) => { u.uEmitStrength.value = value; }));
-          colorFolder.add(palette, 'metalness', 0, 1, 0.01).onChange((value: number) => activeShip()?.materials.forEach((material) => { (material as THREE.MeshStandardMaterial).metalness = value; }));
-          colorFolder.add(palette, 'roughness', 0, 1, 0.01).onChange((value: number) => activeShip()?.materials.forEach((material) => { (material as THREE.MeshStandardMaterial).roughness = value; }));
-          colorFolder.add(palette, 'clearcoat', 0, 1, 0.01).onChange((value: number) => activeShip()?.materials.forEach((material) => { if (material instanceof THREE.MeshPhysicalMaterial) material.clearcoat = value; }));
-          colorFolder.add(palette, 'envMapIntensity', 0, 2, 0.01).onChange((value: number) => activeShip()?.materials.forEach((material) => { (material as THREE.MeshStandardMaterial).envMapIntensity = value; }));
-          destroyGui = () => gui.destroy();
-        })
+      import('../deckTunerPanel')
+        .then(({ createDeckTunerPanel }) =>
+          disposed
+            ? undefined
+            : createDeckTunerPanel({
+                bloomPass,
+                activeShipIndex: () => activeIndexRef.current,
+                shipParts: (shipIndex) => ships[shipIndex]?.parts ?? new Map(),
+                shipMaterials: (shipIndex) => ships[shipIndex]?.materials ?? [],
+                restageLighting: (shipIndex) => applyShipLighting(shipIndex, true),
+                padParts,
+                onDispose: (cleanup) => tunerCleanups.push(cleanup),
+              }),
+        )
         .catch(() => {});
     }
 
@@ -1042,7 +1096,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
-      destroyGui?.();
+      tunerCleanups.forEach((cleanup) => cleanup());
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);

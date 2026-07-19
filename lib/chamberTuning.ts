@@ -1,3 +1,5 @@
+import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
+
 /**
  * The chamber reveal's numbers — fixed constants.
  *
@@ -423,6 +425,19 @@ const CHAMBER_TUNING: ChamberTuning = {
   keyLight: 0,
   envIntensity: 0,
 };
+
+// The shipped values, captured before the ?tune panel can touch them. This is what a reset restores.
+const CHAMBER_DEFAULTS = snapshotDefaults(CHAMBER_TUNING);
+
+/**
+ * Put every value back the way it shipped.
+ *
+ * Restored IN PLACE — the scene holds this object (and the arrays inside it) by reference, so handing
+ * back a fresh one would leave it driving the old copy. See lib/tunerReset.
+ */
+export function resetChamberTuning(): void {
+  restoreInPlace(CHAMBER_TUNING, CHAMBER_DEFAULTS);
+}
 
 /** The chamber's fixed numbers. Read once by the scene and the hologram; never mutated. */
 export function getChamberTuning(): Readonly<ChamberTuning> {
