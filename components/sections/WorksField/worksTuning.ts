@@ -138,26 +138,26 @@ export interface WorksTuning {
 const WORKS_TUNING: WorksTuning = {
   keys: PROJECT_VIEW_KEYS,
 
-  meteorRadius: 2.6,
+  meteorRadius: 1.7,
   meteorX: 0,
   meteorY: 0,
   meteorZ: 0,
-  meteorDetail: 4,
-  meteorSeed: 7,
-  meteorStretchX: 1.0,
+  meteorDetail: 6,
+  meteorSeed: 149,
+  meteorStretchX: 1.04,
   meteorStretchY: 0.86,
-  meteorStretchZ: 1.12,
+  meteorStretchZ: 0.94,
   meteorSpin: 2.5,
   meteorFlatShading: true,
 
-  meteorTextureRepeat: 2,
-  meteorEmissive: 1.6,
-  meteorColor: '#ffffff',
-  meteorEmissiveColor: '#ff7a2a',
-  meteorRoughness: 0.92,
-  meteorMetalness: 0.05,
+  meteorTextureRepeat: 4.5,
+  meteorEmissive: 0.2,
+  meteorColor: '#b69090',
+  meteorEmissiveColor: '#ffffff',
+  meteorRoughness: 1,
+  meteorMetalness: 1,
 
-  travelSeconds: 1.6,
+  travelSeconds: 2.05,
   evenPacing: true,
 };
 
