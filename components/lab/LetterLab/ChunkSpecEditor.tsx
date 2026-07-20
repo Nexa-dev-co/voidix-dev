@@ -17,8 +17,9 @@ import {
 
 interface ChunkSpecEditorProps {
   spec: ChunkMaterialSpec;
-  /** Share of the mark this spec accounts for once weights are normalised — shown as a percentage. */
-  sharePercent: number;
+  /** Shares of each zone this spec accounts for once weights are normalised, as percentages. */
+  edgeSharePercent: number;
+  interiorSharePercent: number;
   onChange: (next: ChunkMaterialSpec) => void;
 }
 
@@ -51,7 +52,12 @@ function FieldSlider({ label, value, min, max, step, onChange }: FieldSliderProp
   );
 }
 
-export default function ChunkSpecEditor({ spec, sharePercent, onChange }: ChunkSpecEditorProps) {
+export default function ChunkSpecEditor({
+  spec,
+  edgeSharePercent,
+  interiorSharePercent,
+  onChange,
+}: ChunkSpecEditorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const set = <Key extends keyof ChunkMaterialSpec>(
     key: Key,
@@ -72,21 +78,16 @@ export default function ChunkSpecEditor({ spec, sharePercent, onChange }: ChunkS
           aria-hidden="true"
         />
         <span className="flex-1 truncate text-[0.7rem] text-fg">{spec.label}</span>
-        <span className="text-[0.65rem] tabular-nums text-accent">{sharePercent.toFixed(0)}%</span>
+        {/* Both shares up front — the whole point of the split is seeing rim vs mass at a glance. */}
+        <span className="text-[0.6rem] tabular-nums text-accent">
+          {edgeSharePercent.toFixed(0)}/{interiorSharePercent.toFixed(0)}%
+        </span>
       </button>
 
-      <div className="flex flex-col gap-3 px-2 pb-3">
-        <FieldSlider
-          label="Weight"
-          value={spec.weight}
-          min={0}
-          max={100}
-          step={1}
-          onChange={(value) => set('weight', value)}
-        />
-
-        {isOpen && (
-          <>
+      {/* Weights are NOT here — they live in the balancer above, where they're coupled to sum to 100.
+          Two places to set one number is how the two quietly disagree. */}
+      {isOpen && (
+        <div className="flex flex-col gap-3 px-2 pb-3">
             <label className="flex flex-col gap-1">
               <span className="text-[0.6rem] uppercase tracking-eyebrow text-muted">Texture</span>
               <select
@@ -158,9 +159,8 @@ export default function ChunkSpecEditor({ spec, sharePercent, onChange }: ChunkS
                 onChange={(value) => set('emissiveIntensity', value)}
               />
             )}
-          </>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

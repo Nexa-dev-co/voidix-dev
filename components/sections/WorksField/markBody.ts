@@ -52,7 +52,7 @@ const LETTER_SOURCE_SCALE = 40;
 // ── Shapes ───────────────────────────────────────────────────────────────────────────────────────
 // The 2D outlines, before anything is done with them. Exported because a mark has two possible bodies
 // built from the SAME outline — extruded solid (below) or assembled out of rock chunks
-// (markAggregate.ts) — and neither should own how the other gets its shapes.
+// (markSwarm.ts) — and neither should own how the other gets its shapes.
 
 /**
  * Outlines from raw SVG source.

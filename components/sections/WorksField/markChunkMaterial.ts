@@ -47,8 +47,10 @@ export interface ChunkMaterialSpec {
   roughness: number;
   /** Only meaningful on `meteor` — how hard the veins burn, and so how much bloom the chunk throws. */
   emissiveIntensity: number;
-  /** Relative share of the mark's chunks. Normalised against the other specs. */
-  weight: number;
+  /** Share of the OUTLINE chunks. Normalised against the other specs' edge weights. */
+  edgeWeight: number;
+  /** Share of the INTERIOR chunks. Normalised separately — see MarkChunkMaterial. */
+  interiorWeight: number;
 }
 
 /**
@@ -84,71 +86,100 @@ export function createChunkMaterial(
 }
 
 /**
- * The default mix.
+ * The shipping mix — authored in the letter lab and exported from it, not designed here.
  *
- * Weighted so ~90% of a mark is cold rock and ~10% is still molten — but the rock half is deliberately
- * split across several surfaces and tints rather than being one flat colour, because that variation is
- * what stops the mark reading as a silhouette-shaped smudge.
+ * ── Read the ids and labels as history, not description ──────────────────────────────────────────
+ * They come from the palette this started as (a pale rim drawing the silhouette against a dark mass)
+ * and the authored version went somewhere else entirely: the outline is now carried by white
+ * `black-stone` at ~63%, `rim` is absent from the edge completely, and the tints are saturated rather
+ * than a grey ladder. The names are kept only so a re-export from the lab diffs cleanly against this
+ * file. **Trust the values, not the labels.**
  *
- * The first entry is the works field's debris EXACTLY: its texture, its `SHARD_TINT`, its treatment. So
- * a mark always contains real field debris, and the rest are variations around it.
+ * ── Two fields here are inert, deliberately left as exported ─────────────────────────────────────
+ * `emissiveIntensity` is only read for the `meteor` treatment (see `createChunkMaterial`), so the `5`
+ * on `rim` and `black-stone` does nothing — they're `stone`. It is left exactly as exported so a
+ * re-export from the lab doesn't show a phantom diff. What the lab showed IS what renders; these are
+ * dead data, not a discrepancy.
+ *
+ * ── What still holds from the original scheme ────────────────────────────────────────────────────
+ * The molten chunks stay near 10% in both zones. They're post-processed — the field runs a bloom pass,
+ * so a molten chunk spreads well past its own silhouette. Past roughly this share the mark stops being
+ * rock with heat in it and becomes a light source, which is the sun's job on this page.
  */
 export const DEFAULT_CHUNK_SPECS: ChunkMaterialSpec[] = [
   {
-    id: 'shard',
-    label: 'Field debris (exact)',
-    texturePath: '/textures/meteor/basalt-magma.png',
-    treatment: 'stone',
-    tint: '#1c2530',
-    textureRepeat: 2,
-    roughness: 0.85,
-    emissiveIntensity: 0,
-    weight: 35,
-  },
-  {
-    id: 'asteroid',
-    label: 'Asteroid',
+    id: 'rim',
+    label: 'Rim stone (pale)',
     texturePath: '/textures/meteor/asteroid-surface-texture-background-composition_1079150-23859.jpg',
     treatment: 'stone',
-    // Much lighter than the field tint on purpose — these are the chunks that catch the key light and
-    // give the mark its readable form.
-    tint: '#8a8f98',
-    textureRepeat: 1.5,
-    roughness: 0.8,
-    emissiveIntensity: 0,
-    weight: 30,
+    tint: '#0077ff',
+    textureRepeat: 2.4,
+    roughness: 0.78,
+    emissiveIntensity: 5,
+    edgeWeight: 0,
+    interiorWeight: 11.0863,
   },
   {
-    id: 'grey-rock',
-    label: 'Grey rock',
+    id: 'mid-stone',
+    label: 'Mid stone',
     texturePath: '/textures/meteor/istockphoto-1143001921-170667a.jpg',
     treatment: 'stone',
-    tint: '#5c626b',
-    textureRepeat: 1.5,
-    roughness: 0.9,
+    tint: '#ffff00',
+    textureRepeat: 2,
+    roughness: 0.86,
     emissiveIntensity: 0,
-    weight: 15,
+    edgeWeight: 1,
+    interiorWeight: 0,
   },
   {
     id: 'black-stone',
     label: 'Black stone',
     texturePath: '/textures/meteor/black-stone-background-material_1127-22469.jpg',
     treatment: 'stone',
-    tint: '#3a4048',
-    textureRepeat: 2,
-    roughness: 0.95,
+    tint: '#ffffff',
+    textureRepeat: 6,
+    roughness: 1,
+    emissiveIntensity: 5,
+    edgeWeight: 63.229,
+    interiorWeight: 62.9345,
+  },
+  {
+    id: 'shard',
+    label: 'Field debris (exact)',
+    texturePath: '/textures/meteor/basalt-magma.png',
+    treatment: 'stone',
+    tint: '#ff0000',
+    textureRepeat: 2.6,
+    roughness: 0.3,
     emissiveIntensity: 0,
-    weight: 10,
+    edgeWeight: 24.1592,
+    interiorWeight: 15.9792,
   },
   {
     id: 'molten',
     label: 'Molten (bloom)',
     texturePath: '/textures/meteor/basalt-magma.png',
     treatment: 'meteor',
-    tint: '#ffffff',
-    textureRepeat: 2,
-    roughness: 0.9,
-    emissiveIntensity: 1.6,
-    weight: 10,
+    tint: '#ff0000',
+    textureRepeat: 1.8,
+    roughness: 1,
+    emissiveIntensity: 5,
+    edgeWeight: 11.6117,
+    interiorWeight: 10,
   },
 ];
+
+/**
+ * The layout authored alongside the mix above. The works field inherits these.
+ *
+ * `edgeChunkCount` replaced the authored `edgeSpacing: 0.03`: the swarm needs a FIXED pool so the same
+ * rocks survive a mark change (see markSwarm), and a spacing yields a different count per shape. 260 is
+ * roughly what that spacing produced on a typical mark.
+ */
+export const DEFAULT_MARK_LAYOUT = {
+  edgeChunkCount: 260,
+  edgeChunkScale: 0.04,
+  interiorChunkScale: 0.06,
+  interiorChunkCount: 340,
+  depth: 0.7,
+};

@@ -13,10 +13,10 @@ import {
   type MarkMaterialVariant,
 } from '@/components/sections/WorksField/markBody';
 import {
-  createMarkAggregate,
-  type MarkAggregate,
+  createMarkSwarm,
+  type MarkSwarm,
   type MarkChunkMaterial,
-} from '@/components/sections/WorksField/markAggregate';
+} from '@/components/sections/WorksField/markSwarm';
 import {
   createChunkMaterial,
   type ChunkMaterialSpec,
@@ -53,8 +53,13 @@ const BLOOM_RADIUS = 0.55;
 const BLOOM_THRESHOLD = 0.6;
 const BLOOM_MSAA_SAMPLES = 4;
 
-const AGGREGATE_SCALE_JITTER = 0.45;
-const AGGREGATE_SEED = 149;
+const SWARM_SCALE_JITTER = 0.45;
+const SWARM_SEED = 149;
+/** How fast a free-drifting chunk wanders and tumbles. Slow — this is ambience, not activity. */
+const FREE_DRIFT_SPEED = 0.35;
+const FREE_TUMBLE_SPEED = 0.25;
+/** Seconds the same rocks take to travel from one mark to the next. */
+const SHAPE_BLEND_SECONDS = 1.8;
 
 const IDLE_SPIN_DEGREES_PER_SECOND = 18;
 const DRAG_YAW_SENSITIVITY = 0.008;
@@ -74,11 +79,23 @@ export interface LetterLabSettings {
    * between these — one surface for everything reads as a blob.
    */
   chunkSpecs: ChunkMaterialSpec[];
-  /** Spacing between outline chunks, in world units. The main lever on how legible the mark stays. */
-  edgeSpacing: number;
+  /** Seconds the mark takes to gather out of the dark. */
+  formationSeconds: number;
+  /** 0..1 — share of chunks already in place before anything flies. */
+  formationBaseFraction: number;
+  formationStagger: number;
+  formationEdgeDelay: number;
+  /** Half-extent of the cloud the chunks drift in before they're called into a shape. */
+  freeRadius: number;
+  freeDriftAmplitude: number;
+  /**
+   * Fixed pool sizes. Counts rather than a spacing, because the pool has to be the SAME rocks across
+   * every mark — see markSwarm's header.
+   */
+  edgeChunkCount: number;
+  interiorChunkCount: number;
   edgeChunkScale: number;
   interiorChunkScale: number;
-  interiorChunkCount: number;
   /** The glyph to extrude, when `svgMarkId` is null. */
   character: string;
   /**
@@ -98,10 +115,15 @@ export interface LetterLabSettings {
   metalness: number;
 }
 
+export interface LetterLabControls {
+  /** Replay the formation from scattered. */
+  replayFormation: () => void;
+}
+
 export function useLetterLab(
   canvasRef: RefObject<HTMLCanvasElement | null>,
   settings: LetterLabSettings,
-) {
+): LetterLabControls {
   // The render loop is built once; it reads the latest settings through this ref rather than being
   // torn down and rebuilt every time a slider moves.
   const settingsRef = useRef(settings);
@@ -111,6 +133,8 @@ export function useLetterLab(
   const rebuildGeometryRef = useRef<(() => void) | null>(null);
   const rebuildMaterialRef = useRef<(() => void) | null>(null);
   const rebuildChunkMaterialsRef = useRef<(() => void) | null>(null);
+  const replayFormationRef = useRef<(() => void) | null>(null);
+  const rebuildSwarmRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -153,7 +177,11 @@ export function useLetterLab(
     let font: Font | null = null;
     let mesh: THREE.Mesh | null = null;
     let materials: THREE.MeshStandardMaterial[] = [];
-    let aggregate: MarkAggregate | null = null;
+    // The persistent rock pool. Built once the materials are ready and kept for the life of the lab —
+    // a mark change re-targets it rather than replacing it, which is the whole point of the swarm.
+    let swarm: MarkSwarm | null = null;
+    /** True once a shape has been handed over, so the first one plays a formation and later ones don't. */
+    let hasShape = false;
 
     // Source images, cached by path — several specs share one texture (each clones it for its own
     // repeat), and a spec's texture can be changed from the panel at any time.
@@ -166,11 +194,12 @@ export function useLetterLab(
       mesh.geometry.dispose();
       mesh = null;
     };
-    const disposeAggregate = () => {
-      if (!aggregate) return;
-      spin.remove(aggregate.group);
-      aggregate.dispose();
-      aggregate = null;
+    const disposeSwarm = () => {
+      if (!swarm) return;
+      spin.remove(swarm.group);
+      swarm.dispose();
+      swarm = null;
+      hasShape = false;
     };
     const disposeChunkMaterials = () => {
       chunkMaterials.forEach((entry) => {
@@ -203,6 +232,16 @@ export function useLetterLab(
     // Bumped on every material rebuild so a slow texture can't overwrite a newer mix that started
     // after it — the usual async-race guard.
     let materialToken = 0;
+
+    // Seconds since the current mark began assembling. Driven in the render loop.
+    let formationElapsed = 0;
+    let shapeBlendElapsed = Infinity;
+    replayFormationRef.current = () => {
+      // Send them back out to the cloud and let them gather again — replaying a formation means
+      // watching it from free, not from wherever it happens to be.
+      formationElapsed = 0;
+      swarm?.setFormation(0);
+    };
     const disposeMaterials = () => {
       materials.forEach((material) => {
         material.map?.dispose();
@@ -238,23 +277,52 @@ export function useLetterLab(
       spin.add(mesh);
     };
 
-    /** Build the rock assembly for a set of outlines, and put it on the rig. */
-    const mountAggregate = (shapes: THREE.Shape[], flipY: boolean) => {
-      if (chunkMaterials.length === 0) return;
+    /** Create the pool once. Everything after this is re-targeting, never rebuilding. */
+    const ensureSwarm = () => {
+      if (swarm || chunkMaterials.length === 0) return;
       const current = settingsRef.current;
-      disposeAggregate();
-      aggregate = createMarkAggregate(shapes, chunkMaterials, {
+      swarm = createMarkSwarm(chunkMaterials, {
         targetSize: TARGET_SIZE,
         depth: current.depth,
-        edgeSpacing: current.edgeSpacing,
+        edgeChunkCount: current.edgeChunkCount,
+        interiorChunkCount: current.interiorChunkCount,
         edgeChunkScale: current.edgeChunkScale,
         interiorChunkScale: current.interiorChunkScale,
-        interiorChunkCount: current.interiorChunkCount,
-        scaleJitter: AGGREGATE_SCALE_JITTER,
-        flipY,
-        seed: AGGREGATE_SEED,
+        scaleJitter: SWARM_SCALE_JITTER,
+        freeRadius: current.freeRadius,
+        freeDriftAmplitude: current.freeDriftAmplitude,
+        freeDriftSpeed: FREE_DRIFT_SPEED,
+        tumbleSpeed: FREE_TUMBLE_SPEED,
+        baseFraction: current.formationBaseFraction,
+        formationStagger: current.formationStagger,
+        formationEdgeDelay: current.formationEdgeDelay,
+        seed: SWARM_SEED,
       });
-      spin.add(aggregate.group);
+      spin.add(swarm.group);
+    };
+
+    /**
+     * Point the swarm at a shape.
+     *
+     * The FIRST shape plays a formation — the rocks are drifting free and gather into it. Every shape
+     * after that is a re-target: the same rocks fly from where they were standing to where they now
+     * belong, which is a shape-blend, not a re-formation. That distinction is the whole reason the two
+     * blends are separate on the swarm.
+     */
+    const holdShape = (shapes: THREE.Shape[], flipY: boolean) => {
+      ensureSwarm();
+      if (!swarm) return;
+      swarm.setShape(shapes, flipY);
+      if (hasShape) {
+        shapeBlendElapsed = 0;
+        swarm.setShapeBlend(0);
+        return;
+      }
+      hasShape = true;
+      formationElapsed = 0;
+      shapeBlendElapsed = Infinity; // nothing to blend from on the first shape
+      swarm.setShapeBlend(1);
+      swarm.setFormation(0);
     };
 
     const extrusionOptions = () => {
@@ -272,23 +340,23 @@ export function useLetterLab(
     /** Draw the current subject as either a solid extrusion or an assembly of rock. */
     const buildFromSvg = (svgText: string) => {
       if (settingsRef.current.body === 'rock') {
-        mountAggregate(svgToShapes(svgText), true);
+        holdShape(svgToShapes(svgText), true);
         disposeMesh();
         return;
       }
       mountGeometry(createSvgMarkGeometry(svgText, extrusionOptions()));
-      disposeAggregate();
+      disposeSwarm();
     };
 
     const buildFromLetter = (character: string, loadedFont: Font) => {
       if (settingsRef.current.body === 'rock') {
         // Typeface outlines are already Y-up, so no flip — see markBody's header note.
-        mountAggregate(letterToShapes(character, loadedFont), false);
+        holdShape(letterToShapes(character, loadedFont), false);
         disposeMesh();
         return;
       }
       mountGeometry(createLetterMarkGeometry(character, loadedFont, extrusionOptions()));
-      disposeAggregate();
+      disposeSwarm();
     };
 
     const buildGeometry = () => {
@@ -334,7 +402,8 @@ export function useLetterLab(
           disposeChunkMaterials();
           chunkMaterials = specs.map((spec, index) => ({
             material: createChunkMaterial(textures[index], spec),
-            weight: spec.weight,
+            edgeWeight: spec.edgeWeight,
+            interiorWeight: spec.interiorWeight,
           }));
           // Weights decide which bucket each chunk lands in, and that's baked into the instanced
           // meshes — so a material change is always a full re-lay, not a property tweak.
@@ -344,6 +413,12 @@ export function useLetterLab(
     };
 
     rebuildChunkMaterialsRef.current = rebuildChunkMaterials;
+    // Pool size, chunk scales, the free cloud and the stagger are all baked into the swarm when it's
+    // built — they can't be re-targeted, so changing one has to replace the pool outright.
+    rebuildSwarmRef.current = () => {
+      disposeSwarm();
+      buildGeometry();
+    };
 
     buildMaterials();
     rebuildChunkMaterials();
@@ -415,6 +490,30 @@ export function useLetterLab(
     const renderFrame = () => {
       frameHandle = requestAnimationFrame(renderFrame);
       const deltaSeconds = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
+      const elapsed = clock.elapsedTime;
+
+      // The swarm gathers out of the drifting cloud, and travels between marks. Reduced motion skips
+      // both — hundreds of flying chunks is exactly the motion that setting exists to suppress.
+      if (swarm) {
+        const duration = settingsRef.current.formationSeconds;
+        if (reduceMotion || duration <= 0) {
+          swarm.setFormation(1);
+          swarm.setShapeBlend(1);
+        } else {
+          if (formationElapsed <= duration) {
+            formationElapsed += deltaSeconds;
+            swarm.setFormation(Math.min(formationElapsed / duration, 1));
+          }
+          if (shapeBlendElapsed <= SHAPE_BLEND_SECONDS) {
+            shapeBlendElapsed += deltaSeconds;
+            swarm.setShapeBlend(Math.min(shapeBlendElapsed / SHAPE_BLEND_SECONDS, 1));
+          }
+        }
+        // Always — the free cloud has to keep drifting even when nothing is being animated, or the
+        // chunks that aren't in the shape read as a frozen frame.
+        swarm.update(elapsed);
+      }
+
       if (!reduceMotion && !isDragging) {
         idleSpin += THREE.MathUtils.degToRad(IDLE_SPIN_DEGREES_PER_SECOND) * deltaSeconds;
       }
@@ -435,8 +534,10 @@ export function useLetterLab(
       rebuildGeometryRef.current = null;
       rebuildMaterialRef.current = null;
       rebuildChunkMaterialsRef.current = null;
+      replayFormationRef.current = null;
+      rebuildSwarmRef.current = null;
       disposeMesh();
-      disposeAggregate();
+      disposeSwarm();
       disposeMaterials();
       disposeChunkMaterials();
       textureCache.forEach((texture) => texture.dispose());
@@ -451,6 +552,7 @@ export function useLetterLab(
   // materials. Split so dragging a colour slider doesn't re-extrude the glyph every frame.
   useEffect(() => {
     rebuildGeometryRef.current?.();
+    // Only what changes the SHAPE being held. Pool-defining values are the effect below.
   }, [
     settings.character,
     settings.svgMarkId,
@@ -458,11 +560,26 @@ export function useLetterLab(
     settings.depth,
     settings.bevelSize,
     settings.bevelThickness,
-    settings.edgeSpacing,
+  ]);
+
+  // Baked into the pool at construction — these can't be re-targeted, so they replace it.
+  useEffect(() => {
+    rebuildSwarmRef.current?.();
+  }, [
+    settings.edgeChunkCount,
+    settings.interiorChunkCount,
     settings.edgeChunkScale,
     settings.interiorChunkScale,
-    settings.interiorChunkCount,
+    settings.freeRadius,
+    settings.freeDriftAmplitude,
+    settings.formationBaseFraction,
+    settings.formationStagger,
+    settings.formationEdgeDelay,
   ]);
+
+  return {
+    replayFormation: () => replayFormationRef.current?.(),
+  };
 
   // The chunk mix is an array of objects, so it's compared by serialised value rather than by
   // reference — the panel builds a new array on every keystroke and re-laying the mark for an
