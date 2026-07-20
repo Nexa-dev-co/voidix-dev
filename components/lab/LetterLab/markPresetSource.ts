@@ -24,9 +24,11 @@ export interface MarkLayoutPreset {
 /** The assembly timing, exported alongside the layout — it's as much part of the look as the mix is. */
 export interface MarkFormationPreset {
   formationSeconds: number;
+  shapeBlendSeconds: number;
   formationBaseFraction: number;
   formationStagger: number;
   formationEdgeDelay: number;
+  formationOrder: number;
   freeRadius: number;
   freeDriftAmplitude: number;
 }

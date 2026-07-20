@@ -58,8 +58,6 @@ const SWARM_SEED = 149;
 /** How fast a free-drifting chunk wanders and tumbles. Slow — this is ambience, not activity. */
 const FREE_DRIFT_SPEED = 0.35;
 const FREE_TUMBLE_SPEED = 0.25;
-/** Seconds the same rocks take to travel from one mark to the next. */
-const SHAPE_BLEND_SECONDS = 1.8;
 
 const IDLE_SPIN_DEGREES_PER_SECOND = 18;
 const DRAG_YAW_SENSITIVITY = 0.008;
@@ -81,10 +79,14 @@ export interface LetterLabSettings {
   chunkSpecs: ChunkMaterialSpec[];
   /** Seconds the mark takes to gather out of the dark. */
   formationSeconds: number;
+  /** Seconds the same rocks take to travel from one mark to the next. */
+  shapeBlendSeconds: number;
   /** 0..1 — share of chunks already in place before anything flies. */
   formationBaseFraction: number;
   formationStagger: number;
   formationEdgeDelay: number;
+  /** 0 = chunks arrive in random order, 1 = the outline draws itself around the contour. */
+  formationOrder: number;
   /** Half-extent of the cloud the chunks drift in before they're called into a shape. */
   freeRadius: number;
   freeDriftAmplitude: number;
@@ -296,6 +298,7 @@ export function useLetterLab(
         baseFraction: current.formationBaseFraction,
         formationStagger: current.formationStagger,
         formationEdgeDelay: current.formationEdgeDelay,
+        formationOrder: current.formationOrder,
         seed: SWARM_SEED,
       });
       spin.add(swarm.group);
@@ -504,9 +507,12 @@ export function useLetterLab(
             formationElapsed += deltaSeconds;
             swarm.setFormation(Math.min(formationElapsed / duration, 1));
           }
-          if (shapeBlendElapsed <= SHAPE_BLEND_SECONDS) {
+          const travelSeconds = settingsRef.current.shapeBlendSeconds;
+          if (travelSeconds <= 0) {
+            swarm.setShapeBlend(1);
+          } else if (shapeBlendElapsed <= travelSeconds) {
             shapeBlendElapsed += deltaSeconds;
-            swarm.setShapeBlend(Math.min(shapeBlendElapsed / SHAPE_BLEND_SECONDS, 1));
+            swarm.setShapeBlend(Math.min(shapeBlendElapsed / travelSeconds, 1));
           }
         }
         // Always — the free cloud has to keep drifting even when nothing is being animated, or the
@@ -575,6 +581,7 @@ export function useLetterLab(
     settings.formationBaseFraction,
     settings.formationStagger,
     settings.formationEdgeDelay,
+    settings.formationOrder,
   ]);
 
   return {

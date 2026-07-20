@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Check, Clipboard, RotateCcw } from 'lucide-react';
 import { useLetterLab, type LetterLabSettings } from './hooks/useLetterLab';
+import { useDebounced } from './hooks/useDebounced';
 import type { MarkMaterialVariant } from '@/components/sections/WorksField/markBody';
 import { MARKS } from '@/components/sections/WorksField/marks';
 import {
@@ -37,6 +38,9 @@ type Subject = 'letters' | 'logos';
 /** How long the copy button stays confirmed before reverting. */
 const COPY_FEEDBACK_MS = 1600;
 
+/** Quiet time after the last slider move before the scene rebuilds. Long enough to cover a drag. */
+const SCENE_SETTLE_MS = 220;
+
 /**
  * Backdrops to judge a mark against. The canvas renders with `alpha: true`, so this is literally the
  * page showing through behind it.
@@ -61,11 +65,14 @@ const DEFAULT_SETTINGS: Omit<LetterLabSettings, 'character' | 'svgMarkId'> = {
   chunkSpecs: DEFAULT_CHUNK_SPECS.map((spec) => ({ ...spec })),
   // The authored layout, imported rather than re-typed so the two can't drift apart.
   ...DEFAULT_MARK_LAYOUT,
-  // Formation: long enough to watch it happen, with the outline landing last so the shape resolves.
-  formationSeconds: 2.4,
+  // Formation: slow and deliberate. A high stagger with a high order means the rocks arrive as a
+  // sequence — the outline drawing itself around the contour — rather than a simultaneous swarm.
+  formationSeconds: 5,
+  shapeBlendSeconds: 4,
   formationBaseFraction: 0.3,
-  formationStagger: 0.55,
-  formationEdgeDelay: 0.3,
+  formationStagger: 0.8,
+  formationEdgeDelay: 0.25,
+  formationOrder: 0.85,
   // The cloud the rocks live in before they're called. Wide enough to fill the frame so they read as
   // ambient debris rather than a tidy reservoir parked just off the mark.
   freeRadius: 4.5,
@@ -143,8 +150,12 @@ export default function LetterLab() {
   const character = GLYPHS[glyphIndex];
   const currentLogo = SVG_MARKS[logoIndex];
 
+  // Sliders stay live in the UI; the scene only catches up once you stop moving them. Which mark is
+  // shown is NOT debounced — stepping a glyph should answer immediately, and it's cheap.
+  const settledSettings = useDebounced(settings, SCENE_SETTLE_MS);
+
   const { replayFormation } = useLetterLab(canvasRef, {
-    ...settings,
+    ...settledSettings,
     character,
     svgMarkId: isLetters ? null : currentLogo?.id ?? null,
   });
@@ -203,9 +214,11 @@ export default function LetterLab() {
       },
       {
         formationSeconds: settings.formationSeconds,
+        shapeBlendSeconds: settings.shapeBlendSeconds,
         formationBaseFraction: settings.formationBaseFraction,
         formationStagger: settings.formationStagger,
         formationEdgeDelay: settings.formationEdgeDelay,
+        formationOrder: settings.formationOrder,
         freeRadius: settings.freeRadius,
         freeDriftAmplitude: settings.freeDriftAmplitude,
       },
@@ -385,12 +398,28 @@ export default function LetterLab() {
                 </button>
               </div>
               <Slider
-                label="Duration (s)"
+                label="Form duration (s)"
                 value={settings.formationSeconds}
                 min={0}
-                max={8}
+                max={15}
                 step={0.1}
                 onChange={(value) => update('formationSeconds', value)}
+              />
+              <Slider
+                label="Travel duration (s)"
+                value={settings.shapeBlendSeconds}
+                min={0}
+                max={15}
+                step={0.1}
+                onChange={(value) => update('shapeBlendSeconds', value)}
+              />
+              <Slider
+                label="Order (random → sequential)"
+                value={settings.formationOrder}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={(value) => update('formationOrder', value)}
               />
               <Slider
                 label="Base already placed"
@@ -433,8 +462,9 @@ export default function LetterLab() {
                 onChange={(value) => update('formationEdgeDelay', value)}
               />
               <p className="text-[0.6rem] leading-relaxed text-muted">
-                Base sits in place from frame one — the rest fly in to complete it. Outline delay
-                holds the silhouette back so the mass gathers first and the shape resolves last.
+                Base sits in place from frame one, first formation only. Order at 1 makes the outline
+                draw itself around the contour instead of arriving at random. Travel is the same rocks
+                moving between marks.
               </p>
             </div>
 

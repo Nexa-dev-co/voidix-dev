@@ -92,6 +92,19 @@ export interface MarkSwarmOptions {
   baseFraction: number;
   /** Fraction of the timeline spent staggering chunk starts. */
   formationStagger: number;
+  /**
+   * 0 = chunks start in random order, 1 = strictly in pool order.
+   *
+   * Pool order is not arbitrary: outline chunks are assigned to their sample points in ARC-LENGTH
+   * order, so ordering their delays by pool index makes the silhouette draw itself progressively
+   * around the contour instead of popping in all over. That reads as deliberate — something being
+   * constructed — where random reads as scattered arrival.
+   *
+   * Interior chunks are rejection-sampled, so their pool order is spatially arbitrary; ordering them
+   * mostly buys a smooth ramp rather than a legible sweep. Both use the same knob, since a mark whose
+   * outline draws itself while its interior arrives at random reads as two unrelated events.
+   */
+  formationOrder: number;
   /** Extra delay on OUTLINE chunks, so the mass gathers first and the silhouette resolves last. */
   formationEdgeDelay: number;
 
@@ -261,10 +274,20 @@ export function createMarkSwarm(
         random() * Math.PI * 2,
         random() * Math.PI * 2,
       );
+      // Where this chunk sits in the queue: its own place in the pool, blended against a random draw.
+      // The random draw is always consumed, so changing the order knob can't reshuffle anything else.
+      const orderRandom = random();
+      const orderFraction = count > 1 ? poolIndex / (count - 1) : 0;
+      const queuePosition = THREE.MathUtils.lerp(
+        orderRandom,
+        orderFraction,
+        options.formationOrder,
+      );
+
       const zoneDelay = isEdge ? options.formationEdgeDelay : 0;
       const delay = Math.min(
         0.999,
-        zoneDelay + random() * options.formationStagger * (1 - zoneDelay),
+        zoneDelay + queuePosition * options.formationStagger * (1 - zoneDelay),
       );
 
       const freeAnchor = new THREE.Vector3(
