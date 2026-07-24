@@ -1,4 +1,5 @@
 import type { SunLabDocument } from "./sunLabDocument";
+import { normalizeState } from "./sunLabState";
 
 // localStorage persistence for the whole document (all snapshots + which is active). Versioned so a
 // future schema change can be detected and discarded rather than crashing the tool on stale data.
@@ -16,6 +17,11 @@ export function loadDocument(): SunLabDocument | null {
     if (!parsed.snapshots.some((snapshot) => snapshot.id === parsed.activeId)) {
       parsed.activeId = parsed.snapshots[0].id;
     }
+    // Backfill any fields added to the schema since this doc was saved.
+    parsed.snapshots = parsed.snapshots.map((snapshot) => ({
+      ...snapshot,
+      state: normalizeState(snapshot.state),
+    }));
     return parsed;
   } catch {
     return null;

@@ -31,6 +31,17 @@ const MAX_FRAME_SECONDS = 0.05;
 const BLOOM_MSAA_SAMPLES = 4;
 // Leave the model comfortably inside the frame after auto-fitting to its bounding sphere.
 const CAMERA_FIT_MARGIN = 1.35;
+// Phase offset per shard so the cracks don't all breathe in lockstep — reads as alive, not mechanical.
+const FRACTURE_PHASE_STEP = 0.7;
+const TWO_PI = Math.PI * 2;
+
+/** One flare's spin state: its disc-normal axis, its posed rotation, and the accumulated spin. */
+interface FlareSpin {
+  mesh: THREE.Mesh;
+  axis: THREE.Vector3;
+  base: THREE.Quaternion;
+  angle: number;
+}
 
 export interface SunLabStatus {
   isLoading: boolean;
@@ -60,6 +71,8 @@ export interface SunLabSceneHandle {
   applySharedMaterial: (name: string, params: MaterialParams) => void;
   /** Signed radial offset of the fracture cells, in units of the cell radius. Composes with overrides. */
   applyFractureSpread: (amount: number) => void;
+  /** Play the one-shot fracture "form" (ramp from formFromSpread to the current spread). */
+  playFormAnimation: () => void;
   /** Re-frame the camera on the model's current bounds. */
   fitCamera: () => void;
 }
@@ -173,22 +186,88 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
     let registry: SunLabRegistry | null = null;
     let autoRotateSpeed = 0;
     let fractureSpread = 0;
+    // Cracks breathing — a gravity-like inward tug on the shards. Amplitude 0 = still.
+    let fracturePulse = 0;
+    let fracturePulseSpeed = 0.3;
+    let fracturePulseTime = 0;
+    // Form-on-enter — a one-shot ramp of the spread when a stage is entered.
+    let formActive = false;
+    let formProgress = 0;
+    let formDuration = 1.2;
+    let formFromSpread = 0;
     // Materials cloned for per-object editing — tracked so we can dispose them on teardown.
     const clonedMaterials: THREE.Material[] = [];
 
-    // Move the whole fracture shards (root Groups) along their outward directions. The magma/inner
-    // meshes live inside them, so they part with their shard — this is the crack-open motion.
-    const applyShardSpread = () => {
+    // Place the whole fracture shards (root Groups) at a uniform spread along their outward directions.
+    // The magma/inner meshes live inside them, so they part with their shard — the crack-open motion.
+    const positionShardsAt = (spread: number) => {
       if (!registry) return;
       const { shards, radius } = registry.cellSpread;
+      const distance = spread * radius;
       shards.forEach(({ object, basePosition, outward }) => {
-        const distance = fractureSpread * radius;
         object.position.set(
           basePosition.x + outward.x * distance,
           basePosition.y + outward.y * distance,
           basePosition.z + outward.z * distance,
         );
       });
+    };
+    const applyShardSpread = () => positionShardsAt(fractureSpread);
+
+    // ── Flare spin ──
+    // The flares are FLAT discs (thin in one axis), so "spinning in place" = turning about the disc's
+    // NORMAL (its shortest dimension), like a coin flat on a table — not tumbling about an in-plane axis.
+    const flareSpins: FlareSpin[] = [];
+    const flareSpinById = new Map<string, FlareSpin>();
+    let flareSpinSpeed = 0;
+    const scratchSpinQuaternion = new THREE.Quaternion();
+
+    // The disc's geometry centre is offset from the mesh origin, so spinning about the origin would
+    // orbit. Recentre each flare's geometry on the origin (compensating the mesh position so nothing
+    // moves visually), so the spin turns it perfectly in place. Runs BEFORE the registry captures
+    // defaults, so the compensated position is what Reset returns to.
+    const recenterFlareGeometry = (root: THREE.Object3D) => {
+      root.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        if (!materials.some((material) => material.name === "flare")) return;
+        // Clone so a shared geometry is never disturbed for other meshes.
+        const geometry = object.geometry.clone();
+        geometry.computeBoundingBox();
+        const center = new THREE.Vector3();
+        geometry.boundingBox?.getCenter(center);
+        // pos' = pos + R·(S·center) keeps every vertex in the same parent-space spot after recentring.
+        const compensation = center.clone().multiply(object.scale).applyQuaternion(object.quaternion);
+        object.position.add(compensation);
+        geometry.translate(-center.x, -center.y, -center.z);
+        object.geometry = geometry;
+      });
+    };
+
+    const buildFlareSpins = () => {
+      if (!registry) return;
+      registry.entries
+        .filter((entry) => entry.groupId === "flares")
+        .forEach((entry) => {
+          entry.mesh.geometry.computeBoundingBox();
+          const size = new THREE.Vector3();
+          entry.mesh.geometry.boundingBox?.getSize(size);
+          // Shortest local dimension = the disc's normal — spin about that so it turns flat, in place.
+          const axis =
+            size.x <= size.y && size.x <= size.z
+              ? new THREE.Vector3(1, 0, 0)
+              : size.y <= size.z
+                ? new THREE.Vector3(0, 1, 0)
+                : new THREE.Vector3(0, 0, 1);
+          const spin: FlareSpin = {
+            mesh: entry.mesh,
+            axis,
+            base: entry.mesh.quaternion.clone(),
+            angle: 0,
+          };
+          flareSpins.push(spin);
+          flareSpinById.set(entry.id, spin);
+        });
     };
 
     const setEnvIntensity = (intensity: number) => {
@@ -234,6 +313,22 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
           setEulerFromDegrees(modelRoot.rotation, global.rotation);
         }
         autoRotateSpeed = global.autoRotateSpeed;
+        // When the drill is switched off, return every flare to its posed rotation (not a random angle).
+        const previousFlareSpinSpeed = flareSpinSpeed;
+        flareSpinSpeed = global.flareSpinSpeed;
+        if (flareSpinSpeed === 0 && previousFlareSpinSpeed !== 0) {
+          flareSpins.forEach((spin) => {
+            spin.angle = 0;
+            spin.mesh.quaternion.copy(spin.base);
+          });
+        }
+        const previousFracturePulse = fracturePulse;
+        fracturePulse = global.fracturePulse;
+        fracturePulseSpeed = global.fracturePulseSpeed;
+        // Turning the breathing off returns the shards to their static spread rather than a mid-pulse spot.
+        if (fracturePulse === 0 && previousFracturePulse !== 0) applyShardSpread();
+        formDuration = global.formDuration;
+        formFromSpread = global.formFromSpread;
         renderer.toneMappingExposure = global.exposure;
         coreLight.color.set(global.coreLight.color);
         coreLight.intensity = global.coreLight.intensity;
@@ -261,6 +356,9 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
         entry.mesh.position.set(resolved.position.x, resolved.position.y, resolved.position.z);
         setEulerFromDegrees(entry.mesh.rotation, resolved.rotation);
         entry.mesh.scale.set(resolved.scale.x, resolved.scale.y, resolved.scale.z);
+        // A flare's posed rotation is the base the drill spins on top of — keep it in sync with edits.
+        const flareSpin = flareSpinById.get(id);
+        if (flareSpin) flareSpin.base.copy(entry.mesh.quaternion);
       },
       applyObjectMaterial: (id, slot, params) => {
         const entry = registry?.entriesById.get(id);
@@ -294,7 +392,13 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
       },
       applyFractureSpread: (amount) => {
         fractureSpread = amount;
-        applyShardSpread();
+        if (!formActive) applyShardSpread();
+      },
+      playFormAnimation: () => {
+        formProgress = 0;
+        formActive = true;
+        // Snap to the start pose immediately so there's no flash of the open state before it forms.
+        positionShardsAt(formFromSpread);
       },
       fitCamera,
     };
@@ -329,8 +433,11 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
           });
         });
 
+        // Recentre the flat flares BEFORE the registry snapshots their (now compensated) positions.
+        recenterFlareGeometry(modelRoot);
         spinner.add(modelRoot);
         registry = buildSunLabRegistry(modelRoot);
+        buildFlareSpins();
 
         // Apply the tool's defaults so the first frame already looks right, then fit + hand off.
         // Re-measure first: the canvas is laid out by now, so the aspect fitCamera reads is correct.
@@ -361,6 +468,42 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
       const delta = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
       if (autoRotateSpeed !== 0) {
         spinner.rotation.y += THREE.MathUtils.degToRad(autoRotateSpeed) * delta;
+      }
+      if (flareSpinSpeed !== 0) {
+        const deltaAngle = THREE.MathUtils.degToRad(flareSpinSpeed) * delta;
+        flareSpins.forEach((spin) => {
+          spin.angle += deltaAngle;
+          scratchSpinQuaternion.setFromAxisAngle(spin.axis, spin.angle);
+          spin.mesh.quaternion.copy(spin.base).multiply(scratchSpinQuaternion);
+        });
+      }
+      // Form-on-enter: ramp the spread from its start to the stage's target once. Eased out so it opens
+      // fast then settles. Takes priority over the breathing until it finishes.
+      if (formActive && registry) {
+        formProgress += delta / Math.max(formDuration, 0.001);
+        const t = Math.min(formProgress, 1);
+        const eased = 1 - Math.pow(1 - t, 3);
+        positionShardsAt(formFromSpread + (fractureSpread - formFromSpread) * eased);
+        if (formProgress >= 1) {
+          formActive = false;
+          fracturePulseTime = 0; // breathing resumes cleanly from the fully-formed (open) pose
+        }
+      } else if (fracturePulse !== 0 && registry) {
+        // Cracks breathing: tug each shard toward centre along its own outward line — so the motion is
+        // always radial (gravity-like), never up or sideways. Overrides the static spread while running.
+        fracturePulseTime += delta;
+        const { shards, radius } = registry.cellSpread;
+        shards.forEach(({ object, basePosition, outward }, index) => {
+          const phase = TWO_PI * fracturePulseSpeed * fracturePulseTime + index * FRACTURE_PHASE_STEP;
+          // 0 (fully open, at the base spread) → fracturePulse (pulled that much toward centre).
+          const inward = fracturePulse * (0.5 - 0.5 * Math.cos(phase));
+          const distance = (fractureSpread - inward) * radius;
+          object.position.set(
+            basePosition.x + outward.x * distance,
+            basePosition.y + outward.y * distance,
+            basePosition.z + outward.z * distance,
+          );
+        });
       }
       controls.update();
       composer.render();

@@ -18,6 +18,7 @@ import {
   type SunLabDocument,
 } from "./sunLabDocument";
 import { loadDocument, saveDocument } from "./sunLabStorage";
+import { SUN_LAB_PRESETS } from "./sunLabPresets";
 import { formatSunLabState } from "./sunLabPresetSource";
 import SnapshotBar from "./hud/SnapshotBar";
 import ObjectTree from "./hud/ObjectTree";
@@ -117,6 +118,7 @@ export default function SunLab() {
       // Reflect the loaded/active snapshot onto this scene. Runs on every ready (incl. a StrictMode
       // remount's fresh scene), and it's idempotent — so the viewport always matches the numbers.
       applyFullState(currentState());
+      if (currentState().global.formOnEnter) handle.playFormAnimation();
       setReady(true);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -253,7 +255,11 @@ export default function SunLab() {
     undoStackRef.current = [];
     setCanUndo(false);
     applyFullState(nextState);
+    // Entering a stage that forms on enter replays its one-shot open.
+    if (nextState.global.formOnEnter) handleRef.current?.playFormAnimation();
   };
+
+  const playForm = () => handleRef.current?.playFormAnimation();
 
   const selectSnapshot = (id: string) => {
     const target = documentRef.current.snapshots.find((snapshot) => snapshot.id === id);
@@ -264,6 +270,18 @@ export default function SunLab() {
 
   const addSnapshot = () => {
     const snapshot = createSnapshot(`Stage ${documentRef.current.snapshots.length + 1}`);
+    setDocument((previous) => ({
+      ...previous,
+      snapshots: [...previous.snapshots, snapshot],
+      activeId: snapshot.id,
+    }));
+    switchToState(snapshot.state);
+  };
+
+  const addPreset = (index: number) => {
+    const preset = SUN_LAB_PRESETS[index];
+    if (!preset) return;
+    const snapshot = createSnapshot(preset.name, structuredClone(preset.state));
     setDocument((previous) => ({
       ...previous,
       snapshots: [...previous.snapshots, snapshot],
@@ -360,9 +378,11 @@ export default function SunLab() {
           <SnapshotBar
             snapshots={document.snapshots}
             activeId={document.activeId}
+            presetNames={SUN_LAB_PRESETS.map((preset) => preset.name)}
             onSelect={selectSnapshot}
             onAdd={addSnapshot}
             onDuplicate={duplicateSnapshot}
+            onAddPreset={addPreset}
             onDelete={deleteSnapshot}
             onRename={renameSnapshot}
             onUndo={undo}
@@ -383,6 +403,7 @@ export default function SunLab() {
                 onChange={updateGlobal}
                 onReset={resetGlobal}
                 onFitCamera={() => handleRef.current?.fitCamera()}
+                onPlayForm={playForm}
               />
             )}
 

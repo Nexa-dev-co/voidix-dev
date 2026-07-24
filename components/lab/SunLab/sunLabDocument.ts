@@ -1,4 +1,5 @@
 import { createInitialState, type SunLabState } from "./sunLabState";
+import { PEACEFUL_PRESET } from "./sunLabPresets";
 
 // A snapshot is nothing more than a named capture of the editor's numbers (a full SunLabState). "The 3
 // stages" are just three snapshots — the tool never hardcodes the count. Everything the editor can do
@@ -27,7 +28,8 @@ export function createSnapshot(name: string, state = createInitialState()): SunL
 }
 
 export function createInitialDocument(): SunLabDocument {
-  const first = createSnapshot("Stage 1");
+  // Fresh users open on the authored Peaceful stage rather than a blank default.
+  const first = createSnapshot(PEACEFUL_PRESET.name, structuredClone(PEACEFUL_PRESET.state));
   return { snapshots: [first], activeId: first.id };
 }
 

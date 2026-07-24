@@ -1,6 +1,6 @@
 "use client";
 
-import { RotateCcw, Crosshair } from "lucide-react";
+import { RotateCcw, Crosshair, Play } from "lucide-react";
 import type { GlobalParams } from "../sunLabState";
 import { ColorField, Section, Slider, Toggle, Vec3Field } from "./controls";
 
@@ -12,11 +12,13 @@ export default function GlobalControls({
   onChange,
   onReset,
   onFitCamera,
+  onPlayForm,
 }: {
   value: GlobalParams;
   onChange: (value: GlobalParams) => void;
   onReset: () => void;
   onFitCamera: () => void;
+  onPlayForm: () => void;
 }) {
   const patch = (partial: Partial<GlobalParams>) => onChange({ ...value, ...partial });
 
@@ -57,13 +59,75 @@ export default function GlobalControls({
           step={1}
           onChange={(rotation) => patch({ rotation })}
         />
+      </Section>
+
+      <Section title="Animation">
         <Slider
-          label="auto-rotate °/s"
+          label="whole-sun spin °/s"
           value={value.autoRotateSpeed}
           min={-90}
           max={90}
           step={1}
           onChange={(autoRotateSpeed) => patch({ autoRotateSpeed })}
+        />
+        <Slider
+          label="flare spin °/s"
+          value={value.flareSpinSpeed}
+          min={-360}
+          max={360}
+          step={5}
+          onChange={(flareSpinSpeed) => patch({ flareSpinSpeed })}
+        />
+        <Slider
+          label="cracks breathe (inward)"
+          value={value.fracturePulse}
+          min={0}
+          max={0.5}
+          step={0.01}
+          onChange={(fracturePulse) => patch({ fracturePulse })}
+        />
+        <Slider
+          label="breathe speed /s"
+          value={value.fracturePulseSpeed}
+          min={0.05}
+          max={2}
+          step={0.05}
+          onChange={(fracturePulseSpeed) => patch({ fracturePulseSpeed })}
+        />
+      </Section>
+
+      <Section
+        title="Form on enter"
+        action={
+          <button
+            type="button"
+            onClick={onPlayForm}
+            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.62rem] text-muted hover:text-fg"
+          >
+            <Play size={12} /> Play
+          </button>
+        }
+      >
+        <Toggle
+          label="form on enter"
+          value={value.formOnEnter}
+          onChange={(formOnEnter) => patch({ formOnEnter })}
+        />
+        <Slider
+          label="form from spread"
+          value={value.formFromSpread}
+          min={-1}
+          max={2.5}
+          step={0.01}
+          onChange={(formFromSpread) => patch({ formFromSpread })}
+        />
+        <Slider
+          label="form duration s"
+          value={value.formDuration}
+          min={0.2}
+          max={4}
+          step={0.05}
+          onChange={(formDuration) => patch({ formDuration })}
         />
       </Section>
 

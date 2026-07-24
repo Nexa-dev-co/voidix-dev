@@ -57,6 +57,18 @@ export interface GlobalParams {
   rotation: Vector3Values;
   /** Continuous spin about world-Y, degrees/second. 0 = still. Lives on a separate spinner parent. */
   autoRotateSpeed: number;
+  /** Each flare cylinder drills about its own long axis at this many degrees/second. 0 = still. */
+  flareSpinSpeed: number;
+  /** Cracks breathe: how far (in cell-radius units) the shards are tugged toward centre. 0 = still. */
+  fracturePulse: number;
+  /** Speed of that breathing, in cycles/second. */
+  fracturePulseSpeed: number;
+  /** Play a one-shot fracture "form" when this stage is entered (shards animate from → target spread). */
+  formOnEnter: boolean;
+  /** Seconds the form takes. */
+  formDuration: number;
+  /** Spread the form STARTS from (target is the stage's fractureSpread). 0 = closed/assembled. */
+  formFromSpread: number;
   /** A point light at the sun's centre — pours through the fracture gaps when the cells part. */
   coreLight: { color: string; intensity: number; distance: number };
   bloom: { strength: number; radius: number; threshold: number };
@@ -86,6 +98,12 @@ export const DEFAULT_GLOBAL_PARAMS: GlobalParams = {
   modelScale: 1,
   rotation: { x: 0, y: 0, z: 0 },
   autoRotateSpeed: 0,
+  flareSpinSpeed: 0,
+  fracturePulse: 0,
+  fracturePulseSpeed: 0.3,
+  formOnEnter: false,
+  formDuration: 1.2,
+  formFromSpread: 0,
   // Off by default — Phase 1 shouldn't force a look. Warm so it reads as sunlight when turned up.
   coreLight: { color: "#ffd9a0", intensity: 0, distance: 0 },
   // Threshold high enough that only the bright magma blooms, not the whole hull.
@@ -105,6 +123,17 @@ export function createInitialState(): SunLabState {
     objects: {},
     sharedMaterials: {},
     fractureSpread: 0,
+  };
+}
+
+// Fill in any fields a saved/preset state is missing (e.g. a global field added after it was saved), so
+// older localStorage data and hand-written presets both stay valid as the schema grows.
+export function normalizeState(loaded: SunLabState): SunLabState {
+  return {
+    global: { ...DEFAULT_GLOBAL_PARAMS, ...loaded.global },
+    objects: loaded.objects ?? {},
+    sharedMaterials: loaded.sharedMaterials ?? {},
+    fractureSpread: loaded.fractureSpread ?? 0,
   };
 }
 

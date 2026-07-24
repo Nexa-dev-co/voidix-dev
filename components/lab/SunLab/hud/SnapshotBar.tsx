@@ -8,9 +8,11 @@ import type { SunLabSnapshot } from "../sunLabDocument";
 export default function SnapshotBar({
   snapshots,
   activeId,
+  presetNames,
   onSelect,
   onAdd,
   onDuplicate,
+  onAddPreset,
   onDelete,
   onRename,
   onUndo,
@@ -21,9 +23,11 @@ export default function SnapshotBar({
 }: {
   snapshots: SunLabSnapshot[];
   activeId: string;
+  presetNames: string[];
   onSelect: (id: string) => void;
   onAdd: () => void;
   onDuplicate: () => void;
+  onAddPreset: (index: number) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onUndo: () => void;
@@ -99,6 +103,17 @@ export default function SnapshotBar({
         <button type="button" onClick={onDuplicate} className={iconButton} title="Duplicate active snapshot">
           <Copy size={12} /> Dupe
         </button>
+        {presetNames.map((name, index) => (
+          <button
+            key={name}
+            type="button"
+            onClick={() => onAddPreset(index)}
+            className={iconButton}
+            title={`Add the ${name} preset as a new snapshot`}
+          >
+            <Plus size={12} /> {name}
+          </button>
+        ))}
       </div>
     </header>
   );
