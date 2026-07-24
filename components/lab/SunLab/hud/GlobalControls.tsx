@@ -1,0 +1,201 @@
+"use client";
+
+import { RotateCcw, Crosshair } from "lucide-react";
+import type { GlobalParams } from "../sunLabState";
+import { ColorField, Section, Slider, Toggle, Vec3Field } from "./controls";
+
+// The whole-sun controls. None of these know about "stages" — they're just the scene's global knobs,
+// so they behave the same whatever you're authoring.
+
+export default function GlobalControls({
+  value,
+  onChange,
+  onReset,
+  onFitCamera,
+}: {
+  value: GlobalParams;
+  onChange: (value: GlobalParams) => void;
+  onReset: () => void;
+  onFitCamera: () => void;
+}) {
+  const patch = (partial: Partial<GlobalParams>) => onChange({ ...value, ...partial });
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <h2 className="font-display text-sm text-fg">Global — the sun</h2>
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            onClick={onFitCamera}
+            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.62rem] text-muted hover:text-fg"
+          >
+            <Crosshair size={12} /> Fit
+          </button>
+          <button
+            type="button"
+            onClick={onReset}
+            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.62rem] text-muted hover:text-fg"
+          >
+            <RotateCcw size={12} /> Reset
+          </button>
+        </div>
+      </div>
+
+      <Section title="Model">
+        <Slider
+          label="scale"
+          value={value.modelScale}
+          min={0.1}
+          max={4}
+          step={0.01}
+          onChange={(modelScale) => patch({ modelScale })}
+        />
+        <Vec3Field
+          label="rotation (deg)"
+          value={value.rotation}
+          step={1}
+          onChange={(rotation) => patch({ rotation })}
+        />
+        <Slider
+          label="auto-rotate °/s"
+          value={value.autoRotateSpeed}
+          min={-90}
+          max={90}
+          step={1}
+          onChange={(autoRotateSpeed) => patch({ autoRotateSpeed })}
+        />
+      </Section>
+
+      <Section title="Core light">
+        <ColorField
+          label="colour"
+          value={value.coreLight.color}
+          onChange={(color) => patch({ coreLight: { ...value.coreLight, color } })}
+        />
+        <Slider
+          label="intensity"
+          value={value.coreLight.intensity}
+          min={0}
+          max={40}
+          step={0.5}
+          onChange={(intensity) => patch({ coreLight: { ...value.coreLight, intensity } })}
+        />
+        <Slider
+          label="range (0 = infinite)"
+          value={value.coreLight.distance}
+          min={0}
+          max={30}
+          step={0.5}
+          onChange={(distance) => patch({ coreLight: { ...value.coreLight, distance } })}
+        />
+      </Section>
+
+      <Section title="Bloom">
+        <Slider
+          label="strength"
+          value={value.bloom.strength}
+          min={0}
+          max={3}
+          step={0.01}
+          onChange={(strength) => patch({ bloom: { ...value.bloom, strength } })}
+        />
+        <Slider
+          label="radius"
+          value={value.bloom.radius}
+          min={0}
+          max={1.5}
+          step={0.01}
+          onChange={(radius) => patch({ bloom: { ...value.bloom, radius } })}
+        />
+        <Slider
+          label="threshold"
+          value={value.bloom.threshold}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(threshold) => patch({ bloom: { ...value.bloom, threshold } })}
+        />
+      </Section>
+
+      <Section title="Lights">
+        <ColorField
+          label="key colour"
+          value={value.key.color}
+          onChange={(color) => patch({ key: { ...value.key, color } })}
+        />
+        <Slider
+          label="key intensity"
+          value={value.key.intensity}
+          min={0}
+          max={6}
+          step={0.05}
+          onChange={(intensity) => patch({ key: { ...value.key, intensity } })}
+        />
+        <ColorField
+          label="fill colour"
+          value={value.fill.color}
+          onChange={(color) => patch({ fill: { ...value.fill, color } })}
+        />
+        <Slider
+          label="fill intensity"
+          value={value.fill.intensity}
+          min={0}
+          max={6}
+          step={0.05}
+          onChange={(intensity) => patch({ fill: { ...value.fill, intensity } })}
+        />
+        <ColorField
+          label="ambient colour"
+          value={value.ambient.color}
+          onChange={(color) => patch({ ambient: { ...value.ambient, color } })}
+        />
+        <Slider
+          label="ambient intensity"
+          value={value.ambient.intensity}
+          min={0}
+          max={3}
+          step={0.05}
+          onChange={(intensity) => patch({ ambient: { ...value.ambient, intensity } })}
+        />
+      </Section>
+
+      <Section title="Render">
+        <Slider
+          label="exposure"
+          value={value.exposure}
+          min={0.2}
+          max={3}
+          step={0.01}
+          onChange={(exposure) => patch({ exposure })}
+        />
+        <Slider
+          label="env reflections"
+          value={value.envIntensity}
+          min={0}
+          max={3}
+          step={0.01}
+          onChange={(envIntensity) => patch({ envIntensity })}
+        />
+        <Slider
+          label="camera fov"
+          value={value.camera.fov}
+          min={18}
+          max={80}
+          step={1}
+          onChange={(fov) => patch({ camera: { ...value.camera, fov } })}
+        />
+        <ColorField
+          label="background"
+          value={value.background.color}
+          onChange={(color) => patch({ background: { ...value.background, color } })}
+        />
+        <Toggle
+          label="transparent bg"
+          value={value.background.transparent}
+          onChange={(transparent) => patch({ background: { ...value.background, transparent } })}
+        />
+      </Section>
+    </div>
+  );
+}
