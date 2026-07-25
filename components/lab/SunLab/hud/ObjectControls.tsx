@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, Copy, Trash2 } from "lucide-react";
 import type { GroupId, MaterialKind } from "../sunLabModel";
 import type {
   MaterialParams,
@@ -31,18 +31,26 @@ export function ObjectPanel({
   slotKinds,
   defaults,
   override,
+  isAdded,
+  canDuplicate,
   onTransformChange,
   onMaterialChange,
   onReset,
+  onDuplicate,
+  onDelete,
 }: {
   name: string;
   slotNames: string[];
   slotKinds: MaterialKind[];
   defaults: ObjectDefaults;
   override: ObjectOverride | undefined;
+  isAdded: boolean;
+  canDuplicate: boolean;
   onTransformChange: (partial: Partial<ObjectOverride>) => void;
   onMaterialChange: (slot: number, params: MaterialParams) => void;
   onReset: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
 }) {
   const [activeSlot, setActiveSlot] = useState(0);
 
@@ -58,7 +66,29 @@ export function ObjectPanel({
     <div>
       <div className="mb-1 flex items-center justify-between gap-2">
         <h2 className="truncate font-display text-sm text-fg">{name}</h2>
-        <ResetButton onClick={onReset} />
+        <div className="flex gap-1.5">
+          {canDuplicate && (
+            <button
+              type="button"
+              onClick={onDuplicate}
+              title="Duplicate this object (shared across all stages)"
+              className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.62rem] text-muted hover:text-fg"
+            >
+              <Copy size={12} /> Dupe
+            </button>
+          )}
+          {isAdded && (
+            <button
+              type="button"
+              onClick={onDelete}
+              title="Delete this duplicated object"
+              className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.62rem] text-muted hover:text-fg"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
+          <ResetButton onClick={onReset} />
+        </div>
       </div>
 
       <Section title="Object">

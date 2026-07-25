@@ -10,11 +10,16 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import {
   buildSunLabRegistry,
+  buildBlackHoleRegistry,
   applyMaterialParams,
+  addDuplicateEntry,
+  removeRegistryEntry,
   type SunLabRegistry,
+  type SunLabObjectEntry,
 } from "../sunLabModel";
 import {
   DEFAULT_GLOBAL_PARAMS,
+  type FormEasing,
   type GlobalParams,
   type MaterialParams,
   type Vector3Values,
@@ -25,7 +30,25 @@ import {
 // mutate the 47 MB model in place instead of rebuilding it. React owns the values; this owns the scene.
 
 const MODEL_PATH = "/models/fractured_sun.glb";
+const BLACKHOLE_MODEL_PATH = "/models/blackhole.glb";
 const DRACO_DECODER_PATH = "/draco/";
+// The finale, mapped to the sequence 0→1: the sun shrinks + gets sucked in over EXPLODE (its glow goes
+// with it), the black hole grows from the centre over REVEAL. Black hole is fit to ~this many sun-radii.
+const FINALE_EXPLODE: [number, number] = [0.2, 0.55]; // sun sucked in, finishing as the core completes
+const FINALE_REVEAL: [number, number] = [0.25, 0.55]; // the dark core grows
+// The white rings + skin form EARLY (as the sun disappears); the `Blackhole_ring` mesh forms LATER.
+const FINALE_RING_FORM_EARLY: [number, number] = [0.22, 0.52];
+const FINALE_RING_FORM_LATE: [number, number] = [0.52, 0.92];
+const BLACKHOLE_TARGET_FACTOR = 1.3;
+// Bloom settles to this as the black hole forms (only the bloom — exposure + lights stay glowy).
+const BLACKHOLE_BLOOM_STRENGTH = 0.44;
+// Yellow sparks: they emit from the sun during the explosion, fly out, then spiral back into the hole.
+const PARTICLE_COUNT = 2600;
+const PARTICLE_EMIT: [number, number] = [0.16, 0.34]; // when each particle is born (staggered)
+const PARTICLE_ABSORB: [number, number] = [0.72, 0.94]; // when each is swallowed (staggered)
+const PARTICLE_OUT_FRACTION = 0.32; // share of a particle's life spent flying OUT before it's pulled in
+const PARTICLE_COLOR = new THREE.Color(1.0, 0.82, 0.28);
+const PARTICLE_SIZE = 26;
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const MAX_FRAME_SECONDS = 0.05;
 const BLOOM_MSAA_SAMPLES = 4;
@@ -53,6 +76,8 @@ export interface SunLabStatus {
 /** The imperative surface the HUD drives. Every method mutates the live scene; none holds React state. */
 export interface SunLabSceneHandle {
   registry: SunLabRegistry;
+  /** The black hole's registry (its own tab in the tree). Null until the model has loaded. */
+  blackHoleRegistry: SunLabRegistry | null;
   applyGlobal: (global: GlobalParams) => void;
   applyObjectTransform: (
     id: string,
@@ -75,12 +100,30 @@ export interface SunLabSceneHandle {
   playFormAnimation: () => void;
   /** Re-frame the camera on the model's current bounds. */
   fitCamera: () => void;
+  /** Clone an existing object into a new selectable one (same group). Used by Duplicate + reload. */
+  addDuplicate: (sourceId: string, newId: string) => void;
+  /** Remove a duplicated object from the scene + registry. */
+  removeObject: (id: string) => void;
+  /** Set the finale to a moment on its 0→1 timeline (sun fade ↔ black-hole reveal; particles later). */
+  applyFinale: (sequence: number) => void;
+  /** Play the finale once, ramping the sequence 0→1 over the given seconds. */
+  playSequence: (durationSeconds: number) => void;
+  /** Show the fully-formed black hole (sun hidden) so it can be edited on the Black hole tab. */
+  setBlackHolePreview: (enabled: boolean) => void;
 }
 
 interface UseSunLabSceneArguments {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   onReady: (handle: SunLabSceneHandle) => void;
   onStatus: (status: SunLabStatus) => void;
+  /** Fires once the black hole model has loaded + registered, so React can show its tab + apply state. */
+  onBlackHoleReady: () => void;
+}
+
+/** Smooth 0→1 ramp across [edge0, edge1], clamped flat outside. */
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = THREE.MathUtils.clamp((value - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 function setEulerFromDegrees(euler: THREE.Euler, degrees: Vector3Values): void {
@@ -91,12 +134,19 @@ function setEulerFromDegrees(euler: THREE.Euler, degrees: Vector3Values): void {
   );
 }
 
-export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneArguments): void {
+export function useSunLabScene({
+  canvasRef,
+  onReady,
+  onStatus,
+  onBlackHoleReady,
+}: UseSunLabSceneArguments): void {
   // Keep the latest callbacks without re-running the (heavy) setup effect.
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
+  const onBlackHoleReadyRef = useRef(onBlackHoleReady);
+  onBlackHoleReadyRef.current = onBlackHoleReady;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -184,6 +234,10 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
     // ── Scene-owned mutable state the handle + loop share ──
     let modelRoot: THREE.Object3D | null = null;
     let registry: SunLabRegistry | null = null;
+    let blackHoleRegistry: SunLabRegistry | null = null;
+    // Look an object up in either model (ids are globally unique across the sun + black hole).
+    const findEntry = (id: string): SunLabObjectEntry | undefined =>
+      registry?.entriesById.get(id) ?? blackHoleRegistry?.entriesById.get(id);
     let autoRotateSpeed = 0;
     let fractureSpread = 0;
     // Cracks breathing — a gravity-like inward tug on the shards. Amplitude 0 = still.
@@ -195,6 +249,157 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
     let formProgress = 0;
     let formDuration = 1.2;
     let formFromSpread = 0;
+    let formEasing: FormEasing = "out";
+    let formFromScale = 1;
+    let targetModelScale = 1;
+    // Finale — the sun→black-hole reveal, driven by a 0→1 sequence.
+    let finaleEnabled = false;
+    let blackHoleScale = 1;
+    let blackHoleSpinSpeed = 20;
+    let currentSequence = 0;
+    let sunRadius = 1;
+    const blackHoleGroup = new THREE.Group();
+    blackHoleGroup.scale.setScalar(0); // hidden until the reveal
+    scene.add(blackHoleGroup);
+    let blackHoleFitScale = 1;
+    let blackHoleLoaded = false;
+    // Pure unlit black for the event horizon — no lighting, no env reflection, tone-map can't lift 0.
+    // Named so it still groups under "Core / Horizon" and is editable in the black-hole tab.
+    const blackHoleCoreMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, name: "Blackhole_core" });
+    // The stage's authored (super-glowy) grade — what the finale blends FROM toward the black-hole grade.
+    // The sun's core light fades WITH the sun (its heat gets sucked in too), so the black hole isn't
+    // left over-lit. Everything else stays at the stage's authored glow — nothing is dimmed by hand.
+    let baseCoreLightIntensity = DEFAULT_GLOBAL_PARAMS.coreLight.intensity;
+    // The bloom the finale grades FROM (the stage's authored super-glow) toward the black-hole value.
+    let baseBloomStrength = DEFAULT_GLOBAL_PARAMS.bloom.strength;
+
+    // ── Yellow spark particles (explosion → orbit → swallowed) ──
+    // Each particle's whole path is a function of the sequence, so it scrubs cleanly and truly ends.
+    const particlePositions = new Float32Array(PARTICLE_COUNT * 3);
+    const particleAlphas = new Float32Array(PARTICLE_COUNT);
+    // Per-particle constants: a random orbit plane (u,v), phase, turns, reach, and birth/death times.
+    const particleU = new Float32Array(PARTICLE_COUNT * 3);
+    const particleV = new Float32Array(PARTICLE_COUNT * 3);
+    const particlePhase = new Float32Array(PARTICLE_COUNT);
+    const particleTurns = new Float32Array(PARTICLE_COUNT);
+    const particleReach = new Float32Array(PARTICLE_COUNT);
+    const particleEmit = new Float32Array(PARTICLE_COUNT);
+    const particleAbsorb = new Float32Array(PARTICLE_COUNT);
+
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute("position", new THREE.BufferAttribute(particlePositions, 3));
+    particleGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(particleAlphas, 1));
+    const particleMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: PARTICLE_COLOR },
+        uSize: { value: PARTICLE_SIZE },
+      },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexShader: `
+        attribute float aAlpha;
+        varying float vAlpha;
+        uniform float uSize;
+        void main() {
+          vAlpha = aAlpha;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = uSize * (1.0 / max(-mv.z, 0.001));
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying float vAlpha;
+        uniform vec3 uColor;
+        void main() {
+          float d = length(gl_PointCoord - 0.5);
+          if (d > 0.5) discard;
+          float glow = smoothstep(0.5, 0.0, d);
+          gl_FragColor = vec4(uColor * glow * vAlpha, glow * vAlpha);
+        }`,
+    });
+    const particlePoints = new THREE.Points(particleGeometry, particleMaterial);
+    particlePoints.frustumCulled = false;
+    particlePoints.visible = false;
+    scene.add(particlePoints);
+
+    // Seed the per-particle constants once we know the sun's size (called on sun load).
+    const seedParticles = () => {
+      const tmpNormal = new THREE.Vector3();
+      const tmpU = new THREE.Vector3();
+      const tmpV = new THREE.Vector3();
+      for (let index = 0; index < PARTICLE_COUNT; index += 1) {
+        // A random orbit plane: pick a normal, then two perpendicular basis vectors in that plane.
+        tmpNormal.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
+        tmpU.set(0, 1, 0);
+        if (Math.abs(tmpNormal.y) > 0.9) tmpU.set(1, 0, 0);
+        tmpU.crossVectors(tmpU, tmpNormal).normalize();
+        tmpV.crossVectors(tmpNormal, tmpU).normalize();
+        particleU.set([tmpU.x, tmpU.y, tmpU.z], index * 3);
+        particleV.set([tmpV.x, tmpV.y, tmpV.z], index * 3);
+        particlePhase[index] = Math.random() * Math.PI * 2;
+        particleTurns[index] = 1 + Math.random() * 2.5;
+        particleReach[index] = sunRadius * (0.7 + Math.random() * 1.1);
+        particleEmit[index] = PARTICLE_EMIT[0] + Math.random() * (PARTICLE_EMIT[1] - PARTICLE_EMIT[0]);
+        particleAbsorb[index] =
+          PARTICLE_ABSORB[0] + Math.random() * (PARTICLE_ABSORB[1] - PARTICLE_ABSORB[0]);
+      }
+    };
+
+    // Place + fade every particle for a moment on the timeline. radius rises then falls (fly out, then
+    // get pulled in, accelerating like gravity); the orbit angle keeps turning the whole time.
+    const updateParticles = (sequence: number) => {
+      for (let index = 0; index < PARTICLE_COUNT; index += 1) {
+        const emit = particleEmit[index];
+        const absorb = particleAbsorb[index];
+        const life = (sequence - emit) / (absorb - emit);
+        if (life <= 0 || life >= 1) {
+          particleAlphas[index] = 0;
+          continue;
+        }
+        let radiusFactor: number;
+        if (life < PARTICLE_OUT_FRACTION) {
+          const outT = life / PARTICLE_OUT_FRACTION;
+          radiusFactor = outT * (2 - outT); // ease-out to full reach
+        } else {
+          const inT = (life - PARTICLE_OUT_FRACTION) / (1 - PARTICLE_OUT_FRACTION);
+          radiusFactor = 1 - inT * inT; // ease-in back to the centre (gravity)
+        }
+        const radius = particleReach[index] * radiusFactor;
+        const angle = particlePhase[index] + life * particleTurns[index] * Math.PI * 2;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const base = index * 3;
+        particlePositions[base] = radius * (cos * particleU[base] + sin * particleV[base]);
+        particlePositions[base + 1] =
+          radius * (cos * particleU[base + 1] + sin * particleV[base + 1]);
+        particlePositions[base + 2] =
+          radius * (cos * particleU[base + 2] + sin * particleV[base + 2]);
+        // Fade in at birth, wink out as it's swallowed.
+        particleAlphas[index] = Math.min(
+          smoothstep(0, 0.08, life),
+          1 - smoothstep(0.88, 1, life),
+        );
+      }
+      particleGeometry.attributes.position.needsUpdate = true;
+      particleGeometry.attributes.aAlpha.needsUpdate = true;
+    };
+    // Play state — a one-shot ramp of the sequence.
+    let sequencePlayActive = false;
+    let sequencePlayProgress = 0;
+    let sequencePlayDuration = 6;
+    // Preview: show the fully-formed black hole (sun hidden) so it can be edited on the Black hole tab.
+    let blackHolePreview = false;
+    // Ring/skin meshes form AFTER the core — scale is base × form. The white ones form early (with the
+    // sun disappearing), the `Blackhole_ring` mesh forms late. `currentForm` is stored so an edit composes.
+    interface RingForm {
+      id: string;
+      mesh: THREE.Mesh;
+      baseScale: THREE.Vector3;
+      early: boolean;
+      currentForm: number;
+    }
+    const ringForms: RingForm[] = [];
+    const ringFormById = new Map<string, RingForm>();
     // Materials cloned for per-object editing — tracked so we can dispose them on teardown.
     const clonedMaterials: THREE.Material[] = [];
 
@@ -244,27 +449,26 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
       });
     };
 
+    const makeFlareSpin = (mesh: THREE.Mesh): FlareSpin => {
+      mesh.geometry.computeBoundingBox();
+      const size = new THREE.Vector3();
+      mesh.geometry.boundingBox?.getSize(size);
+      // Shortest local dimension = the disc's normal — spin about that so it turns flat, in place.
+      const axis =
+        size.x <= size.y && size.x <= size.z
+          ? new THREE.Vector3(1, 0, 0)
+          : size.y <= size.z
+            ? new THREE.Vector3(0, 1, 0)
+            : new THREE.Vector3(0, 0, 1);
+      return { mesh, axis, base: mesh.quaternion.clone(), angle: 0 };
+    };
+
     const buildFlareSpins = () => {
       if (!registry) return;
       registry.entries
         .filter((entry) => entry.groupId === "flares")
         .forEach((entry) => {
-          entry.mesh.geometry.computeBoundingBox();
-          const size = new THREE.Vector3();
-          entry.mesh.geometry.boundingBox?.getSize(size);
-          // Shortest local dimension = the disc's normal — spin about that so it turns flat, in place.
-          const axis =
-            size.x <= size.y && size.x <= size.z
-              ? new THREE.Vector3(1, 0, 0)
-              : size.y <= size.z
-                ? new THREE.Vector3(0, 1, 0)
-                : new THREE.Vector3(0, 0, 1);
-          const spin: FlareSpin = {
-            mesh: entry.mesh,
-            axis,
-            base: entry.mesh.quaternion.clone(),
-            angle: 0,
-          };
+          const spin = makeFlareSpin(entry.mesh);
           flareSpins.push(spin);
           flareSpinById.set(entry.id, spin);
         });
@@ -302,10 +506,68 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
       coreLight.position.copy(sphere.center);
     };
 
+    const applyRingForm = (earlyForm: number, lateForm: number) => {
+      ringForms.forEach((ringForm) => {
+        ringForm.currentForm = ringForm.early ? earlyForm : lateForm;
+        ringForm.mesh.scale.set(
+          ringForm.baseScale.x * ringForm.currentForm,
+          ringForm.baseScale.y * ringForm.currentForm,
+          ringForm.baseScale.z * ringForm.currentForm,
+        );
+      });
+    };
+
+    // Set the finale to a moment on its timeline:
+    //   EXPLODE    — the sun bursts + fades, yellow sparks fly out
+    //   REVEAL     — the dark core grows from the centre
+    //   RING_FORM  — the rings/skin form AFTER the core, spiralling back in with the sparks
+    // Preview (Black hole tab) shows the fully-formed hole with the sun gone, so it can be edited.
+    // Off (not a finale stage, not preview) → black hole + sparks hidden, sun left to applyGlobal/form.
+    const applyFinale = (sequence: number) => {
+      currentSequence = sequence;
+
+      let explode: number;
+      let reveal: number;
+
+      if (blackHolePreview) {
+        explode = 1;
+        reveal = 1;
+      } else if (!finaleEnabled) {
+        blackHoleGroup.scale.setScalar(0);
+        particlePoints.visible = false;
+        return;
+      } else {
+        explode = smoothstep(FINALE_EXPLODE[0], FINALE_EXPLODE[1], sequence);
+        reveal = smoothstep(FINALE_REVEAL[0], FINALE_REVEAL[1], sequence);
+      }
+
+      // The sun shrinks to nothing (sucked into the hole); the black hole grows in its place.
+      if (modelRoot) modelRoot.scale.setScalar(targetModelScale * (1 - explode));
+      blackHoleGroup.scale.setScalar(blackHoleFitScale * blackHoleScale * reveal);
+      // White rings/skin form early (as the sun goes); the Blackhole_ring mesh forms later.
+      const earlyForm = blackHolePreview
+        ? 1
+        : smoothstep(FINALE_RING_FORM_EARLY[0], FINALE_RING_FORM_EARLY[1], sequence);
+      const lateForm = blackHolePreview
+        ? 1
+        : smoothstep(FINALE_RING_FORM_LATE[0], FINALE_RING_FORM_LATE[1], sequence);
+      applyRingForm(earlyForm, lateForm);
+      // Keep the scene fully glowy — the glow simply LEAVES with the sun (its emissive body is gone) and
+      // its core light is sucked in too. Only the bloom eases down to the black-hole value as it forms.
+      coreLight.intensity = baseCoreLightIntensity * (1 - explode);
+      bloomPass.strength = THREE.MathUtils.lerp(baseBloomStrength, BLACKHOLE_BLOOM_STRENGTH, reveal);
+
+      // Particles are off for now (the sun-shrink + black-hole reveal reads cleaner without them).
+      particlePoints.visible = false;
+    };
+
     const handle: SunLabSceneHandle = {
-      // Filled in once the model loads; the getters below read the live registry.
+      // Filled in once the model loads; the getters below read the live registries.
       get registry() {
         return registry as SunLabRegistry;
+      },
+      get blackHoleRegistry() {
+        return blackHoleRegistry;
       },
       applyGlobal: (global) => {
         if (modelRoot) {
@@ -329,6 +591,20 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
         if (fracturePulse === 0 && previousFracturePulse !== 0) applyShardSpread();
         formDuration = global.formDuration;
         formFromSpread = global.formFromSpread;
+        formEasing = global.formEasing;
+        formFromScale = global.formFromScale;
+        targetModelScale = global.modelScale;
+        // Finale knobs — the actual reveal is applied by applyFinale (called by React after this).
+        finaleEnabled = global.finaleEnabled;
+        blackHoleScale = global.blackHoleScale;
+        blackHoleSpinSpeed = global.blackHoleSpinSpeed;
+        blackHoleGroup.position.set(
+          global.blackHolePosition.x,
+          global.blackHolePosition.y,
+          global.blackHolePosition.z,
+        );
+        baseCoreLightIntensity = global.coreLight.intensity;
+        baseBloomStrength = global.bloom.strength;
         renderer.toneMappingExposure = global.exposure;
         coreLight.color.set(global.coreLight.color);
         coreLight.intensity = global.coreLight.intensity;
@@ -350,7 +626,7 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
           : new THREE.Color(global.background.color);
       },
       applyObjectTransform: (id, resolved) => {
-        const entry = registry?.entriesById.get(id);
+        const entry = findEntry(id);
         if (!entry) return;
         entry.mesh.visible = resolved.visible;
         entry.mesh.position.set(resolved.position.x, resolved.position.y, resolved.position.z);
@@ -359,9 +635,19 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
         // A flare's posed rotation is the base the drill spins on top of — keep it in sync with edits.
         const flareSpin = flareSpinById.get(id);
         if (flareSpin) flareSpin.base.copy(entry.mesh.quaternion);
+        // A black-hole ring's scale is base × its own form factor — keep base in sync, re-apply the form.
+        const ringForm = ringFormById.get(id);
+        if (ringForm) {
+          ringForm.baseScale.set(resolved.scale.x, resolved.scale.y, resolved.scale.z);
+          entry.mesh.scale.set(
+            resolved.scale.x * ringForm.currentForm,
+            resolved.scale.y * ringForm.currentForm,
+            resolved.scale.z * ringForm.currentForm,
+          );
+        }
       },
       applyObjectMaterial: (id, slot, params) => {
-        const entry = registry?.entriesById.get(id);
+        const entry = findEntry(id);
         if (!entry || !entry.materialSlots[slot]) return;
         // Clone on first per-object edit so recolouring one shard never bleeds into its siblings.
         if (!entry.slotCloned[slot]) {
@@ -378,7 +664,7 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
         applyMaterialParams(entry.materialSlots[slot], params);
       },
       setObjectMaterialToShared: (id, slot) => {
-        const entry = registry?.entriesById.get(id);
+        const entry = findEntry(id);
         if (!entry || !entry.slotCloned[slot]) return;
         const shared = entry.sharedSlots[slot];
         entry.materialSlots[slot] = shared;
@@ -387,7 +673,9 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
         else entry.mesh.material = shared;
       },
       applySharedMaterial: (name, params) => {
-        const shared = registry?.sharedMaterials.find((entry) => entry.name === name);
+        const shared =
+          registry?.sharedMaterials.find((entry) => entry.name === name) ??
+          blackHoleRegistry?.sharedMaterials.find((entry) => entry.name === name);
         if (shared) applyMaterialParams(shared.material, params);
       },
       applyFractureSpread: (amount) => {
@@ -397,10 +685,49 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
       playFormAnimation: () => {
         formProgress = 0;
         formActive = true;
-        // Snap to the start pose immediately so there's no flash of the open state before it forms.
+        // Snap to the start pose immediately so there's no flash of the target state before it forms.
         positionShardsAt(formFromSpread);
+        if (modelRoot) modelRoot.scale.setScalar(formFromScale);
       },
       fitCamera,
+      addDuplicate: (sourceId, newId) => {
+        const source = registry?.entriesById.get(sourceId);
+        if (!registry || !source) return;
+        // Mesh.clone() shares geometry + material (so shared-material edits still reach it until it's
+        // edited per-object), and copies the transform. Nudge it off its source so the copy is visibly a
+        // separate object (this becomes its captured default, in every stage) rather than hidden behind it.
+        const newMesh = source.mesh.clone();
+        newMesh.position.x += 0.2;
+        newMesh.position.y += 0.12;
+        source.mesh.parent?.add(newMesh);
+        const entry = addDuplicateEntry(registry, source, newMesh, newId);
+        if (entry.groupId === "flares") {
+          const spin = makeFlareSpin(newMesh);
+          flareSpins.push(spin);
+          flareSpinById.set(newId, spin);
+        }
+      },
+      removeObject: (id) => {
+        if (!registry) return;
+        const entry = removeRegistryEntry(registry, id);
+        if (!entry) return;
+        entry.mesh.parent?.remove(entry.mesh);
+        // Geometry + material are shared with the source, so don't dispose them here.
+        const spinIndex = flareSpins.findIndex((spin) => spin.mesh === entry.mesh);
+        if (spinIndex >= 0) flareSpins.splice(spinIndex, 1);
+        flareSpinById.delete(id);
+      },
+      applyFinale,
+      playSequence: (durationSeconds) => {
+        sequencePlayDuration = Math.max(durationSeconds, 0.1);
+        sequencePlayProgress = 0;
+        sequencePlayActive = true;
+        applyFinale(0);
+      },
+      setBlackHolePreview: (enabled) => {
+        blackHolePreview = enabled;
+        applyFinale(currentSequence);
+      },
     };
 
     // ── Load ──
@@ -445,8 +772,63 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
         handle.applyGlobal(DEFAULT_GLOBAL_PARAMS);
         fitCamera();
 
+        // Base sun radius (at scale 1) — used to fit the black hole and scale the spark burst.
+        const sunBox = new THREE.Box3().setFromObject(modelRoot);
+        sunRadius = sunBox.getBoundingSphere(new THREE.Sphere()).radius || 1;
+        seedParticles();
+
         onStatusRef.current({ isLoading: false, percent: 100 });
         onReadyRef.current(handle);
+
+        // Load the black hole too — centred at the sun's core, fit to its size, hidden until the finale.
+        gltfLoader.load(
+          BLACKHOLE_MODEL_PATH,
+          (blackHoleGltf) => {
+            if (disposed) return;
+            const blackHoleModel = blackHoleGltf.scene;
+            blackHoleModel.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(blackHoleModel);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const radius = Math.max(size.x, size.y, size.z) / 2 || 1;
+            // The event horizon must read PURE BLACK — swap the core material for unlit black so no
+            // light, reflection or exposure can lift it. The emissive rings/skin keep glowing.
+            blackHoleModel.traverse((object) => {
+              if (!(object instanceof THREE.Mesh)) return;
+              const materials = Array.isArray(object.material) ? object.material : [object.material];
+              const isCore = materials.some((material) => material.name === "Blackhole_core");
+              if (isCore) object.material = blackHoleCoreMaterial;
+            });
+            blackHoleModel.position.sub(center); // centre it on the group origin (= sun centre)
+            blackHoleGroup.add(blackHoleModel);
+            blackHoleFitScale = (sunRadius * BLACKHOLE_TARGET_FACTOR) / radius;
+            blackHoleLoaded = true;
+            // Build its editable registry (its own tab) and tell React to show it + apply saved edits.
+            blackHoleRegistry = buildBlackHoleRegistry(blackHoleModel);
+            // The rings + skin form AFTER the core — collect them so the finale can scale them from 0.
+            // The one mesh using the `Blackhole_ring` material forms LATE; every other ring/skin (the
+            // white ones) forms EARLY, as the sun disappears.
+            blackHoleRegistry.entries.forEach((entry) => {
+              if (entry.groupId !== "rings" && entry.groupId !== "skin") return;
+              const isLateRing = entry.materialSlots.some(
+                (material) => material.name === "Blackhole_ring",
+              );
+              const ringForm: RingForm = {
+                id: entry.id,
+                mesh: entry.mesh,
+                baseScale: entry.mesh.scale.clone(),
+                early: !isLateRing,
+                currentForm: 1,
+              };
+              ringForms.push(ringForm);
+              ringFormById.set(entry.id, ringForm);
+            });
+            applyFinale(currentSequence); // reflect the current moment now that it exists
+            onBlackHoleReadyRef.current();
+          },
+          undefined,
+          (error) => console.error("[sun-lab] failed to load black hole", error),
+        );
       },
       (event) => {
         if (disposed || !event.lengthComputable) return;
@@ -482,8 +864,18 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
       if (formActive && registry) {
         formProgress += delta / Math.max(formDuration, 0.001);
         const t = Math.min(formProgress, 1);
-        const eased = 1 - Math.pow(1 - t, 3);
+        // "in" accelerates (gravity/collapse), "out" opens then settles, "inout" does both.
+        const eased =
+          formEasing === "in"
+            ? t * t * t
+            : formEasing === "inout"
+              ? t < 0.5
+                ? 4 * t * t * t
+                : 1 - Math.pow(-2 * t + 2, 3) / 2
+              : 1 - Math.pow(1 - t, 3);
         positionShardsAt(formFromSpread + (fractureSpread - formFromSpread) * eased);
+        // Shrink (or grow) the whole sun across the same ramp — so a collapse visibly gets denser.
+        if (modelRoot) modelRoot.scale.setScalar(formFromScale + (targetModelScale - formFromScale) * eased);
         if (formProgress >= 1) {
           formActive = false;
           fracturePulseTime = 0; // breathing resumes cleanly from the fully-formed (open) pose
@@ -505,6 +897,16 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
           );
         });
       }
+      // Finale playback — ramp the sequence 0→1 once.
+      if (sequencePlayActive) {
+        sequencePlayProgress += delta / sequencePlayDuration;
+        applyFinale(Math.min(sequencePlayProgress, 1));
+        if (sequencePlayProgress >= 1) sequencePlayActive = false;
+      }
+      // Black hole idle spin, once it's revealed.
+      if (finaleEnabled && blackHoleLoaded && blackHoleGroup.scale.x > 0.0001) {
+        blackHoleGroup.rotation.y += THREE.MathUtils.degToRad(blackHoleSpinSpeed) * delta;
+      }
       controls.update();
       composer.render();
       animationFrame = requestAnimationFrame(renderFrame);
@@ -524,6 +926,15 @@ export function useSunLabScene({ canvasRef, onReady, onStatus }: UseSunLabSceneA
           materials.forEach((material) => material.dispose());
         });
       }
+      blackHoleGroup.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        object.geometry.dispose();
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => material.dispose());
+      });
+      blackHoleCoreMaterial.dispose();
+      particleGeometry.dispose();
+      particleMaterial.dispose();
       clonedMaterials.forEach((material) => material.dispose());
       environmentTexture.dispose();
       pmrem.dispose();

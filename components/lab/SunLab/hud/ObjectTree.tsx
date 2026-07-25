@@ -45,7 +45,7 @@ export default function ObjectTree({
         className={rowClasses(selection.kind === "global")}
       >
         <Sun size={13} className="text-accent" />
-        <span className="font-display">Global — the sun</span>
+        <span className="font-display">Global — scene</span>
       </button>
 
       {registry.groups.map((group) => {

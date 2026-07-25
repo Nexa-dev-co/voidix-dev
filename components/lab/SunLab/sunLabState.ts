@@ -12,6 +12,9 @@ export interface Vector3Values {
   z: number;
 }
 
+/** How the form-on-enter ramp is shaped: settle (out), accelerate/gravity (in), or both (in-out). */
+export type FormEasing = "out" | "in" | "inout";
+
 /** Everything editable about one material slot. Applies to a MeshStandardMaterial. */
 export interface MaterialParams {
   /** Base colour, `#rrggbb`. */
@@ -69,6 +72,18 @@ export interface GlobalParams {
   formDuration: number;
   /** Spread the form STARTS from (target is the stage's fractureSpread). 0 = closed/assembled. */
   formFromSpread: number;
+  /** Ramp shape: "out" opens+settles, "in" accelerates (gravity/collapse), "inout" does both. */
+  formEasing: FormEasing;
+  /** Model scale the form STARTS from (target is `modelScale`). <1 target = the sun shrinks as it forms. */
+  formFromScale: number;
+  /** The finale (explosion → black hole → particles) is active for this stage. Only Singularity sets it. */
+  finaleEnabled: boolean;
+  /** Final size of the black hole, relative to its fit-to-sun base. */
+  blackHoleScale: number;
+  /** Black hole idle spin, degrees/second. */
+  blackHoleSpinSpeed: number;
+  /** Black hole position offset from the sun's centre (world units). */
+  blackHolePosition: Vector3Values;
   /** A point light at the sun's centre — pours through the fracture gaps when the cells part. */
   coreLight: { color: string; intensity: number; distance: number };
   bloom: { strength: number; radius: number; threshold: number };
@@ -104,6 +119,12 @@ export const DEFAULT_GLOBAL_PARAMS: GlobalParams = {
   formOnEnter: false,
   formDuration: 1.2,
   formFromSpread: 0,
+  formEasing: "out",
+  formFromScale: 1,
+  finaleEnabled: false,
+  blackHoleScale: 1,
+  blackHoleSpinSpeed: 20,
+  blackHolePosition: { x: 0, y: 0, z: 0 },
   // Off by default — Phase 1 shouldn't force a look. Warm so it reads as sunlight when turned up.
   coreLight: { color: "#ffd9a0", intensity: 0, distance: 0 },
   // Threshold high enough that only the bright magma blooms, not the whole hull.

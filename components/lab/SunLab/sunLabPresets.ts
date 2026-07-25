@@ -21,6 +21,12 @@ const PEACEFUL_STATE: SunLabState = {
     formOnEnter: false,
     formDuration: 1.2,
     formFromSpread: 0,
+    formEasing: "out",
+    formFromScale: 1,
+    finaleEnabled: false,
+    blackHoleScale: 1,
+    blackHoleSpinSpeed: 20,
+    blackHolePosition: { x: 0, y: 0, z: 0 },
     coreLight: { color: "#ffd9a0", intensity: 0, distance: 0 },
     bloom: { strength: 1.26, radius: 0.92, threshold: 0.59 },
     key: { color: "#fff4e0", intensity: 2.7 },
@@ -55,6 +61,7 @@ const CRACKS_STATE: SunLabState = {
     formOnEnter: true,
     formDuration: 1.4,
     formFromSpread: 0,
+    formEasing: "out",
   },
   objects: { ...PEACEFUL_STATE.objects },
   sharedMaterials: {
@@ -74,9 +81,65 @@ const CRACKS_STATE: SunLabState = {
   fractureSpread: 0.18,
 };
 
+// Stage 3 — Collapse: entering it, the sun IMPLODES — the shards rush from the cracked pose past
+// assembled into a tight crushed core (ease-IN = accelerating gravity), spun up and white-hot, ready to
+// hand off to a black hole later. No breathing; the drama is the one-way pull-in.
+const COLLAPSE_STATE: SunLabState = {
+  global: {
+    ...PEACEFUL_STATE.global,
+    // Shrinks to a dense core as it implodes (the form ramps scale 1 → 0.5 alongside the spread).
+    modelScale: 0.5,
+    autoRotateSpeed: 45,
+    flareSpinSpeed: 40,
+    // White-hot compression light from the core, and super-glowy bloom + exposure.
+    coreLight: { color: "#ffe6c8", intensity: 18, distance: 0 },
+    bloom: { strength: 2.5, radius: 1, threshold: 0.42 },
+    exposure: 1.6,
+    fracturePulse: 0,
+    fracturePulseSpeed: 0.3,
+    formOnEnter: true,
+    formDuration: 2,
+    formFromSpread: 0.18, // starts from the cracked pose…
+    formEasing: "in", // …and accelerates inward like gravity
+    formFromScale: 1, // …from full size, shrinking to modelScale as it crushes in
+  },
+  objects: { ...PEACEFUL_STATE.objects },
+  sharedMaterials: {
+    magma: {
+      color: "#ffffff",
+      emissive: "#ffffff",
+      emissiveIntensity: 5, // super-glowy molten core
+      metalness: 0,
+      roughness: 1,
+      opacity: 1,
+      transparent: false,
+      wireframe: false,
+    },
+  },
+  fractureSpread: -0.5, // …to a crushed, imploded core
+};
+
+// Stage 4 — Singularity: opens ALREADY collapsed + super-glowing (Collapse's end look, no form), with the
+// finale armed. Scrub the "sequence" slider or hit Play: the sun bursts + fades and the black hole grows
+// from its centre (particles land in Build B/C).
+const SINGULARITY_STATE: SunLabState = {
+  ...COLLAPSE_STATE,
+  global: {
+    ...COLLAPSE_STATE.global,
+    formOnEnter: false, // it's already collapsed at sequence 0 — the finale takes over from here
+    finaleEnabled: true,
+    blackHoleScale: 1,
+    blackHoleSpinSpeed: 24,
+  },
+  objects: { ...COLLAPSE_STATE.objects },
+  sharedMaterials: { ...COLLAPSE_STATE.sharedMaterials },
+};
+
 export const SUN_LAB_PRESETS: SunLabPreset[] = [
   { name: "Peaceful", state: PEACEFUL_STATE },
   { name: "Cracks", state: CRACKS_STATE },
+  { name: "Collapse", state: COLLAPSE_STATE },
+  { name: "Singularity", state: SINGULARITY_STATE },
 ];
 
 export const PEACEFUL_PRESET = SUN_LAB_PRESETS[0];

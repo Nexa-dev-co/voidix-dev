@@ -22,6 +22,7 @@ export function loadDocument(): SunLabDocument | null {
       ...snapshot,
       state: normalizeState(snapshot.state),
     }));
+    if (!Array.isArray(parsed.addedObjects)) parsed.addedObjects = [];
     return parsed;
   } catch {
     return null;

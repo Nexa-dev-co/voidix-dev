@@ -13,12 +13,18 @@ export default function GlobalControls({
   onReset,
   onFitCamera,
   onPlayForm,
+  sequence,
+  onSequenceChange,
+  onPlaySequence,
 }: {
   value: GlobalParams;
   onChange: (value: GlobalParams) => void;
   onReset: () => void;
   onFitCamera: () => void;
   onPlayForm: () => void;
+  sequence: number;
+  onSequenceChange: (value: number) => void;
+  onPlaySequence: () => void;
 }) {
   const patch = (partial: Partial<GlobalParams>) => onChange({ ...value, ...partial });
 
@@ -122,12 +128,92 @@ export default function GlobalControls({
           onChange={(formFromSpread) => patch({ formFromSpread })}
         />
         <Slider
+          label="form from scale"
+          value={value.formFromScale}
+          min={0.05}
+          max={2}
+          step={0.01}
+          onChange={(formFromScale) => patch({ formFromScale })}
+        />
+        <Slider
           label="form duration s"
           value={value.formDuration}
           min={0.2}
           max={4}
           step={0.05}
           onChange={(formDuration) => patch({ formDuration })}
+        />
+        <div className="flex flex-col gap-1">
+          <span className="text-[0.64rem] text-muted">easing</span>
+          <div className="grid grid-cols-3 gap-1">
+            {([
+              ["out", "settle"],
+              ["in", "gravity"],
+              ["inout", "both"],
+            ] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => patch({ formEasing: mode })}
+                className={`rounded px-1.5 py-1 text-[0.6rem] ${
+                  value.formEasing === mode
+                    ? "bg-accent/20 text-fg"
+                    : "border border-border text-muted hover:text-fg"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        title="Finale — singularity"
+        action={
+          <button
+            type="button"
+            onClick={onPlaySequence}
+            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.62rem] text-muted hover:text-fg"
+          >
+            <Play size={12} /> Play
+          </button>
+        }
+      >
+        <Toggle
+          label="finale enabled"
+          value={value.finaleEnabled}
+          onChange={(finaleEnabled) => patch({ finaleEnabled })}
+        />
+        <Slider
+          label="sequence (scrub)"
+          value={sequence}
+          min={0}
+          max={1}
+          step={0.001}
+          onChange={onSequenceChange}
+        />
+        <Slider
+          label="black hole size"
+          value={value.blackHoleScale}
+          min={0.1}
+          max={4}
+          step={0.05}
+          onChange={(blackHoleScale) => patch({ blackHoleScale })}
+        />
+        <Vec3Field
+          label="black hole position"
+          value={value.blackHolePosition}
+          step={0.05}
+          onChange={(blackHolePosition) => patch({ blackHolePosition })}
+        />
+        <Slider
+          label="black hole spin °/s"
+          value={value.blackHoleSpinSpeed}
+          min={-180}
+          max={180}
+          step={1}
+          onChange={(blackHoleSpinSpeed) => patch({ blackHoleSpinSpeed })}
         />
       </Section>
 

@@ -13,9 +13,10 @@ import type { MaterialParams, ObjectDefaults, Vector3Values } from "./sunLabStat
 //     magma/inner/shell meshes sit INSIDE them at local ~0. So fracture-spread moves the shard GROUPS,
 //     never the inner meshes.
 
-export type GroupId = "core" | "corona" | "cells" | "flares" | "planes";
+// A group id is just a string now, so a second model (the black hole) can define its own groups.
+export type GroupId = string;
 
-export const GROUP_LABELS: Record<GroupId, string> = {
+export const GROUP_LABELS: Record<string, string> = {
   core: "Core",
   corona: "Corona",
   cells: "Magma cracks",
@@ -23,7 +24,15 @@ export const GROUP_LABELS: Record<GroupId, string> = {
   planes: "Planes",
 };
 
-export const GROUP_ORDER: GroupId[] = ["core", "corona", "cells", "flares", "planes"];
+export const GROUP_ORDER: string[] = ["core", "corona", "cells", "flares", "planes"];
+
+// The black hole's role groups (its materials: Blackhole_core / ring / ring2 / skin / skin_inner).
+export const BLACKHOLE_GROUP_LABELS: Record<string, string> = {
+  horizon: "Core / Horizon",
+  rings: "Rings",
+  skin: "Skin",
+};
+export const BLACKHOLE_GROUP_ORDER: string[] = ["horizon", "rings", "skin"];
 
 /** The material classes this model uses, and the only two the tool edits. */
 export type EditableMaterial = THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
@@ -141,7 +150,14 @@ function groupForMaterialNames(names: string[]): GroupId | null {
   return null;
 }
 
-export function buildSunLabRegistry(root: THREE.Object3D): SunLabRegistry {
+// Shared registry builder — parameterised by the model's grouping, so the sun and the black hole both
+// use it. Each caller adds its own cellSpread.
+function collectEntries(
+  root: THREE.Object3D,
+  groupForNames: (names: string[]) => GroupId | null,
+  groupOrder: string[],
+  groupLabels: Record<string, string>,
+): Omit<SunLabRegistry, "cellSpread"> {
   const entries: SunLabObjectEntry[] = [];
   const entriesById = new Map<string, SunLabObjectEntry>();
   const usedIds = new Set<string>();
@@ -166,7 +182,7 @@ export function buildSunLabRegistry(root: THREE.Object3D): SunLabRegistry {
     if (slots.length === 0) return;
 
     const names = slots.map((material) => material.name);
-    const groupId = groupForMaterialNames(names);
+    const groupId = groupForNames(names);
     if (!groupId) return;
 
     slots.forEach((material) => {
@@ -202,19 +218,84 @@ export function buildSunLabRegistry(root: THREE.Object3D): SunLabRegistry {
     entriesById.set(id, entry);
   });
 
-  const groups = GROUP_ORDER.map((id) => ({
+  const groups = groupOrder.map((id) => ({
     id,
-    label: GROUP_LABELS[id],
+    label: groupLabels[id] ?? id,
     objectIds: entries.filter((entry) => entry.groupId === id).map((entry) => entry.id),
   }));
 
+  return { entries, entriesById, groups, sharedMaterials: Array.from(sharedByName.values()) };
+}
+
+export function buildSunLabRegistry(root: THREE.Object3D): SunLabRegistry {
   return {
-    entries,
-    entriesById,
-    groups,
-    sharedMaterials: Array.from(sharedByName.values()),
+    ...collectEntries(root, groupForMaterialNames, GROUP_ORDER, GROUP_LABELS),
     cellSpread: computeCellSpread(root),
   };
+}
+
+/** rings → Blackhole_ring/ring2, skin → Blackhole_skin/skin_inner, everything else (the core) → horizon. */
+function blackHoleGroupForMaterialNames(names: string[]): GroupId | null {
+  if (names.some((name) => name === "Blackhole_ring" || name === "Blackhole_ring2")) return "rings";
+  if (names.some((name) => name === "Blackhole_skin" || name === "Blackhole_skin_inner")) return "skin";
+  return "horizon";
+}
+
+export function buildBlackHoleRegistry(root: THREE.Object3D): SunLabRegistry {
+  return {
+    ...collectEntries(root, blackHoleGroupForMaterialNames, BLACKHOLE_GROUP_ORDER, BLACKHOLE_GROUP_LABELS),
+    cellSpread: { shards: [], radius: 1 },
+  };
+}
+
+/**
+ * Register a duplicated mesh as a new selectable entry (same group as its source). The mesh must
+ * already be cloned + added to the scene by the caller; this only builds the registry side.
+ */
+export function addDuplicateEntry(
+  registry: SunLabRegistry,
+  sourceEntry: SunLabObjectEntry,
+  newMesh: THREE.Mesh,
+  newId: string,
+): SunLabObjectEntry {
+  const slots = materialSlotsOf(newMesh);
+  const entry: SunLabObjectEntry = {
+    id: newId,
+    name: newId,
+    groupId: sourceEntry.groupId,
+    mesh: newMesh,
+    materialSlots: slots,
+    sharedSlots: slots.slice(),
+    slotKinds: slots.map(materialKindOf),
+    slotCloned: slots.map(() => false),
+    defaults: {
+      visible: newMesh.visible,
+      position: toVector3Values(newMesh.position),
+      rotation: radToDegVector(newMesh.rotation),
+      scale: toVector3Values(newMesh.scale),
+      materials: slots.map((material) => readMaterialParams(material)),
+    },
+  };
+  registry.entries.push(entry);
+  registry.entriesById.set(newId, entry);
+  registry.groups.find((group) => group.id === sourceEntry.groupId)?.objectIds.push(newId);
+  return entry;
+}
+
+/** Remove a (duplicated) entry from the registry. Returns it so the caller can detach its mesh. */
+export function removeRegistryEntry(
+  registry: SunLabRegistry,
+  id: string,
+): SunLabObjectEntry | null {
+  const entry = registry.entriesById.get(id);
+  if (!entry) return null;
+  registry.entriesById.delete(id);
+  const entryIndex = registry.entries.indexOf(entry);
+  if (entryIndex >= 0) registry.entries.splice(entryIndex, 1);
+  const group = registry.groups.find((candidate) => candidate.id === entry.groupId);
+  const idIndex = group?.objectIds.indexOf(id) ?? -1;
+  if (group && idIndex >= 0) group.objectIds.splice(idIndex, 1);
+  return entry;
 }
 
 // The fracture shards are the scene-root Groups named Sphere_0_cell*; their local positions carry the

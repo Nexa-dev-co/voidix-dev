@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Play } from "lucide-react";
 import { useSunLabScene, type SunLabSceneHandle, type SunLabStatus } from "./hooks/useSunLabScene";
 import {
   createInitialState,
@@ -10,9 +11,9 @@ import {
   type ObjectOverride,
   type SunLabState,
 } from "./sunLabState";
-import { GROUP_LABELS } from "./sunLabModel";
 import {
   activeSnapshot,
+  createAddedObjectId,
   createInitialDocument,
   createSnapshot,
   type SunLabDocument,
@@ -31,6 +32,8 @@ const AUTOSAVE_DEBOUNCE_MS = 400;
 // A burst of edits within this window (one slider drag) collapses into a single undo step.
 const HISTORY_COALESCE_MS = 400;
 const UNDO_LIMIT = 60;
+// Seconds the finale's Play button takes to run the sequence 0→1.
+const FINALE_PLAY_SECONDS = 6;
 
 // The Sun Lab shell. Owns the document (all snapshots), bridges every edit to the imperative scene
 // handle, and layers snapshots / undo / autosave on top of the Phase-1 editor without changing it: an
@@ -45,6 +48,17 @@ export default function SunLab() {
   const [selection, setSelection] = useState<Selection>({ kind: "global" });
   const [copied, setCopied] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
+  // The finale scrub cursor — a transient authoring value (not saved per stage); Play ramps it 0→1.
+  const [sequence, setSequence] = useState(0);
+  const sequenceRef = useRef(0);
+  sequenceRef.current = sequence;
+  // Bumped whenever the scene registry changes (duplicate / delete / black hole loads) so the tree re-renders.
+  const [, setRegistryVersion] = useState(0);
+  const bumpRegistry = () => setRegistryVersion((version) => version + 1);
+  // Which model's tree is shown — the sun or the black hole.
+  const [activeModel, setActiveModel] = useState<"sun" | "blackhole">("sun");
+  const activeModelRef = useRef(activeModel);
+  activeModelRef.current = activeModel;
 
   const documentRef = useRef(document);
   documentRef.current = document;
@@ -80,8 +94,13 @@ export default function SunLab() {
     setActiveState(updater(currentState()));
   };
 
+  // Find an object in either model (the sun or the black hole).
+  const entryById = (id: string) =>
+    handleRef.current?.registry.entriesById.get(id) ??
+    handleRef.current?.blackHoleRegistry?.entriesById.get(id);
+
   const resolvedTransform = (id: string, override: ObjectOverride | undefined) => {
-    const defaults = handleRef.current?.registry.entriesById.get(id)?.defaults;
+    const defaults = entryById(id)?.defaults;
     return {
       visible: override?.visible ?? defaults?.visible ?? true,
       position: override?.position ?? defaults?.position ?? { x: 0, y: 0, z: 0 },
@@ -93,28 +112,49 @@ export default function SunLab() {
   // Make the scene exactly match a state — used on snapshot switch, undo, reset, and first load.
   const applyFullState = useCallback((next: SunLabState) => {
     const handle = handleRef.current;
-    const registry = handle?.registry;
-    if (!handle || !registry) return;
+    if (!handle || !handle.registry) return;
     handle.applyGlobal(next.global);
     handle.applyFractureSpread(next.fractureSpread);
-    // Shared materials first, so an un-cloned slot below already reflects the right value.
-    registry.sharedMaterials.forEach((shared) => {
-      handle.applySharedMaterial(shared.name, next.sharedMaterials[shared.name] ?? shared.defaults);
-    });
-    registry.entries.forEach((entry) => {
-      handle.applyObjectTransform(entry.id, resolvedTransform(entry.id, next.objects[entry.id]));
-      entry.materialSlots.forEach((_, slot) => {
-        const override = next.objects[entry.id]?.materials?.[slot];
-        if (override) handle.applyObjectMaterial(entry.id, slot, override);
-        else handle.setObjectMaterialToShared(entry.id, slot);
+    // Apply a registry's shared materials first (so an un-cloned slot reflects the right value), then
+    // each object's transform + per-slot material. Runs for the sun AND the black hole.
+    const applyRegistry = (target: typeof handle.registry | null) => {
+      if (!target) return;
+      target.sharedMaterials.forEach((shared) => {
+        handle.applySharedMaterial(shared.name, next.sharedMaterials[shared.name] ?? shared.defaults);
       });
-    });
+      target.entries.forEach((entry) => {
+        handle.applyObjectTransform(entry.id, resolvedTransform(entry.id, next.objects[entry.id]));
+        entry.materialSlots.forEach((_, slot) => {
+          const override = next.objects[entry.id]?.materials?.[slot];
+          if (override) handle.applyObjectMaterial(entry.id, slot, override);
+          else handle.setObjectMaterialToShared(entry.id, slot);
+        });
+      });
+    };
+    applyRegistry(handle.registry);
+    applyRegistry(handle.blackHoleRegistry);
+    // Reflect the finale at the current scrub cursor (black hole hidden unless this stage enables it).
+    handle.applyFinale(sequenceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // When the black hole finishes loading, show its tab and apply any saved edits to it.
+  const onBlackHoleReady = useCallback(() => {
+    bumpRegistry();
+    applyFullState(currentState());
+    // Honour the current tab (e.g. after a dev remount while on the Black hole tab).
+    handleRef.current?.setBlackHolePreview(activeModelRef.current === "blackhole");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyFullState]);
 
   const onReady = useCallback(
     (handle: SunLabSceneHandle) => {
       handleRef.current = handle;
+      // Re-create the duplicated objects (document-level) onto this fresh scene BEFORE applying state,
+      // so their per-stage overrides have something to apply to.
+      documentRef.current.addedObjects.forEach((added) =>
+        handle.addDuplicate(added.sourceId, added.id),
+      );
       // Reflect the loaded/active snapshot onto this scene. Runs on every ready (incl. a StrictMode
       // remount's fresh scene), and it's idempotent — so the viewport always matches the numbers.
       applyFullState(currentState());
@@ -125,7 +165,7 @@ export default function SunLab() {
     [applyFullState],
   );
 
-  useSunLabScene({ canvasRef, onReady, onStatus: setStatus });
+  useSunLabScene({ canvasRef, onReady, onStatus: setStatus, onBlackHoleReady });
 
   // ── Autosave ──
   useEffect(() => {
@@ -137,7 +177,15 @@ export default function SunLab() {
   const updateGlobal = (next: GlobalParams) => {
     editActiveState((previous) => ({ ...previous, global: next }));
     handleRef.current?.applyGlobal(next);
+    // Re-apply the finale so toggling it / resizing the black hole reflects immediately.
+    handleRef.current?.applyFinale(sequenceRef.current);
   };
+
+  const changeSequence = (value: number) => {
+    setSequence(value);
+    handleRef.current?.applyFinale(value);
+  };
+  const playSequence = () => handleRef.current?.playSequence(FINALE_PLAY_SECONDS);
   const resetGlobal = () => updateGlobal(structuredClone(DEFAULT_GLOBAL_PARAMS));
 
   const setFractureSpread = (amount: number) => {
@@ -229,6 +277,40 @@ export default function SunLab() {
     });
   };
 
+  // ── Duplicate / delete objects (document-level, shared across stages) ──
+  const isAddedObject = (id: string) =>
+    documentRef.current.addedObjects.some((added) => added.id === id);
+
+  const duplicateObject = (id: string) => {
+    const handle = handleRef.current;
+    if (!handle) return;
+    const newId = createAddedObjectId(id);
+    handle.addDuplicate(id, newId);
+    setDocument((previous) => ({
+      ...previous,
+      addedObjects: [...previous.addedObjects, { id: newId, sourceId: id }],
+    }));
+    bumpRegistry();
+    setSelection({ kind: "object", id: newId });
+  };
+
+  const deleteObject = (id: string) => {
+    handleRef.current?.removeObject(id);
+    setDocument((previous) => ({
+      ...previous,
+      addedObjects: previous.addedObjects.filter((added) => added.id !== id),
+      // Drop its per-stage overrides from every snapshot too.
+      snapshots: previous.snapshots.map((snapshot) => {
+        if (!snapshot.state.objects[id]) return snapshot;
+        const objects = { ...snapshot.state.objects };
+        delete objects[id];
+        return { ...snapshot, state: { ...snapshot.state, objects } };
+      }),
+    }));
+    bumpRegistry();
+    setSelection({ kind: "global" });
+  };
+
   const resetAll = () => {
     const initial = createInitialState();
     lastEditRef.current = 0; // force this onto the undo stack even right after an edit
@@ -254,7 +336,10 @@ export default function SunLab() {
   const switchToState = (nextState: SunLabState) => {
     undoStackRef.current = [];
     setCanUndo(false);
+    // A stage starts at the beginning of its finale timeline.
+    setSequence(0);
     applyFullState(nextState);
+    handleRef.current?.applyFinale(0);
     // Entering a stage that forms on enter replays its one-shot open.
     if (nextState.global.formOnEnter) handleRef.current?.playFormAnimation();
   };
@@ -306,7 +391,7 @@ export default function SunLab() {
     if (previous.snapshots.length <= 1) return;
     const remaining = previous.snapshots.filter((snapshot) => snapshot.id !== id);
     const nextActiveId = previous.activeId === id ? remaining[0].id : previous.activeId;
-    setDocument({ snapshots: remaining, activeId: nextActiveId });
+    setDocument({ ...previous, snapshots: remaining, activeId: nextActiveId });
     if (previous.activeId === id) {
       switchToState(remaining[0].state);
     }
@@ -354,6 +439,20 @@ export default function SunLab() {
   }, []);
 
   const registry = handleRef.current?.registry;
+  const blackHoleRegistry = handleRef.current?.blackHoleRegistry ?? null;
+  // The tree shows one model at a time; fall back to the sun until the black hole has loaded.
+  const activeRegistry =
+    activeModel === "blackhole" && blackHoleRegistry ? blackHoleRegistry : registry;
+  const selectedIsSun = !!(
+    selection.kind === "object" && registry?.entriesById.get(selection.id)
+  );
+
+  const switchModel = (model: "sun" | "blackhole") => {
+    setActiveModel(model);
+    setSelection({ kind: "global" });
+    // On the Black hole tab, preview the fully-formed hole (sun hidden) so it can be edited + seen.
+    handleRef.current?.setBlackHolePreview(model === "blackhole");
+  };
 
   return (
     // Fullscreen authoring takeover — above the site navbar (z 9999), which the root layout renders on
@@ -392,8 +491,56 @@ export default function SunLab() {
             onResetAll={resetAll}
           />
 
+          {/* Finale playback — always visible on a finale stage, so Play + scrub are never buried. */}
+          {state.global.finaleEnabled && (
+            <div className="flex items-center gap-2 rounded border border-accent/40 bg-accent/10 px-2 py-1.5">
+              <button
+                type="button"
+                onClick={playSequence}
+                className="flex items-center gap-1 rounded border border-border bg-black/30 px-2 py-1 text-[0.66rem] text-fg hover:text-accent"
+              >
+                <Play size={12} /> Play
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.001}
+                value={sequence}
+                onChange={(event) => changeSequence(Number(event.target.value))}
+                className="h-1 flex-1 cursor-pointer appearance-none rounded bg-border accent-accent"
+                aria-label="Finale sequence"
+              />
+              <span className="w-8 text-right text-[0.62rem] tabular-nums text-muted">
+                {sequence.toFixed(2)}
+              </span>
+            </div>
+          )}
+
+          {/* Model tab — appears once the black hole has loaded. */}
+          {blackHoleRegistry && (
+            <div className="flex gap-1">
+              {(["sun", "blackhole"] as const).map((model) => (
+                <button
+                  key={model}
+                  type="button"
+                  onClick={() => switchModel(model)}
+                  className={`flex-1 rounded border py-1 text-[0.66rem] ${
+                    activeModel === model
+                      ? "border-accent/60 bg-accent/10 text-fg"
+                      : "border-border text-muted hover:text-fg"
+                  }`}
+                >
+                  {model === "sun" ? "Sun" : "Black hole"}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="min-h-0 flex-[1.1] overflow-y-auto pr-1">
-            <ObjectTree registry={registry} selection={selection} onSelect={setSelection} />
+            {activeRegistry && (
+              <ObjectTree registry={activeRegistry} selection={selection} onSelect={setSelection} />
+            )}
           </div>
 
           <div className="min-h-0 flex-[1.4] overflow-y-auto border-t border-border pr-1 pt-1">
@@ -404,12 +551,15 @@ export default function SunLab() {
                 onReset={resetGlobal}
                 onFitCamera={() => handleRef.current?.fitCamera()}
                 onPlayForm={playForm}
+                sequence={sequence}
+                onSequenceChange={changeSequence}
+                onPlaySequence={playSequence}
               />
             )}
 
             {selection.kind === "object" &&
               (() => {
-                const entry = registry.entriesById.get(selection.id);
+                const entry = entryById(selection.id);
                 if (!entry) return null;
                 return (
                   <ObjectPanel
@@ -418,22 +568,26 @@ export default function SunLab() {
                     slotKinds={entry.slotKinds}
                     defaults={entry.defaults}
                     override={state.objects[selection.id]}
+                    isAdded={isAddedObject(selection.id)}
+                    canDuplicate={selectedIsSun}
                     onTransformChange={(partial) => changeObjectTransform(selection.id, partial)}
                     onMaterialChange={(slot, params) =>
                       changeObjectMaterial(selection.id, slot, params)
                     }
                     onReset={() => resetObject(selection.id)}
+                    onDuplicate={() => duplicateObject(selection.id)}
+                    onDelete={() => deleteObject(selection.id)}
                   />
                 );
               })()}
 
             {selection.kind === "group" &&
               (() => {
-                const group = registry.groups.find((entry) => entry.id === selection.groupId);
+                const group = activeRegistry?.groups.find((entry) => entry.id === selection.groupId);
                 if (!group) return null;
                 return (
                   <GroupPanel
-                    label={GROUP_LABELS[selection.groupId]}
+                    label={group.label}
                     groupId={selection.groupId}
                     childCount={group.objectIds.length}
                     fractureSpread={state.fractureSpread}
@@ -448,7 +602,7 @@ export default function SunLab() {
 
             {selection.kind === "material" &&
               (() => {
-                const shared = registry.sharedMaterials.find(
+                const shared = activeRegistry?.sharedMaterials.find(
                   (entry) => entry.name === selection.name,
                 );
                 if (!shared) return null;
