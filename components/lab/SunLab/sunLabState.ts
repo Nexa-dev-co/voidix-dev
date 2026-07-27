@@ -15,6 +15,9 @@ export interface Vector3Values {
 /** How the form-on-enter ramp is shaped: settle (out), accelerate/gravity (in), or both (in-out). */
 export type FormEasing = "out" | "in" | "inout";
 
+/** How a material composites against what's already been drawn. */
+export type MaterialBlending = "normal" | "additive" | "multiply";
+
 /** Everything editable about one material slot. Applies to a MeshStandardMaterial. */
 export interface MaterialParams {
   /** Base colour, `#rrggbb`. */
@@ -29,6 +32,19 @@ export interface MaterialParams {
   opacity: number;
   transparent: boolean;
   wireframe: boolean;
+  // The three below are optional so a hand-written preset or an older saved state stays valid without
+  // restating them — the promise `normalizeState` makes for `global`, kept here too. `readMaterialParams`
+  // always emits them, so a resolved value is only ever missing one when it came from such a source, and
+  // every consumer falls back to the model's own value.
+  /**
+   * Dielectric specular strength (MeshPhysicalMaterial only). 0 removes the specular term entirely, for
+   * every light at every angle — the only way a black surface stays black under a bright key light.
+   */
+  specularIntensity?: number;
+  /** "additive" makes stacked glow layers accumulate toward white instead of averaging to grey. */
+  blending?: MaterialBlending;
+  /** Off lets every layer of a stack show through, instead of the nearest one claiming the depth. */
+  depthWrite?: boolean;
 }
 
 /** The model's as-imported values for one object, captured once at load. Reset returns here. */
@@ -84,6 +100,10 @@ export interface GlobalParams {
   blackHoleSpinSpeed: number;
   /** Black hole position offset from the sun's centre (world units). */
   blackHolePosition: Vector3Values;
+  /** Black hole static rotation, DEGREES. */
+  blackHoleRotation: Vector3Values;
+  /** Which axis the black hole spins about: 0 = X, 1 = Y, 2 = Z. */
+  blackHoleSpinAxis: number;
   /** A point light at the sun's centre — pours through the fracture gaps when the cells part. */
   coreLight: { color: string; intensity: number; distance: number };
   bloom: { strength: number; radius: number; threshold: number };
@@ -125,6 +145,8 @@ export const DEFAULT_GLOBAL_PARAMS: GlobalParams = {
   blackHoleScale: 1,
   blackHoleSpinSpeed: 20,
   blackHolePosition: { x: 0, y: 0, z: 0 },
+  blackHoleRotation: { x: 0, y: 0, z: 0 },
+  blackHoleSpinAxis: 1,
   // Off by default — Phase 1 shouldn't force a look. Warm so it reads as sunlight when turned up.
   coreLight: { color: "#ffd9a0", intensity: 0, distance: 0 },
   // Threshold high enough that only the bright magma blooms, not the whole hull.
@@ -142,6 +164,44 @@ export function createInitialState(): SunLabState {
   return {
     global: structuredClone(DEFAULT_GLOBAL_PARAMS),
     objects: {},
+    sharedMaterials: {},
+    fractureSpread: 0,
+  };
+}
+
+// The New-black-hole tab's starting point (rebuilt 2026-07-27, when the model stopped being rebuilt at
+// runtime and started loading its own real materials).
+//
+// Deliberately there are NO material overrides here beyond hiding the Planet: every colour, roughness and
+// emissive now comes from the model itself, so this is scene grade only. That is what makes "Reset" on
+// this tab mean "back to the actual model" instead of "back to somebody's guess".
+export function createBlackHoleInitialState(): SunLabState {
+  return {
+    global: {
+      ...structuredClone(DEFAULT_GLOBAL_PARAMS),
+      // The lab lights the scene with a studio RoomEnvironment. A black hole in deep space has nothing to
+      // reflect, so 0 keeps a room that isn't there from showing up on the rings.
+      envIntensity: 0,
+      exposure: 1.0,
+      // The accretion layers are genuinely emissive now (light1 runs at 2.0 with its full-colour map), so
+      // the threshold is high on purpose: only the brightest arcs bloom. Pushing it lower hazes the hole
+      // itself, because bloom bleeds inward from the disc around it.
+      bloom: { strength: 0.35, radius: 0.6, threshold: 0.75 },
+      // The sun's core light sits at the origin — inside the black hole. Always 0 on this tab.
+      coreLight: { color: "#ffd9a0", intensity: 0, distance: 0 },
+      // The rings and Planet carry no emissive, so they are lit entirely by these. The glow layers ignore
+      // them completely. Raise `key` if the disc reads too dark; it cannot brighten the horizon.
+      key: { color: "#ffffff", intensity: 2.0 },
+      fill: { color: "#2a3550", intensity: 0.4 },
+      ambient: { color: "#ffffff", intensity: 0.6 },
+      background: { color: "#000000", transparent: false },
+      camera: { fov: 49 },
+      blackHoleScale: 1.94,
+      blackHoleSpinSpeed: 4,
+      blackHoleSpinAxis: 1,
+    },
+    // The model ships with a small off-centre Planet that has nothing to do with the black hole.
+    objects: { Planet_Planet_0: { visible: false } },
     sharedMaterials: {},
     fractureSpread: 0,
   };
@@ -166,10 +226,15 @@ export function resolveVector(
   return override ?? fallback;
 }
 
-/** The material a slot should show: the override if present, else the captured default. */
+/**
+ * The material a slot should show: the override layered over the captured default.
+ *
+ * Merged rather than swapped so a state saved before a field existed still resolves — the missing field
+ * falls back to the model's own value instead of arriving `undefined`.
+ */
 export function resolveMaterial(
   override: MaterialParams | undefined,
   fallback: MaterialParams,
 ): MaterialParams {
-  return override ?? fallback;
+  return override ? { ...fallback, ...override } : fallback;
 }

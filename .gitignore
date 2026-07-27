@@ -29,3 +29,6 @@ next-env.d.ts
 
 # Raw, pre-compression source models (optimized copies live in public/models)
 models-src/
+
+# Scratch space for raw model sources being inspected (see models-src for the kept copies)
+/temp

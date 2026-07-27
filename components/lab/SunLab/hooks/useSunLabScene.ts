@@ -30,18 +30,29 @@ import {
 // mutate the 47 MB model in place instead of rebuilding it. React owns the values; this owns the scene.
 
 const MODEL_PATH = "/models/fractured_sun.glb";
-const BLACKHOLE_MODEL_PATH = "/models/blackhole.glb";
+const BLACKHOLE_MODEL_PATH = "/models/black_hole.glb";
 const DRACO_DECODER_PATH = "/draco/";
 // The finale, mapped to the sequence 0→1: the sun shrinks + gets sucked in over EXPLODE (its glow goes
 // with it), the black hole grows from the centre over REVEAL. Black hole is fit to ~this many sun-radii.
 const FINALE_EXPLODE: [number, number] = [0.2, 0.55]; // sun sucked in, finishing as the core completes
 const FINALE_REVEAL: [number, number] = [0.25, 0.55]; // the dark core grows
-// The white rings + skin form EARLY (as the sun disappears); the `Blackhole_ring` mesh forms LATER.
+// The glow + secondary rings form EARLY (as the sun disappears); the main `ring` mesh forms LATER.
 const FINALE_RING_FORM_EARLY: [number, number] = [0.22, 0.52];
 const FINALE_RING_FORM_LATE: [number, number] = [0.52, 0.92];
 const BLACKHOLE_TARGET_FACTOR = 1.3;
 // Bloom settles to this as the black hole forms (only the bloom — exposure + lights stay glowy).
 const BLACKHOLE_BLOOM_STRENGTH = 0.44;
+// black_hole.glb is now converted to real metallic-roughness at build time (see the `specGloss` recipe in
+// scripts/optimizeModels.mjs), so three loads its colours and all its textures natively. Nothing about
+// its materials is rewritten here any more — the registry captures the model's own values as the
+// defaults, which is what makes "Reset" on this tab actually mean reset.
+//
+// One exception is applied on load, in BLACK_HOLE_HORIZON_MATERIALS below: the horizon's specular.
+// The conversion faithfully preserves the artist's specularFactor 0.2, which three encodes as F0 ≈ 0.199
+// — a 20%-reflective surface. Black albedo kills the diffuse term but NOT the specular one, so the key
+// light would put a glossy highlight on the event horizon. `specularIntensity = 0` collapses that term
+// to zero for every light at every angle, which is the only way a black hole stays black.
+const BLACK_HOLE_HORIZON_MATERIALS = ["black_hole_blackoutside", "black_hole_center"];
 // Yellow sparks: they emit from the sun during the explosion, fly out, then spiral back into the hole.
 const PARTICLE_COUNT = 2600;
 const PARTICLE_EMIT: [number, number] = [0.16, 0.34]; // when each particle is born (staggered)
@@ -110,6 +121,28 @@ export interface SunLabSceneHandle {
   playSequence: (durationSeconds: number) => void;
   /** Show the fully-formed black hole (sun hidden) so it can be edited on the Black hole tab. */
   setBlackHolePreview: (enabled: boolean) => void;
+  /** Show the black hole ALONE with its own settings (the "New black hole" tab). Sun hidden. */
+  showBlackHoleStandalone: (settings: BlackHoleStandaloneSettings) => void;
+  /** Leave standalone mode (the caller then re-applies the sun). */
+  exitBlackHoleStandalone: () => void;
+}
+
+/** The self-contained look the "New black hole" tab drives — its own scene grade, transform + spin. */
+export interface BlackHoleStandaloneSettings {
+  exposure: number;
+  bloom: { strength: number; radius: number; threshold: number };
+  key: { color: string; intensity: number };
+  fill: { color: string; intensity: number };
+  ambient: { color: string; intensity: number };
+  background: { color: string; transparent: boolean };
+  cameraFov: number;
+  /** envMapIntensity pushed onto the black hole's own materials — 0 stops the chrome-mirror reflection. */
+  envIntensity: number;
+  scale: number;
+  position: Vector3Values;
+  rotation: Vector3Values;
+  spinAxis: number;
+  spinSpeed: number;
 }
 
 interface UseSunLabSceneArguments {
@@ -258,15 +291,32 @@ export function useSunLabScene({
     let blackHoleSpinSpeed = 20;
     let currentSequence = 0;
     let sunRadius = 1;
+    // blackHoleGroup holds the scale + position + static rotation; blackHoleSpinner (its child) holds the
+    // idle spin — so a static rotation and the spin never fight over the same Euler.
     const blackHoleGroup = new THREE.Group();
-    blackHoleGroup.scale.setScalar(0); // hidden until the reveal
+    blackHoleGroup.scale.setScalar(0); // hidden until shown
+    const blackHoleSpinner = new THREE.Group();
+    blackHoleGroup.add(blackHoleSpinner);
     scene.add(blackHoleGroup);
     let blackHoleFitScale = 1;
     let blackHoleLoaded = false;
-    // Pure unlit black for the event horizon — no lighting, no env reflection, tone-map can't lift 0.
-    // Named so it still groups under "Core / Horizon" and is editable in the black-hole tab.
-    const blackHoleCoreMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, name: "Blackhole_core" });
-    // The stage's authored (super-glowy) grade — what the finale blends FROM toward the black-hole grade.
+    // "New black hole" tab (standalone): the black hole shown alone with its OWN settings, decoupled
+    // from the sun/finale. Spin runs on the spinner about a chosen axis.
+    let blackHoleStandalone = false;
+    let blackHoleStandaloneSpinAxis = 1;
+    let blackHoleStandaloneSpinSpeed = 0;
+    const setBlackHoleEnvIntensity = (intensity: number) => {
+      blackHoleGroup.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => {
+          if (material instanceof THREE.MeshStandardMaterial) {
+            material.envMapIntensity = intensity;
+            material.needsUpdate = true;
+          }
+        });
+      });
+    };
     // The sun's core light fades WITH the sun (its heat gets sucked in too), so the black hole isn't
     // left over-lit. Everything else stays at the stage's authored glow — nothing is dimmed by hand.
     let baseCoreLightIntensity = DEFAULT_GLOBAL_PARAMS.coreLight.intensity;
@@ -390,7 +440,7 @@ export function useSunLabScene({
     // Preview: show the fully-formed black hole (sun hidden) so it can be edited on the Black hole tab.
     let blackHolePreview = false;
     // Ring/skin meshes form AFTER the core — scale is base × form. The white ones form early (with the
-    // sun disappearing), the `Blackhole_ring` mesh forms late. `currentForm` is stored so an edit composes.
+    // sun disappearing), the main `ring` mesh forms late. `currentForm` is stored so an edit composes.
     interface RingForm {
       id: string;
       mesh: THREE.Mesh;
@@ -489,8 +539,11 @@ export function useSunLabScene({
     };
 
     const fitCamera = () => {
-      if (!modelRoot) return;
-      const box = new THREE.Box3().setFromObject(modelRoot);
+      // Frame whatever is actually on screen. On the black hole tab the sun is hidden, so measuring it
+      // would give a degenerate box and throw the camera somewhere useless.
+      const fitTarget = blackHoleStandalone ? blackHoleGroup : modelRoot;
+      if (!fitTarget) return;
+      const box = new THREE.Box3().setFromObject(fitTarget);
       if (box.isEmpty()) return;
       const sphere = box.getBoundingSphere(new THREE.Sphere());
       const fitDistance =
@@ -544,7 +597,7 @@ export function useSunLabScene({
       // The sun shrinks to nothing (sucked into the hole); the black hole grows in its place.
       if (modelRoot) modelRoot.scale.setScalar(targetModelScale * (1 - explode));
       blackHoleGroup.scale.setScalar(blackHoleFitScale * blackHoleScale * reveal);
-      // White rings/skin form early (as the sun goes); the Blackhole_ring mesh forms later.
+      // Glow + secondary rings form early (as the sun goes); the main ring mesh forms later.
       const earlyForm = blackHolePreview
         ? 1
         : smoothstep(FINALE_RING_FORM_EARLY[0], FINALE_RING_FORM_EARLY[1], sequence);
@@ -728,6 +781,48 @@ export function useSunLabScene({
         blackHolePreview = enabled;
         applyFinale(currentSequence);
       },
+      showBlackHoleStandalone: (settings) => {
+        blackHoleStandalone = true;
+        // Scene grade (its own, not the sun's).
+        renderer.toneMappingExposure = settings.exposure;
+        bloomPass.strength = settings.bloom.strength;
+        bloomPass.radius = settings.bloom.radius;
+        bloomPass.threshold = settings.bloom.threshold;
+        keyLight.color.set(settings.key.color);
+        keyLight.intensity = settings.key.intensity;
+        fillLight.color.set(settings.fill.color);
+        fillLight.intensity = settings.fill.intensity;
+        ambientLight.color.set(settings.ambient.color);
+        ambientLight.intensity = settings.ambient.intensity;
+        // Kill the sun's core point light — it sits at the origin and was flooding the black hole from
+        // its centre (the "sun is still there" glow). The black hole is lit only by key/fill/ambient here.
+        coreLight.intensity = 0;
+        scene.background = settings.background.transparent
+          ? null
+          : new THREE.Color(settings.background.color);
+        camera.fov = settings.cameraFov;
+        camera.updateProjectionMatrix();
+        setBlackHoleEnvIntensity(settings.envIntensity);
+        // Sun fully OUT of the frame — `visible = false` rather than scale 0, so it isn't drawn at all
+        // and can't be picked up by a bounding-box measurement.
+        if (modelRoot) modelRoot.visible = false;
+        particlePoints.visible = false;
+        // A half-scrubbed finale leaves the rings on a partial form multiplier. Clear it, or every scale
+        // this tab reports and writes is silently multiplied by a leftover from the other tab.
+        applyRingForm(1, 1);
+        blackHoleGroup.scale.setScalar(blackHoleFitScale * settings.scale);
+        blackHoleGroup.position.set(settings.position.x, settings.position.y, settings.position.z);
+        setEulerFromDegrees(blackHoleGroup.rotation, settings.rotation);
+        blackHoleStandaloneSpinAxis = settings.spinAxis;
+        blackHoleStandaloneSpinSpeed = settings.spinSpeed;
+      },
+      exitBlackHoleStandalone: () => {
+        blackHoleStandalone = false;
+        blackHoleGroup.rotation.set(0, 0, 0);
+        blackHoleSpinner.rotation.set(0, 0, 0);
+        // Hand the sun back; the caller's applyGlobal re-establishes its scale.
+        if (modelRoot) modelRoot.visible = true;
+      },
     };
 
     // ── Load ──
@@ -786,33 +881,40 @@ export function useSunLabScene({
           (blackHoleGltf) => {
             if (disposed) return;
             const blackHoleModel = blackHoleGltf.scene;
-            blackHoleModel.updateMatrixWorld(true);
-            const box = new THREE.Box3().setFromObject(blackHoleModel);
-            const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
-            const radius = Math.max(size.x, size.y, size.z) / 2 || 1;
-            // The event horizon must read PURE BLACK — swap the core material for unlit black so no
-            // light, reflection or exposure can lift it. The emissive rings/skin keep glowing.
+            // The model arrives correct — the ONLY thing forced here is killing the event horizon's
+            // specular (see BLACK_HOLE_HORIZON_MATERIALS). Runs before the registry captures defaults, so
+            // a black hole that can't be lit is what "Reset" returns to.
             blackHoleModel.traverse((object) => {
               if (!(object instanceof THREE.Mesh)) return;
               const materials = Array.isArray(object.material) ? object.material : [object.material];
-              const isCore = materials.some((material) => material.name === "Blackhole_core");
-              if (isCore) object.material = blackHoleCoreMaterial;
+              materials.forEach((material) => {
+                if (!(material instanceof THREE.MeshPhysicalMaterial)) return;
+                if (!BLACK_HOLE_HORIZON_MATERIALS.includes(material.name)) return;
+                material.specularIntensity = 0;
+                material.needsUpdate = true;
+              });
             });
-            blackHoleModel.position.sub(center); // centre it on the group origin (= sun centre)
-            blackHoleGroup.add(blackHoleModel);
+            blackHoleModel.updateMatrixWorld(true);
+            // Centre + fit on the BLACK HOLE itself (node "black hole"), so the tiny off-centre Planet
+            // doesn't skew where it sits or how big it reads. Fall back to the whole model if absent.
+            const focusNode = blackHoleModel.getObjectByName("black hole") ?? blackHoleModel;
+            focusNode.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(focusNode);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const radius = Math.max(size.x, size.y, size.z) / 2 || 1;
+            // Rendered EXACTLY as authored — no material changes.
+            blackHoleModel.position.sub(center); // centre the black hole on the group origin (= sun centre)
+            blackHoleSpinner.add(blackHoleModel);
             blackHoleFitScale = (sunRadius * BLACKHOLE_TARGET_FACTOR) / radius;
             blackHoleLoaded = true;
             // Build its editable registry (its own tab) and tell React to show it + apply saved edits.
             blackHoleRegistry = buildBlackHoleRegistry(blackHoleModel);
-            // The rings + skin form AFTER the core — collect them so the finale can scale them from 0.
-            // The one mesh using the `Blackhole_ring` material forms LATE; every other ring/skin (the
-            // white ones) forms EARLY, as the sun disappears.
+            // Rings + glow form AFTER the core (only used by the finale); collect them so it can scale
+            // from 0. The main `ring` mesh forms LATE, every other ring/glow forms EARLY.
             blackHoleRegistry.entries.forEach((entry) => {
-              if (entry.groupId !== "rings" && entry.groupId !== "skin") return;
-              const isLateRing = entry.materialSlots.some(
-                (material) => material.name === "Blackhole_ring",
-              );
+              if (entry.groupId !== "rings" && entry.groupId !== "glow") return;
+              const isLateRing = entry.materialSlots.some((material) => material.name === "ring");
               const ringForm: RingForm = {
                 id: entry.id,
                 mesh: entry.mesh,
@@ -903,9 +1005,14 @@ export function useSunLabScene({
         applyFinale(Math.min(sequencePlayProgress, 1));
         if (sequencePlayProgress >= 1) sequencePlayActive = false;
       }
-      // Black hole idle spin, once it's revealed.
-      if (finaleEnabled && blackHoleLoaded && blackHoleGroup.scale.x > 0.0001) {
-        blackHoleGroup.rotation.y += THREE.MathUtils.degToRad(blackHoleSpinSpeed) * delta;
+      // Standalone (New black hole tab): spin about the chosen axis.
+      if (blackHoleStandalone && blackHoleLoaded && blackHoleStandaloneSpinSpeed !== 0) {
+        const axis = blackHoleStandaloneSpinAxis === 0 ? "x" : blackHoleStandaloneSpinAxis === 2 ? "z" : "y";
+        blackHoleSpinner.rotation[axis] += THREE.MathUtils.degToRad(blackHoleStandaloneSpinSpeed) * delta;
+      }
+      // Finale idle spin (only while the sun→black-hole finale is running, not standalone/preview).
+      if (!blackHoleStandalone && !blackHolePreview && finaleEnabled && blackHoleLoaded && blackHoleGroup.scale.x > 0.0001) {
+        blackHoleSpinner.rotation.y += THREE.MathUtils.degToRad(blackHoleSpinSpeed) * delta;
       }
       controls.update();
       composer.render();
@@ -932,7 +1039,6 @@ export function useSunLabScene({
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         materials.forEach((material) => material.dispose());
       });
-      blackHoleCoreMaterial.dispose();
       particleGeometry.dispose();
       particleMaterial.dispose();
       clonedMaterials.forEach((material) => material.dispose());

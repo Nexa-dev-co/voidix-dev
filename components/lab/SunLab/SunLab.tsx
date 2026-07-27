@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Play } from "lucide-react";
 import { useSunLabScene, type SunLabSceneHandle, type SunLabStatus } from "./hooks/useSunLabScene";
 import {
+  createBlackHoleInitialState,
   createInitialState,
   DEFAULT_GLOBAL_PARAMS,
   type GlobalParams,
@@ -18,7 +19,13 @@ import {
   createSnapshot,
   type SunLabDocument,
 } from "./sunLabDocument";
-import { loadDocument, saveDocument } from "./sunLabStorage";
+import { clearDocument, loadDocument, saveDocument } from "./sunLabStorage";
+import {
+  clearBlackHoleState,
+  loadBlackHoleState,
+  saveBlackHoleState,
+} from "./blackHoleLabStorage";
+import BlackHoleSettings from "./hud/BlackHoleSettings";
 import { SUN_LAB_PRESETS } from "./sunLabPresets";
 import { formatSunLabState } from "./sunLabPresetSource";
 import SnapshotBar from "./hud/SnapshotBar";
@@ -55,21 +62,35 @@ export default function SunLab() {
   // Bumped whenever the scene registry changes (duplicate / delete / black hole loads) so the tree re-renders.
   const [, setRegistryVersion] = useState(0);
   const bumpRegistry = () => setRegistryVersion((version) => version + 1);
-  // Which model's tree is shown — the sun or the black hole.
+  // Which model's tree is shown — the sun or the (self-contained) new black hole.
   const [activeModel, setActiveModel] = useState<"sun" | "blackhole">("sun");
   const activeModelRef = useRef(activeModel);
   activeModelRef.current = activeModel;
+
+  // The New-black-hole tab's OWN state — its own scene look, transform, spin + per-part edits, walled off
+  // from the sun (its own localStorage). All the edit handlers route to this when the tab is active.
+  const [blackHoleState, setBlackHoleState] = useState<SunLabState>(() => loadBlackHoleState());
+  const blackHoleStateRef = useRef(blackHoleState);
+  blackHoleStateRef.current = blackHoleState;
 
   const documentRef = useRef(document);
   documentRef.current = document;
   const undoStackRef = useRef<SunLabState[]>([]);
   const lastEditRef = useRef(0);
 
-  const state = activeSnapshot(document).state;
-  const currentState = () => activeSnapshot(documentRef.current).state;
+  // The active state — sun snapshot OR the black hole's own state, depending on the tab.
+  const state = activeModel === "blackhole" ? blackHoleState : activeSnapshot(document).state;
+  const currentState = () =>
+    activeModelRef.current === "blackhole"
+      ? blackHoleStateRef.current
+      : activeSnapshot(documentRef.current).state;
 
-  // ── State plumbing ──
+  // ── State plumbing (routes to the active model's state) ──
   const setActiveState = (nextState: SunLabState) => {
+    if (activeModelRef.current === "blackhole") {
+      setBlackHoleState(nextState);
+      return;
+    }
     setDocument((previous) => ({
       ...previous,
       snapshots: previous.snapshots.map((snapshot) =>
@@ -98,6 +119,14 @@ export default function SunLab() {
   const entryById = (id: string) =>
     handleRef.current?.registry.entriesById.get(id) ??
     handleRef.current?.blackHoleRegistry?.entriesById.get(id);
+
+  // The registry the HUD is currently editing. Group ids and material names are disjoint between the two
+  // models, so anything that looks one up MUST ask the active model — reaching for the sun's registry
+  // while the black hole tab is open finds nothing and silently does nothing.
+  const activeSceneRegistry = () =>
+    activeModelRef.current === "blackhole"
+      ? handleRef.current?.blackHoleRegistry
+      : handleRef.current?.registry;
 
   const resolvedTransform = (id: string, override: ObjectOverride | undefined) => {
     const defaults = entryById(id)?.defaults;
@@ -131,21 +160,57 @@ export default function SunLab() {
         });
       });
     };
+    // The SUN's registry only. The black hole owns its own state on its own tab, and applying a sun
+    // state here would walk its materials back to defaults — the two are meant to be walled off.
     applyRegistry(handle.registry);
-    applyRegistry(handle.blackHoleRegistry);
     // Reflect the finale at the current scrub cursor (black hole hidden unless this stage enables it).
     handle.applyFinale(sequenceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When the black hole finishes loading, show its tab and apply any saved edits to it.
+  // Apply the New-black-hole tab's own state: its standalone scene look + transform + spin, then its
+  // per-part edits. Nothing here touches the sun's document.
+  const applyBlackHole = useCallback((bh: SunLabState) => {
+    const handle = handleRef.current;
+    if (!handle) return;
+    handle.showBlackHoleStandalone({
+      exposure: bh.global.exposure,
+      bloom: bh.global.bloom,
+      key: bh.global.key,
+      fill: bh.global.fill,
+      ambient: bh.global.ambient,
+      background: bh.global.background,
+      cameraFov: bh.global.camera.fov,
+      envIntensity: bh.global.envIntensity,
+      scale: bh.global.blackHoleScale,
+      position: bh.global.blackHolePosition,
+      rotation: bh.global.blackHoleRotation,
+      spinAxis: bh.global.blackHoleSpinAxis,
+      spinSpeed: bh.global.blackHoleSpinSpeed,
+    });
+    const registry = handle.blackHoleRegistry;
+    if (!registry) return;
+    registry.sharedMaterials.forEach((shared) => {
+      handle.applySharedMaterial(shared.name, bh.sharedMaterials[shared.name] ?? shared.defaults);
+    });
+    registry.entries.forEach((entry) => {
+      handle.applyObjectTransform(entry.id, resolvedTransform(entry.id, bh.objects[entry.id]));
+      entry.materialSlots.forEach((_, slot) => {
+        const override = bh.objects[entry.id]?.materials?.[slot];
+        if (override) handle.applyObjectMaterial(entry.id, slot, override);
+        else handle.setObjectMaterialToShared(entry.id, slot);
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // When the black hole finishes loading, reveal its tab and apply whichever state the current tab needs.
   const onBlackHoleReady = useCallback(() => {
     bumpRegistry();
-    applyFullState(currentState());
-    // Honour the current tab (e.g. after a dev remount while on the Black hole tab).
-    handleRef.current?.setBlackHolePreview(activeModelRef.current === "blackhole");
+    if (activeModelRef.current === "blackhole") applyBlackHole(blackHoleStateRef.current);
+    else applyFullState(activeSnapshot(documentRef.current).state);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyFullState]);
+  }, [applyFullState, applyBlackHole]);
 
   const onReady = useCallback(
     (handle: SunLabSceneHandle) => {
@@ -167,15 +232,23 @@ export default function SunLab() {
 
   useSunLabScene({ canvasRef, onReady, onStatus: setStatus, onBlackHoleReady });
 
-  // ── Autosave ──
+  // ── Autosave (each state to its own store) ──
   useEffect(() => {
     const timer = window.setTimeout(() => saveDocument(document), AUTOSAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [document]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => saveBlackHoleState(blackHoleState), AUTOSAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [blackHoleState]);
 
   // ── Edits ──
   const updateGlobal = (next: GlobalParams) => {
     editActiveState((previous) => ({ ...previous, global: next }));
+    if (activeModelRef.current === "blackhole") {
+      applyBlackHole({ ...blackHoleStateRef.current, global: next });
+      return;
+    }
     handleRef.current?.applyGlobal(next);
     // Re-apply the finale so toggling it / resizing the black hole reflects immediately.
     handleRef.current?.applyFinale(sequenceRef.current);
@@ -186,7 +259,14 @@ export default function SunLab() {
     handleRef.current?.applyFinale(value);
   };
   const playSequence = () => handleRef.current?.playSequence(FINALE_PLAY_SECONDS);
-  const resetGlobal = () => updateGlobal(structuredClone(DEFAULT_GLOBAL_PARAMS));
+  const resetGlobal = () =>
+    updateGlobal(
+      structuredClone(
+        activeModelRef.current === "blackhole"
+          ? createBlackHoleInitialState().global
+          : DEFAULT_GLOBAL_PARAMS,
+      ),
+    );
 
   const setFractureSpread = (amount: number) => {
     editActiveState((previous) => ({ ...previous, fractureSpread: amount }));
@@ -238,7 +318,7 @@ export default function SunLab() {
   };
 
   const resetSharedMaterial = (name: string) => {
-    const shared = handleRef.current?.registry.sharedMaterials.find((entry) => entry.name === name);
+    const shared = activeSceneRegistry()?.sharedMaterials.find((entry) => entry.name === name);
     if (shared) handleRef.current?.applySharedMaterial(name, shared.defaults);
     editActiveState((previous) => {
       const sharedMaterials = { ...previous.sharedMaterials };
@@ -248,7 +328,7 @@ export default function SunLab() {
   };
 
   const resetGroup = (groupId: string) => {
-    const group = handleRef.current?.registry.groups.find((entry) => entry.id === groupId);
+    const group = activeSceneRegistry()?.groups.find((entry) => entry.id === groupId);
     if (!group) return;
     const previousObjects = currentState().objects;
     group.objectIds.forEach((id) => restoreObjectToDefaults(id, previousObjects[id]));
@@ -262,7 +342,7 @@ export default function SunLab() {
   };
 
   const broadcastGroupVisible = (groupId: string, visible: boolean) => {
-    const group = handleRef.current?.registry.groups.find((entry) => entry.id === groupId);
+    const group = activeSceneRegistry()?.groups.find((entry) => entry.id === groupId);
     if (!group) return;
     editActiveState((previous) => {
       const objects = { ...previous.objects };
@@ -312,12 +392,33 @@ export default function SunLab() {
   };
 
   const resetAll = () => {
-    const initial = createInitialState();
+    const onBlackHole = activeModelRef.current === "blackhole";
+    const initial = onBlackHole ? createBlackHoleInitialState() : createInitialState();
     lastEditRef.current = 0; // force this onto the undo stack even right after an edit
     pushHistory();
     setActiveState(initial);
-    applyFullState(initial);
+    if (onBlackHole) applyBlackHole(initial);
+    else applyFullState(initial);
     setSelection({ kind: "global" });
+  };
+
+  // Wipe ALL saved data — the sun document AND the black hole's own store — and start from clean bases.
+  const freshStart = () => {
+    if (!window.confirm("Reset everything to base? This clears all saved snapshots and edits.")) return;
+    clearDocument();
+    clearBlackHoleState();
+    const base = createSnapshot("Base", createInitialState());
+    const fresh: SunLabDocument = { snapshots: [base], activeId: base.id, addedObjects: [] };
+    setDocument(fresh);
+    const freshBlackHole = createBlackHoleInitialState();
+    setBlackHoleState(freshBlackHole);
+    setSelection({ kind: "global" });
+    setSequence(0);
+    sequenceRef.current = 0;
+    undoStackRef.current = [];
+    setCanUndo(false);
+    if (activeModelRef.current === "blackhole") applyBlackHole(freshBlackHole);
+    else applyFullState(base.state);
   };
 
   // ── Undo ──
@@ -327,9 +428,10 @@ export default function SunLab() {
     if (!restored) return;
     lastEditRef.current = 0;
     setActiveState(restored);
-    applyFullState(restored);
+    if (activeModelRef.current === "blackhole") applyBlackHole(restored);
+    else applyFullState(restored);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyFullState]);
+  }, [applyFullState, applyBlackHole]);
 
   // ── Snapshots ──
   // Switching / adding / deleting clears undo history — it's scoped to editing one snapshot.
@@ -449,9 +551,17 @@ export default function SunLab() {
 
   const switchModel = (model: "sun" | "blackhole") => {
     setActiveModel(model);
+    activeModelRef.current = model; // so the routed helpers use the new tab immediately
     setSelection({ kind: "global" });
-    // On the Black hole tab, preview the fully-formed hole (sun hidden) so it can be edited + seen.
-    handleRef.current?.setBlackHolePreview(model === "blackhole");
+    undoStackRef.current = [];
+    setCanUndo(false);
+    if (model === "blackhole") {
+      // The New black hole tab: show it alone with its own settings.
+      applyBlackHole(blackHoleStateRef.current);
+    } else {
+      handleRef.current?.exitBlackHoleStandalone();
+      applyFullState(activeSnapshot(documentRef.current).state);
+    }
   };
 
   return (
@@ -489,6 +599,8 @@ export default function SunLab() {
             onCopy={copyState}
             copied={copied}
             onResetAll={resetAll}
+            onFreshStart={freshStart}
+            showSnapshots={activeModel === "sun"}
           />
 
           {/* Finale playback — always visible on a finale stage, so Play + scrub are never buried. */}
@@ -531,7 +643,7 @@ export default function SunLab() {
                       : "border-border text-muted hover:text-fg"
                   }`}
                 >
-                  {model === "sun" ? "Sun" : "Black hole"}
+                  {model === "sun" ? "Sun" : "New black hole"}
                 </button>
               ))}
             </div>
@@ -544,7 +656,16 @@ export default function SunLab() {
           </div>
 
           <div className="min-h-0 flex-[1.4] overflow-y-auto border-t border-border pr-1 pt-1">
-            {selection.kind === "global" && (
+            {selection.kind === "global" && activeModel === "blackhole" && (
+              <BlackHoleSettings
+                value={state.global}
+                onChange={updateGlobal}
+                onReset={resetGlobal}
+                onFitCamera={() => handleRef.current?.fitCamera()}
+              />
+            )}
+
+            {selection.kind === "global" && activeModel === "sun" && (
               <GlobalControls
                 value={state.global}
                 onChange={updateGlobal}

@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import type { MaterialKind } from "../sunLabModel";
-import type { MaterialParams, Vector3Values } from "../sunLabState";
+import type { MaterialBlending, MaterialParams, Vector3Values } from "../sunLabState";
 
 // Reusable HUD inputs, Tailwind-styled with the site tokens (a lab has no business growing globals.css
 // — same rule LetterLab follows). All controlled: value in, onChange out. No state of their own.
@@ -171,10 +171,16 @@ export function Toggle({
   );
 }
 
+const BLENDING_OPTIONS: { value: MaterialBlending; label: string }[] = [
+  { value: "normal", label: "normal" },
+  { value: "additive", label: "additive" },
+  { value: "multiply", label: "multiply" },
+];
+
 /**
  * The editable surface of one material slot. The emissive/metal/rough controls only appear for a
  * standard (lit) material — the sun's surface materials are unlit (basic), where those fields have no
- * effect, so showing them would be a lie.
+ * effect, so showing them would be a lie. `specular` is narrower still: only a physical material has it.
  */
 export function MaterialFields({
   value,
@@ -186,10 +192,11 @@ export function MaterialFields({
   onChange: (value: MaterialParams) => void;
 }) {
   const patch = (partial: Partial<MaterialParams>) => onChange({ ...value, ...partial });
+  const isLit = kind === "standard" || kind === "physical";
   return (
     <div className="flex flex-col gap-2.5">
       <ColorField label="color" value={value.color} onChange={(color) => patch({ color })} />
-      {kind === "standard" && (
+      {isLit && (
         <>
           <ColorField
             label="emissive"
@@ -222,6 +229,16 @@ export function MaterialFields({
           />
         </>
       )}
+      {kind === "physical" && (
+        <Slider
+          label="specular (0 = unlightable)"
+          value={value.specularIntensity ?? 1}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(specularIntensity) => patch({ specularIntensity })}
+        />
+      )}
       <Slider
         label="opacity"
         value={value.opacity}
@@ -230,10 +247,34 @@ export function MaterialFields({
         step={0.01}
         onChange={(opacity) => patch({ opacity })}
       />
+      <div className="flex flex-col gap-1">
+        <span className="text-[0.64rem] text-muted">blending</span>
+        <div className="grid grid-cols-3 gap-1">
+          {BLENDING_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => patch({ blending: option.value })}
+              className={`rounded px-1.5 py-1 text-[0.62rem] ${
+                (value.blending ?? "normal") === option.value
+                  ? "bg-accent/20 text-fg"
+                  : "border border-border text-muted hover:text-fg"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <Toggle
         label="transparent"
         value={value.transparent}
         onChange={(transparent) => patch({ transparent })}
+      />
+      <Toggle
+        label="depth write"
+        value={value.depthWrite ?? true}
+        onChange={(depthWrite) => patch({ depthWrite })}
       />
       <Toggle label="wireframe" value={value.wireframe} onChange={(wireframe) => patch({ wireframe })} />
     </div>

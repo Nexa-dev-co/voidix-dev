@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import type { MaterialParams, ObjectDefaults, Vector3Values } from "./sunLabState";
+import type {
+  MaterialBlending,
+  MaterialParams,
+  ObjectDefaults,
+  Vector3Values,
+} from "./sunLabState";
 
 // Parses the loaded fractured_sun scene into the tool's structures: the five role groups, a flat
 // registry of selectable objects (each with captured defaults + live material slots), the shared
@@ -26,17 +31,24 @@ export const GROUP_LABELS: Record<string, string> = {
 
 export const GROUP_ORDER: string[] = ["core", "corona", "cells", "flares", "planes"];
 
-// The black hole's role groups (its materials: Blackhole_core / ring / ring2 / skin / skin_inner).
+// The black hole's role groups (black_hole.glb materials: blackoutside / center / light1-3 / distortion
+// / ring / ring2 / Planet).
 export const BLACKHOLE_GROUP_LABELS: Record<string, string> = {
   horizon: "Core / Horizon",
+  glow: "Glow",
   rings: "Rings",
-  skin: "Skin",
+  planet: "Planet",
 };
-export const BLACKHOLE_GROUP_ORDER: string[] = ["horizon", "rings", "skin"];
+export const BLACKHOLE_GROUP_ORDER: string[] = ["horizon", "glow", "rings", "planet"];
 
-/** The material classes this model uses, and the only two the tool edits. */
+/**
+ * The material classes the tool edits. `MeshPhysicalMaterial` extends `MeshStandardMaterial`, so it is
+ * already covered by the union — the black hole loads as physical because its converted glTF carries
+ * KHR_materials_specular / _ior.
+ */
 export type EditableMaterial = THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
-export type MaterialKind = "basic" | "standard";
+/** "physical" is a superset of "standard" — it adds the specular controls to the same panel. */
+export type MaterialKind = "basic" | "standard" | "physical";
 
 /** The prefix the fracture shards' root Groups carry (post-load names drop the dots). */
 const SHARD_NAME_PREFIX = "Sphere_0_cell";
@@ -96,7 +108,21 @@ function radToDegVector(euler: THREE.Euler): Vector3Values {
 }
 
 export function materialKindOf(material: EditableMaterial): MaterialKind {
+  // Physical first — it extends Standard, so the order matters.
+  if (material instanceof THREE.MeshPhysicalMaterial) return "physical";
   return material instanceof THREE.MeshStandardMaterial ? "standard" : "basic";
+}
+
+const BLENDING_TO_THREE: Record<MaterialBlending, THREE.Blending> = {
+  normal: THREE.NormalBlending,
+  additive: THREE.AdditiveBlending,
+  multiply: THREE.MultiplyBlending,
+};
+
+function blendingOf(material: EditableMaterial): MaterialBlending {
+  if (material.blending === THREE.AdditiveBlending) return "additive";
+  if (material.blending === THREE.MultiplyBlending) return "multiply";
+  return "normal";
 }
 
 /** Read a material's editable state into plain params. Standard-only fields fall back for basic ones. */
@@ -111,6 +137,10 @@ export function readMaterialParams(material: EditableMaterial): MaterialParams {
     opacity: material.opacity,
     transparent: material.transparent,
     wireframe: material.wireframe,
+    specularIntensity:
+      material instanceof THREE.MeshPhysicalMaterial ? material.specularIntensity : 1,
+    blending: blendingOf(material),
+    depthWrite: material.depthWrite,
   };
 }
 
@@ -120,11 +150,19 @@ export function applyMaterialParams(material: EditableMaterial, params: Material
   material.opacity = params.opacity;
   material.transparent = params.transparent;
   material.wireframe = params.wireframe;
+  // Defaulting throughout: a state saved before these fields existed still applies cleanly.
+  material.blending = params.blending
+    ? BLENDING_TO_THREE[params.blending]
+    : THREE.NormalBlending;
+  material.depthWrite = params.depthWrite ?? true;
   if (material instanceof THREE.MeshStandardMaterial) {
     material.emissive.set(params.emissive);
     material.emissiveIntensity = params.emissiveIntensity;
     material.metalness = params.metalness;
     material.roughness = params.roughness;
+  }
+  if (material instanceof THREE.MeshPhysicalMaterial) {
+    material.specularIntensity = params.specularIntensity ?? 1;
   }
   material.needsUpdate = true;
 }
@@ -234,10 +272,22 @@ export function buildSunLabRegistry(root: THREE.Object3D): SunLabRegistry {
   };
 }
 
-/** rings → Blackhole_ring/ring2, skin → Blackhole_skin/skin_inner, everything else (the core) → horizon. */
+// rings → ring/ring2, planet → Planet, glow → the emissive light layers + distortion, else → horizon
+// (blackoutside + center = the dark parts).
 function blackHoleGroupForMaterialNames(names: string[]): GroupId | null {
-  if (names.some((name) => name === "Blackhole_ring" || name === "Blackhole_ring2")) return "rings";
-  if (names.some((name) => name === "Blackhole_skin" || name === "Blackhole_skin_inner")) return "skin";
+  if (names.some((name) => name === "ring" || name === "ring2")) return "rings";
+  if (names.some((name) => name === "Planet")) return "planet";
+  if (
+    names.some(
+      (name) =>
+        name === "black_hole_light1" ||
+        name === "black_hole_light2" ||
+        name === "black_hole_light3" ||
+        name === "black_hole_distortion",
+    )
+  ) {
+    return "glow";
+  }
   return "horizon";
 }
 

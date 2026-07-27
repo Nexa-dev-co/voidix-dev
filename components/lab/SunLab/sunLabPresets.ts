@@ -27,6 +27,8 @@ const PEACEFUL_STATE: SunLabState = {
     blackHoleScale: 1,
     blackHoleSpinSpeed: 20,
     blackHolePosition: { x: 0, y: 0, z: 0 },
+    blackHoleRotation: { x: 0, y: 0, z: 0 },
+    blackHoleSpinAxis: 1,
     coreLight: { color: "#ffd9a0", intensity: 0, distance: 0 },
     bloom: { strength: 1.26, radius: 0.92, threshold: 0.59 },
     key: { color: "#fff4e0", intensity: 2.7 },

@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Clipboard, Copy, Plus, RotateCcw, Undo2, X } from "lucide-react";
+import { Check, Clipboard, Copy, Eraser, Plus, RotateCcw, Undo2, X } from "lucide-react";
 import type { SunLabSnapshot } from "../sunLabDocument";
 
 // The snapshot bar: the named states you author (your "stages"), plus undo / copy / reset. The active
@@ -20,6 +20,8 @@ export default function SnapshotBar({
   onCopy,
   copied,
   onResetAll,
+  onFreshStart,
+  showSnapshots,
 }: {
   snapshots: SunLabSnapshot[];
   activeId: string;
@@ -35,6 +37,9 @@ export default function SnapshotBar({
   onCopy: () => void;
   copied: boolean;
   onResetAll: () => void;
+  onFreshStart: () => void;
+  /** The snapshot chips are a sun-only concept — hidden on the New black hole tab. */
+  showSnapshots: boolean;
 }) {
   const iconButton = "flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.62rem] text-muted hover:text-fg disabled:opacity-40 disabled:hover:text-muted";
 
@@ -53,9 +58,13 @@ export default function SnapshotBar({
           <button type="button" onClick={onResetAll} className={iconButton} title="Reset this snapshot to defaults">
             <RotateCcw size={12} /> Reset
           </button>
+          <button type="button" onClick={onFreshStart} className={iconButton} title="Wipe ALL saved snapshots + edits and start from a clean base">
+            <Eraser size={12} /> Fresh
+          </button>
         </div>
       </div>
 
+      {showSnapshots && (
       <div className="flex flex-wrap items-center gap-1.5">
         {snapshots.map((snapshot, index) => {
           const active = snapshot.id === activeId;
@@ -115,6 +124,7 @@ export default function SnapshotBar({
           </button>
         ))}
       </div>
+      )}
     </header>
   );
 }

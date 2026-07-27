@@ -14,7 +14,8 @@
 // intend to touch re-encodes textures and geometry that were already lossily compressed once.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const SOURCE_DIRECTORY = "models-src";
@@ -87,6 +88,25 @@ const MODEL_RECIPES = {
     // meshes. Nothing for the texture cap to do; Draco is the whole win.
     simplify: false,
   },
+
+  "black_hole.glb": {
+    // An old Sketchfab export whose materials live ENTIRELY inside KHR_materials_pbrSpecularGlossiness.
+    // three.js dropped that extension in r151, so loading it raw gives nine untextured chrome-metal
+    // materials — every colour and all 12 textures silently discarded. metalrough bakes the spec/gloss
+    // into real metallic-roughness maps, which is the only thing that makes this model loadable at all.
+    specGloss: true,
+    // 3x "blackoutside" and 4x "ring2" share a material. Joining merges each set into ONE mesh, which
+    // both destroys the sun lab's object tree and renumbers every id (name, name#2, name#3…) — orphaning
+    // the per-object overrides saved against those ids.
+    join: false,
+    // flatten DELETES the "black hole" parent node. useSunLabScene.ts centres and fits on that node
+    // precisely so the small off-centre Planet can't skew the framing; losing it silently falls back to
+    // the whole model.
+    flatten: false,
+    // Nested spheres, a thin disc and concentric rings — decimation visibly chews the rings, and Draco
+    // already takes this from 30 MB to ~3 MB on its own.
+    simplify: false,
+  },
 };
 
 function formatMegabytes(byteCount) {
@@ -120,6 +140,20 @@ for (const fileName of sourceFileNames) {
   const inputPath = join(SOURCE_DIRECTORY, fileName);
   const sizeBefore = statSync(inputPath).size;
 
+  // A spec/gloss source has to be converted BEFORE optimize runs — optimize's own passes can't read
+  // those materials either, so anything downstream would be working on already-lost data.
+  let optimizeInput = inputPath;
+  let scratchPath = null;
+  if (recipe.specGloss) {
+    scratchPath = join(tmpdir(), `${baseName}-metalrough.glb`);
+    execFileSync(
+      "npx",
+      ["--yes", "@gltf-transform/cli@latest", "metalrough", inputPath, scratchPath],
+      { stdio: "inherit", shell: true },
+    );
+    optimizeInput = scratchPath;
+  }
+
   for (const textureSize of textureSizes) {
     // A tiered model needs the tier in its name so both variants can sit side by side; a single-output
     // model keeps a clean name.
@@ -134,7 +168,7 @@ for (const fileName of sourceFileNames) {
         "--yes",
         "@gltf-transform/cli@latest",
         "optimize",
-        inputPath,
+        optimizeInput,
         outputPath,
         "--texture-size",
         String(textureSize),
@@ -146,6 +180,8 @@ for (const fileName of sourceFileNames) {
         String(recipe.simplify ?? true),
         "--join",
         String(recipe.join ?? true),
+        "--flatten",
+        String(recipe.flatten ?? true),
       ],
       { stdio: "inherit", shell: true },
     );
@@ -158,4 +194,6 @@ for (const fileName of sourceFileNames) {
       )} → ${formatMegabytes(sizeAfter)}  (−${reduction}%)\n`,
     );
   }
+
+  if (scratchPath) rmSync(scratchPath, { force: true });
 }
