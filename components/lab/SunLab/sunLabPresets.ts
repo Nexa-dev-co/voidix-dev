@@ -1,4 +1,4 @@
-import type { SunLabState } from "./sunLabState";
+import { DEFAULT_GLOBAL_PARAMS, type SunLabState } from "./sunLabState";
 
 // Built-in starting points you can drop into the document. These are authored numbers, not defaults —
 // a preset is just a named SunLabState. Add more here and they appear as buttons in the snapshot bar.
@@ -12,6 +12,10 @@ export interface SunLabPreset {
 // bloomed on pure black.
 const PEACEFUL_STATE: SunLabState = {
   global: {
+    // Spread the defaults first so a field added to GlobalParams later doesn't break every preset in this
+    // file — each preset then states only what it actually authors. Every value below is an explicit
+    // override, so this changes nothing about how Peaceful looks.
+    ...DEFAULT_GLOBAL_PARAMS,
     modelScale: 1,
     rotation: { x: 5, y: 106, z: -59 },
     autoRotateSpeed: 16,
@@ -122,8 +126,8 @@ const COLLAPSE_STATE: SunLabState = {
 };
 
 // Stage 4 — Singularity: opens ALREADY collapsed + super-glowing (Collapse's end look, no form), with the
-// finale armed. Scrub the "sequence" slider or hit Play: the sun bursts + fades and the black hole grows
-// from its centre (particles land in Build B/C).
+// finale armed. Scrub the "sequence" slider or hit Play: the star's own matter is released into a spiral
+// that winds inward, and the black hole forms at its centre.
 const SINGULARITY_STATE: SunLabState = {
   ...COLLAPSE_STATE,
   global: {
@@ -132,6 +136,26 @@ const SINGULARITY_STATE: SunLabState = {
     finaleEnabled: true,
     blackHoleScale: 1,
     blackHoleSpinSpeed: 24,
+    // The accretion spiral carries the collapse — this is the stage it exists for.
+    accretion: {
+      strength: 1,
+      wind: 1.1,
+      flatten: 0.85,
+      turbulence: 0.12,
+      size: 26,
+      innerRadius: 0.28,
+      colorCool: "#d92a05",
+      colorHot: "#ffeeb8",
+    },
+    // Lensing on, so the disc visibly bends around the hole as it forms.
+    lensing: {
+      strength: 0.5,
+      aberration: 0.18,
+      liquid: 0.35,
+      ring: 0.5,
+      shadow: 0.7,
+      radiusScale: 1,
+    },
   },
   objects: { ...COLLAPSE_STATE.objects },
   sharedMaterials: { ...COLLAPSE_STATE.sharedMaterials },

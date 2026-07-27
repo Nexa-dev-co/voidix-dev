@@ -217,6 +217,69 @@ export default function GlobalControls({
         />
       </Section>
 
+      {/* The star's own matter, released from its mesh and wound inward. The spiral is NOT authored —
+          it emerges from Keplerian shear (inner material laps outer), so `wind` is the only shape dial. */}
+      <Section title="Accretion spiral">
+        <Slider
+          label="strength (0 = off)"
+          value={value.accretion.strength}
+          min={0}
+          max={3}
+          step={0.01}
+          onChange={(strength) => patch({ accretion: { ...value.accretion, strength } })}
+        />
+        <Slider
+          label="wind (spiral tightness)"
+          value={value.accretion.wind}
+          min={0}
+          max={6}
+          step={0.01}
+          onChange={(wind) => patch({ accretion: { ...value.accretion, wind } })}
+        />
+        <Slider
+          label="flatten to disc"
+          value={value.accretion.flatten}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(flatten) => patch({ accretion: { ...value.accretion, flatten } })}
+        />
+        <Slider
+          label="turbulence (filaments)"
+          value={value.accretion.turbulence}
+          min={0}
+          max={0.6}
+          step={0.005}
+          onChange={(turbulence) => patch({ accretion: { ...value.accretion, turbulence } })}
+        />
+        <Slider
+          label="particle size"
+          value={value.accretion.size}
+          min={4}
+          max={120}
+          step={1}
+          onChange={(size) => patch({ accretion: { ...value.accretion, size } })}
+        />
+        <Slider
+          label="swallow radius"
+          value={value.accretion.innerRadius}
+          min={0.01}
+          max={0.6}
+          step={0.005}
+          onChange={(innerRadius) => patch({ accretion: { ...value.accretion, innerRadius } })}
+        />
+        <ColorField
+          label="outer (cool)"
+          value={value.accretion.colorCool}
+          onChange={(colorCool) => patch({ accretion: { ...value.accretion, colorCool } })}
+        />
+        <ColorField
+          label="inner (hot)"
+          value={value.accretion.colorHot}
+          onChange={(colorHot) => patch({ accretion: { ...value.accretion, colorHot } })}
+        />
+      </Section>
+
       <Section title="Core light">
         <ColorField
           label="colour"

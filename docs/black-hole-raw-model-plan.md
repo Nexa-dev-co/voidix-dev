@@ -1,5 +1,9 @@
 # Black hole — raw model restoration plan
 
+> **BUILT** (committed in `53c3f18`). Two things from this document are still outstanding: the blue-face
+> question in §2.5/§4 is unresolved, and the CC-BY-4.0 attribution has not landed anywhere on the site.
+> Both are tracked in **`docs/sun-lab-remaining-work.md`**.
+
 **Goal:** make the Sun Lab's "New black hole" tab show the *actual* model with nothing applied, so its
 colours match the source and every HUD control does what it says. Today it shows a hand-rebuilt guess.
 

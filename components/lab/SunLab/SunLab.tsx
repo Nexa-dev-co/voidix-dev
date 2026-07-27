@@ -187,6 +187,7 @@ export default function SunLab() {
       rotation: bh.global.blackHoleRotation,
       spinAxis: bh.global.blackHoleSpinAxis,
       spinSpeed: bh.global.blackHoleSpinSpeed,
+      lensing: bh.global.lensing,
     });
     const registry = handle.blackHoleRegistry;
     if (!registry) return;
@@ -258,7 +259,10 @@ export default function SunLab() {
     setSequence(value);
     handleRef.current?.applyFinale(value);
   };
-  const playSequence = () => handleRef.current?.playSequence(FINALE_PLAY_SECONDS);
+  // Mirror the scene's playback into React so the scrub slider tracks it — and so a later edit re-applies
+  // where the finale actually IS, rather than snapping it back to 0.
+  const playSequence = () =>
+    handleRef.current?.playSequence(FINALE_PLAY_SECONDS, (played) => setSequence(played));
   const resetGlobal = () =>
     updateGlobal(
       structuredClone(

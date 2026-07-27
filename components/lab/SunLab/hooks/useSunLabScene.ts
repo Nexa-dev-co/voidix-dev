@@ -6,8 +6,16 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { LENSING_SHADER } from "../lensingShader";
+import {
+  ACCRETION_COUNT,
+  ACCRETION_FRAGMENT_SHADER,
+  ACCRETION_UNIFORMS,
+  ACCRETION_VERTEX_SHADER,
+} from "../accretionShader";
 import {
   buildSunLabRegistry,
   buildBlackHoleRegistry,
@@ -117,8 +125,12 @@ export interface SunLabSceneHandle {
   removeObject: (id: string) => void;
   /** Set the finale to a moment on its 0→1 timeline (sun fade ↔ black-hole reveal; particles later). */
   applyFinale: (sequence: number) => void;
-  /** Play the finale once, ramping the sequence 0→1 over the given seconds. */
-  playSequence: (durationSeconds: number) => void;
+  /**
+   * Play the finale once, ramping the sequence 0→1 over the given seconds. `onSequence` reports each
+   * step so React's scrub cursor follows along — without it the slider sits at 0 during playback and the
+   * next global edit re-applies that stale 0, snapping the finale back to the start.
+   */
+  playSequence: (durationSeconds: number, onSequence?: (sequence: number) => void) => void;
   /** Show the fully-formed black hole (sun hidden) so it can be edited on the Black hole tab. */
   setBlackHolePreview: (enabled: boolean) => void;
   /** Show the black hole ALONE with its own settings (the "New black hole" tab). Sun hidden. */
@@ -143,6 +155,8 @@ export interface BlackHoleStandaloneSettings {
   rotation: Vector3Values;
   spinAxis: number;
   spinSpeed: number;
+  /** The screen-space lensing settings this tab drives (see lensingShader.ts). */
+  lensing: GlobalParams["lensing"];
 }
 
 interface UseSunLabSceneArguments {
@@ -242,6 +256,10 @@ export function useSunLabScene({
 
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
+    // Lensing sits BEFORE bloom on purpose: gravity bends the light on its way to the camera, and bloom
+    // is an artefact of the camera itself. Ordering it this way also means the photon ring blooms.
+    const lensingPass = new ShaderPass(LENSING_SHADER);
+    composer.addPass(lensingPass);
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(1, 1),
       DEFAULT_GLOBAL_PARAMS.bloom.strength,
@@ -258,6 +276,7 @@ export function useSunLabScene({
       renderer.setSize(width, height, false);
       composer.setSize(width, height);
       bloomPass.setSize(width, height);
+      lensingPass.uniforms.uAspect.value = width / height;
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
     };
@@ -300,6 +319,66 @@ export function useSunLabScene({
     scene.add(blackHoleGroup);
     let blackHoleFitScale = 1;
     let blackHoleLoaded = false;
+    // LOCAL radius of just the horizon meshes (not the rings) — the lensing pass needs to know where the
+    // shadow edge actually is, and the rings extend far past it.
+    let blackHoleHorizonRadius = 1;
+    let lensing = structuredClone(DEFAULT_GLOBAL_PARAMS.lensing);
+    let accretion = structuredClone(DEFAULT_GLOBAL_PARAMS.accretion);
+    let lensingTime = 0;
+    const scratchLensCenter = new THREE.Vector3();
+    const scratchLensEdge = new THREE.Vector3();
+    const scratchCameraUp = new THREE.Vector3();
+
+    // Point the lensing pass at wherever the black hole currently is on screen. Measured every frame so it
+    // tracks orbiting, zoom and the reveal, rather than assuming the hole sits at the centre.
+    const updateLensing = () => {
+      const uniforms = lensingPass.uniforms;
+      const groupScale = blackHoleGroup.scale.x;
+      // Nothing to bend light around on a sun-only stage, or before the hole has been revealed. Strength 0
+      // makes the shader a pass-through, so this also skips the cost.
+      if (lensing.strength <= 0 || !blackHoleLoaded || groupScale <= 1e-4) {
+        uniforms.uStrength.value = 0;
+        return;
+      }
+
+      // OrbitControls has just moved the camera, but its matrices are only refreshed inside render() —
+      // without this the lens centre would trail the camera by a frame while orbiting.
+      camera.updateMatrixWorld();
+
+      blackHoleGroup.getWorldPosition(scratchLensCenter);
+      scratchLensCenter.project(camera);
+      // Behind the camera: projection wraps and would smear the effect across the frame.
+      if (scratchLensCenter.z > 1) {
+        uniforms.uStrength.value = 0;
+        return;
+      }
+      uniforms.uStrength.value = lensing.strength;
+      uniforms.uCenter.value.set(
+        scratchLensCenter.x * 0.5 + 0.5,
+        scratchLensCenter.y * 0.5 + 0.5,
+      );
+
+      // Project the horizon's edge to get its on-screen size. Offsetting along camera UP (not right) lands
+      // in NDC-y, which maps to the shader's vertical units with no aspect correction to undo.
+      scratchCameraUp.setFromMatrixColumn(camera.matrixWorld, 1);
+      blackHoleGroup.getWorldPosition(scratchLensEdge);
+      scratchLensEdge
+        .addScaledVector(
+          scratchCameraUp,
+          blackHoleHorizonRadius * groupScale * lensing.radiusScale,
+        )
+        .project(camera);
+      uniforms.uRadius.value = Math.max(
+        Math.abs(scratchLensEdge.y - scratchLensCenter.y) * 0.5,
+        1e-4,
+      );
+
+      uniforms.uAberration.value = lensing.aberration;
+      uniforms.uLiquid.value = lensing.liquid;
+      uniforms.uRingStrength.value = lensing.ring;
+      uniforms.uShadow.value = lensing.shadow;
+      uniforms.uTime.value = lensingTime;
+    };
     // "New black hole" tab (standalone): the black hole shown alone with its OWN settings, decoupled
     // from the sun/finale. Spin runs on the spinner about a chosen axis.
     let blackHoleStandalone = false;
@@ -372,6 +451,88 @@ export function useSunLabScene({
     particlePoints.visible = false;
     scene.add(particlePoints);
 
+    // ── Accretion spiral (the star's own matter becoming the disc) ──
+    // Lives on `spinner` so it shares the sun's frame; the black hole sits at that frame's origin, which
+    // is exactly where the particles fall to.
+    const accretionGeometry = new THREE.BufferGeometry();
+    const accretionMaterial = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(ACCRETION_UNIFORMS),
+      vertexShader: ACCRETION_VERTEX_SHADER,
+      fragmentShader: ACCRETION_FRAGMENT_SHADER,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const accretionPoints = new THREE.Points(accretionGeometry, accretionMaterial);
+    accretionPoints.frustumCulled = false; // the vertex shader moves points far from their bind pose
+    accretionPoints.visible = false;
+    spinner.add(accretionPoints);
+    let accretionSeeded = false;
+
+    // Sample start points across the sun's actual surface. Sampling TRIANGLES rather than vertices gives
+    // even coverage — the model's 10k vertices are clustered around detail, so vertex sampling would
+    // clump. Positions are normalised to sun-radii so the shader's radius maths is scale-free.
+    const seedAccretion = () => {
+      if (!modelRoot || accretionSeeded) return;
+      spinner.updateMatrixWorld(true);
+      const spinnerInverse = new THREE.Matrix4().copy(spinner.matrixWorld).invert();
+      const toSpinner = new THREE.Matrix4();
+      const corner = new THREE.Vector3();
+      const triangles: number[] = [];
+
+      modelRoot.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const positionAttribute = object.geometry.getAttribute("position");
+        if (!positionAttribute) return;
+        toSpinner.multiplyMatrices(spinnerInverse, object.matrixWorld);
+        const index = object.geometry.getIndex();
+        const triangleCount = index ? index.count / 3 : positionAttribute.count / 3;
+        for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+          for (let vertex = 0; vertex < 3; vertex += 1) {
+            const slot = triangle * 3 + vertex;
+            const attributeIndex = index ? index.getX(slot) : slot;
+            corner
+              .fromBufferAttribute(positionAttribute, attributeIndex)
+              .applyMatrix4(toSpinner);
+            triangles.push(corner.x, corner.y, corner.z);
+          }
+        }
+      });
+
+      const triangleCount = triangles.length / 9;
+      if (triangleCount === 0) return;
+
+      const starts = new Float32Array(ACCRETION_COUNT * 3);
+      const seeds = new Float32Array(ACCRETION_COUNT);
+      for (let particle = 0; particle < ACCRETION_COUNT; particle += 1) {
+        const base = Math.floor(Math.random() * triangleCount) * 9;
+        // Uniform barycentric point on the triangle — the fold keeps it inside instead of biased to a corner.
+        let u = Math.random();
+        let v = Math.random();
+        if (u + v > 1) {
+          u = 1 - u;
+          v = 1 - v;
+        }
+        const w = 1 - u - v;
+        const target = particle * 3;
+        for (let axis = 0; axis < 3; axis += 1) {
+          starts[target + axis] =
+            (triangles[base + axis] * w +
+              triangles[base + 3 + axis] * u +
+              triangles[base + 6 + axis] * v) /
+            sunRadius;
+        }
+        // Kept in [0,1): the shader's hash multiplies it up, and feeding it a large number there costs
+        // float precision and bands the release times.
+        seeds[particle] = Math.random();
+      }
+
+      accretionGeometry.setAttribute("position", new THREE.BufferAttribute(starts, 3));
+      accretionGeometry.setAttribute("aSeed", new THREE.BufferAttribute(seeds, 1));
+      accretionMaterial.uniforms.uScale.value = sunRadius;
+      accretionSeeded = true;
+    };
+
     // Seed the per-particle constants once we know the sun's size (called on sun load).
     const seedParticles = () => {
       const tmpNormal = new THREE.Vector3();
@@ -437,6 +598,8 @@ export function useSunLabScene({
     let sequencePlayActive = false;
     let sequencePlayProgress = 0;
     let sequencePlayDuration = 6;
+    // Set for the duration of a Play so React's scrub cursor can track it.
+    let sequenceReporter: ((sequence: number) => void) | null = null;
     // Preview: show the fully-formed black hole (sun hidden) so it can be edited on the Black hole tab.
     let blackHolePreview = false;
     // Ring/skin meshes form AFTER the core — scale is base × form. The white ones form early (with the
@@ -588,14 +751,35 @@ export function useSunLabScene({
       } else if (!finaleEnabled) {
         blackHoleGroup.scale.setScalar(0);
         particlePoints.visible = false;
+        accretionPoints.visible = false;
         return;
       } else {
         explode = smoothstep(FINALE_EXPLODE[0], FINALE_EXPLODE[1], sequence);
         reveal = smoothstep(FINALE_REVEAL[0], FINALE_REVEAL[1], sequence);
       }
 
-      // The sun shrinks to nothing (sucked into the hole); the black hole grows in its place.
-      if (modelRoot) modelRoot.scale.setScalar(targetModelScale * (1 - explode));
+      // The sun collapses on an ACCELERATING curve, not a smoothstep. Smoothstep decelerates into its
+      // end, which reads as a slider being dragged; gravity does the opposite — barely moves, then
+      // plummets. Cubing `explode` is what makes the last of the star vanish fast.
+      const collapse = explode * explode * explode;
+      if (modelRoot) modelRoot.scale.setScalar(targetModelScale * (1 - collapse));
+
+      // The accretion spiral: the star's own matter, released and wound inward. Runs on the raw sequence
+      // (not `explode`) because the particles have their own staggered release built in.
+      const accretionActive = finaleEnabled && accretionSeeded && accretion.strength > 0;
+      accretionPoints.visible = accretionActive && !blackHolePreview;
+      if (accretionActive) {
+        const uniforms = accretionMaterial.uniforms;
+        uniforms.uSequence.value = sequence;
+        uniforms.uStrength.value = accretion.strength;
+        uniforms.uWind.value = accretion.wind;
+        uniforms.uFlatten.value = accretion.flatten;
+        uniforms.uTurbulence.value = accretion.turbulence;
+        uniforms.uSize.value = accretion.size;
+        uniforms.uInnerRadius.value = accretion.innerRadius;
+        uniforms.uColorCool.value.set(accretion.colorCool);
+        uniforms.uColorHot.value.set(accretion.colorHot);
+      }
       blackHoleGroup.scale.setScalar(blackHoleFitScale * blackHoleScale * reveal);
       // Glow + secondary rings form early (as the sun goes); the main ring mesh forms later.
       const earlyForm = blackHolePreview
@@ -658,6 +842,8 @@ export function useSunLabScene({
         );
         baseCoreLightIntensity = global.coreLight.intensity;
         baseBloomStrength = global.bloom.strength;
+        lensing = global.lensing;
+        accretion = global.accretion;
         renderer.toneMappingExposure = global.exposure;
         coreLight.color.set(global.coreLight.color);
         coreLight.intensity = global.coreLight.intensity;
@@ -771,11 +957,13 @@ export function useSunLabScene({
         flareSpinById.delete(id);
       },
       applyFinale,
-      playSequence: (durationSeconds) => {
+      playSequence: (durationSeconds, onSequence) => {
         sequencePlayDuration = Math.max(durationSeconds, 0.1);
         sequencePlayProgress = 0;
         sequencePlayActive = true;
+        sequenceReporter = onSequence ?? null;
         applyFinale(0);
+        sequenceReporter?.(0);
       },
       setBlackHolePreview: (enabled) => {
         blackHolePreview = enabled;
@@ -815,6 +1003,7 @@ export function useSunLabScene({
         setEulerFromDegrees(blackHoleGroup.rotation, settings.rotation);
         blackHoleStandaloneSpinAxis = settings.spinAxis;
         blackHoleStandaloneSpinSpeed = settings.spinSpeed;
+        lensing = settings.lensing;
       },
       exitBlackHoleStandalone: () => {
         blackHoleStandalone = false;
@@ -871,6 +1060,7 @@ export function useSunLabScene({
         const sunBox = new THREE.Box3().setFromObject(modelRoot);
         sunRadius = sunBox.getBoundingSphere(new THREE.Sphere()).radius || 1;
         seedParticles();
+        seedAccretion();
 
         onStatusRef.current({ isLoading: false, percent: 100 });
         onReadyRef.current(handle);
@@ -895,6 +1085,21 @@ export function useSunLabScene({
               });
             });
             blackHoleModel.updateMatrixWorld(true);
+            // Measure the horizon alone, while the model is still unparented (so world == local) — the
+            // lensing shadow edge must sit on the black sphere, not on the far larger ring span. A later
+            // recentre only translates it, which leaves the radius correct.
+            const horizonBox = new THREE.Box3();
+            blackHoleModel.traverse((object) => {
+              if (!(object instanceof THREE.Mesh)) return;
+              const materials = Array.isArray(object.material) ? object.material : [object.material];
+              if (!materials.some((material) => BLACK_HOLE_HORIZON_MATERIALS.includes(material.name))) {
+                return;
+              }
+              horizonBox.expandByObject(object);
+            });
+            if (!horizonBox.isEmpty()) {
+              blackHoleHorizonRadius = horizonBox.getBoundingSphere(new THREE.Sphere()).radius || 1;
+            }
             // Centre + fit on the BLACK HOLE itself (node "black hole"), so the tiny off-centre Planet
             // doesn't skew where it sits or how big it reads. Fall back to the whole model if absent.
             const focusNode = blackHoleModel.getObjectByName("black hole") ?? blackHoleModel;
@@ -1002,8 +1207,13 @@ export function useSunLabScene({
       // Finale playback — ramp the sequence 0→1 once.
       if (sequencePlayActive) {
         sequencePlayProgress += delta / sequencePlayDuration;
-        applyFinale(Math.min(sequencePlayProgress, 1));
-        if (sequencePlayProgress >= 1) sequencePlayActive = false;
+        const played = Math.min(sequencePlayProgress, 1);
+        applyFinale(played);
+        sequenceReporter?.(played);
+        if (sequencePlayProgress >= 1) {
+          sequencePlayActive = false;
+          sequenceReporter = null;
+        }
       }
       // Standalone (New black hole tab): spin about the chosen axis.
       if (blackHoleStandalone && blackHoleLoaded && blackHoleStandaloneSpinSpeed !== 0) {
@@ -1015,6 +1225,12 @@ export function useSunLabScene({
         blackHoleSpinner.rotation.y += THREE.MathUtils.degToRad(blackHoleSpinSpeed) * delta;
       }
       controls.update();
+      // After controls.update() so the lensing centre is measured against the camera actually being
+      // rendered this frame, not last frame's.
+      lensingTime += delta;
+      updateLensing();
+      // Shimmer only — the spiral's STRUCTURE is a function of the sequence, so scrubbing stays exact.
+      accretionMaterial.uniforms.uTime.value = lensingTime;
       composer.render();
       animationFrame = requestAnimationFrame(renderFrame);
     };
@@ -1041,11 +1257,14 @@ export function useSunLabScene({
       });
       particleGeometry.dispose();
       particleMaterial.dispose();
+      accretionGeometry.dispose();
+      accretionMaterial.dispose();
       clonedMaterials.forEach((material) => material.dispose());
       environmentTexture.dispose();
       pmrem.dispose();
       composer.dispose();
       bloomPass.dispose();
+      lensingPass.dispose();
       dracoLoader.dispose();
       renderer.dispose();
     };

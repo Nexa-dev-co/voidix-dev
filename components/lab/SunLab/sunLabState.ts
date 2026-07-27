@@ -104,6 +104,44 @@ export interface GlobalParams {
   blackHoleRotation: Vector3Values;
   /** Which axis the black hole spins about: 0 = X, 1 = Y, 2 = Z. */
   blackHoleSpinAxis: number;
+  /**
+   * Screen-space gravitational lensing (see lensingShader.ts) — the "space behaves like fluid" pass.
+   * `strength` 0 turns the whole pass into a pass-through, so it costs nothing when unused.
+   */
+  lensing: {
+    strength: number;
+    /** Colour fringing: how far the R and B samples split from G. */
+    aberration: number;
+    /** Amplitude of the travelling ripple — the undulating-liquid read. */
+    liquid: number;
+    /** Brightness of the photon ring at the shadow edge. */
+    ring: number;
+    /** Darkening inside the shadow, so the silhouette stays hard against a bright disc. */
+    shadow: number;
+    /** Shadow radius as a fraction of the black hole's measured horizon. Tunes where the edge sits. */
+    radiusScale: number;
+  };
+  /**
+   * The accretion spiral (see accretionShader.ts) — particles seeded from the sun's own mesh, wound into
+   * arms by Keplerian shear. `strength` 0 hides it entirely.
+   */
+  accretion: {
+    strength: number;
+    /** Turns of winding — the spiral's tightness. */
+    wind: number;
+    /** How hard the sphere collapses into the disc plane. 1 = completely flat. */
+    flatten: number;
+    /** Organic displacement that breaks the arms into filaments. */
+    turbulence: number;
+    /** Point size. */
+    size: number;
+    /** Radius (in sun-radii) at which particles are swallowed. */
+    innerRadius: number;
+    /** Outer/cooler colour, `#rrggbb`. */
+    colorCool: string;
+    /** Inner/hotter colour, `#rrggbb`. */
+    colorHot: string;
+  };
   /** A point light at the sun's centre — pours through the fracture gaps when the cells part. */
   coreLight: { color: string; intensity: number; distance: number };
   bloom: { strength: number; radius: number; threshold: number };
@@ -147,6 +185,26 @@ export const DEFAULT_GLOBAL_PARAMS: GlobalParams = {
   blackHolePosition: { x: 0, y: 0, z: 0 },
   blackHoleRotation: { x: 0, y: 0, z: 0 },
   blackHoleSpinAxis: 1,
+  // Off by default — the sun stages have no black hole to bend light around.
+  lensing: {
+    strength: 0,
+    aberration: 0.18,
+    liquid: 0.35,
+    ring: 0.5,
+    shadow: 0.7,
+    radiusScale: 1,
+  },
+  // Off by default — only the finale has a star coming apart. Turned on by the Singularity preset.
+  accretion: {
+    strength: 0,
+    wind: 1.1,
+    flatten: 0.85,
+    turbulence: 0.12,
+    size: 26,
+    innerRadius: 0.28,
+    colorCool: "#d92a05",
+    colorHot: "#ffeeb8",
+  },
   // Off by default — Phase 1 shouldn't force a look. Warm so it reads as sunlight when turned up.
   coreLight: { color: "#ffd9a0", intensity: 0, distance: 0 },
   // Threshold high enough that only the bright magma blooms, not the whole hull.
@@ -199,6 +257,16 @@ export function createBlackHoleInitialState(): SunLabState {
       blackHoleScale: 1.94,
       blackHoleSpinSpeed: 4,
       blackHoleSpinAxis: 1,
+      // On here, because this is the tab where there IS a black hole to bend light around. Moderate by
+      // default: enough to read as refraction, not so much that the disc smears into soup.
+      lensing: {
+        strength: 0.55,
+        aberration: 0.18,
+        liquid: 0.35,
+        ring: 0.5,
+        shadow: 0.7,
+        radiusScale: 1,
+      },
     },
     // The model ships with a small off-centre Planet that has nothing to do with the black hole.
     objects: { Planet_Planet_0: { visible: false } },
@@ -211,7 +279,14 @@ export function createBlackHoleInitialState(): SunLabState {
 // older localStorage data and hand-written presets both stay valid as the schema grows.
 export function normalizeState(loaded: SunLabState): SunLabState {
   return {
-    global: { ...DEFAULT_GLOBAL_PARAMS, ...loaded.global },
+    global: {
+      ...DEFAULT_GLOBAL_PARAMS,
+      ...loaded.global,
+      // Nested groups need their own merge — a spread only replaces them wholesale, so a state saved
+      // before a field was added to one would otherwise resolve it as undefined.
+      lensing: { ...DEFAULT_GLOBAL_PARAMS.lensing, ...loaded.global?.lensing },
+      accretion: { ...DEFAULT_GLOBAL_PARAMS.accretion, ...loaded.global?.accretion },
+    },
     objects: loaded.objects ?? {},
     sharedMaterials: loaded.sharedMaterials ?? {},
     fractureSpread: loaded.fractureSpread ?? 0,

@@ -160,6 +160,60 @@ export default function BlackHoleSettings({
         />
       </Section>
 
+      {/* Screen-space lensing. It distorts the RENDERED frame, so it cannot bend light from behind the
+          hole around to the front the way a raymarched metric would — it buys most of the look, not the
+          physics. `strength` 0 makes the pass a no-op. */}
+      <Section title="Lensing — space as fluid">
+        <Slider
+          label="strength (0 = off)"
+          value={value.lensing.strength}
+          min={0}
+          max={2}
+          step={0.01}
+          onChange={(strength) => patch({ lensing: { ...value.lensing, strength } })}
+        />
+        <Slider
+          label="chromatic aberration"
+          value={value.lensing.aberration}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(aberration) => patch({ lensing: { ...value.lensing, aberration } })}
+        />
+        <Slider
+          label="liquid ripple"
+          value={value.lensing.liquid}
+          min={0}
+          max={1.5}
+          step={0.01}
+          onChange={(liquid) => patch({ lensing: { ...value.lensing, liquid } })}
+        />
+        <Slider
+          label="photon ring"
+          value={value.lensing.ring}
+          min={0}
+          max={3}
+          step={0.01}
+          onChange={(ring) => patch({ lensing: { ...value.lensing, ring } })}
+        />
+        <Slider
+          label="shadow darkening"
+          value={value.lensing.shadow}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(shadow) => patch({ lensing: { ...value.lensing, shadow } })}
+        />
+        <Slider
+          label="shadow radius"
+          value={value.lensing.radiusScale}
+          min={0.2}
+          max={3}
+          step={0.01}
+          onChange={(radiusScale) => patch({ lensing: { ...value.lensing, radiusScale } })}
+        />
+      </Section>
+
       <Section title="Camera">
         <Slider
           label="fov"
