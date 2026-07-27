@@ -10,7 +10,8 @@ import {
   onAssetProgress,
   ASSETS_WARMUP_EVENT,
 } from "@/lib/assetLoadProgress";
-import { REVEAL_EVENT, INTRO_ACTIVE_EVENT } from "./introEvents";
+import { REVEAL_EVENT, INTRO_ACTIVE_EVENT, IGNITE_EVENT } from "./introEvents";
+import GatherCanvas from "./GatherCanvas";
 
 // The shared sun lives in HeroSun. The intro only drives it:
 //   .hero-sun-layer  — the outer layer (we fade its opacity in)
@@ -19,20 +20,21 @@ const SUN_LAYER_SELECTOR = ".hero-sun-layer";
 const SUN_FLIGHT_SELECTOR = ".hero-sun-flight";
 const HERO_SQUARE_SELECTOR = ".hero-sun-card";
 
-// Slot-machine words that rip through before resolving to the wordmark.
-const CYCLE_WORDS = [
-  "WORLDS",
-  "MOTION",
-  "ORBIT",
-  "STORIES",
-  "SIGNAL",
-  "STUDIO",
-];
-const ACCENT_WORD = "ORBIT";
+// Letter spacing on the wordmark. In `em` so it scales with the fluid font size rather than closing up
+// on large screens and crowding on small ones.
+const WORDMARK_TRACKING = "0.07em";
+
+// The wordmark is "voidix" with the sun standing in for the "o": v · [sun] · idix.
+const WORDMARK_BEFORE_SUN = "v";
+const WORDMARK_AFTER_SUN = "idix";
+// Index into WORDMARK_AFTER_SUN that gets the accent colour — the second "i", so the highlight sits
+// near the end of the word the way it did before the rebrand.
+const WORDMARK_ACCENT_INDEX = 2;
 
 // ── Timing (seconds) ───────────────────────────────────────────────────
-const WORD_STEP = 0.2;
-const WORD_START = 0.15;
+// A short beat of empty frame before the wordmark resolves, so it arrives into stillness rather than
+// on top of the frame still settling in.
+const WORDMARK_DELAY = 0.55;
 const RESOLVE_DURATION = 0.9;
 const SUN_FADE_IN = 0.45;
 const SUN_SOLO_HOLD = 0.2; // the sun sits alone in the "o" before the letters arrive
@@ -76,7 +78,6 @@ export default function IntroSequence() {
   const rootRef = useRef<HTMLDivElement>(null);
   const veilRef = useRef<HTMLDivElement>(null);
   const oSlotRef = useRef<HTMLSpanElement>(null);
-  const cycleRef = useRef<HTMLSpanElement>(null);
   const counterRef = useRef<HTMLDivElement>(null);
 
   // `done` is the only state — everything animated is driven by GSAP/DOM refs so
@@ -274,44 +275,10 @@ export default function IntroSequence() {
 
     // 2. (The counter is driven by real asset progress above, not a scripted climb.)
 
-    // 3. Slot-machine word cycle, each ripping up through the centre.
-    const cycle = cycleRef.current;
-    CYCLE_WORDS.forEach((word, index) => {
-      const at = WORD_START + index * WORD_STEP;
-      timeline.add(() => {
-        if (!cycle) return;
-        cycle.textContent = word;
-        cycle.style.color =
-          word === ACCENT_WORD ? "var(--accent)" : "var(--fg)";
-      }, at);
-      timeline.fromTo(
-        ".intro-cycle",
-        { yPercent: 70, autoAlpha: 0, scaleX: 1.5 - index * 0.05 },
-        {
-          yPercent: 0,
-          autoAlpha: 1,
-          scaleX: 1,
-          duration: 0.14,
-          ease: "power3.out",
-        },
-        at,
-      );
-      timeline.to(
-        ".intro-cycle",
-        {
-          yPercent: -70,
-          autoAlpha: 0,
-          scaleX: 0.6,
-          duration: 0.12,
-          ease: "power3.in",
-        },
-        at + 0.16,
-      );
-    });
-
-    // 4. Reveal wordmark container + sun first — the sun appears alone in the "o".
-    timeline.set(".intro-cycle-wrap", { autoAlpha: 0 }, ">");
-    timeline.set(".intro-word-wrap", { autoAlpha: 1 });
+    // 3. Reveal wordmark container + sun — the sun appears alone in the "o". No slot-machine words
+    //    any more: the gathering field IS the loader's motion, and a word cycle on top of it was two
+    //    things competing for the same beat.
+    timeline.set(".intro-word-wrap", { autoAlpha: 1 }, WORDMARK_DELAY);
     timeline.add(parkSunInO);
     if (sunLayer)
       timeline.to(sunLayer, { autoAlpha: 1, duration: SUN_FADE_IN }, "<");
@@ -319,7 +286,7 @@ export default function IntroSequence() {
     // Hold — the sun sits alone in the "o" before the letters arrive.
     timeline.to({}, { duration: SUN_SOLO_HOLD });
 
-    // 5. "rbix" letters animate in after the sun has had its moment.
+    // 4. wordmark letters animate in after the sun has had its moment.
     timeline.fromTo(
       ".intro-letter",
       {
@@ -360,6 +327,12 @@ export default function IntroSequence() {
     //    and the sun shrinks + flies from the "o" into the hero square.
     const handoffLabel = "handoff";
     timeline.addLabel(handoffLabel);
+    // Ignite the gathering field: the last rush of matter into the star, timed to land under the sun's
+    // flight out of the "o" rather than competing with it.
+    timeline.add(
+      () => window.dispatchEvent(new Event(IGNITE_EVENT)),
+      handoffLabel,
+    );
     timeline.to(
       [
         ".intro-chrome",
@@ -427,6 +400,12 @@ export default function IntroSequence() {
         ref={veilRef}
         style={{ position: "absolute", inset: 0, background: "var(--bg)" }}
       >
+        {/* The gathering field — matter falling together into the "o". Sits directly on the veil, under
+            everything else, and is driven by real load progress rather than the timeline. Rendered
+            unconditionally (a `prefersReducedMotion()` check here would differ between server and client
+            and break hydration); it opts out of its own WebGL setup instead. */}
+        <GatherCanvas />
+
         {/* Hairline editorial frame */}
         <div
           className="intro-frame"
@@ -448,7 +427,7 @@ export default function IntroSequence() {
             color: "var(--muted)",
           }}
         >
-          orbix™
+          voidix™
         </span>
         <span
           className="intro-chrome eyebrow"
@@ -470,7 +449,7 @@ export default function IntroSequence() {
             color: "var(--muted)",
           }}
         >
-          Entering orbit
+          Entering the void
         </span>
 
         {/* Ghost counter */}
@@ -494,7 +473,7 @@ export default function IntroSequence() {
           0
         </div>
 
-        {/* Centre stage: cycle words → wordmark */}
+        {/* Centre stage: the wordmark, resolving out of the gathering field */}
         <div
           style={{
             position: "absolute",
@@ -504,32 +483,6 @@ export default function IntroSequence() {
             justifyContent: "center",
           }}
         >
-          <div
-            className="intro-cycle-wrap"
-            style={{
-              position: "absolute",
-              width: "100%",
-              textAlign: "center",
-              overflow: "hidden",
-            }}
-          >
-            <span
-              ref={cycleRef}
-              className="intro-cycle"
-              style={{
-                display: "inline-block",
-                fontFamily: "var(--font-syne), sans-serif",
-                fontWeight: 800,
-                fontSize: "clamp(4rem, 17vw, 16rem)",
-                lineHeight: 1,
-                whiteSpace: "nowrap",
-                letterSpacing: "-0.02em",
-              }}
-            >
-              WORLDS
-            </span>
-          </div>
-
           <div
             className="intro-word-wrap"
             style={{
@@ -548,29 +501,46 @@ export default function IntroSequence() {
                 alignItems: "center",
                 fontFamily: "var(--font-syne), sans-serif",
                 fontWeight: 800,
-                fontSize: "clamp(3.5rem, 15vw, 12rem)",
+                fontSize: "clamp(4.5rem, 19vw, 16rem)",
                 lineHeight: 1,
-                letterSpacing: "-0.01em",
+                // Open, spaced-out letters. Positive tracking adds space AFTER the last glyph too, which
+                // would push the whole word left of centre — the negative margin takes that back.
+                letterSpacing: WORDMARK_TRACKING,
+                marginRight: `-${WORDMARK_TRACKING}`,
               }}
             >
-              {/* the "o" — left empty; the sun overlays this slot */}
+              {WORDMARK_BEFORE_SUN.split("").map((character, index) => (
+                <span
+                  key={`before-${index}`}
+                  className="intro-letter"
+                  style={{ display: "inline-block" }}
+                >
+                  {character}
+                </span>
+              ))}
+              {/* the "o" — left empty; the sun overlays this slot. parkSunInO measures it live, so
+                  moving it from the first letter to the second needs no change to the flight maths. */}
               <span
                 ref={oSlotRef}
                 aria-hidden
+                // GatherCanvas measures this element to find where the gathering field converges.
+                className="intro-o-slot"
                 style={{
                   display: "inline-block",
                   width: "0.62em",
                   height: "0.62em",
-                  transform: "translateX(-5px)",
+                  // em, not px: a fixed nudge drifts as the fluid font size changes.
+                  transform: "translateX(-0.04em)",
                 }}
               />
-              {"rbix".split("").map((character, index) => (
+              {WORDMARK_AFTER_SUN.split("").map((character, index) => (
                 <span
-                  key={index}
+                  key={`after-${index}`}
                   className="intro-letter"
                   style={{
                     display: "inline-block",
-                    color: character === "i" ? "var(--accent)" : "inherit",
+                    color:
+                      index === WORDMARK_ACCENT_INDEX ? "var(--accent)" : "inherit",
                   }}
                 >
                   {character}
@@ -580,7 +550,7 @@ export default function IntroSequence() {
             <div
               className="intro-underline"
               style={{
-                width: "min(40vw, 280px)",
+                width: "min(52vw, 400px)",
                 height: 1,
                 background:
                   "linear-gradient(90deg, transparent, var(--accent), transparent)",

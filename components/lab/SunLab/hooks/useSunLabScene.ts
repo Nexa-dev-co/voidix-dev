@@ -16,6 +16,8 @@ import {
   ACCRETION_UNIFORMS,
   ACCRETION_VERTEX_SHADER,
 } from "../accretionShader";
+import { BURST_FRAGMENT_SHADER, BURST_UNIFORMS, BURST_VERTEX_SHADER } from "../burstShader";
+import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import {
   buildSunLabRegistry,
   buildBlackHoleRegistry,
@@ -40,14 +42,67 @@ import {
 const MODEL_PATH = "/models/fractured_sun.glb";
 const BLACKHOLE_MODEL_PATH = "/models/black_hole.glb";
 const DRACO_DECODER_PATH = "/draco/";
-// The finale, mapped to the sequence 0→1: the sun shrinks + gets sucked in over EXPLODE (its glow goes
-// with it), the black hole grows from the centre over REVEAL. Black hole is fit to ~this many sun-radii.
-const FINALE_EXPLODE: [number, number] = [0.2, 0.55]; // sun sucked in, finishing as the core completes
-const FINALE_REVEAL: [number, number] = [0.25, 0.55]; // the dark core grows
-// The glow + secondary rings form EARLY (as the sun disappears); the main `ring` mesh forms LATER.
-const FINALE_RING_FORM_EARLY: [number, number] = [0.22, 0.52];
-const FINALE_RING_FORM_LATE: [number, number] = [0.52, 0.92];
+// The finale, mapped to the sequence 0→1. The order is the whole point and reads strictly left to right:
+//
+//   0.00        0.15              0.50   0.62        0.84        1.00
+//     │ liquid sun │  COLLAPSE      │ HORIZON │  RINGS FORM        │
+//     │  churns    │  star falls in │ opens   │  glow, then the    │
+//     │            │                │ from    │  main ring last    │
+//     │            │                │ middle  │                    │
+//
+// Nothing overlaps that shouldn't: the hole opens only once the star is essentially gone, and the disc
+// assembles only once the hole exists. The rings used to form BEFORE the core, which read as two models
+// cross-fading rather than one thing causing the next.
+const FINALE_EXPLODE: [number, number] = [0.15, 0.5]; // the star falls in
+const FINALE_HORIZON: [number, number] = [0.4, 0.62]; // the hole opens from the middle
+// The liquid ramps IN with the collapse rather than being on from frame 0. The finale opens on the
+// collapsed-but-intact star, which has to read as solid matter before it starts behaving like fluid —
+// a star that is already flowing before anything happens has nowhere to go.
+const FINALE_LIQUID_RAMP: [number, number] = [0.15, 0.34];
+// The disc assembles only AFTER the hole is finished — there is a deliberate beat of just-a-black-hole
+// between FINALE_HORIZON completing (0.62) and the first ring appearing, so the disc reads as something
+// that gathered around the hole rather than arriving with it.
+const FINALE_RING_FORM_EARLY: [number, number] = [0.68, 0.88];
+const FINALE_RING_FORM_LATE: [number, number] = [0.78, 1];
 const BLACKHOLE_TARGET_FACTOR = 1.3;
+// The flash, in sequence units around its peak. Attack is short — a detonation arrives fast.
+const FLASH_ATTACK = 0.05;
+// The BURST CORE only holds briefly: it is the detonation itself, and it has to get out of the way so
+// you can see what it revealed. The screen grade below is what stays lit.
+const FLASH_CORE_HOLD_FRACTION = 0.25;
+const FLASH_CORE_DECAY = 0.16;
+// The screen-wide grade lags the core slightly (the eye is overwhelmed a beat AFTER the light arrives)
+// and then PLATEAUS for the authored hold — that plateau is the window the black hole forms inside.
+const FLASH_SCREEN_LAG = 0.015;
+const FLASH_SCREEN_ATTACK = 0.07;
+const FLASH_SCREEN_DECAY = 0.24;
+// How far the burst quad expands, in sun-radii. Kept modest: it is additive and covers a lot of frame,
+// so a large bright quad floods everything it is meant to be revealing.
+const FLASH_SCALE_FROM = 0.5;
+const FLASH_SCALE_TO = 4;
+// The black hole's liquid, relative to the flash: it swells in while the screen is held bright (the hole
+// forming inside the glare) and drains to zero as that brightness leaves — settling to a plain hole.
+const FINALE_LIQUID_IN_FRACTION = 0.7;
+// What the screen-wide stage ADDS at full intensity. Kept modest on purpose: the finale stages are
+// already graded hot (exposure 1.6, bloom 2.5), so a big boost here doesn't read as a flash, it just
+// white-clips the frame and you lose the horizon opening underneath it. Raise `strength` to go brighter.
+const FLASH_EXPOSURE_BOOST = 0.45;
+const FLASH_BLOOM_BOOST = 0.4;
+// A sudden bright flash is a photosensitivity trigger, so it is damped hard rather than merely eased.
+const REDUCED_MOTION_FLASH_SCALE = 0.22;
+// The only lit material on the sun, and the one carrying its glow — so it is the one redshift acts on.
+const REDSHIFT_MATERIAL = "magma";
+// The anticipation beat. The tremor builds across TREMOR_IN and is then swallowed by the real collapse,
+// so it hands over rather than competing with it.
+const TREMOR_IN = 0.14;
+// Radians per unit of sequence — about three shudders across the beat. Fast enough to read as a struggle,
+// slow enough not to look like noise.
+const TREMOR_FREQUENCY = 140;
+// Per-shard phase offset, so they shudder out of step. In lockstep it reads as one mechanical pulse.
+const TREMOR_PHASE_STEP = 0.9;
+// What the beat adds beyond the shudder itself, at full amplitude.
+const TREMOR_SPIN_LIFT = 0.8;
+const TREMOR_GLOW_SWELL = 0.5;
 // Bloom settles to this as the black hole forms (only the bloom — exposure + lights stay glowy).
 const BLACKHOLE_BLOOM_STRENGTH = 0.44;
 // black_hole.glb is now converted to real metallic-roughness at build time (see the `specGloss` recipe in
@@ -171,6 +226,32 @@ interface UseSunLabSceneArguments {
 function smoothstep(edge0: number, edge1: number, value: number): number {
   const t = THREE.MathUtils.clamp((value - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * A flash envelope with a sustained plateau: rise → HOLD → fall.
+ *
+ * The hold is the whole point. A pulse that peaks and immediately decays reads as a camera flash; a
+ * supernova floods the frame and STAYS flooded while the thing that caused it resolves underneath. That
+ * plateau is the window the black hole forms in.
+ *
+ * Squared on the way up so it snaps in, squared down from full so it drops away and tails.
+ */
+function flashEnvelope(
+  value: number,
+  peak: number,
+  attack: number,
+  hold: number,
+  decay: number,
+): number {
+  if (value <= peak - attack || value >= peak + hold + decay) return 0;
+  if (value < peak) {
+    const rise = (value - (peak - attack)) / attack;
+    return rise * rise;
+  }
+  if (value <= peak + hold) return 1;
+  const fall = (value - (peak + hold)) / decay;
+  return (1 - fall) * (1 - fall);
 }
 
 function setEulerFromDegrees(euler: THREE.Euler, degrees: Vector3Values): void {
@@ -322,8 +403,39 @@ export function useSunLabScene({
     // LOCAL radius of just the horizon meshes (not the rings) — the lensing pass needs to know where the
     // shadow edge actually is, and the rings extend far past it.
     let blackHoleHorizonRadius = 1;
+    // How far the horizon has opened, 0..1. Since the finale now keeps the GROUP at full scale and
+    // reveals per-mesh, group scale no longer says whether the hole is on screen — this does.
+    let blackHoleHorizonForm = 0;
     let lensing = structuredClone(DEFAULT_GLOBAL_PARAMS.lensing);
     let accretion = structuredClone(DEFAULT_GLOBAL_PARAMS.accretion);
+    let finaleFlash = structuredClone(DEFAULT_GLOBAL_PARAMS.finaleFlash);
+    let finaleCollapse = structuredClone(DEFAULT_GLOBAL_PARAMS.finaleCollapse);
+    // While the finale is crushing the shards it OWNS them, so the render loop's breathing must stand
+    // down rather than write competing positions every frame.
+    let finaleOwnsShards = false;
+    // Multiplier the render loop applies to both spins — angular momentum as the star contracts.
+    let finaleSpinMultiplier = 1;
+    // The magma's authored emissive, so redshift can lerp FROM it and return to it exactly at sequence 0.
+    // Re-captured whenever the material is written, so editing it mid-finale doesn't bake in a tint.
+    let redshiftBaseEmissive: THREE.Color | null = null;
+    const scratchRedshift = new THREE.Color();
+    const captureRedshiftBase = () => {
+      const magma = registry?.sharedMaterials.find((entry) => entry.name === REDSHIFT_MATERIAL);
+      if (magma && magma.material instanceof THREE.MeshStandardMaterial) {
+        redshiftBaseEmissive = magma.material.emissive.clone();
+      }
+    };
+    const restoreRedshift = () => {
+      const magma = registry?.sharedMaterials.find((entry) => entry.name === REDSHIFT_MATERIAL);
+      if (magma && magma.material instanceof THREE.MeshStandardMaterial && redshiftBaseEmissive) {
+        magma.material.emissive.copy(redshiftBaseEmissive);
+      }
+    };
+    // 0→1 across FINALE_LIQUID_RAMP; scales the sun-targeted lensing so the star starts solid. Stays at 1
+    // off the finale, where lensing is just a look the stage authored and shouldn't be second-guessed.
+    let finaleLiquidRamp = 1;
+    // The stage's authored exposure, so the flash can spike ABOVE it and return to it exactly.
+    let baseExposure = DEFAULT_GLOBAL_PARAMS.exposure;
     let lensingTime = 0;
     const scratchLensCenter = new THREE.Vector3();
     const scratchLensEdge = new THREE.Vector3();
@@ -333,10 +445,24 @@ export function useSunLabScene({
     // tracks orbiting, zoom and the reveal, rather than assuming the hole sits at the centre.
     const updateLensing = () => {
       const uniforms = lensingPass.uniforms;
-      const groupScale = blackHoleGroup.scale.x;
-      // Nothing to bend light around on a sun-only stage, or before the hole has been revealed. Strength 0
-      // makes the shader a pass-through, so this also skips the cost.
-      if (lensing.strength <= 0 || !blackHoleLoaded || groupScale <= 1e-4) {
+      const targetsSun = lensing.target === "sun";
+      // On a finale stage the liquid is driven by the sequence envelope (see applyFinale); everywhere
+      // else — other stages, the black hole tab — it is exactly what was authored.
+      const strength = lensing.strength * (finaleEnabled ? finaleLiquidRamp : 1);
+      // Whichever body the distortion belongs to. Targeting the sun is what gives the STAR its molten
+      // read; targeting the hole is the gravitational lens.
+      const target = targetsSun ? modelRoot : blackHoleGroup;
+      // For the hole, fold in how far it has opened — an unopened horizon is nothing to bend light around.
+      const targetScale = targetsSun
+        ? (modelRoot?.scale.x ?? 0)
+        : blackHoleGroup.scale.x * blackHoleHorizonForm;
+      // Its radius in local units — the sun's own bounding radius, or just the black hole's horizon.
+      const targetRadius = targetsSun ? sunRadius : blackHoleHorizonRadius;
+      // Nothing to distort if the body isn't there or has collapsed away. Strength 0 makes the shader a
+      // pass-through, so this also skips the cost. As a collapsing sun shrinks, its radius shrinks with
+      // it and the liquid concentrates then vanishes on its own — no separate fade needed.
+      const ready = targetsSun ? !!modelRoot && modelRoot.visible : blackHoleLoaded;
+      if (strength <= 0 || !ready || !target || targetScale <= 1e-4) {
         uniforms.uStrength.value = 0;
         return;
       }
@@ -345,27 +471,27 @@ export function useSunLabScene({
       // without this the lens centre would trail the camera by a frame while orbiting.
       camera.updateMatrixWorld();
 
-      blackHoleGroup.getWorldPosition(scratchLensCenter);
+      target.getWorldPosition(scratchLensCenter);
       scratchLensCenter.project(camera);
       // Behind the camera: projection wraps and would smear the effect across the frame.
       if (scratchLensCenter.z > 1) {
         uniforms.uStrength.value = 0;
         return;
       }
-      uniforms.uStrength.value = lensing.strength;
+      uniforms.uStrength.value = strength;
       uniforms.uCenter.value.set(
         scratchLensCenter.x * 0.5 + 0.5,
         scratchLensCenter.y * 0.5 + 0.5,
       );
 
-      // Project the horizon's edge to get its on-screen size. Offsetting along camera UP (not right) lands
+      // Project the body's edge to get its on-screen size. Offsetting along camera UP (not right) lands
       // in NDC-y, which maps to the shader's vertical units with no aspect correction to undo.
       scratchCameraUp.setFromMatrixColumn(camera.matrixWorld, 1);
-      blackHoleGroup.getWorldPosition(scratchLensEdge);
+      target.getWorldPosition(scratchLensEdge);
       scratchLensEdge
         .addScaledVector(
           scratchCameraUp,
-          blackHoleHorizonRadius * groupScale * lensing.radiusScale,
+          targetRadius * targetScale * lensing.radiusScale,
         )
         .project(camera);
       uniforms.uRadius.value = Math.max(
@@ -450,6 +576,25 @@ export function useSunLabScene({
     particlePoints.frustumCulled = false;
     particlePoints.visible = false;
     scene.add(particlePoints);
+
+    // ── Supernova burst (the flash that masks the handoff) ──
+    // A billboarded additive quad at the origin. depthTest is off so it always reads: it is light hitting
+    // the lens, not an object in the scene, and at this moment the horizon is opening in the same place.
+    const burstMaterial = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(BURST_UNIFORMS),
+      vertexShader: BURST_VERTEX_SHADER,
+      fragmentShader: BURST_FRAGMENT_SHADER,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const burstMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), burstMaterial);
+    burstMesh.frustumCulled = false;
+    burstMesh.renderOrder = 999;
+    burstMesh.visible = false;
+    scene.add(burstMesh);
+    const flashDamping = prefersReducedMotion() ? REDUCED_MOTION_FLASH_SCALE : 1;
 
     // ── Accretion spiral (the star's own matter becoming the disc) ──
     // Lives on `spinner` so it shares the sun's frame; the black hole sits at that frame's origin, which
@@ -604,15 +749,19 @@ export function useSunLabScene({
     let blackHolePreview = false;
     // Ring/skin meshes form AFTER the core — scale is base × form. The white ones form early (with the
     // sun disappearing), the main `ring` mesh forms late. `currentForm` is stored so an edit composes.
-    interface RingForm {
+    // Which beat a black-hole mesh belongs to. Scaling these SEPARATELY (rather than the whole group) is
+    // what lets the hole open from the middle while the disc assembles afterwards — scaling the group
+    // inflated the accretion disc out of a point, which no real disc does.
+    type BlackHolePhase = "horizon" | "early" | "late";
+    interface MeshForm {
       id: string;
       mesh: THREE.Mesh;
       baseScale: THREE.Vector3;
-      early: boolean;
+      phase: BlackHolePhase;
       currentForm: number;
     }
-    const ringForms: RingForm[] = [];
-    const ringFormById = new Map<string, RingForm>();
+    const ringForms: MeshForm[] = [];
+    const ringFormById = new Map<string, MeshForm>();
     // Materials cloned for per-object editing — tracked so we can dispose them on teardown.
     const clonedMaterials: THREE.Material[] = [];
 
@@ -631,6 +780,26 @@ export function useSunLabScene({
       });
     };
     const applyShardSpread = () => positionShardsAt(fractureSpread);
+
+    // The finale's version: the same uniform spread, plus a per-shard shudder. Each shard carries its own
+    // phase so they fight out of step — in lockstep it reads as one mechanical pulse rather than a star
+    // straining. Purely a function of `sequence`, so scrubbing back reproduces it exactly.
+    const positionShardsWithTremor = (spread: number, tremor: number, sequence: number) => {
+      if (!registry) return;
+      const { shards, radius } = registry.cellSpread;
+      shards.forEach(({ object, basePosition, outward }, index) => {
+        const shudder =
+          tremor === 0
+            ? 0
+            : Math.sin(sequence * TREMOR_FREQUENCY + index * TREMOR_PHASE_STEP) * tremor;
+        const distance = (spread + shudder) * radius;
+        object.position.set(
+          basePosition.x + outward.x * distance,
+          basePosition.y + outward.y * distance,
+          basePosition.z + outward.z * distance,
+        );
+      });
+    };
 
     // ── Flare spin ──
     // The flares are FLAT discs (thin in one axis), so "spinning in place" = turning about the disc's
@@ -722,9 +891,14 @@ export function useSunLabScene({
       coreLight.position.copy(sphere.center);
     };
 
-    const applyRingForm = (earlyForm: number, lateForm: number) => {
+    const applyRingForm = (horizonForm: number, earlyForm: number, lateForm: number) => {
       ringForms.forEach((ringForm) => {
-        ringForm.currentForm = ringForm.early ? earlyForm : lateForm;
+        ringForm.currentForm =
+          ringForm.phase === "horizon"
+            ? horizonForm
+            : ringForm.phase === "early"
+              ? earlyForm
+              : lateForm;
         ringForm.mesh.scale.set(
           ringForm.baseScale.x * ringForm.currentForm,
           ringForm.baseScale.y * ringForm.currentForm,
@@ -741,21 +915,34 @@ export function useSunLabScene({
     // Off (not a finale stage, not preview) → black hole + sparks hidden, sun left to applyGlobal/form.
     const applyFinale = (sequence: number) => {
       currentSequence = sequence;
+      // Declared up here because both the lensing envelope and the flash itself are timed against it.
+      const hold = finaleFlash.hold;
 
       let explode: number;
-      let reveal: number;
+      let horizonForm: number;
 
       if (blackHolePreview) {
         explode = 1;
-        reveal = 1;
+        horizonForm = 1;
       } else if (!finaleEnabled) {
         blackHoleGroup.scale.setScalar(0);
+        blackHoleHorizonForm = 0;
         particlePoints.visible = false;
         accretionPoints.visible = false;
+        burstMesh.visible = false;
+        renderer.toneMappingExposure = baseExposure;
+        finaleLiquidRamp = 1; // off the finale, lensing is just the stage's authored look
+        finaleSpinMultiplier = 1;
+        // Hand the shards and the glow back to the stage exactly as it posed them.
+        if (finaleOwnsShards) {
+          finaleOwnsShards = false;
+          applyShardSpread();
+        }
+        if (redshiftBaseEmissive) restoreRedshift();
         return;
       } else {
         explode = smoothstep(FINALE_EXPLODE[0], FINALE_EXPLODE[1], sequence);
-        reveal = smoothstep(FINALE_REVEAL[0], FINALE_REVEAL[1], sequence);
+        horizonForm = smoothstep(FINALE_HORIZON[0], FINALE_HORIZON[1], sequence);
       }
 
       // The sun collapses on an ACCELERATING curve, not a smoothstep. Smoothstep decelerates into its
@@ -763,6 +950,38 @@ export function useSunLabScene({
       // plummets. Cubing `explode` is what makes the last of the star vanish fast.
       const collapse = explode * explode * explode;
       if (modelRoot) modelRoot.scale.setScalar(targetModelScale * (1 - collapse));
+
+      // ── What the star DOES while it falls ──
+      // 0. TREMOR — the anticipation beat. Builds over TREMOR_IN, then is swallowed by the collapse, so
+      //    it hands over instead of fighting it. This is what stops the finale opening mid-thought.
+      const tremorAmount =
+        finaleCollapse.tremor *
+        smoothstep(0, TREMOR_IN, sequence) *
+        (1 - collapse);
+      // 1. The shards are crushed inward past the stage's own spread, so the star implodes rather than
+      //    merely getting smaller. Uses the model's real fracture geometry instead of a uniform scale.
+      finaleOwnsShards = finaleCollapse.shards !== 0 || finaleCollapse.tremor !== 0;
+      if (finaleOwnsShards) {
+        positionShardsWithTremor(
+          fractureSpread - finaleCollapse.shards * collapse,
+          tremorAmount,
+          sequence,
+        );
+      }
+      // 2. Gravitational redshift — the glow loses energy climbing out of a deepening well.
+      if (redshiftBaseEmissive && finaleCollapse.redshift > 0) {
+        const magma = registry?.sharedMaterials.find((entry) => entry.name === REDSHIFT_MATERIAL);
+        if (magma && magma.material instanceof THREE.MeshStandardMaterial) {
+          scratchRedshift.set(finaleCollapse.redshiftColor);
+          magma.material.emissive
+            .copy(redshiftBaseEmissive)
+            .lerp(scratchRedshift, finaleCollapse.redshift * collapse);
+        }
+      }
+      // 3. Angular momentum — a contracting star spins up. Applied as a multiplier in the render loop,
+      //    where the spin actually accumulates. The tremor adds a restless lift before the real wind-up.
+      finaleSpinMultiplier =
+        1 + (finaleCollapse.spinUp - 1) * collapse + TREMOR_SPIN_LIFT * tremorAmount;
 
       // The accretion spiral: the star's own matter, released and wound inward. Runs on the raw sequence
       // (not `explode`) because the particles have their own staggered release built in.
@@ -780,19 +999,98 @@ export function useSunLabScene({
         uniforms.uColorCool.value.set(accretion.colorCool);
         uniforms.uColorHot.value.set(accretion.colorHot);
       }
-      blackHoleGroup.scale.setScalar(blackHoleFitScale * blackHoleScale * reveal);
-      // Glow + secondary rings form early (as the sun goes); the main ring mesh forms later.
+      // The GROUP stays at full size; the reveal happens per-mesh below. Scaling the group would inflate
+      // the accretion disc out of a single point, which is not how a disc arrives.
+      blackHoleGroup.scale.setScalar(blackHoleFitScale * blackHoleScale);
+      // Horizon opens from the middle first; the disc assembles around it afterwards.
       const earlyForm = blackHolePreview
         ? 1
         : smoothstep(FINALE_RING_FORM_EARLY[0], FINALE_RING_FORM_EARLY[1], sequence);
       const lateForm = blackHolePreview
         ? 1
         : smoothstep(FINALE_RING_FORM_LATE[0], FINALE_RING_FORM_LATE[1], sequence);
-      applyRingForm(earlyForm, lateForm);
+      applyRingForm(horizonForm, earlyForm, lateForm);
+      blackHoleHorizonForm = horizonForm;
+      // The lensing envelope, which depends on what it is centred on:
+      //   • sun       — reads as solid until the collapse starts pulling it apart, then flows.
+      //   • blackhole — swells in while the screen is held bright (the hole forming inside the glare),
+      //                 then drains to zero as that brightness leaves, settling to a plain black hole.
+      if (blackHolePreview) {
+        finaleLiquidRamp = 1;
+      } else if (lensing.target === "sun") {
+        finaleLiquidRamp = smoothstep(FINALE_LIQUID_RAMP[0], FINALE_LIQUID_RAMP[1], sequence);
+      } else {
+        const swellIn = smoothstep(
+          finaleFlash.at,
+          finaleFlash.at + hold * FINALE_LIQUID_IN_FRACTION,
+          sequence,
+        );
+        const drainOut =
+          1 -
+          smoothstep(
+            finaleFlash.at + hold,
+            finaleFlash.at + hold + FLASH_SCREEN_DECAY,
+            sequence,
+          );
+        finaleLiquidRamp = swellIn * drainOut;
+      }
       // Keep the scene fully glowy — the glow simply LEAVES with the sun (its emissive body is gone) and
       // its core light is sucked in too. Only the bloom eases down to the black-hole value as it forms.
-      coreLight.intensity = baseCoreLightIntensity * (1 - explode);
-      bloomPass.strength = THREE.MathUtils.lerp(baseBloomStrength, BLACKHOLE_BLOOM_STRENGTH, reveal);
+      // The core swells while the star strains, then is sucked in with the rest of it.
+      coreLight.intensity =
+        baseCoreLightIntensity * (1 - explode) * (1 + TREMOR_GLOW_SWELL * tremorAmount);
+      const gradedBloom = THREE.MathUtils.lerp(
+        baseBloomStrength,
+        BLACKHOLE_BLOOM_STRENGTH,
+        horizonForm,
+      );
+
+      // ── The flash ──
+      // Stage 1: the core burst, an actual light source at the origin (there is nothing else bright left
+      // in frame by now — see burstShader.ts). Stage 2: the screen grade, lagging slightly and lasting
+      // longer, so the eye is overwhelmed a beat after the light arrives.
+      const flashStrength = finaleFlash.strength * flashDamping;
+      // The detonation itself: holds only briefly, then clears so it isn't standing in front of what it
+      // just revealed.
+      const corePulse = blackHolePreview
+        ? 0
+        : flashEnvelope(
+            sequence,
+            finaleFlash.at,
+            FLASH_ATTACK,
+            hold * FLASH_CORE_HOLD_FRACTION,
+            FLASH_CORE_DECAY,
+          );
+      // The screen stays flooded across the whole hold — this plateau is the window the hole forms in.
+      const screenPulse = blackHolePreview
+        ? 0
+        : flashEnvelope(
+            sequence,
+            finaleFlash.at + FLASH_SCREEN_LAG,
+            FLASH_SCREEN_ATTACK,
+            hold,
+            FLASH_SCREEN_DECAY,
+          );
+
+      burstMesh.visible = flashStrength > 0 && corePulse > 0;
+      if (burstMesh.visible) {
+        // Expansion is monotonic across the whole pulse, while brightness rises then falls — so the light
+        // keeps travelling outward as it dies, instead of shrinking back into itself.
+        const expand = smoothstep(
+          finaleFlash.at - FLASH_ATTACK,
+          finaleFlash.at + hold * FLASH_CORE_HOLD_FRACTION + FLASH_CORE_DECAY,
+          sequence,
+        );
+        const size = THREE.MathUtils.lerp(FLASH_SCALE_FROM, FLASH_SCALE_TO, expand) * sunRadius;
+        burstMesh.scale.setScalar(size);
+        burstMesh.position.copy(blackHoleGroup.position);
+        burstMaterial.uniforms.uIntensity.value = corePulse * flashStrength;
+        burstMaterial.uniforms.uColor.value.set(finaleFlash.color);
+      }
+
+      renderer.toneMappingExposure =
+        baseExposure + screenPulse * flashStrength * FLASH_EXPOSURE_BOOST;
+      bloomPass.strength = gradedBloom + screenPulse * flashStrength * FLASH_BLOOM_BOOST;
 
       // Particles are off for now (the sun-shrink + black-hole reveal reads cleaner without them).
       particlePoints.visible = false;
@@ -844,6 +1142,9 @@ export function useSunLabScene({
         baseBloomStrength = global.bloom.strength;
         lensing = global.lensing;
         accretion = global.accretion;
+        finaleFlash = global.finaleFlash;
+        finaleCollapse = global.finaleCollapse;
+        baseExposure = global.exposure;
         renderer.toneMappingExposure = global.exposure;
         coreLight.color.set(global.coreLight.color);
         coreLight.intensity = global.coreLight.intensity;
@@ -916,6 +1217,9 @@ export function useSunLabScene({
           registry?.sharedMaterials.find((entry) => entry.name === name) ??
           blackHoleRegistry?.sharedMaterials.find((entry) => entry.name === name);
         if (shared) applyMaterialParams(shared.material, params);
+        // Re-read the redshift base AFTER writing, so an edit mid-finale re-anchors the tint to the new
+        // authored colour instead of baking the current tinted value in as the new baseline.
+        if (name === REDSHIFT_MATERIAL) captureRedshiftBase();
       },
       applyFractureSpread: (amount) => {
         fractureSpread = amount;
@@ -995,9 +1299,11 @@ export function useSunLabScene({
         // and can't be picked up by a bounding-box measurement.
         if (modelRoot) modelRoot.visible = false;
         particlePoints.visible = false;
+        burstMesh.visible = false; // this tab shows the settled hole, not the moment it formed
         // A half-scrubbed finale leaves the rings on a partial form multiplier. Clear it, or every scale
         // this tab reports and writes is silently multiplied by a leftover from the other tab.
-        applyRingForm(1, 1);
+        applyRingForm(1, 1, 1);
+        blackHoleHorizonForm = 1; // fully formed on this tab
         blackHoleGroup.scale.setScalar(blackHoleFitScale * settings.scale);
         blackHoleGroup.position.set(settings.position.x, settings.position.y, settings.position.z);
         setEulerFromDegrees(blackHoleGroup.rotation, settings.rotation);
@@ -1118,13 +1424,22 @@ export function useSunLabScene({
             // Rings + glow form AFTER the core (only used by the finale); collect them so it can scale
             // from 0. The main `ring` mesh forms LATE, every other ring/glow forms EARLY.
             blackHoleRegistry.entries.forEach((entry) => {
-              if (entry.groupId !== "rings" && entry.groupId !== "glow") return;
-              const isLateRing = entry.materialSlots.some((material) => material.name === "ring");
-              const ringForm: RingForm = {
+              // The horizon opens first, then the glow + secondary rings, then the main ring completes it.
+              // Planet is excluded — it isn't part of the black hole and is hidden by the base state.
+              const phase: BlackHolePhase | null =
+                entry.groupId === "horizon"
+                  ? "horizon"
+                  : entry.groupId === "rings" || entry.groupId === "glow"
+                    ? entry.materialSlots.some((material) => material.name === "ring")
+                      ? "late"
+                      : "early"
+                    : null;
+              if (!phase) return;
+              const ringForm: MeshForm = {
                 id: entry.id,
                 mesh: entry.mesh,
                 baseScale: entry.mesh.scale.clone(),
-                early: !isLateRing,
+                phase,
                 currentForm: 1,
               };
               ringForms.push(ringForm);
@@ -1155,11 +1470,14 @@ export function useSunLabScene({
     let animationFrame = 0;
     const renderFrame = () => {
       const delta = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
+      // Both spins carry the finale's spin-up multiplier — the star winds up as it contracts.
       if (autoRotateSpeed !== 0) {
-        spinner.rotation.y += THREE.MathUtils.degToRad(autoRotateSpeed) * delta;
+        spinner.rotation.y +=
+          THREE.MathUtils.degToRad(autoRotateSpeed * finaleSpinMultiplier) * delta;
       }
       if (flareSpinSpeed !== 0) {
-        const deltaAngle = THREE.MathUtils.degToRad(flareSpinSpeed) * delta;
+        const deltaAngle =
+          THREE.MathUtils.degToRad(flareSpinSpeed * finaleSpinMultiplier) * delta;
         flareSpins.forEach((spin) => {
           spin.angle += deltaAngle;
           scratchSpinQuaternion.setFromAxisAngle(spin.axis, spin.angle);
@@ -1187,7 +1505,9 @@ export function useSunLabScene({
           formActive = false;
           fracturePulseTime = 0; // breathing resumes cleanly from the fully-formed (open) pose
         }
-      } else if (fracturePulse !== 0 && registry) {
+        // While the finale is crushing the shards it owns their positions — breathing would fight it
+        // every frame and the crush would stutter.
+      } else if (fracturePulse !== 0 && registry && !finaleOwnsShards) {
         // Cracks breathing: tug each shard toward centre along its own outward line — so the motion is
         // always radial (gravity-like), never up or sideways. Overrides the static spread while running.
         fracturePulseTime += delta;
@@ -1225,6 +1545,9 @@ export function useSunLabScene({
         blackHoleSpinner.rotation.y += THREE.MathUtils.degToRad(blackHoleSpinSpeed) * delta;
       }
       controls.update();
+      // Billboard the burst — it represents light reaching the lens, so it must always face the camera
+      // rather than presenting an edge as you orbit.
+      if (burstMesh.visible) burstMesh.quaternion.copy(camera.quaternion);
       // After controls.update() so the lensing centre is measured against the camera actually being
       // rendered this frame, not last frame's.
       lensingTime += delta;
@@ -1259,6 +1582,8 @@ export function useSunLabScene({
       particleMaterial.dispose();
       accretionGeometry.dispose();
       accretionMaterial.dispose();
+      burstMesh.geometry.dispose();
+      burstMaterial.dispose();
       clonedMaterials.forEach((material) => material.dispose());
       environmentTexture.dispose();
       pmrem.dispose();

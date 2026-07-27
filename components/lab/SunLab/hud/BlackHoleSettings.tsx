@@ -164,6 +164,25 @@ export default function BlackHoleSettings({
           hole around to the front the way a raymarched metric would — it buys most of the look, not the
           physics. `strength` 0 makes the pass a no-op. */}
       <Section title="Lensing — space as fluid">
+        <div className="flex flex-col gap-1">
+          <span className="text-[0.64rem] text-muted">centred on</span>
+          <div className="grid grid-cols-2 gap-1">
+            {(["sun", "blackhole"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => patch({ lensing: { ...value.lensing, target: option } })}
+                className={`rounded px-1.5 py-1 text-[0.62rem] ${
+                  value.lensing.target === option
+                    ? "bg-accent/20 text-fg"
+                    : "border border-border text-muted hover:text-fg"
+                }`}
+              >
+                {option === "sun" ? "sun (liquid)" : "black hole"}
+              </button>
+            ))}
+          </div>
+        </div>
         <Slider
           label="strength (0 = off)"
           value={value.lensing.strength}

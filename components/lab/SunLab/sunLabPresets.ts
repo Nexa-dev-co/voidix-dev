@@ -136,9 +136,31 @@ const SINGULARITY_STATE: SunLabState = {
     finaleEnabled: true,
     blackHoleScale: 1,
     blackHoleSpinSpeed: 24,
+    // ── Roughly half the brightness of the Collapse stage it inherits from ──
+    // Collapse was authored as a white-hot end state and is fine on its own. Singularity then stacks a
+    // supernova flash AND 120k additively-blended particles on top of that same grade, which clips the
+    // frame to white and buries everything it is meant to be revealing. Every contributor is pulled down
+    // together — grading only one just moves where the clipping happens.
+    exposure: 1.05, // was 1.6
+    bloom: { strength: 1.15, radius: 1, threshold: 0.42 }, // strength was 2.5
+    coreLight: { color: "#ffe6c8", intensity: 8, distance: 0 }, // was 18
+    // The star doesn't just shrink: its ten shards are crushed inward on the same accelerating curve,
+    // its glow reddens as it compresses (light losing energy climbing out of a deepening well), and it
+    // winds up as it contracts — conservation of angular momentum.
+    finaleCollapse: {
+      shards: 1.2,
+      redshift: 0.85,
+      redshiftColor: "#ff2600",
+      spinUp: 5,
+      // The anticipation beat — the star shudders and strains before anything actually falls.
+      tremor: 0.09,
+    },
+    // Peaks at 0.5 — exactly where FINALE_EXPLODE's cubed collapse takes the sun's scale to zero, so the
+    // star's last frame is inside the glare rather than visibly shrinking away.
+    finaleFlash: { strength: 0.5, at: 0.5, hold: 0.18, color: "#fff5e0" },
     // The accretion spiral carries the collapse — this is the stage it exists for.
     accretion: {
-      strength: 1,
+      strength: 0.6,
       wind: 1.1,
       flatten: 0.85,
       turbulence: 0.12,
@@ -147,18 +169,30 @@ const SINGULARITY_STATE: SunLabState = {
       colorCool: "#d92a05",
       colorHot: "#ffeeb8",
     },
-    // Lensing on, so the disc visibly bends around the hole as it forms.
+    // The liquid belongs to the BLACK HOLE, and only while it is forming. `strength` here is the PEAK —
+    // the finale scales it by an envelope that swells in during the held flash (so the hole is born as a
+    // liquid distortion inside the glare) and drains to 0 as that brightness leaves. By the end it is a
+    // plain black hole, which is why nothing needs to be turned off by hand.
+    //
+    // `shadow` is on, unlike the sun — a dark silhouette IS a black-hole feature.
     lensing: {
-      strength: 0.5,
-      aberration: 0.18,
-      liquid: 0.35,
-      ring: 0.5,
+      strength: 0.9,
+      target: "blackhole",
+      aberration: 0.24,
+      liquid: 0.6,
+      // No photon ring on this stage — the accretion spiral is already drawing a bright edge around the
+      // hole, and a second ring on top of it just reads as a hard outline.
+      ring: 0,
       shadow: 0.7,
       radiusScale: 1,
     },
   },
   objects: { ...COLLAPSE_STATE.objects },
-  sharedMaterials: { ...COLLAPSE_STATE.sharedMaterials },
+  sharedMaterials: {
+    ...COLLAPSE_STATE.sharedMaterials,
+    // The sun's only emissive material, and the single biggest source of blowout on this stage.
+    magma: { ...COLLAPSE_STATE.sharedMaterials.magma, emissiveIntensity: 2.5 }, // was 5
+  },
 };
 
 export const SUN_LAB_PRESETS: SunLabPreset[] = [

@@ -89,6 +89,28 @@ const MODEL_RECIPES = {
     simplify: false,
   },
 
+  "fractured_sun.glb": {
+    // 46 MB against just 10,023 vertices — the weight is ENTIRELY textures (five 2048² PNGs, one of them
+    // 22 MB on its own). The size cap plus WebP is the whole win here; geometry is a rounding error.
+    //
+    // flatten would be catastrophic: the ten fracture shards are Groups at the SCENE ROOT named
+    // Sphere_0_cell*, and computeCellSpread() finds them with
+    // `root.children.filter(c => c.name.startsWith("Sphere_0_cell"))`. Collapse that hierarchy and the
+    // entire fracture/spread/collapse system silently stops working.
+    flatten: false,
+    // Joining merges meshes that share a material, which would fuse shards together AND renumber every
+    // registry id — orphaning every saved snapshot in the lab's localStorage.
+    join: false,
+    // 10k verts total across 50 meshes. Nothing to reclaim, and decimation would visibly round the
+    // shards' fracture edges — the one silhouette this model exists for.
+    simplify: false,
+    // GPU instancing collapses the repeated flares/planes into shared InstancedMeshes — which took the
+    // model from 50 meshes to 36. The lab selects and edits each mesh INDIVIDUALLY, and InstancedMesh
+    // extends Mesh, so the registry would happily accept them and then move every copy at once. It also
+    // renumbers the ids that saved snapshots are keyed on.
+    instance: false,
+  },
+
   "black_hole.glb": {
     // An old Sketchfab export whose materials live ENTIRELY inside KHR_materials_pbrSpecularGlossiness.
     // three.js dropped that extension in r151, so loading it raw gives nine untextured chrome-metal
@@ -182,6 +204,8 @@ for (const fileName of sourceFileNames) {
         String(recipe.join ?? true),
         "--flatten",
         String(recipe.flatten ?? true),
+        "--instance",
+        String(recipe.instance ?? true),
       ],
       { stdio: "inherit", shell: true },
     );

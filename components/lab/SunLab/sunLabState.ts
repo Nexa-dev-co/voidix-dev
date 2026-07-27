@@ -105,11 +105,72 @@ export interface GlobalParams {
   /** Which axis the black hole spins about: 0 = X, 1 = Y, 2 = Z. */
   blackHoleSpinAxis: number;
   /**
+   * What the star DOES while it falls. Without these the collapse is a uniform scale-down — the model
+   * gets smaller and nothing about it reads as matter being crushed.
+   */
+  finaleCollapse: {
+    /**
+     * How far the ten fracture shards are crushed inward, beyond the stage's own `fractureSpread`, in
+     * cell-radius units. This is the difference between the star shrinking and the star imploding.
+     */
+    shards: number;
+    /**
+     * Gravitational redshift: how far the magma's glow reddens as it compresses. Light climbing out of a
+     * deepening gravity well loses energy, and this is the cue that reads most as real physics. 0 = off.
+     */
+    redshift: number;
+    /** The colour it reddens toward, `#rrggbb`. */
+    redshiftColor: string;
+    /**
+     * Peak multiplier on the sun's spin (body + flares) as it contracts — conservation of angular
+     * momentum, the figure-skater effect. 1 = no spin-up.
+     */
+    spinUp: number;
+    /**
+     * The anticipation beat, before anything actually falls: the star shudders, its spin lifts and its
+     * core swells. One dial for the whole beat, in cell-radius units.
+     *
+     * Without it the finale opens mid-thought — nothing happens until the collapse curve bites around
+     * 0.25, so the first half-second is dead air. A smooth ramp reads as "growing"; the shudder is what
+     * makes it read as *struggling*, which is the difference between starting and building.
+     */
+    tremor: number;
+  };
+  /** Seconds the finale's Play button takes to run the sequence 0→1. */
+  finaleDuration: number;
+  /**
+   * The supernova flash (see burstShader.ts) — the moment that masks the handoff. Without it the sun is
+   * visibly seen shrinking to nothing, which reads as two models cross-fading.
+   */
+  finaleFlash: {
+    /** Master intensity. 0 = no flash at all. */
+    strength: number;
+    /**
+     * Where on the sequence the flash peaks. Defaults to where the sun's collapse curve reaches zero, so
+     * the star's last frame is hidden inside the glare — move one and you should move the other.
+     */
+    at: number;
+    /**
+     * How long the screen stays flooded after the peak, in sequence units. This is the plateau the black
+     * hole forms inside — without it the flash reads as a camera pop rather than a detonation. At the
+     * default 6s playback, 0.18 is a little over a second of held brightness.
+     */
+    hold: number;
+    /** Colour of the burst, `#rrggbb`. */
+    color: string;
+  };
+  /**
    * Screen-space gravitational lensing (see lensingShader.ts) — the "space behaves like fluid" pass.
    * `strength` 0 turns the whole pass into a pass-through, so it costs nothing when unused.
    */
   lensing: {
     strength: number;
+    /**
+     * What the distortion centres on. "sun" makes the STAR read as molten liquid (its own light churning
+     * through the ripple); "blackhole" is the gravitational-lens read. The radius follows whichever it
+     * targets, so a collapsing sun carries its liquid down with it and needs no separate fade.
+     */
+    target: "sun" | "blackhole";
     /** Colour fringing: how far the R and B samples split from G. */
     aberration: number;
     /** Amplitude of the travelling ripple — the undulating-liquid read. */
@@ -185,16 +246,23 @@ export const DEFAULT_GLOBAL_PARAMS: GlobalParams = {
   blackHolePosition: { x: 0, y: 0, z: 0 },
   blackHoleRotation: { x: 0, y: 0, z: 0 },
   blackHoleSpinAxis: 1,
-  // Off by default — the sun stages have no black hole to bend light around.
+  // Off by default; targets the sun, since that is what exists on a non-finale stage.
   lensing: {
     strength: 0,
+    target: "sun",
     aberration: 0.18,
     liquid: 0.35,
-    ring: 0.5,
-    shadow: 0.7,
+    ring: 0,
+    shadow: 0,
     radiusScale: 1,
   },
-  // Off by default — only the finale has a star coming apart. Turned on by the Singularity preset.
+  // Off by default — only the finale has a star to detonate. Turned on by the Singularity preset.
+  // `at: 0.5` is not arbitrary: FINALE_EXPLODE ends at 0.5 and the collapse curve is cubed, so the sun's
+  // scale reaches exactly zero there. The flash peaks on the frame the star disappears.
+  // All off by default — a non-finale stage should collapse exactly as its author posed it.
+  finaleCollapse: { shards: 0, redshift: 0, redshiftColor: "#ff2600", spinUp: 1, tremor: 0 },
+  finaleDuration: 6,
+  finaleFlash: { strength: 0, at: 0.5, hold: 0.18, color: "#fff5e0" },
   accretion: {
     strength: 0,
     wind: 1.1,
@@ -257,10 +325,12 @@ export function createBlackHoleInitialState(): SunLabState {
       blackHoleScale: 1.94,
       blackHoleSpinSpeed: 4,
       blackHoleSpinAxis: 1,
-      // On here, because this is the tab where there IS a black hole to bend light around. Moderate by
-      // default: enough to read as refraction, not so much that the disc smears into soup.
+      // OFF for now — the black hole is meant to read plain here. The pass and its controls are fully
+      // wired and waiting: set `strength` above 0 with target "blackhole" and the lensing comes straight
+      // back. Deliberately parked, not removed.
       lensing: {
-        strength: 0.55,
+        strength: 0,
+        target: "blackhole",
         aberration: 0.18,
         liquid: 0.35,
         ring: 0.5,
@@ -286,6 +356,8 @@ export function normalizeState(loaded: SunLabState): SunLabState {
       // before a field was added to one would otherwise resolve it as undefined.
       lensing: { ...DEFAULT_GLOBAL_PARAMS.lensing, ...loaded.global?.lensing },
       accretion: { ...DEFAULT_GLOBAL_PARAMS.accretion, ...loaded.global?.accretion },
+      finaleFlash: { ...DEFAULT_GLOBAL_PARAMS.finaleFlash, ...loaded.global?.finaleFlash },
+      finaleCollapse: { ...DEFAULT_GLOBAL_PARAMS.finaleCollapse, ...loaded.global?.finaleCollapse },
     },
     objects: loaded.objects ?? {},
     sharedMaterials: loaded.sharedMaterials ?? {},

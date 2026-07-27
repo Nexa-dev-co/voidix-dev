@@ -21,7 +21,10 @@ export const metadata: Metadata = {
   title: 'voidix — software with gravity',
   description:
     'A software studio building products with their own gravity. Custom web applications, SaaS platforms, enterprise CRM, mobile apps, and AI systems.',
-  metadataBase: new URL('https://orbix.studio'),
+  // TODO: confirm the real domain — this was left on the pre-rebrand `orbix.studio` and is a guess at
+  // the voidix equivalent. It's the base every relative OG/canonical URL resolves against, so a wrong
+  // host here silently breaks link previews.
+  metadataBase: new URL('https://voidix.studio'),
   openGraph: {
     title: 'voidix — software with gravity',
     description:

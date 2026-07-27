@@ -194,6 +194,14 @@ export default function GlobalControls({
           onChange={onSequenceChange}
         />
         <Slider
+          label="play duration (s)"
+          value={value.finaleDuration}
+          min={1}
+          max={20}
+          step={0.1}
+          onChange={(finaleDuration) => patch({ finaleDuration })}
+        />
+        <Slider
           label="black hole size"
           value={value.blackHoleScale}
           min={0.1}
@@ -214,6 +222,78 @@ export default function GlobalControls({
           max={180}
           step={1}
           onChange={(blackHoleSpinSpeed) => patch({ blackHoleSpinSpeed })}
+        />
+      </Section>
+
+      {/* What the star DOES while it falls. Without these the collapse is a uniform scale-down: the
+          model gets smaller and nothing about it reads as matter being crushed. */}
+      <Section title="Collapse — the star falling">
+        <Slider
+          label="tremor (anticipation)"
+          value={value.finaleCollapse.tremor}
+          min={0}
+          max={0.4}
+          step={0.005}
+          onChange={(tremor) => patch({ finaleCollapse: { ...value.finaleCollapse, tremor } })}
+        />
+        <Slider
+          label="shard crush (implode)"
+          value={value.finaleCollapse.shards}
+          min={0}
+          max={3}
+          step={0.01}
+          onChange={(shards) => patch({ finaleCollapse: { ...value.finaleCollapse, shards } })}
+        />
+        <Slider
+          label="gravitational redshift"
+          value={value.finaleCollapse.redshift}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(redshift) => patch({ finaleCollapse: { ...value.finaleCollapse, redshift } })}
+        />
+        <ColorField
+          label="reddens toward"
+          value={value.finaleCollapse.redshiftColor}
+          onChange={(redshiftColor) =>
+            patch({ finaleCollapse: { ...value.finaleCollapse, redshiftColor } })
+          }
+        />
+        <Slider
+          label="spin-up × (angular momentum)"
+          value={value.finaleCollapse.spinUp}
+          min={1}
+          max={12}
+          step={0.1}
+          onChange={(spinUp) => patch({ finaleCollapse: { ...value.finaleCollapse, spinUp } })}
+        />
+      </Section>
+
+      {/* The moment. Without it you watch the sun shrink to nothing, which reads as two models
+          cross-fading; with it, the star's last frame is hidden inside the glare and the horizon
+          resolves out of it. `at` defaults to where the collapse curve reaches zero — move one and you
+          should move the other. */}
+      <Section title="Supernova flash">
+        <Slider
+          label="strength (0 = off)"
+          value={value.finaleFlash.strength}
+          min={0}
+          max={3}
+          step={0.01}
+          onChange={(strength) => patch({ finaleFlash: { ...value.finaleFlash, strength } })}
+        />
+        <Slider
+          label="peaks at (sequence)"
+          value={value.finaleFlash.at}
+          min={0}
+          max={1}
+          step={0.005}
+          onChange={(at) => patch({ finaleFlash: { ...value.finaleFlash, at } })}
+        />
+        <ColorField
+          label="burst colour"
+          value={value.finaleFlash.color}
+          onChange={(color) => patch({ finaleFlash: { ...value.finaleFlash, color } })}
         />
       </Section>
 
@@ -277,6 +357,80 @@ export default function GlobalControls({
           label="inner (hot)"
           value={value.accretion.colorHot}
           onChange={(colorHot) => patch({ accretion: { ...value.accretion, colorHot } })}
+        />
+      </Section>
+
+      {/* Centred on the SUN, this makes the star read as molten liquid — its own light churning through a
+          travelling ripple. The radius follows whatever it targets, so a collapsing sun carries its
+          liquid down with it. `photon ring` and `shadow` are black-hole features: leave them at 0 on the
+          sun or they punch a dark hole through the middle of it. */}
+      <Section title="Liquid — refraction">
+        <div className="flex flex-col gap-1">
+          <span className="text-[0.64rem] text-muted">centred on</span>
+          <div className="grid grid-cols-2 gap-1">
+            {(["sun", "blackhole"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => patch({ lensing: { ...value.lensing, target: option } })}
+                className={`rounded px-1.5 py-1 text-[0.62rem] ${
+                  value.lensing.target === option
+                    ? "bg-accent/20 text-fg"
+                    : "border border-border text-muted hover:text-fg"
+                }`}
+              >
+                {option === "sun" ? "sun (liquid)" : "black hole"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Slider
+          label="strength (0 = off)"
+          value={value.lensing.strength}
+          min={0}
+          max={2}
+          step={0.01}
+          onChange={(strength) => patch({ lensing: { ...value.lensing, strength } })}
+        />
+        <Slider
+          label="chromatic aberration"
+          value={value.lensing.aberration}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(aberration) => patch({ lensing: { ...value.lensing, aberration } })}
+        />
+        <Slider
+          label="liquid ripple"
+          value={value.lensing.liquid}
+          min={0}
+          max={1.5}
+          step={0.01}
+          onChange={(liquid) => patch({ lensing: { ...value.lensing, liquid } })}
+        />
+        <Slider
+          label="radius"
+          value={value.lensing.radiusScale}
+          min={0.2}
+          max={3}
+          step={0.01}
+          onChange={(radiusScale) => patch({ lensing: { ...value.lensing, radiusScale } })}
+        />
+        <Slider
+          label="photon ring (black hole only)"
+          value={value.lensing.ring}
+          min={0}
+          max={3}
+          step={0.01}
+          onChange={(ring) => patch({ lensing: { ...value.lensing, ring } })}
+        />
+        <Slider
+          label="shadow (black hole only)"
+          value={value.lensing.shadow}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(shadow) => patch({ lensing: { ...value.lensing, shadow } })}
         />
       </Section>
 

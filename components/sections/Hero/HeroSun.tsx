@@ -8,10 +8,13 @@ import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
 
-// The single blue sun for the whole page. It lives here (not in the hero card and
-// not in the loader) so exactly one WebGL sun exists: the intro flies it from the
-// loader "o" into the hero square, then scroll expands it.
-const SunCanvas = dynamic(() => import('./SunCanvas'), { ssr: false });
+// The single sun for the whole page. It lives here (not in the hero card and not in the loader) so
+// exactly one WebGL sun exists: the intro flies it from the loader "o" into the hero square, then
+// scroll expands it.
+//
+// This is now the real fractured_sun model rather than the old procedural plasma shader, so the page and
+// /sun-lab share one sun and the lab's presets can drive it.
+const SunCanvas = dynamic(() => import('./SunModelCanvas'), { ssr: false });
 
 const HERO_SQUARE_SELECTOR = '.hero-sun-card';
 const Z_DURING_INTRO = 10001; // above the loader veil (10000) so the sun shows in the "o"

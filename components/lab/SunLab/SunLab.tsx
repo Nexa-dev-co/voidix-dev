@@ -39,8 +39,6 @@ const AUTOSAVE_DEBOUNCE_MS = 400;
 // A burst of edits within this window (one slider drag) collapses into a single undo step.
 const HISTORY_COALESCE_MS = 400;
 const UNDO_LIMIT = 60;
-// Seconds the finale's Play button takes to run the sequence 0→1.
-const FINALE_PLAY_SECONDS = 6;
 
 // The Sun Lab shell. Owns the document (all snapshots), bridges every edit to the imperative scene
 // handle, and layers snapshots / undo / autosave on top of the Phase-1 editor without changing it: an
@@ -262,7 +260,10 @@ export default function SunLab() {
   // Mirror the scene's playback into React so the scrub slider tracks it — and so a later edit re-applies
   // where the finale actually IS, rather than snapping it back to 0.
   const playSequence = () =>
-    handleRef.current?.playSequence(FINALE_PLAY_SECONDS, (played) => setSequence(played));
+    handleRef.current?.playSequence(
+      currentState().global.finaleDuration,
+      (played) => setSequence(played),
+    );
   const resetGlobal = () =>
     updateGlobal(
       structuredClone(
