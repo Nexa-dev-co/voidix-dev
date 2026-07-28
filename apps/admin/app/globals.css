@@ -1,0 +1,138 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The site's tokens, plus the one the panel needs that the site doesn't: a destructive red. A tool
+   has to be able to say "this will delete something" in a way a marketing site never does. */
+:root {
+  --bg: #060606;
+  --fg: #ebe8e0;
+  --muted: rgba(235, 232, 224, 0.38);
+  --accent: #00e5ff;
+  --border: rgba(235, 232, 224, 0.08);
+  --card: #0d0d0d;
+  --danger: #ff5e47;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-dm-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent);
+  color: #060606;
+}
+
+/* ── Form primitives ─────────────────────────────────────────────────────────────────────────────
+   Defined once here rather than repeated as Tailwind strings on every input. A panel is mostly
+   fields; when they drift visually the whole thing reads as unfinished. */
+
+.field-label {
+  display: block;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.field-input,
+.field-textarea {
+  width: 100%;
+  background: #0a0a0a;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6rem 0.75rem;
+  color: var(--fg);
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+}
+
+.field-textarea {
+  min-height: 7rem;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.field-input:focus,
+.field-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-input:disabled,
+.field-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field-hint {
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────────────────────── */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 4px;
+  padding: 0.55rem 1rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.button-primary {
+  background: var(--accent);
+  color: #060606;
+}
+
+.button-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.button-secondary:hover:not(:disabled) {
+  border-color: rgba(235, 232, 224, 0.25);
+}
+
+.button-danger {
+  background: transparent;
+  border-color: rgba(255, 94, 71, 0.3);
+  color: var(--danger);
+}
+
+.button-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+}
+
+/* ── Surfaces ────────────────────────────────────────────────────────────────────────────────── */
+
+.panel-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.eyebrow {
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}

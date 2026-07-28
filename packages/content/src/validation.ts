@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 
+import { MAX_WORKS_PROJECTS } from './limits';
 import type {
   DeckService,
   FaqEntry,
@@ -34,8 +35,12 @@ const hexColorSchema = z
 /** A PBR factor — the shaders assume these are normalised. */
 const unitFactorSchema = z.number().min(0).max(1);
 
-/** Ordinals are rendered as-is ("01"), so they're two digits, not a number. */
-const ordinalSchema = z.string().regex(/^\d{2}$/, 'Must be a two-digit ordinal such as "01"');
+/**
+ * Ordinals are rendered as-is ("01"), so they're a zero-padded string, not a number. Two digits is
+ * the floor rather than the ceiling — the site derives these from a row's position, and a hard
+ * two-digit cap would turn "someone added a hundredth project" into a validation failure.
+ */
+const ordinalSchema = z.string().regex(/^\d{2,}$/, 'Must be a zero-padded ordinal such as "01"');
 
 const nonEmptyText = z.string().trim().min(1);
 
@@ -145,7 +150,19 @@ export const faqEntrySchema = z.object({
 
 export const contentPayloadSchema = z.object({
   services: z.array(deckServiceSchema).optional(),
-  projects: z.array(worksProjectSchema).optional(),
+  // Capped, because the works field's camera stops are hand-authored and a fifth project would have
+  // nowhere to fly to — see MAX_WORKS_PROJECTS. Enforcing it HERE rather than only in the panel's UI
+  // means a publish carrying too many projects is rejected outright, with a clear error, instead of
+  // reaching the site and failing the payload validation there (which would silently revert the whole
+  // site to its bundled defaults over one extra row).
+  projects: z
+    .array(worksProjectSchema)
+    .max(
+      MAX_WORKS_PROJECTS,
+      `The works field has ${MAX_WORKS_PROJECTS} authored camera stops, so it can show at most ` +
+        `${MAX_WORKS_PROJECTS} projects. Author another stop in worksTuning.ts before adding one.`,
+    )
+    .optional(),
   faqEntries: z.array(faqEntrySchema).optional(),
 }) satisfies z.ZodType<ContentPayload>;
 

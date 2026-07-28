@@ -29,6 +29,8 @@
  * The tuner has a button that writes it exactly; don't hand-edit it to something else.
  */
 
+import { MAX_WORKS_PROJECTS } from '@voidix/content';
+
 import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
 
 /** One pose on the path around the rock. */
@@ -80,6 +82,28 @@ export const PROJECT_VIEW_KEYS: ProjectViewKey[] = [
   { x: -5.0, y: 1.8, z: -5.0, tx: 0, ty: 0, tz: 0, fov: 38, stop: null },
   { x: -7.0, y: 0.8, z: 0.0, tx: 0, ty: 0, tz: 0, fov: 36, stop: 3 },
 ];
+
+/**
+ * How many projects this path can actually park at.
+ *
+ * The admin panel refuses to publish more projects than this, via `MAX_WORKS_PROJECTS` in
+ * @voidix/content. The two numbers describe the same fact from opposite ends — the camera stops
+ * authored here, and the ceiling the panel enforces — so they're checked against each other rather
+ * than trusted to stay in step.
+ *
+ * Add a key tagged with the next `stop` index and this count rises; bump `MAX_WORKS_PROJECTS` to
+ * match and the panel will allow the extra project. Do it the other way round and the site gets a
+ * scroll snap position with no pose to fly to.
+ */
+export const AUTHORED_STOP_COUNT = PROJECT_VIEW_KEYS.filter((key) => key.stop !== null).length;
+
+if (AUTHORED_STOP_COUNT !== MAX_WORKS_PROJECTS) {
+  throw new Error(
+    `worksTuning has ${AUTHORED_STOP_COUNT} authored camera stops but MAX_WORKS_PROJECTS is ` +
+      `${MAX_WORKS_PROJECTS}. The panel would allow a number of projects this camera path can't ` +
+      'reach. Update whichever is behind (see packages/content/src/limits.ts).',
+  );
+}
 
 export interface WorksTuning {
   /**

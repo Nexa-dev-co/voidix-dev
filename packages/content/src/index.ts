@@ -20,6 +20,8 @@ export type {
 
 export { DECK_SERVICES, WORKS_PROJECTS, FAQ_ENTRIES, hydrateContent } from './runtime';
 
+export { MAX_WORKS_PROJECTS } from './limits';
+
 export { DEFAULT_DECK_SERVICES } from './defaults/deckServices';
 export { DEFAULT_FAQ_ENTRIES } from './defaults/faqEntries';
 export { DEFAULT_WORKS_PROJECTS } from './defaults/worksProjects';

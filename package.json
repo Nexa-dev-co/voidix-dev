@@ -4,11 +4,21 @@
   "private": true,
   "packageManager": "pnpm@10.21.0",
   "scripts": {
-    "dev": "pnpm --filter @voidix/web dev",
+    "dev": "pnpm --parallel --filter @voidix/web --filter @voidix/admin run dev",
+    "dev:web": "pnpm --filter @voidix/web dev",
+    "dev:admin": "pnpm --filter @voidix/admin dev",
     "build": "pnpm --filter @voidix/web build",
+    "build:admin": "pnpm --filter @voidix/admin build",
+    "build:all": "pnpm --parallel --filter @voidix/web --filter @voidix/admin run build",
     "start": "pnpm --filter @voidix/web start",
     "lint": "pnpm --filter @voidix/web lint",
     "typecheck": "pnpm -r typecheck",
-    "optimize:models": "pnpm --filter @voidix/web optimize:models"
+    "optimize:models": "pnpm --filter @voidix/web optimize:models",
+    "seed": "pnpm --filter @voidix/database seed",
+    "verify": "pnpm --filter @voidix/database verify"
+  },
+  "pnpm": {
+    "//onlyBuiltDependencies": "pnpm 10 blocks postinstall scripts by default. esbuild is tsx's engine and needs its to fetch a platform binary; without this the seed script can't run.",
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }
