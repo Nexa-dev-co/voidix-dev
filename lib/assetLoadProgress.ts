@@ -54,6 +54,11 @@ export function getAssetProgress(): number {
   return progress;
 }
 
+/** One source's own 0..1 fraction (0 if it hasn't reported yet) — for per-module loader readouts. */
+export function getSourceProgress(source: AssetSource): number {
+  return progressBySource.get(source) ?? 0;
+}
+
 /** True once every expected source has fully loaded. */
 export function areAssetsReady(): boolean {
   return EXPECTED_SOURCES.every((source) => (progressBySource.get(source) ?? 0) >= 1);

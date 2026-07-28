@@ -16,6 +16,25 @@ export const REVEAL_EVENT = 'voidix:reveal';
 export const INTRO_ACTIVE_EVENT = 'voidix:intro-active';
 
 /**
+ * Fired when the load reaches 100%, cueing the sun's fracture shards to sweep in from off-frame.
+ *
+ * This is the loader's finale, so it is deliberately the LAST thing that happens rather than something
+ * running alongside the wait: the dust streams for however long the download takes, and the arrival of
+ * solid matter is the reward for it finishing. (It used to fire when the "o" appeared, which meant the
+ * assembly raced the download and usually ended long before the loader did.)
+ *
+ * If the cue never comes — no intro on the page at all — the sun starts on its own; see SunModelCanvas.
+ */
+export const SUN_ASSEMBLE_EVENT = 'voidix:sun-assemble';
+
+/**
+ * Fired by the sun once every shard has landed. The intro holds its handoff until this arrives (capped by
+ * a timeout), so the reveal can never begin on a half-built star — which would waste the one moment the
+ * assembly is on screen.
+ */
+export const SUN_ASSEMBLED_EVENT = 'voidix:sun-assembled';
+
+/**
  * Fired at the start of the handoff, telling the loader's gathering field to ignite — the last rush of
  * matter into the star, timed to land under the sun's flight out of the "o".
  *

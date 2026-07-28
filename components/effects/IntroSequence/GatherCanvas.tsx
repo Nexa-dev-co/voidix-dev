@@ -4,8 +4,9 @@ import { useEffect, useRef } from "react";
 import { getAssetProgress } from "@/lib/assetLoadProgress";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import { GatherRenderer } from "./gatherRenderer";
+import { SUN_IN_O_RATIO, SUN_BODY_FILL, SUN_FRAMING_NUDGE_X } from "./gatherShader";
 import type { GatherMessage } from "./gatherMessages";
-import { IGNITE_EVENT } from "./introEvents";
+import { IGNITE_EVENT, SUN_ASSEMBLE_EVENT, SUN_ASSEMBLED_EVENT } from "./introEvents";
 
 // The loader's gathering field — matter falling together into the star the page opens on.
 //
@@ -30,13 +31,17 @@ const MEASURE_INTERVAL_MS = 250;
 // needs to be often enough to feel live.
 const POST_INTERVAL_MS = 100;
 /**
- * Ring radius as a multiple of the glyph's height.
+ * The sun's BODY radius as a multiple of the "o" glyph's height.
  *
- * The sun fills the "o" at `SUN_IN_O_RATIO` (1.3) of the glyph, so its *radius* is about 0.65 glyphs.
- * Anything near that and the dust sits on the star instead of orbiting it — this keeps the ring well
- * outside, at roughly 2.5× the sun's radius, so it reads as a disc around a star.
+ * Everything in the field is measured in sun radii (see gatherShader.ts), so this one number registers
+ * the dust to the star. It is derived, not tuned: the sun element is `SUN_IN_O_RATIO` of the glyph, the
+ * model's body fills `SUN_BODY_FILL` of that element, and radius is half of it.
+ *
+ * The previous version had a hand-picked 0.9 here, which is roughly TWICE this — that, plus a shader
+ * that biased particles outward, is what made the dust orbit at 2× the sun's radius instead of falling
+ * into it.
  */
-const RING_TO_GLYPH_RATIO = 0.9;
+const SUN_RADIUS_PER_GLYPH = (SUN_IN_O_RATIO * SUN_BODY_FILL) / 2;
 
 /**
  * Workers already attached to a canvas, so a re-run of the effect reuses one instead of transferring
@@ -78,11 +83,16 @@ export default function GatherCanvas() {
       if (rect.width === 0 && rect.height === 0) return null;
       const { width, height } = canvasSize();
       const aspect = width / height;
+      // The sun is framed slightly left of the glyph's centre (SUN_FRAMING_NUDGE_X), so the stream has to
+      // follow it or the dust would be absorbed off to one side of the star. The nudge is a fraction of
+      // the sun camera's half-frame, and that half-frame is half the sun element's height on screen.
+      const sunNudge = (SUN_FRAMING_NUDGE_X * (rect.height * SUN_IN_O_RATIO)) / height;
       // Screen pixels → NDC → aspect units. Y flips: screens count downward.
       return {
-        targetX: (((rect.left + rect.width / 2) / width) * 2 - 1) * aspect,
+        targetX: (((rect.left + rect.width / 2) / width) * 2 - 1) * aspect - sunNudge,
         targetY: -(((rect.top + rect.height / 2) / height) * 2 - 1),
-        targetRadius: (rect.height / height) * 2 * RING_TO_GLYPH_RATIO,
+        // The full canvas height is 2 aspect units, so a pixel height maps in at (px / height) * 2.
+        sunRadius: (rect.height / height) * 2 * SUN_RADIUS_PER_GLYPH,
       };
     };
 
@@ -164,11 +174,26 @@ export default function GatherCanvas() {
     };
     window.addEventListener(IGNITE_EVENT, onIgnite);
 
+    // Withdraw the dust from around the star for exactly the span of the assembly — the shards need clean
+    // space to dock into — then let it flow back. Only the zone around the star clears; the rest of the
+    // field keeps streaming, so the screen is never still.
+    const setClearing = (clearing: number) => {
+      const update = { type: "update" as const, clearing };
+      if (worker) post(update);
+      else fallback?.update(update);
+    };
+    const onAssembleStart = () => setClearing(1);
+    const onAssembleEnd = () => setClearing(0);
+    window.addEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
+    window.addEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
+
     return () => {
       window.clearInterval(progressTimer);
       window.clearInterval(measureTimer);
       window.removeEventListener("resize", resize);
       window.removeEventListener(IGNITE_EVENT, onIgnite);
+      window.removeEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
+      window.removeEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
       // Deferred so a StrictMode re-mount (which runs in the same commit) can cancel it and adopt the
       // worker. A real unmount has nothing to cancel it, so the worker is genuinely torn down.
       const entry = WORKERS_BY_CANVAS.get(canvas);

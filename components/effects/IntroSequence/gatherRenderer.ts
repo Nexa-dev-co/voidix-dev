@@ -1,4 +1,5 @@
 import {
+  CAMERA_DISTANCE,
   GATHER_COUNT,
   GATHER_DEFAULTS,
   GATHER_FRAGMENT_SHADER,
@@ -27,8 +28,10 @@ export interface GatherFrameInput {
   /** Convergence point in aspect units (see gatherShader.ts). */
   targetX?: number;
   targetY?: number;
-  /** Scale of the cloud particles settle into, in aspect units. */
-  targetRadius?: number;
+  /** The sun's body radius on screen, in aspect units — the unit the whole flow is measured in. */
+  sunRadius?: number;
+  /** 1 while the shards are docking, 0 otherwise. Eased internally into the withdrawal. */
+  clearing?: number;
 }
 
 const MAX_FRAME_SECONDS = 0.05;
@@ -36,14 +39,42 @@ const MAX_FRAME_SECONDS = 0.05;
 const PROGRESS_EASE_PER_SECOND = 2.2;
 const IGNITE_SECONDS = 0.55;
 
+// ── Flow rate ──
+// Trips per second: how fast a particle falls from the far edge of the stream to the sun's rim. This is
+// where real progress is spent — a cold start is a slow trickle from deep space, a finished load is a
+// torrent — so the field reports the truth while never once holding a still pose.
+const FLOW_TRIPS_PER_SECOND_IDLE = 0.16; // ~6s per trip
+const FLOW_TRIPS_PER_SECOND_FULL = 0.5; //  ~2s per trip
+/** Ignition dumps whatever is left into the star, so the stream surges as the sun lights. */
+const FLOW_IGNITE_SURGE = 3;
+
+/** Fallback sun radius (aspect units) until the "o" has been measured — roughly its desktop value. */
+const DEFAULT_SUN_RADIUS = 0.17;
+
+/** Floats per particle: startX, startY, phaseOffset, seed. */
+const PARTICLE_STRIDE = 4;
+
+/**
+ * How quickly the dust withdraws from around the star, and returns.
+ *
+ * Asymmetric on purpose: it clears briskly so the frame is empty before the first shard crosses in, and
+ * flows back gently once the star is whole, so the return reads as the field settling rather than as a
+ * light being switched on.
+ */
+const CLEAR_OUT_PER_SECOND = 2.4;
+const CLEAR_IN_PER_SECOND = 1.1;
+
 type GL = WebGLRenderingContext | WebGL2RenderingContext;
 
 const UNIFORM_NAMES = [
+  "uFlow",
   "uProgress",
   "uTime",
   "uIgnite",
+  "uClearing",
   "uTarget",
-  "uTargetRadius",
+  "uSunRadius",
+  "uCameraDistance",
   "uWind",
   "uAspect",
   "uSize",
@@ -81,7 +112,11 @@ export class GatherRenderer {
   private igniteProgress = 0;
   private targetX = 0;
   private targetY = 0;
-  private targetRadius: number = GATHER_DEFAULTS.targetRadius;
+  private sunRadius = DEFAULT_SUN_RADIUS;
+  private clearing = 0;
+  private targetClearing = 0;
+  /** Accumulated trips. Only ever increases, so the stream can never stutter or reverse. */
+  private flow = 0;
   private lastFrameMs = 0;
   private readonly startedMs = performance.now();
 
@@ -122,15 +157,21 @@ export class GatherRenderer {
       this.uniforms[name] = gl.getUniformLocation(program, name);
     });
 
-    // Per-particle constants: x = start radius, y = start angle, z = seed.
-    const constants = new Float32Array(GATHER_COUNT * 3);
+    // Per-particle constants: xy = start point on screen, z = phase offset, w = seed.
+    //
+    // The start point is uniform over the viewport in normalised units — the shader multiplies x by the
+    // aspect, so the field covers the whole screen at any window shape without regenerating the buffer.
+    //
+    // The phase offsets are spread evenly rather than randomly: a random spread clumps, and a clumped
+    // stream pulses instead of flowing. The seed stays random — it is the density threshold, and it must
+    // not correlate with where in its fall a particle happens to be.
+    const constants = new Float32Array(GATHER_COUNT * PARTICLE_STRIDE);
     for (let particle = 0; particle < GATHER_COUNT; particle += 1) {
-      const slot = particle * 3;
-      // sqrt spreads them evenly across the disc rather than crowding the middle; starting out past the
-      // frame edge means matter visibly arrives from outside.
-      constants[slot] = 0.45 + Math.sqrt(Math.random()) * 1.75;
-      constants[slot + 1] = Math.random() * Math.PI * 2;
-      constants[slot + 2] = Math.random();
+      const slot = particle * PARTICLE_STRIDE;
+      constants[slot] = Math.random() * 2 - 1;
+      constants[slot + 1] = Math.random() * 2 - 1;
+      constants[slot + 2] = particle / GATHER_COUNT;
+      constants[slot + 3] = Math.random();
     }
     const buffer = gl.createBuffer();
     if (!buffer) throw new Error("gather: could not create buffer");
@@ -148,6 +189,7 @@ export class GatherRenderer {
     // Everything that never changes is set once, here.
     gl.useProgram(program);
     gl.uniform1f(this.uniforms.uWind, GATHER_DEFAULTS.wind);
+    gl.uniform1f(this.uniforms.uCameraDistance, CAMERA_DISTANCE);
     gl.uniform1f(this.uniforms.uSize, GATHER_DEFAULTS.size);
     gl.uniform1f(this.uniforms.uOpacity, GATHER_DEFAULTS.opacity);
     gl.uniform1f(this.uniforms.uPixelRatio, pixelRatio);
@@ -169,7 +211,8 @@ export class GatherRenderer {
     if (input.progress !== undefined) this.targetProgress = input.progress;
     if (input.targetX !== undefined) this.targetX = input.targetX;
     if (input.targetY !== undefined) this.targetY = input.targetY;
-    if (input.targetRadius !== undefined) this.targetRadius = input.targetRadius;
+    if (input.sunRadius !== undefined) this.sunRadius = input.sunRadius;
+    if (input.clearing !== undefined) this.targetClearing = input.clearing;
   }
 
   ignite(): void {
@@ -199,16 +242,32 @@ export class GatherRenderer {
       this.igniteProgress = Math.min(1, this.igniteProgress + delta / IGNITE_SECONDS);
     }
 
+    // The stream runs faster the more of the site has landed, and surges as the star lights. Progress is
+    // spent HERE rather than on particle positions — see the header of gatherShader.ts.
+    const trips =
+      FLOW_TRIPS_PER_SECOND_IDLE +
+      (FLOW_TRIPS_PER_SECOND_FULL - FLOW_TRIPS_PER_SECOND_IDLE) * this.easedProgress;
+    this.flow += delta * trips * (1 + this.igniteProgress * FLOW_IGNITE_SURGE);
+
+    const clearRate =
+      this.targetClearing > this.clearing ? CLEAR_OUT_PER_SECOND : CLEAR_IN_PER_SECOND;
+    const clearStep = clearRate * delta;
+    this.clearing +=
+      Math.sign(this.targetClearing - this.clearing) *
+      Math.min(clearStep, Math.abs(this.targetClearing - this.clearing));
+
     gl.useProgram(this.program);
+    gl.uniform1f(this.uniforms.uFlow, this.flow);
+    gl.uniform1f(this.uniforms.uClearing, this.clearing);
     gl.uniform1f(this.uniforms.uProgress, this.easedProgress);
     gl.uniform1f(this.uniforms.uTime, (nowMs - this.startedMs) / 1000);
     gl.uniform1f(this.uniforms.uIgnite, this.igniteProgress);
     gl.uniform2f(this.uniforms.uTarget, this.targetX, this.targetY);
-    gl.uniform1f(this.uniforms.uTargetRadius, this.targetRadius);
+    gl.uniform1f(this.uniforms.uSunRadius, this.sunRadius);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.enableVertexAttribArray(this.particleLocation);
-    gl.vertexAttribPointer(this.particleLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribPointer(this.particleLocation, PARTICLE_STRIDE, gl.FLOAT, false, 0, 0);
 
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.POINTS, 0, GATHER_COUNT);

@@ -10,8 +10,15 @@ import {
   onAssetProgress,
   ASSETS_WARMUP_EVENT,
 } from "@/lib/assetLoadProgress";
-import { REVEAL_EVENT, INTRO_ACTIVE_EVENT, IGNITE_EVENT } from "./introEvents";
+import {
+  REVEAL_EVENT,
+  INTRO_ACTIVE_EVENT,
+  IGNITE_EVENT,
+  SUN_ASSEMBLE_EVENT,
+  SUN_ASSEMBLED_EVENT,
+} from "./introEvents";
 import GatherCanvas from "./GatherCanvas";
+import LoaderTelemetry from "./LoaderTelemetry/LoaderTelemetry";
 
 // The shared sun lives in HeroSun. The intro only drives it:
 //   .hero-sun-layer  — the outer layer (we fade its opacity in)
@@ -50,10 +57,11 @@ const REDUCED_MOTION_DELAY = 0.3;
 // user at the loader). Kept well under the hero's REVEAL fallback so the intro always reveals first.
 const COUNTER_EASE_SECONDS = 0.5;
 const ASSET_WAIT_TIMEOUT_MS = 12000;
-// After assets download, kick off the (async) shader compiles and hold the reveal until the scenes
-// report warm — capped so a machine that never reports can't trap the loader — then a short settle so
-// the reveal always begins on a smooth beat rather than on the tail of a compile.
-const WARMUP_WAIT_MAX_MS = 3000;
+// After assets download, three things happen at the gate: the (async) shader compiles kick off, the sun's
+// shards begin flying in, and the reveal holds until BOTH the scenes report warm and the sun reports
+// assembled — then a short settle so the reveal always begins on a smooth beat rather than on the tail of
+// a compile. Capped, so a machine that never reports (or a sun that never loads) can't trap the loader.
+const GATE_WAIT_MAX_MS = 5500;
 const WARMUP_SETTLE_MS = 250;
 
 // The sun is sized to a little over the "o" glyph so it reads as filling it.
@@ -195,6 +203,7 @@ export default function IntroSequence() {
     let warmupStarted = false;
     let hasResumed = false;
     let assetsTimedOut = false;
+    let sunAssembled = false;
     let resumeFrame = 0;
     let warmupWaitTimeout = 0;
     // While we WAIT at the gate (for assets to download, then for their shaders to compile), breathe
@@ -221,25 +230,32 @@ export default function IntroSequence() {
       resumeFrame = requestAnimationFrame(() => timeline.resume());
     };
 
-    // Scenes report when their shaders have finished compiling; once both are warm, wait a short
-    // settle (a beat of smooth animation) then reveal — so the reveal never starts on the tail of a
-    // compile. This is what stops the loader "stopping" as it hands off.
-    const checkWarmup = () => {
-      if (warmupStarted && !hasResumed && areWarmupsDone()) {
+    // The gate opens only when the scenes have compiled AND the sun has finished assembling. Then a short
+    // settle (a beat of smooth animation) before the reveal, so it never starts on the tail of a compile.
+    // This is what stops the loader "stopping" as it hands off.
+    const checkGate = () => {
+      if (warmupStarted && !hasResumed && areWarmupsDone() && sunAssembled) {
         window.clearTimeout(warmupWaitTimeout);
         warmupWaitTimeout = window.setTimeout(resumeReveal, WARMUP_SETTLE_MS);
       }
     };
+    const onSunAssembled = () => {
+      sunAssembled = true;
+      checkGate();
+    };
+    window.addEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
 
-    // Assets are in → kick off the async shader compiles and keep holding on the wordmark until the
-    // scenes report warm (capped, so a machine that never reports can't trap the loader).
+    // 100%. Everything that was waiting on the download happens here: the shader compiles start, and the
+    // sun's shards begin their sweep in from off-frame. The hold continues through the assembly — that
+    // flight IS the loader's last beat, so revealing over the top of it would throw away the payoff.
     const beginWarmupThenReveal = () => {
       if (warmupStarted) return;
       warmupStarted = true;
       startHoldPulse();
       window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
-      warmupWaitTimeout = window.setTimeout(resumeReveal, WARMUP_WAIT_MAX_MS);
-      checkWarmup();
+      window.dispatchEvent(new Event(SUN_ASSEMBLE_EVENT));
+      warmupWaitTimeout = window.setTimeout(resumeReveal, GATE_WAIT_MAX_MS);
+      checkGate();
     };
 
     const tryBeginWarmup = () => {
@@ -248,8 +264,8 @@ export default function IntroSequence() {
 
     const stopAssetProgress = onAssetProgress(() => {
       syncCounterToAssets();
-      tryBeginWarmup(); // assets finished downloading → start compiling
-      checkWarmup();    // a scene reported its shaders warm → maybe settle + reveal
+      tryBeginWarmup(); // assets finished downloading → start compiling, start the shards
+      checkGate();      // a scene reported its shaders warm → maybe settle + reveal
     });
     const assetWaitTimeout = window.setTimeout(() => {
       assetsTimedOut = true;
@@ -372,6 +388,7 @@ export default function IntroSequence() {
       timeline.kill();
       unlockScroll();
       stopAssetProgress();
+      window.removeEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
       window.clearTimeout(assetWaitTimeout);
       window.clearTimeout(warmupWaitTimeout);
       cancelAnimationFrame(resumeFrame);
@@ -451,6 +468,11 @@ export default function IntroSequence() {
         >
           Entering the void
         </span>
+
+        {/* Live instrument panel — module states, throughput, and the meter on the frame's bottom edge.
+            Its rows carry .intro-chrome, so the timeline's existing fade-in/fade-out covers them. */}
+        <LoaderTelemetry />
+
 
         {/* Ghost counter */}
         <div
