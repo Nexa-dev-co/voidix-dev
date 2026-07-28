@@ -18,13 +18,13 @@ import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hull
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 import { getDeckTuning } from '../deckTuning';
+import { PAD_MODEL_PATH, preparePad, type PreparedPad } from '../padModel';
 
 // ── Framing + the pad ───────────────────────────────────────────────────
 // The camera's pose, the pad's size and colour, and each hull's placement are all AUTHORED — they live
 // in deckTuning.ts and are pushed onto the scene every frame, so the ?tune panel can move them live.
 // Only the things that aren't adjustable stay here.
 const GROUND_Y       = 0; // the pad's top surface sits here; the craft hovers just above it
-const PAD_MODEL_PATH = '/models/space_landing.glb';
 
 // ── Starfield ───────────────────────────────────────────────────────────
 const STAR_COUNT         = 1200;
@@ -581,6 +581,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const previousIndex = stagedIndex;
       stagedIndex = nextIndex;
       applyShipLighting(nextIndex);
+      startPadGlowTransition(nextIndex);
 
       ships.forEach((ship, index) => {
         const isCenter  = index === nextIndex;
@@ -676,47 +677,77 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const gltfLoader = new GLTFLoader();
     gltfLoader.setDRACOLoader(dracoLoader);
 
+    // ── The pad's glow, cross-fading between craft ──
+    // The colour actually on screen, plus the ends of the fade it is currently running. Starting
+    // `from` and `target` on the same colour means the first frame is already settled — no flash of
+    // a default colour before the initial craft's own takes over.
+    const initialPadGlow = DECK_SERVICES[activeIndexRef.current]?.padGlow ?? '#ffffff';
+    const padGlowColor  = new THREE.Color(initialPadGlow);
+    const padGlowFrom   = new THREE.Color(initialPadGlow);
+    const padGlowTarget = new THREE.Color(initialPadGlow);
+    let padGlowMix = 1;
+    const padSpinEuler = new THREE.Euler();
+    const padSpinQuaternion = new THREE.Quaternion();
+
+    /**
+     * Begin a fade to the craft's pad colour.
+     *
+     * Starts from the colour CURRENTLY on screen rather than from the previous craft's authored one,
+     * so flicking through the carousel mid-fade continues from where the pad actually got to instead
+     * of jumping back to a colour it had already left.
+     */
+    const startPadGlowTransition = (shipIndex: number) => {
+      const next = DECK_SERVICES[shipIndex]?.padGlow;
+      if (!next) return;
+      padGlowFrom.copy(padGlowColor);
+      padGlowTarget.set(next);
+      padGlowMix = reduceMotion ? 1 : 0;
+      if (reduceMotion) padGlowColor.copy(padGlowTarget);
+    };
+
     let padGroup: THREE.Group | null = null;
-    let padScaledHeight = 0;
-    /** Every switchable mesh of the pad, and every standard material on it — both driven by the panel. */
-    const padParts = new Map<string, THREE.Mesh>();
-    const padMaterialsAll: THREE.MeshStandardMaterial[] = [];
+    let preparedPad: PreparedPad | null = null;
+    /** The meshes the spin turns, resolved from the tuning's material name. */
+    let padSpinMeshes: { mesh: THREE.Mesh; baseQuaternion: THREE.Quaternion }[] = [];
+    let padSpinAngle = 0;
+
+    // The light the pad throws up into the hull. Its own group, following the pad's POSITION but not
+    // its rotation — the pad is laid flat by `padRotX: 90`, and inheriting that would turn "height
+    // above the pad" into a horizontal offset.
+    const padLightGroup = new THREE.Group();
+    scene.add(padLightGroup);
+    const padLight = new THREE.PointLight(0xffffff, 0);
+    padLightGroup.add(padLight);
+
     gltfLoader.load(
       PAD_MODEL_PATH,
       (gltf) => {
         const loadedScene = gltf.scene;
-        // Retint the pad to the scene palette, and catalogue its meshes so the panel can switch pieces
-        // off. Positional ids, for the same reason the ships use them: these are third-party models.
-        let padPartIndex = 0;
-        loadedScene.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            const partId = `pad:${padPartIndex}`;
-            padPartIndex += 1;
-            padParts.set(partId, child);
-            if (tuning.padHiddenParts.includes(partId)) child.visible = false;
-            const padMaterials = Array.isArray(child.material) ? child.material : [child.material];
-            padMaterials.forEach((material) => {
-              if (material instanceof THREE.MeshStandardMaterial) {
-                padMaterialsAll.push(material);
-              }
-            });
-          }
-        });
+        // Applies the authored material look, patches the emissive maps to act as masks, and
+        // catalogues the meshes by material. See padModel.ts.
+        preparedPad = preparePad(loadedScene, tuning.glowMapHue);
+
         const boundingBox = new THREE.Box3().setFromObject(loadedScene);
         const size   = boundingBox.getSize(new THREE.Vector3());
         const center = boundingBox.getCenter(new THREE.Vector3());
         loadedScene.position.sub(center);
 
-        const padScale = tuning.padWidth / (Math.max(size.x, size.z) || 1);
-        const scaledHeight = size.y * padScale;
+        // Normalised by its widest horizontal axis. This model is authored STANDING (its bbox is
+        // 45 × 366 × 366), so before `padRotX` lays it down its width runs across Y/Z, not X/Z —
+        // hence the max of all three rather than of x and z.
+        const padFit = tuning.padWidth / (Math.max(size.x, size.y, size.z) || 1);
         const group = new THREE.Group();
-        group.scale.setScalar(padScale);
         group.add(loadedScene);
-        // Align the pad's top with the ground so the craft hovers just above the surface.
-        group.position.y = GROUND_Y - scaledHeight / 2 + tuning.padY;
         scene.add(group);
         padGroup = group;
-        padScaledHeight = scaledHeight;
+        group.userData.fit = padFit;
+
+        // Resolve the spin target by material, so a piece made of several meshes turns as one.
+        const spinMeshes = preparedPad.partsByMaterial.get(tuning.spinMaterial) ?? [];
+        padSpinMeshes = spinMeshes.map((mesh) => ({
+          mesh,
+          baseQuaternion: mesh.quaternion.clone(),
+        }));
       },
       undefined,
       (error) => console.error(`Failed to load landing pad: ${PAD_MODEL_PATH}`, error),
@@ -907,13 +938,80 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         starfieldMaterial.opacity = tuning.starOpacity;
       }
 
-      if (padGroup) {
+      if (padGroup && preparedPad) {
         padGroup.visible = tuning.showPad;
-        padGroup.position.y = GROUND_Y - padScaledHeight / 2 + tuning.padY;
-        padMaterialsAll.forEach((material) => {
-          material.color.set(tuning.padColor);
-          material.emissive.set(tuning.padEmissiveColor);
-          material.emissiveIntensity = tuning.padEmissiveIntensity;
+        padGroup.scale.setScalar((padGroup.userData.fit as number) * tuning.padScale);
+        padGroup.rotation.set(
+          THREE.MathUtils.degToRad(tuning.padRotX),
+          THREE.MathUtils.degToRad(tuning.padRotY),
+          THREE.MathUtils.degToRad(tuning.padRotZ),
+        );
+
+        // Sit the pad's TOP SURFACE on GROUND_Y, which is where the craft hover from (SHIP_HOVER is
+        // measured off it). Aligning by the model's centre instead would bury the ship inside the
+        // pad — the lab floats its test craft well clear, so its padY is not a deck-ready offset.
+        //
+        // Measured rather than derived from the raw bbox height, because the pad is ROTATED flat:
+        // after `padRotX: 90` its vertical extent runs along what was the model's Z, so `size.y`
+        // describes the wrong axis entirely.
+        //
+        // Cached on scale+rotation. A Box3 every frame would be wasteful, but the tuner has to keep
+        // working live, so it recomputes exactly when one of those changes.
+        const alignKey = `${padGroup.scale.x}|${tuning.padRotX}|${tuning.padRotY}|${tuning.padRotZ}`;
+        if (padGroup.userData.alignKey !== alignKey) {
+          padGroup.userData.alignKey = alignKey;
+          padGroup.position.set(0, 0, 0);
+          padGroup.updateMatrixWorld(true);
+          padGroup.userData.topOffset = new THREE.Box3().setFromObject(padGroup).max.y;
+        }
+        padGroup.position.set(
+          tuning.padX,
+          GROUND_Y + tuning.padY - (padGroup.userData.topOffset as number),
+          tuning.padZ,
+        );
+
+        // ── The glow, cross-fading between craft ──
+        // The pad is the only thing lighting a hull from underneath, so switching craft has to
+        // re-tune it rather than cut. `padGlowMix` runs 0 → 1 across `glowTransitionSeconds` from
+        // whatever colour was actually on screen when the change landed, so interrupting a fade
+        // half-way starts the next one from where it got to instead of snapping back.
+        if (padGlowMix < 1) {
+          padGlowMix = Math.min(1, padGlowMix + deltaSeconds / Math.max(tuning.glowTransitionSeconds, 0.0001));
+          // Smoothstep, so it eases out of the old colour and into the new one.
+          const eased = padGlowMix * padGlowMix * (3 - 2 * padGlowMix);
+          padGlowColor.lerpColors(padGlowFrom, padGlowTarget, eased);
+        }
+
+        preparedPad.glowMaterials.forEach(({ material, weight }) => {
+          material.emissive.copy(padGlowColor);
+          material.emissiveIntensity = tuning.glowIntensity * weight;
+        });
+        preparedPad.mapHueUniforms.forEach((uniform) => {
+          uniform.value = tuning.glowMapHue;
+        });
+
+        // ── The light it casts ──
+        padLightGroup.position.copy(padGroup.position);
+        padLight.visible = tuning.padLightEnabled;
+        padLight.color.copy(padGlowColor);
+        padLight.intensity = tuning.padLightIntensity;
+        padLight.position.set(tuning.padLightX, tuning.padLightY, tuning.padLightZ);
+        padLight.distance = tuning.padLightDistance;
+        padLight.decay = tuning.padLightDecay;
+
+        // ── The spin ──
+        // Every node in this model sits at translation [0,0,0] with its offset baked into the
+        // geometry, so a local rotation carries a part AROUND the pad's centre rather than twisting
+        // it on the spot.
+        padSpinAngle += THREE.MathUtils.degToRad(tuning.spinSpeed) * deltaSeconds;
+        padSpinMeshes.forEach(({ mesh, baseQuaternion }) => {
+          padSpinEuler.set(
+            tuning.spinAxis === 0 ? padSpinAngle : 0,
+            tuning.spinAxis === 1 ? padSpinAngle : 0,
+            tuning.spinAxis === 2 ? padSpinAngle : 0,
+          );
+          padSpinQuaternion.setFromEuler(padSpinEuler);
+          mesh.quaternion.copy(baseQuaternion).multiply(padSpinQuaternion);
         });
       }
 
@@ -1095,7 +1193,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
                 shipParts: (shipIndex) => ships[shipIndex]?.parts ?? new Map(),
                 shipMaterials: (shipIndex) => ships[shipIndex]?.materials ?? [],
                 restageLighting: (shipIndex) => applyShipLighting(shipIndex, true),
-                padParts,
                 onDispose: (cleanup) => tunerCleanups.push(cleanup),
               }),
         )

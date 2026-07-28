@@ -152,6 +152,7 @@ components/
     ConstellationFrame/
   lab/
     SunLab/         # /sun-lab — the fractured-sun + black-hole editor
+    PadLab/         # /pad-lab — the landing-pad (champion_astro_ring) editor
     LetterLab/      # /letters
 
 lib/                # shared: the pin's layout maths, events, perf systems, tuner plumbing
@@ -315,13 +316,20 @@ console), `tunerReset.ts`, `tuneScrollLock.ts`.
 **These are general editors, not one-shot wizards.** When extending a lab or panel, give full
 control over the thing being edited rather than wiring a path to one preconceived outcome.
 
-## The labs (`/sun-lab`, `/letters`)
+## The labs (`/sun-lab`, `/pad-lab`, `/letters`)
 
 Authoring tools, `robots: noindex`, separate routes — nothing reaches the homepage bundle.
-`/sun-lab` is a full editor for `fractured_sun.glb` and `black_hole.glb`: grouped object tree,
-per-material controls, snapshot presets, and a **complete five-phase sun→black-hole finale**
-(flash, shard implosion, gravitational redshift, spin-up + tremor, screen-space lensing, a
-120k-particle accretion spiral). See `docs/sun-lab-remaining-work.md`.
+
+- **`/sun-lab`** — a full editor for `fractured_sun.glb` and `black_hole.glb`: grouped object tree,
+  per-material controls, snapshot presets, and a **complete five-phase sun→black-hole finale**
+  (flash, shard implosion, gravitational redshift, spin-up + tremor, screen-space lensing, a
+  120k-particle accretion spiral). See `docs/sun-lab-remaining-work.md`.
+- **`/pad-lab`** — the services deck's landing pad (`champion_astro_ring.glb`). Per-part pose and
+  per-material colour/emissive, plus the **lights the pad casts** and a real craft from
+  `DECK_SERVICES` to judge them against. That light rig is the point: every rig light on the deck is
+  now `0`, so the pad is the only thing lighting a hull from underneath. Copy button emits the stage
+  literal plus the live material/part values.
+- **`/letters`** — extruded-glyph testbed.
 
 ---
 

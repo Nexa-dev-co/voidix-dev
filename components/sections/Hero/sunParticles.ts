@@ -95,6 +95,26 @@ const PARTICLE_BRIGHTNESS = 1.9;
 const TWINKLE_AMOUNT = 0.35;
 const TWINKLE_SPEED = 1.3;
 
+// ── Forming ──
+// The ring does not just fade up: it ASSEMBLES. Grains fall in from wider orbits and arrive
+// staggered around the circumference, so the band draws itself around the star.
+//
+// Driven by the same services ramp as everything else, so it reverses on scroll-up for free — the
+// ring un-forms and scatters back out rather than blinking off.
+/** How far out a grain starts, as a multiple of its final orbit. */
+const FORM_ENTRY_RADIUS_SCALE = 2.1;
+/**
+ * Fraction of the form spent staggering arrivals. 0 = every grain lands together (reads as a fade);
+ * approaching 1 = the last grain only starts as the first finishes (reads as slow and gappy).
+ */
+const FORM_STAGGER = 0.55;
+/**
+ * Blends each grain's arrival order between a clean sweep around the ring (0) and pure random (1).
+ * All-sweep reads mechanical, like a loading bar bent into a circle; a little randomness keeps the
+ * leading edge ragged and organic while the sweep still reads as direction.
+ */
+const FORM_SCATTER = 0.45;
+
 const PARTICLE_VERTEX_SHADER = /* glsl */ `
   precision highp float;
 
@@ -116,13 +136,31 @@ const PARTICLE_VERTEX_SHADER = /* glsl */ `
   uniform float uPixelRatio;
   uniform float uTwinkleAmount;
   uniform float uTwinkleSpeed;
+  uniform float uForm;
+  uniform float uFormEntryScale;
+  uniform float uFormStagger;
+  uniform float uFormScatter;
 
   varying float vHeat;
   varying float vFade;
 
+  const float TWO_PI = 6.283185307;
+
   void main() {
+    // ── Arrival order ──
+    // Sweeping by start angle draws the ring around the star; blending in the grain's own random
+    // phase keeps the leading edge ragged instead of a hard clock hand.
+    float sweepDelay = fract(aOrbit.y / TWO_PI);
+    float randomDelay = fract(aLook.y / TWO_PI);
+    float delay = mix(sweepDelay, randomDelay, uFormScatter) * uFormStagger;
+    // Each grain runs its own 0..1 form across the window left after its delay.
+    float grainForm = clamp((uForm - delay) / max(1.0 - uFormStagger, 0.001), 0.0, 1.0);
+    // Ease out: it decelerates into its orbit rather than arriving at full speed.
+    float settled = 1.0 - pow(1.0 - grainForm, 3.0);
+
     float angle = aOrbit.y + uTime * aOrbit.z;
-    float radius = aOrbit.x * uFrameExtent;
+    // Falls inward from a wider orbit as it forms.
+    float radius = aOrbit.x * mix(uFormEntryScale, 1.0, settled) * uFrameExtent;
 
     vec3 normal = cross(aRingU, aRingV);
     vec3 position =
@@ -136,7 +174,7 @@ const PARTICLE_VERTEX_SHADER = /* glsl */ `
 
     // A slow shimmer, out of phase per grain.
     float twinkle = 1.0 - uTwinkleAmount * (0.5 + 0.5 * sin(uTime * uTwinkleSpeed + aLook.y));
-    vFade = twinkle * uPresence;
+    vFade = twinkle * uPresence * settled;
 
     // Perspective size — the only cue that separates the near and far halves of an orbit.
     float perspectiveSize = uSize * uPixelRatio / max(-modelViewPosition.z, 0.001);
@@ -250,6 +288,10 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
       uPixelRatio: { value: pixelRatio },
       uTwinkleAmount: { value: TWINKLE_AMOUNT },
       uTwinkleSpeed: { value: TWINKLE_SPEED },
+      uForm: { value: 0 },
+      uFormEntryScale: { value: FORM_ENTRY_RADIUS_SCALE },
+      uFormStagger: { value: FORM_STAGGER },
+      uFormScatter: { value: FORM_SCATTER },
       uBrightness: { value: PARTICLE_BRIGHTNESS },
       uColorCool: { value: new THREE.Vector3(...GATHER_DEFAULTS.colorCool) },
       uColorHot: { value: new THREE.Vector3(...GATHER_DEFAULTS.colorHot) },
@@ -273,6 +315,10 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
     if (!object.visible) return;
     material.uniforms.uTime.value = elapsedSeconds;
     material.uniforms.uPresence.value = presence;
+    // Form runs off the SAME ramp as the fade rather than its own clock. That is deliberate: one
+    // clock means the assembly reverses exactly on scroll-up, and it can never desync from the
+    // sun's own cracks ramp, which is driven by that same value.
+    material.uniforms.uForm.value = presence;
   };
 
   const setFrameExtent = (halfExtent: number) => {

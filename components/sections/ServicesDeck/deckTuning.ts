@@ -80,14 +80,48 @@ export interface DeckTuning {
   starOpacity: number;
 
   // ── The pad ──
+  // Authored in /pad-lab against a real craft; these are its numbers. The pad is not scenery here —
+  // with every rig light at 0 it is the ONLY thing lighting a hull from underneath.
   showPad: boolean;
+  /** The pad is normalised to this width in world units, so its framing is model-independent. */
   padWidth: number;
+  padScale: number;
+  padX: number;
   padY: number;
-  padColor: string;
-  padEmissiveColor: string;
-  padEmissiveIntensity: number;
-  /** Mesh ids switched off at load — `pad:<meshIndex>`. */
-  padHiddenParts: string[];
+  padZ: number;
+  /** DEGREES. `padRotX: 90` lays the model flat with its lit face upward — it is authored standing. */
+  padRotX: number;
+  padRotY: number;
+  padRotZ: number;
+
+  // ── The glow (see PAD_GLOW_MATERIALS) ──
+  /** Master emissive on the pad's light-emitting materials, scaled by each one's weight. */
+  glowIntensity: number;
+  /**
+   * How much of an emissive TEXTURE's own colour survives. 0 = the map is a mask and the craft's
+   * `padGlow` owns the hue; 1 = the texture's authored colours. Two of the pad's panels ship an
+   * ORANGE emissive map, so anything above 0 stops them matching the rest of the pad.
+   */
+  glowMapHue: number;
+  /** Seconds the pad takes to cross-fade from one craft's colour to the next. */
+  glowTransitionSeconds: number;
+
+  // ── The light the pad casts up into the hull ──
+  padLightEnabled: boolean;
+  padLightIntensity: number;
+  padLightX: number;
+  padLightY: number;
+  padLightZ: number;
+  padLightDistance: number;
+  padLightDecay: number;
+
+  // ── Spin ──
+  /** Which parts turn, by MATERIAL name (several meshes can share one). Empty spins nothing. */
+  spinMaterial: string;
+  /** Degrees per second; negative reverses. */
+  spinSpeed: number;
+  /** Local axis: 0 = X, 1 = Y, 2 = Z. Z is the pad's face. */
+  spinAxis: number;
 
   /** One entry per vessel, in DECK_SERVICES order. */
   ships: ShipPlacement[];
@@ -136,11 +170,34 @@ const DECK_TUNING: DeckTuning = {
 
   showPad: true,
   padWidth: 5.0,
-  padY: 0.6,
-  padColor: '#16222b',
-  padEmissiveColor: '#0b3a45',
-  padEmissiveIntensity: 0.55,
-  padHiddenParts: [],
+  padScale: 1.04,
+  padX: 0.04,
+  padY: 0.03,
+  padZ: 0,
+  padRotX: 90,
+  padRotY: 0,
+  padRotZ: 0,
+
+  glowIntensity: 5.6,
+  glowMapHue: 0,
+  // Long enough to read as the pad re-tuning itself to the new craft rather than as a hard cut, and
+  // short enough to have finished by the time the incoming ship settles (the swap runs ~1.2s).
+  glowTransitionSeconds: 0.9,
+
+  padLightEnabled: true,
+  padLightIntensity: 6,
+  padLightX: 0,
+  padLightY: 0.25,
+  padLightZ: 1.6,
+  padLightDistance: 10,
+  padLightDecay: 2,
+
+  // Only the central hub turns. The lit-panel spinner authored in the lab is deliberately not
+  // carried over — one moving element under a craft reads as machinery; two competing rotations
+  // under a hovering ship read as busy.
+  spinMaterial: 'Object01Mtl',
+  spinSpeed: -18,
+  spinAxis: 2,
 
   // One per vessel, so adding a fifth ship to DECK_SERVICES can't leave the tuning short.
   ships: DECK_SERVICES.map(restingShip),

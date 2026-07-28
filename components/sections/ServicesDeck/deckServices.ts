@@ -89,6 +89,16 @@ export interface DeckService {
   modelPath: string;
   /** The ship's full visual identity (palette + material + glow). */
   profile: ShipProfile;
+  /**
+   * The colour the LANDING PAD burns while this craft is on it.
+   *
+   * Lives here rather than in deckTuning for the same reason `profile` does: it is part of this
+   * craft's identity, not part of the stage. The pad is the only thing lighting a hull from
+   * underneath (every rig light on the deck is 0), so this is effectively the craft's key light —
+   * it drives the pad's emissive surfaces AND the light they cast, and cross-fades when the
+   * carousel moves. Authored in /pad-lab.
+   */
+  padGlow: string;
   /** Optional per-ship key-light override (see ShipLight); omit for the default warm key. */
   light?: ShipLight;
   /** Optional base model rotation in DEGREES, applied before framing (e.g. flip a mis-oriented hull). */
@@ -104,6 +114,7 @@ export const DECK_SERVICES: DeckService[] = [
       'Bespoke platforms engineered from the metal up — no templates, no compromise. Every interaction is hand-tuned until the product moves like it has its own momentum.',
     capabilities: ['Next.js', 'WebGL / GLSL', 'Realtime', 'Design Systems'],
     modelPath: WEB_VESSEL,
+    padGlow: '#ff2233',
     // Ember Noir — a full-black hull lit almost neutrally; only a faint dark-red rim catch remains as a
     // nod to the red. Predominantly black. Matte, low-reflectance.
     profile: {
@@ -133,6 +144,7 @@ export const DECK_SERVICES: DeckService[] = [
       'Apps that feel like an extension of the device, not a website in a frame. Sixty frames a second, offline-first, and tactile in the hand.',
     capabilities: ['iOS / Android', 'Offline-first', 'Motion', 'Haptics'],
     modelPath: MOBILE_VESSEL,
+    padGlow: '#9fd4ff',
     // Deep Navy — a dark blue hull (navy → steel-blue) raked by a reddish key light for a cinematic
     // warm/cool contrast. The ship itself stays cool/blue; the red mood comes from the light.
     profile: {
@@ -162,6 +174,7 @@ export const DECK_SERVICES: DeckService[] = [
       'Operational cores that pull every signal into one orbit. We model the way your business actually works, then make the software disappear into the workflow.',
     capabilities: ['Workflow Engines', 'Integrations', 'Roles & Access', 'Reporting'],
     modelPath: ENTERPRISE_VESSEL,
+    padGlow: '#ffb24d',
     // Gunmetal hull with a WARM amber accent — the one ship that breaks the cool palette, and
     // brushed rather than lacquered, so the fleet reads as four distinct machines.
     profile: {
@@ -190,6 +203,7 @@ export const DECK_SERVICES: DeckService[] = [
       'Models wired into real products, not demos. Retrieval, agents, and inference pipelines designed around your data — useful on day one, smarter every week.',
     capabilities: ['LLM Pipelines', 'RAG', 'Agents', 'Evaluation'],
     modelPath: AI_VESSEL,
+    padGlow: '#36e6ff',
     // Pre-overhaul original look (restored on request): a flat two-tone tint — purple body fading
     // to cyan at the edges. Keeps the model's native metalness/roughness; no graded palette.
     profile: {

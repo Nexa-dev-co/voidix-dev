@@ -46,12 +46,33 @@ export const GATHER_COUNT = 60000;
  * If `CAMERA_FIT_MARGIN` in SunModelCanvas changes, `CAMERA_DISTANCE` here must change with it or the
  * dust will be in a subtly different space from the shards falling through it.
  */
-// fitDistance / bodyRadius = (2.224 / sin(22.5 deg)) * 0.575 / 1.0
-export const CAMERA_DISTANCE = 3.34;
+/**
+ * Padding around the sun, as a multiple of the hero square.
+ *
+ * The sun's canvas used to be exactly the square's size, which meant the star filled its own frame
+ * edge to edge — and every glow that reached that edge was CUT FLAT by the canvas boundary, drawing
+ * a hard rectangle around the sun (worst once bloom and the orbiting ring landed, both of which
+ * bleed outward by design).
+ *
+ * So the canvas is now this much LARGER than the square, and the camera pulls back by exactly the
+ * same factor. The star's on-screen size is therefore unchanged — the extra pixels are pure
+ * headroom for light to fall off in. `HeroSun` grows the layer; `SunModelCanvas` pulls the camera.
+ * Both read this one number, and it must stay that way or the sun changes size.
+ */
+export const SUN_CANVAS_HEADROOM = 1.6;
+
+// fitDistance / bodyRadius = (2.224 / sin(22.5 deg)) * 0.575 / 1.0, then × SUN_CANVAS_HEADROOM for
+// the padding above. Was 3.34 when the canvas hugged the square.
+export const CAMERA_DISTANCE = 3.34 * SUN_CANVAS_HEADROOM;
 /** The sun element is sized to this multiple of the "o" glyph (mirrors parkSunInO in IntroSequence). */
 export const SUN_IN_O_RATIO = 1.3;
-/** How much of that element the model's BODY actually fills — the rest is flares and empty margin. */
-export const SUN_BODY_FILL = 0.723;
+/**
+ * How much of that element the model's BODY actually fills — the rest is flares and empty margin.
+ *
+ * Divided by the headroom for the same reason `CAMERA_DISTANCE` is multiplied by it: the body did
+ * not shrink, the frame around it grew. Was 0.723.
+ */
+export const SUN_BODY_FILL = 0.723 / SUN_CANVAS_HEADROOM;
 /**
  * Horizontal framing nudge, as a fraction of the sun camera's frame HALF-height. Positive moves the sun
  * left. Lives here rather than in SunModelCanvas because the dust has to move with it: the field

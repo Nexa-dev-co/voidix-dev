@@ -111,6 +111,28 @@ const MODEL_RECIPES = {
     instance: false,
   },
 
+  "champion_astro_ring.glb": {
+    // The services deck's new landing pad, and its own authoring tool at /pad-lab. It is not scenery:
+    // every part is individually posed, tinted and lit from that panel, and the ring is meant to spin
+    // on its own — so the three passes that would take that control away are all off.
+    //
+    // flatten bakes each node's transform down into its mesh, which moves a part's PIVOT to the scene
+    // origin. A ring whose pivot is no longer at its own centre does not spin, it orbits — and this
+    // model's ring stands vertically across a 366-unit span, so that error is enormous rather than
+    // subtle.
+    flatten: false,
+    // Two pairs of meshes share a material here (c_sd_meatcleaver and c_sd_Meatcleaver_on). Joining
+    // merges each pair into one object, which would weld the lit and unlit halves of the prop
+    // together and drop the mesh count from 9 to 7 — losing two of the parts the panel addresses.
+    join: false,
+    // InstancedMesh extends Mesh, so a registry accepts it and then transforms every copy at once.
+    // The same trap the fractured sun hit.
+    instance: false,
+    // 26k verts across rings and trim. Decimation visibly chews concentric rings (it did on the
+    // podium), and Draco already does the real work — the weight here is textures, not geometry.
+    simplify: false,
+  },
+
   "black_hole.glb": {
     // An old Sketchfab export whose materials live ENTIRELY inside KHR_materials_pbrSpecularGlossiness.
     // three.js dropped that extension in r151, so loading it raw gives nine untextured chrome-metal

@@ -6,6 +6,7 @@ import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
+import { SUN_CANVAS_HEADROOM } from '@/components/effects/IntroSequence/gatherShader';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
 
 // The single sun for the whole page. It lives here (not in the hero card and not in the loader) so
@@ -53,10 +54,17 @@ export default function HeroSun() {
       // made the sun balloon and drift out of the square on resize. The sun's own rise/scale is
       // applied separately by the hero pin, so the layer only needs the square's base box.
       const rect = measureUntransformedRect(square);
-      layer.style.width = `${rect.width}px`;
-      layer.style.height = `${rect.height}px`;
-      layer.style.left = `${rect.left}px`;
-      layer.style.top = `${rect.top}px`;
+      // Padded well beyond the square, and CENTRED on it. The star renders the same size inside
+      // (SunModelCanvas pulls its camera back by the same factor) — the extra pixels exist purely so
+      // the bloom and the orbiting ring have somewhere to fade out. Sized to the square exactly, any
+      // glow reaching the edge got cut flat and drew a rectangle around the sun.
+      // The layer is transparent and pointer-events:none, so the overlap costs nothing.
+      const width = rect.width * SUN_CANVAS_HEADROOM;
+      const height = rect.height * SUN_CANVAS_HEADROOM;
+      layer.style.width = `${width}px`;
+      layer.style.height = `${height}px`;
+      layer.style.left = `${rect.left - (width - rect.width) / 2}px`;
+      layer.style.top = `${rect.top - (height - rect.height) / 2}px`;
     };
     syncToSquare();
 

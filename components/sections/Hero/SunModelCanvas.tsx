@@ -11,7 +11,10 @@ import {
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
 } from '@/components/effects/IntroSequence/introEvents';
-import { SUN_FRAMING_NUDGE_X } from '@/components/effects/IntroSequence/gatherShader';
+import {
+  SUN_FRAMING_NUDGE_X,
+  SUN_CANVAS_HEADROOM,
+} from '@/components/effects/IntroSequence/gatherShader';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { VECTOR_DEG_PER_SECOND } from './HeroInstruments/heroReadouts';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
@@ -66,9 +69,14 @@ const CAMERA_FOV = 45;
  * desync the landing; moving the camera changes nothing outside this file.
  *
  * Note the bounding sphere includes the flares and planes that stick well out past the sun's body, so
- * values below ~0.6 start cropping those outer elements before they touch the body itself.
+ * base values below ~0.6 start cropping those outer elements before they touch the body itself.
+ *
+ * The `× SUN_CANVAS_HEADROOM` is NOT a size change. `HeroSun` grows the canvas by that same factor
+ * to give the bloom and the ring room to fade out, so the camera has to pull back by it or the sun
+ * would simply render bigger and fill the new space it was given. Change one, change both — they are
+ * the same number for exactly this reason.
  */
-const CAMERA_FIT_MARGIN = 0.575;
+const CAMERA_FIT_MARGIN = 0.575 * SUN_CANVAS_HEADROOM;
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const MAX_FRAME_SECONDS = 0.05;

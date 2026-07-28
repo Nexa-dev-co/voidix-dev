@@ -38,7 +38,6 @@ interface DeckTunerOptions {
    * second writer, and the next carousel move would silently undo it.
    */
   restageLighting: (shipIndex: number) => void;
-  padParts: Map<string, THREE.Mesh>;
   onDispose: (cleanup: () => void) => void;
 }
 
@@ -55,7 +54,6 @@ export async function createDeckTunerPanel({
   shipParts,
   shipMaterials,
   restageLighting,
-  padParts,
   onDispose,
 }: DeckTunerOptions): Promise<void> {
   const { default: LilGui } = await import('lil-gui');
@@ -106,14 +104,36 @@ export async function createDeckTunerPanel({
   bloomFolder.close();
 
   // ── Pad ──
+  // The pad is the deck's light source (every rig multiplier above is 0), so its glow is the closest
+  // thing this stage has to a key light. Its per-craft COLOUR is not here — that is part of each
+  // craft's identity and lives in deckServices as `padGlow`. Full authoring lives at /pad-lab.
   const padFolder = gui.addFolder('Landing pad');
   padFolder.add(tuning, 'showPad');
   padFolder.add(tuning, 'padWidth', 1, 20, 0.05).name('width (reload to apply)');
+  padFolder.add(tuning, 'padScale', 0.1, 3, 0.01).name('scale');
+  padFolder.add(tuning, 'padX', -5, 5, 0.01).name('x');
   padFolder.add(tuning, 'padY', -5, 5, 0.01).name('height');
-  padFolder.addColor(tuning, 'padColor');
-  padFolder.addColor(tuning, 'padEmissiveColor').name('glow colour');
-  padFolder.add(tuning, 'padEmissiveIntensity', 0, 4, 0.01).name('glow');
-  const padPartsFolder = padFolder.addFolder('Pad parts — keep / remove');
+  padFolder.add(tuning, 'padZ', -5, 5, 0.01).name('z');
+  padFolder.add(tuning, 'padRotX', -180, 180, 0.5).name('rot X (90 lays it flat)');
+  padFolder.add(tuning, 'padRotY', -180, 180, 0.5).name('rot Y');
+  padFolder.add(tuning, 'padRotZ', -180, 180, 0.5).name('rot Z');
+
+  const padGlowFolder = padFolder.addFolder('Glow + cast light');
+  padGlowFolder.add(tuning, 'glowIntensity', 0, 30, 0.05).name('glow');
+  padGlowFolder.add(tuning, 'glowMapHue', 0, 1, 0.01).name('texture hue (0 = one colour)');
+  padGlowFolder.add(tuning, 'glowTransitionSeconds', 0, 4, 0.05).name('colour fade (s)');
+  padGlowFolder.add(tuning, 'padLightEnabled').name('cast light');
+  padGlowFolder.add(tuning, 'padLightIntensity', 0, 60, 0.1).name('light intensity');
+  padGlowFolder.add(tuning, 'padLightX', -8, 8, 0.01).name('light x');
+  padGlowFolder.add(tuning, 'padLightY', -4, 8, 0.01).name('light height');
+  padGlowFolder.add(tuning, 'padLightZ', -8, 8, 0.01).name('light z');
+  padGlowFolder.add(tuning, 'padLightDistance', 0, 40, 0.1).name('light reach');
+  padGlowFolder.add(tuning, 'padLightDecay', 0, 4, 0.01).name('light falloff');
+
+  const padSpinFolder = padFolder.addFolder('Spin');
+  padSpinFolder.add(tuning, 'spinMaterial').name('material (empty = off)');
+  padSpinFolder.add(tuning, 'spinSpeed', -180, 180, 0.5).name('deg / sec');
+  padSpinFolder.add(tuning, 'spinAxis', { X: 0, Y: 1, Z: 2 }).name('axis');
   padFolder.close();
 
   // ── The active ship ──
@@ -286,23 +306,6 @@ export async function createDeckTunerPanel({
     });
   };
 
-  // The pad's parts don't change with the carousel, so they're bound once — but only after the model
-  // has actually arrived, which is why this is polled rather than called outright.
-  let padBound = false;
-  const bindPadParts = () => {
-    if (padBound || padParts.size === 0) return;
-    padBound = true;
-    padParts.forEach((mesh, partId) => {
-      const proxy = { keep: !tuning.padHiddenParts.includes(partId) };
-      padPartsFolder.add(proxy, 'keep').name(`${partId}  ${mesh.name || ''}`).onChange((keep: boolean) => {
-        mesh.visible = keep;
-        const listed = tuning.padHiddenParts.indexOf(partId);
-        if (keep && listed !== -1) tuning.padHiddenParts.splice(listed, 1);
-        if (!keep && listed === -1) tuning.padHiddenParts.push(partId);
-      });
-    });
-  };
-
   // ── Export ──
   const exports = {
     copyStage: () => {
@@ -319,11 +322,26 @@ export async function createDeckTunerPanel({
         `  exposure: ${tuning.exposure},`,
         `  showPad: ${tuning.showPad},`,
         `  padWidth: ${tuning.padWidth},`,
+        `  padScale: ${tuning.padScale},`,
+        `  padX: ${tuning.padX},`,
         `  padY: ${tuning.padY},`,
-        `  padColor: '${tuning.padColor}',`,
-        `  padEmissiveColor: '${tuning.padEmissiveColor}',`,
-        `  padEmissiveIntensity: ${tuning.padEmissiveIntensity},`,
-        `  padHiddenParts: ${JSON.stringify(tuning.padHiddenParts)},`,
+        `  padZ: ${tuning.padZ},`,
+        `  padRotX: ${tuning.padRotX},`,
+        `  padRotY: ${tuning.padRotY},`,
+        `  padRotZ: ${tuning.padRotZ},`,
+        `  glowIntensity: ${tuning.glowIntensity},`,
+        `  glowMapHue: ${tuning.glowMapHue},`,
+        `  glowTransitionSeconds: ${tuning.glowTransitionSeconds},`,
+        `  padLightEnabled: ${tuning.padLightEnabled},`,
+        `  padLightIntensity: ${tuning.padLightIntensity},`,
+        `  padLightX: ${tuning.padLightX},`,
+        `  padLightY: ${tuning.padLightY},`,
+        `  padLightZ: ${tuning.padLightZ},`,
+        `  padLightDistance: ${tuning.padLightDistance},`,
+        `  padLightDecay: ${tuning.padLightDecay},`,
+        `  spinMaterial: '${tuning.spinMaterial}',`,
+        `  spinSpeed: ${tuning.spinSpeed},`,
+        `  spinAxis: ${tuning.spinAxis},`,
         '  ships: [',
         ...tuning.ships.map(
           (ship) =>
@@ -358,7 +376,6 @@ export async function createDeckTunerPanel({
   // Follow the carousel. Polled rather than event-driven because the index lives in a ref the scene
   // reads every frame — there is no change event to subscribe to, and a poll at this rate is free.
   const followInterval = window.setInterval(() => {
-    bindPadParts();
     const shipIndex = activeShipIndex();
     // Rebind when the craft changes, and also once its parts have finished loading (the models stream
     // in, so the first bind can legitimately find an empty hull).
@@ -379,9 +396,6 @@ export async function createDeckTunerPanel({
       shipParts(shipIndex).forEach((mesh, partId) => {
         mesh.visible = !hidden.includes(partId);
       });
-    });
-    padParts.forEach((mesh, partId) => {
-      mesh.visible = !tuning.padHiddenParts.includes(partId);
     });
     // Rebind so the per-ship folders are rebuilt against the restored placement objects.
     bindShip(activeShipIndex());
