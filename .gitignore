@@ -1,14 +1,18 @@
 # dependencies
-/node_modules
-/.pnp
+# Un-anchored: the app lives at apps/web, so these must match at any depth.
+node_modules/
+.pnp
 .pnp.js
 
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
-/build
+build/
+
+# turbo / workspace build caches
+.turbo/
 
 # misc
 .DS_Store
@@ -27,8 +31,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Raw, pre-compression source models (optimized copies live in public/models)
+# Raw, pre-compression source models (optimized copies live in apps/web/public/models)
 models-src/
 
 # Scratch space for raw model sources being inspected (see models-src for the kept copies)
-/temp
+temp/

@@ -1,9 +1,14 @@
 // The four vessels that sit on the Services deck. Each ship is dormant until the
 // visitor hovers (lights ignite) or clicks (it powers up and steps forward).
 //
-// This is the single source of truth for the services copy — short display `name`
-// plus the richer eyebrow / description / capability detail surfaced when active —
-// and for each ship's full visual identity (its `profile`).
+// This is the services fleet as authored in code — short display `name` plus the richer eyebrow /
+// description / capability detail surfaced when active, and each ship's full visual identity (its
+// `profile`). It is the seed for the database and the fallback the site falls back to when nothing
+// is published, so it stays a complete, shippable fleet rather than a stub.
+//
+// The shapes these entries satisfy live in ../types.
+
+import type { DeckService } from '../types';
 
 // Model → service assignment. Each ship is one line — swap a path to reassign a
 // vessel. The carousel shows one craft at a time, so every bay gets a distinct hull.
@@ -12,90 +17,7 @@ const MOBILE_VESSEL     = '/models/spaceship3.glb';
 const ENTERPRISE_VESSEL = '/models/cargo_spaceship.glb';
 const AI_VESSEL         = '/models/star_aventure_spaceship_starship_fighter.glb';
 
-// Each hull is re-graded onto its own palette instead of being washed to one flat hue. The
-// model's own albedo *luminance* drives a three-tone map (shadow → hull → highlight), so panels,
-// recesses, and bright faces stay distinct (the ship reads as real, multi-material — never one
-// solid colour). `accent` is the engine/window glow that blooms; `rim` is the silhouette edge
-// catch. The four accents deliberately span blue / mint / warm-amber / magenta so no two ships
-// share a colour family. See hullMaterial.ts for how these are applied.
-export interface GradedProfile {
-  /** Discriminates the material treatment; omitted = graded (the default). */
-  kind?: 'graded';
-  /** Deep tone the darkest albedo maps to (recesses, shadowed panels). */
-  shadow: string;
-  /** Primary mid-tone — the hull's "body" colour. */
-  hull: string;
-  /** Bright tone the lightest albedo maps to (top faces, worn edges). */
-  highlight: string;
-  /** Emissive glow colour for engines / windows / trim — this is what blooms. */
-  accent: string;
-  /** Fresnel edge-catch colour traced along the silhouette. */
-  rim: string;
-  /** PBR feel. */
-  metalness: number;
-  roughness: number;
-  /** Lacquered-hull sheen (a thin reflective coat over the base material). */
-  clearcoat: number;
-  clearcoatRoughness: number;
-  /** Exotic shifting sheen — only the AI ship uses it (0 elsewhere). */
-  iridescence: number;
-  iridescenceIOR: number;
-  /** Luminance pivot between the hull mid-tone and the highlight (≈0.5). */
-  gradeMid: number;
-  /** Albedo luminance above which a texel is treated as a light (→ accent glow). */
-  emitThreshold: number;
-  /** How hard those picked-out lights glow (feeds bloom). */
-  emitStrength: number;
-  /** Per-ship environment-reflection strength. */
-  envIntensity: number;
-}
-
-// The original pre-overhaul hull treatment, kept for ships that read best as a flat two-tone tint:
-// the model's texture is multiplied by a fresnel mix from `colorCore` (facing the camera) to
-// `colorEdge` (grazing edges). No graded palette, no clearcoat/iridescence — the model keeps its
-// native metalness/roughness.
-export interface LegacyProfile {
-  kind: 'legacy';
-  /** Hull colour where the surface faces the camera. */
-  colorCore: string;
-  /** Hull colour at grazing / edge angles. */
-  colorEdge: string;
-}
-
-export type ShipProfile = GradedProfile | LegacyProfile;
-
-// Per-ship key-light override, so the stage light matches each craft's vibe (the rim light already
-// adapts via the profile's rim / colorEdge). Omit `light` to keep the rig's default warm key.
-export interface ShipLight {
-  /** Key-light colour (CSS hex). */
-  color: string;
-  /** Key-light intensity; defaults to the rig's base when omitted. */
-  intensity?: number;
-  /** Fill-light colour override; defaults to the rig's cool fill when omitted (use to kill any cool cast). */
-  fill?: string;
-}
-
-export interface DeckService {
-  /** Two-digit ordinal shown beside the label, e.g. "01". */
-  index: string;
-  /** Short display name shown on the deck. */
-  name: string;
-  /** Poetic kicker revealed above the description when the service is active. */
-  eyebrow: string;
-  description: string;
-  /** Capability tags surfaced under the active description. */
-  capabilities: string[];
-  /** Path to this service's vessel — a Draco-compressed .glb under /public/models. */
-  modelPath: string;
-  /** The ship's full visual identity (palette + material + glow). */
-  profile: ShipProfile;
-  /** Optional per-ship key-light override (see ShipLight); omit for the default warm key. */
-  light?: ShipLight;
-  /** Optional base model rotation in DEGREES, applied before framing (e.g. flip a mis-oriented hull). */
-  modelRotation?: { x?: number; y?: number; z?: number };
-}
-
-export const DECK_SERVICES: DeckService[] = [
+export const DEFAULT_DECK_SERVICES: DeckService[] = [
   {
     index: '01',
     name: 'Web Experiences',

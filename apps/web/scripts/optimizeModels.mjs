@@ -1,14 +1,17 @@
-// Compresses the raw GLBs (kept in /models-src) into web-ready GLBs in /public/models.
+// Compresses the raw GLBs (kept in models-src/) into web-ready GLBs in public/models.
 // Re-runnable: it always reads the pristine source, so tuning a setting and re-running never
 // compounds compression artifacts.
+//
+// Both paths resolve against apps/web (the script runs with that as its working directory), so the
+// raw sources live at apps/web/models-src — not the repo root.
 //
 // The raw Sketchfab exports ship 4K PNG textures (~90 MB of VRAM *each*) and junk UV channels. The
 // Services section loads all four ships at once, so the real budget is GPU memory, not just download
 // size — hence the hard cap on texture resolution below.
 //
-// Usage:
-//   npm run optimize:models                 → every source in /models-src
-//   npm run optimize:models -- chamber.glb  → only the sources you name
+// Usage (from the repo root):
+//   pnpm optimize:models                 → every source in models-src/
+//   pnpm optimize:models chamber.glb     → only the sources you name
 //
 // Name the sources explicitly when you only mean to (re)build one. Reprocessing a model you didn't
 // intend to touch re-encodes textures and geometry that were already lossily compressed once.

@@ -4,47 +4,13 @@
 // worksTransition.ts).
 //
 // Placeholders for now — swap `title` / `client` / `year` / `description` / `tags` for the real
-// work later; the scene and the panel both read straight from here, so no other file changes.
+// work later. This is the seed for the database and the fallback when nothing is published.
+//
+// The shapes these entries satisfy live in ../types.
 
-/**
- * How the rock looks for one project. `seed` and `sizeScale` are baked into geometry, so changing
- * them means re-carving the body (`buildMeteor`); `color` and `textureRepeat` are pushed onto the
- * material every frame, so they take effect immediately.
- *
- * These four deliberately OVERRIDE their equivalents in worksTuning — the tuner's global
- * `meteorSeed` / `meteorColor` / `meteorTextureRepeat` are the fallback for a project that omits a
- * profile, not a live knob once one is set. Everything else about the rock (emissive, roughness,
- * metalness, stretch, detail, idle spin) stays global and stays tunable.
- */
-export interface ProjectRock {
-  /** Which silhouette gets carved. Any integer; the same seed is always the same rock. */
-  seed: number;
-  /** Multiplies the global `meteorRadius`. Keep inside ±10% or the swap stops reading as the same body. */
-  sizeScale: number;
-  /** Tint over the basalt albedo. */
-  color: string;
-  /** How many times the surface texture wraps the body — the apparent grain of the rock. */
-  textureRepeat: number;
-}
+import type { WorksProject } from '../types';
 
-export interface WorksProject {
-  /** Two-digit ordinal shown by the nav counter, e.g. "01". */
-  index: string;
-  /** Codename / display title of the project. */
-  title: string;
-  /** Who it was built for (or the context). */
-  client: string;
-  /** Year shipped. */
-  year: string;
-  /** One paragraph surfaced in the detail panel when this project is focused. */
-  description: string;
-  /** Capability / tech chips under the description. */
-  tags: string[];
-  /** The rock the camera finds at this project's stop. Omit to keep the global tuning values. */
-  rock?: ProjectRock;
-}
-
-export const WORKS_PROJECTS: WorksProject[] = [
+export const DEFAULT_WORKS_PROJECTS: WorksProject[] = [
   {
     index: '01',
     title: 'Aphelion',

@@ -1,24 +1,20 @@
 /**
  * The questions the hologram answers.
  *
- * Single source of truth for the FAQ copy, exactly as `deckServices.ts` is for the fleet and
- * `worksProjects.ts` is for the field: the scene and the panel both read straight from here, so
- * swapping the copy touches no other file. The list's LENGTH is free — the hologram measures its own
- * content and the frames move to fit (see FaqHologram), so adding a question costs nothing.
+ * The FAQ copy as authored in code, exactly as `deckServices.ts` is for the fleet and
+ * `worksProjects.ts` is for the field — the seed for the database and the fallback when nothing is
+ * published. The list's LENGTH is free — the hologram measures its own content and the frames move
+ * to fit (see FaqHologram), so adding a question costs nothing.
  *
  * Placeholder copy for now. The voice is the one the rest of the site speaks in — a claim, then the
  * thing that backs it up — not agency boilerplate.
+ *
+ * The shape these entries satisfy lives in ../types.
  */
 
-export interface FaqEntry {
-  /** Two-digit ordinal, shown down the left of each row. */
-  index: string;
-  question: string;
-  /** One or more paragraphs. Long answers scroll inside the hologram rather than growing it forever. */
-  answer: string[];
-}
+import type { FaqEntry } from '../types';
 
-export const FAQ_ENTRIES: FaqEntry[] = [
+export const DEFAULT_FAQ_ENTRIES: FaqEntry[] = [
   {
     index: '01',
     question: 'What do you actually build?',

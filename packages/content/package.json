@@ -1,0 +1,22 @@
+{
+  "name": "@voidix/content",
+  "version": "0.0.0",
+  "private": true,
+  "//sideEffects": "Lets the site's bundler drop the zod validation layer, which only the admin panel and server-side parsing use.",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.5.4"
+  }
+}
