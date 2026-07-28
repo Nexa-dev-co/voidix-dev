@@ -1,688 +1,432 @@
 # CLAUDE.md
 
+> **Rewritten 2026-07-28** against the actual source. The previous revision described a project
+> with only a Hero and a ServicesDeck and told you Work/Process/Contact "are not built yet" — three
+> sections and two labs had landed since. If you find this file disagreeing with the code again,
+> the code is right: fix this file as part of the change.
+
+---
+
+# PART 1 — The brief
+
 ## Project Overview
 
-Project Name: Voidix
+**Voidix** is a premium software studio specialising in custom web applications, SaaS platforms,
+enterprise CRM, mobile applications, AI solutions, and digital product design.
 
-Voidix is a premium software company specializing in:
+The name comes from orbital systems, gravitational movement, celestial mechanics, and
+interconnected ecosystems.
 
-- Custom Web Applications
-- SaaS Platforms
-- Enterprise CRM Systems
-- Mobile Applications
-- AI Solutions
-- Digital Product Design
+**The website is not a marketing page. The website is the demonstration.** Every interaction,
+animation, transition, and visual element must communicate innovation, technical excellence,
+precision engineering, premium quality, and future thinking.
 
-The name "Voidix" originates from orbital systems, gravitational movement, celestial mechanics, and interconnected ecosystems.
+## Primary Objective
 
-The website is not a marketing page.
+The goal is a site that can realistically **compete on Awwwards**. Evaluate every decision against:
 
-The website itself must be a demonstration of Voidix's capabilities.
+> *"Would this feel impressive next to recent Awwwards winners?"*
 
-Every interaction, animation, transition, and visual element should communicate:
+If no — don't build it. Propose something more original, memorable, immersive, or technically
+impressive.
 
-- Innovation
-- Technical Excellence
-- Precision Engineering
-- Premium Quality
-- Future Thinking
+## Creative Principles
 
----
+**1 · Avoid generic agency design.** No generic hero sections, gradient backgrounds, floating
+cards, feature grids, SaaS landing layouts, Framer-style templates, or startup aesthetics. If a
+section resembles a typical agency site, reject it.
 
-# Primary Objective
+**2 · Create experiences, not pages.** Every section is a scene: orbital systems reacting to the
+cursor, scroll-driven worlds, cinematic camera movement, particle systems, physics. The site should
+feel alive.
 
-The goal of this project is not merely to build a beautiful website.
+**3 · Motion first.** Motion is a design language. Avoid basic fades, slides, and generic scroll
+reveals. Prefer morphing, spatial transitions, depth, camera travel, object transformation,
+procedural animation. Motion communicates meaning.
 
-The goal is to create a website that can realistically compete on Awwwards.
+**4 · Use 3D purposefully.** Never decoration — every 3D element supports the narrative.
 
-Every design decision, animation, interaction, layout, component, and piece of content must be evaluated against this question:
+**5 · Design for emotional impact.** Curiosity → wonder → engagement → trust → excitement. Create
+moments users want to share.
 
-"Would this feel impressive when compared against recent Awwwards winners?"
+## Awwwards Evaluation Framework
 
-If the answer is no:
+Score any proposed feature 1–10 on: **Creativity · Innovation · Interaction · Visual Design ·
+Motion · Technical Excellence · Memorability.** Anything below 8 in any category gets redesigned.
 
-Do not implement it.
+## Brand Personality
 
-Instead propose something more original, memorable, immersive, or technically impressive.
+Voidix **is**: visionary, intelligent, precise, premium, futuristic, confident.
+Voidix **is not**: corporate, boring, generic, minimal for minimalism's sake, trend-following.
 
----
+## Content Standards
 
-# Creative Principles
+Never generate generic agency copy — no *"we build digital solutions"*, *"we transform
+businesses"*, *"your trusted partner"*. Every headline should be distinctive; every sentence should
+reinforce the Voidix universe. The established voice is **a claim, then the thing that backs it
+up** (see `faqEntries.ts`, `worksProjects.ts`).
 
-## Principle 1: Avoid Generic Agency Design
+## Decision Rule
 
-Never generate:
-
-- Generic hero sections
-- Generic gradient backgrounds
-- Generic floating cards
-- Generic feature grids
-- Generic SaaS landing page layouts
-- Generic Framer-style templates
-- Generic startup aesthetics
-
-If a section resembles a typical agency website:
-
-Reject it.
+Before proposing anything, ask: Is this unique? Memorable? Technically impressive? Does it
+strengthen the Voidix identity? Could it appear on Awwwards? If not — build something better.
 
 ---
 
-## Principle 2: Create Experiences, Not Pages
-
-Every section should feel like an experience.
-
-Examples:
-
-- Orbital systems reacting to cursor movement
-- Dynamic 3D worlds
-- Interactive storytelling
-- Scroll-driven transformations
-- Immersive scene transitions
-- Cinematic camera movements
-- Environmental effects
-- Particle systems
-- Physics-driven interactions
-
-The website should feel alive.
-
----
-
-## Principle 3: Motion First
-
-Motion is a core design language.
-
-Every transition should have intention.
-
-Avoid:
-
-- Basic fade-ins
-- Basic slide-ins
-- Generic scroll reveals
-
-Prefer:
-
-- Morphing objects
-- Spatial transitions
-- Depth-based movement
-- Camera travel
-- Object transformation
-- Procedural animation
-
-Motion should communicate meaning.
-
----
-
-## Principle 4: Use 3D Purposefully
-
-3D should not be decoration.
-
-Every 3D element must support the narrative.
-
-Potential themes:
-
-- Orbiting systems
-- Planetary mechanics
-- Connected ecosystems
-- Data universes
-- Artificial intelligence structures
-- Digital galaxies
-- Abstract technological architectures
-
-3D must feel premium and cinematic.
-
----
-
-## Principle 5: Design for Emotional Impact
-
-Users should experience:
-
-1. Curiosity
-2. Wonder
-3. Engagement
-4. Trust
-5. Excitement
-
-The site should create moments that users want to share.
-
----
-
-# Awwwards Evaluation Framework
-
-Before implementing any feature, score it from 1-10 in the following categories:
-
-## Creativity
-
-Is it original?
-
-## Innovation
-
-Have users seen this before?
-
-## Interaction
-
-Does it create engagement?
-
-## Visual Design
-
-Does it look premium?
-
-## Motion
-
-Does animation elevate the experience?
-
-## Technical Excellence
-
-Does it demonstrate advanced engineering?
-
-## Memorability
-
-Will users remember it tomorrow?
-
-Any concept scoring below 8 in any category should be redesigned.
-
----
-
-# Voidix Brand Personality
-
-Voidix is:
-
-- Visionary
-- Intelligent
-- Precise
-- Premium
-- Futuristic
-- Confident
-
-Voidix is not:
-
-- Corporate
-- Boring
-- Generic
-- Minimal for the sake of minimalism
-- Trend-following
-
-Voidix should feel like a company that builds the future.
-
----
-
-# Technical Standards
-
-Framework:
-
-- Next.js
-- TypeScript
-
-Preferred Technologies:
-
-- React Three Fiber
-- Three.js
-- GSAP
-- Framer Motion
-- Lenis
-- Motion Path Animations
-- WebGL
-- GLSL Shaders
-- Custom Post Processing
-
-Avoid unnecessary dependencies.
-
-Favor custom implementations over generic libraries when they improve uniqueness.
-
----
-
-# Content Standards
-
-Never generate generic agency copy.
-
-Avoid phrases such as:
-
-- We build digital solutions
-- We transform businesses
-- We create innovative experiences
-- Your trusted partner
-
-Every headline should feel distinctive and memorable.
-
-Every sentence should reinforce the Voidix universe.
-
----
-
-# Performance Requirements
-
-Awwwards-level visuals must not sacrifice performance.
-
-Priorities:
-
-1. Smooth 60fps interactions
-2. Fast initial load
-3. Progressive enhancement
-4. Optimized assets
-5. Efficient WebGL rendering
-
-Visual ambition must coexist with engineering excellence.
-
----
-
-# Decision Rule
-
-Before proposing any feature, section, interaction, animation, or visual concept:
-
-Ask:
-
-1. Is this unique?
-2. Is this memorable?
-3. Is this technically impressive?
-4. Does it strengthen the Voidix identity?
-5. Could this appear on Awwwards?
-
-If not:
-
-Do not proceed.
-
-Create something better.
-
-# CLAUDE.md — voidix
-
-This file defines how code should be written, structured, and named in this codebase. Follow these rules in every suggestion, generation, and edit. This is a **pure frontend** Next.js project — no backend, no API routes, no database.
-
-voidix is a cinematic, single-page **web-studio portfolio**: a long-scroll homepage composed of animated sections, gated behind an intro loading screen, plus an isolated **orbital-map navigation prototype** at `/prototype`.
-
----
+# PART 2 — The system as it actually exists
 
 ## Stack
 
-**Framework:** Next.js 14 (App Router), TypeScript, Tailwind CSS
+**Next.js 14.2 (App Router) · TypeScript (strict) · Tailwind CSS.**
 
-**Animation & graphics:**
+| | |
+|---|---|
+| `three` ^0.184 | All WebGL. Four independent scenes — see below. Always dynamically imported (`ssr: false`). |
+| `gsap` + `ScrollTrigger` + `ScrollToPlugin` | Used **directly**. No `@gsap/react`, no `useGSAP`. |
+| `lil-gui` | The `?tune` authoring panels only. Dynamically imported, never in the default bundle. |
+| `lucide-react` | Icons — **labs only** at present. |
 
-- `gsap` + `gsap/ScrollTrigger` + `gsap/ScrollToPlugin` — imported and used **directly** (no `@gsap/react` / `useGSAP` wrapper, no scoped `useGsap` hook). Scroll-driven pins, scrubs, timelines, snapping. Each animation lives in its own hook under `lib/hooks/` (`useHeroAnimation`, `useNavbarAnimation`) or co-located with its scene (`useServicesDeck`).
-- `Three.js` — WebGL scenes: the shared sun (`SunCanvas`) and the homepage services fleet (`useServicesDeck`).
+There is **no** shadcn/ui, no Framer Motion, no form library, no validation library, and **no
+smooth-scroll layer** — scroll is native. (`lenis`, `ogl` and `@gsap/react` were dependencies that
+nothing imported; removed 2026-07-28. If you want smooth scroll, wire it deliberately and re-sync
+ScrollTrigger to it.)
 
-**Icons:** `lucide-react` (a dependency; reach for it when an icon is needed).
+## Design tokens
 
-**Dev tooling:** `lil-gui` — a dependency for runtime tweak panels while tuning shaders/scenes (never shipped in a visible/default-on state).
-
-> **Listed-but-unused dependencies (do not assume they're wired in):** `lenis` (smooth scroll), `ogl`, and `@gsap/react` are in `package.json` but currently imported **nowhere**. The site uses **native scroll** today — there is no Lenis instance, no GSAP-ticker-driven scroll loop. If you need smooth scroll, wire Lenis up deliberately; don't write code that assumes it already exists.
-
-There is **no** shadcn/ui, Framer Motion, form library, or validation library in this project. Don't introduce one without being asked.
-
----
-
-## Design System — Tokens
-
-These are the canonical design tokens, defined as CSS variables in `app/globals.css` and exposed to Tailwind via `tailwind.config.ts`. Use them everywhere. **Never hardcode a color.**
-
-### Colors
+Defined in `app/globals.css` `:root`, exposed to Tailwind in `tailwind.config.ts`. **Never hardcode
+a colour.**
 
 ```css
-:root {
-  --bg: #060606; /* page background — near-black */
-  --fg: #ebe8e0; /* foreground text — warm off-white */
-  --muted: rgba(235, 232, 224, 0.38); /* secondary / metadata text */
-  --accent: #00e5ff; /* signature electric cyan — CTAs, highlights, selection */
-  --border: rgba(235, 232, 224, 0.08); /* hairline dividers, card borders */
-  --card: #0d0d0d; /* elevated surfaces / cards */
-}
+--bg: #060606;                        /* near-black page background */
+--fg: #ebe8e0;                        /* warm off-white text        */
+--muted: rgba(235, 232, 224, 0.38);   /* secondary / metadata       */
+--accent: #00e5ff;                    /* signature electric cyan    */
+--border: rgba(235, 232, 224, 0.08);  /* hairlines                  */
+--card: #0d0d0d;                      /* elevated surfaces          */
 ```
 
-Tailwind exposes these as `bg-bg`, `text-fg`, `text-muted`, `bg-accent`, `border-border`, `bg-card`, etc. (see `tailwind.config.ts`). Prefer the Tailwind token classes over raw `var(--…)` in JSX, and use `var(--…)` directly in CSS / inline canvas styles.
+Non-token colours that matter: the hero's cream `#e2dfd2` and `--hero-invert-text: #c0c0c0`.
 
-### Typography
+**Type:** `--font-syne` (Syne, 700/800) for display via `.font-display`; `--font-dm-sans` (DM Sans,
+300/400/500) is the `<body>` default. `.eyebrow` is the uppercased kicker helper. A fluid scale
+(`--fs-micro … --fs-mark`) drives sizing — use it rather than fixed px.
 
-Two fonts, loaded via `next/font/google` in `app/layout.tsx` with `display: "swap"`:
-
-```css
---font-syne     /* Syne   — display / headings (weights 700, 800) */
---font-dm-sans  /* DM Sans — body / UI         (weights 300, 400, 500) */
-```
-
-**Usage rules:**
-
-- Display (Syne) → headings, hero text, section titles. Apply via the `font-display` Tailwind class or the `.font-display` helper.
-- Body (DM Sans) → paragraphs, nav, labels. This is the `<body>` default.
-- `.eyebrow` helper → small uppercased, letter-spaced kicker labels above headings.
-
----
+**All CSS lives in `app/globals.css`** (~1,900 lines, class-based). There are no CSS Modules.
 
 ## Responsiveness — non-negotiable
 
-**Everything built in this project must be responsive.** No fixed-width layouts, no desktop-only sections, no "we'll do mobile later". Every new section, component, animation, and 3D scene ships working from small phones to large desktops in the same change.
+Everything ships working from ~360px phones to large desktops **in the same change**.
 
-Follow the patterns already in the codebase:
+- **Fluid by default** — `clamp()` / viewport units and the `--fs-*` tokens, not fixed px. Reach for
+  a breakpoint only when fluid scaling genuinely can't fix the layout.
+- **The breakpoint is `@media (max-width: 51.25em)`** (≈820px). Reuse it.
+- **3D scenes reframe, not stretch** — update camera aspect on resize, keep subjects framed at
+  portrait, clamp DPR.
+- **Scrubbed animation must survive resize** — `invalidateOnRefresh` + function-based tween values,
+  measure with `measureUntransformedRect` (never a transformed `getBoundingClientRect`), and
+  `ScrollTrigger.config({ ignoreMobileResize: true })` so a mobile address bar doesn't re-pin.
+- **Phones don't mount the optional hero effects at all** — `useIsLowPowerViewport` unmounts
+  `FluidCursor` and `HeroInstruments` below 760px / on coarse pointers. Hiding with CSS leaves the
+  rAF loops running, which is the opposite of the point.
 
-- **Fluid by default.** Size type, spacing, and layout with `clamp()` / viewport units, not fixed pixels — see the `--fs-*` tokens in `globals.css` and the `clamp(...)` font sizes/padding throughout. Reach for a breakpoint only when fluid scaling alone can't fix the layout.
-- **Breakpoint convention.** The existing stacked-layout breakpoint is `@media (max-width: 51.25em)` (≈820px) — reuse it for consistency unless a component genuinely needs its own.
-- **3D / canvas scenes must reframe, not just stretch.** Update camera aspect on resize, keep subjects framed at portrait aspect ratios, and clamp DPR (`Math.min(devicePixelRatio, 2)`) for performance.
-- **Scroll-driven (pinned/scrubbed) animation must survive resize.** Recompute geometry on `ScrollTrigger` refresh (`invalidateOnRefresh` + function-based tween values), measure base boxes with `measureUntransformedRect` (never a transformed `getBoundingClientRect`), and use `ScrollTrigger.config({ ignoreMobileResize: true })` so a mobile address bar showing/hiding doesn't re-pin or jitter the scene.
-- **Touch matters.** Pointer-driven interactions (drag-to-rotate, flick) should degrade gracefully on touch; scroll/snap and tap-to-select must always work.
-- Verify changes at a narrow viewport before considering them done.
-
----
-
-## Intro Loading Screen
-
-Every load of the homepage is gated behind a single fullscreen intro: `components/effects/IntroSequence/IntroSequence.tsx`. It is **one component running one GSAP timeline** (~6s) — there is **no loader-variant registry, no `?loader=` URL switch, and no `PageLoader` orchestrator**. (Earlier docs described a multi-variant loader system; that does not exist in the code.)
-
-The intro: paints an opaque `--bg` veil over the hero, runs a counter → slot-machine word cycle → "voidix" wordmark resolve, then **hands off** by flying the one shared sun from the wordmark's "o" into the hero square. It locks scroll for its entire duration and dispatches `REVEAL_EVENT` (`voidix:reveal`) right before the sun lands — the single "site is ready" signal the hero and navbar wait for. Honours `prefers-reduced-motion` by resolving fast. See the **Intro & Hero Animation Timeline** section below for the contracts that protect it.
-
----
-
-## Project Structure
-
-**Single-page site.** Everything renders from `app/page.tsx` — there are **no other routes** (a former `/services` page was removed). There is **no `View` wrapper** between the page and its sections. The codebase is intentionally small right now — most of the sections the creative brief envisions (Work, Process, Contact, Footer) are **not built yet**.
+## Project structure
 
 ```
 app/
-  layout.tsx          # root layout — fonts (Syne + DM Sans), Navbar, global CSS
-  globals.css         # design tokens + all component CSS (class-based, not CSS Modules)
-  page.tsx            # the only route — renders <Hero/> + <HeroSun/> + <IntroSequence/>
+  layout.tsx        # fonts, Navbar, metadata
+  globals.css       # tokens + every component's CSS
+  page.tsx          # the ONLY public route
+  sun-lab/          # authoring tool (noindex)
+  letters/          # glyph testbed (noindex)
 
 components/
-  layout/
-    Navbar/           # Navbar.tsx — blended bar + cyan accent layer + per-section scroll meters
+  layout/Navbar/
   sections/
-    Hero/             # Hero.tsx (hero + owns the services-deck overlay), HeroSun.tsx, SunCanvas.tsx, sunShaders.ts
-    ServicesDeck/     # homepage services: ServicesDeck.tsx, deckServices.ts, deckEvents.ts,
-                      #   DeckCanvas/DeckCanvas.tsx, hooks/useServicesDeck.ts
+    Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
+    ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial + tuner
+    WorksField/     # the project field + FieldCanvas + meteor/mark systems + tuner
+    Chamber/        # the room, its walls/ground, FaqHologram/, tuner
   effects/
-    IntroSequence/    # IntroSequence.tsx + introEvents.ts (REVEAL_EVENT)
-    FluidCursor/      # FluidCursor.tsx + fluidConfig + fluidSimulation (hero ink trail)
+    IntroSequence/  # loader: GatherCanvas, gather.worker, LoaderTelemetry/
+    FluidCursor/    # hero ink trail (hand-rolled WebGL fluid sim)
+    ConstellationFrame/
+  lab/
+    SunLab/         # /sun-lab — the fractured-sun + black-hole editor
+    LetterLab/      # /letters
 
-lib/
-  hooks/
-    useHeroAnimation.ts    # the hero→services single-pin transition (fill → reveal → carousel)
-    useNavbarAnimation.ts  # navbar entrance + per-section meter positioning
-    useFluidCursor.ts      # drives the FluidCursor WebGL sim + difference-blend invert canvas
-  prefersReducedMotion.ts  # standalone helper — `prefersReducedMotion()` (NOT a hook, NOT inside useGsap)
-  measureUntransformedRect.ts # reads an element's base box with its live transform stripped
-
-public/
-  models/             # Draco-compressed .glb vessels (some referenced models are missing — see below)
-  draco/              # Draco decoder (js + wasm) for GLTFLoader
-  textures/           # planet + sun textures
-
-scripts/
-  optimizeModels.mjs  # `npm run optimize:models` — gltf-transform Draco compression
-docs/                 # living handoff docs — services-deck-state.md is the accurate one
+lib/                # shared: the pin's layout maths, events, perf systems, tuner plumbing
+scripts/optimizeModels.mjs   # `npm run optimize:models` — per-model gltf-transform recipes
+docs/               # living design + state docs
 ```
 
-### Component file convention
-
-- **Each component lives in its own folder named after it**, containing its `.tsx` plus anything it owns (co-located config, events, sub-hooks, shaders). E.g. `components/sections/Hero/Hero.tsx`, not a loose `Hero.tsx`.
-- Category folders (`layout`, `sections`, `effects`) are grouping only; the per-component folder sits inside its category.
-- A component that owns a WebGL scene co-locates its scene hook (e.g. `ServicesDeck/hooks/useServicesDeck.ts`); cross-component animation hooks live in `lib/hooks/`.
-- Only promote something to `lib/` when it's shared across components.
+**Component file convention:** each component lives in its own folder named after it, holding its
+`.tsx` plus everything it owns (config, events, sub-hooks, shaders). A component that owns a WebGL
+scene co-locates its scene hook (`ServicesDeck/hooks/useServicesDeck.ts`); only genuinely shared
+things get promoted to `lib/`.
 
 ---
 
-## The Page (`/`)
+## ► The scroll spine — read this before touching any section
 
-`app/page.tsx` renders just three things: `<Hero/>`, `<HeroSun/>`, and `<IntroSequence/>`. The whole hero→services experience is **one continuous pinned scroll**, not a stack of sections:
+**The entire public site is ONE pinned `ScrollTrigger`, owned by `lib/hooks/useHeroAnimation.ts`.**
+`app/page.tsx` renders only `<Hero/>`, `<HeroSun/>`, `<IntroSequence/>` and `<FaqHologram/>`. Every
+"section" past the hero is an **absolutely-positioned overlay inside `.hero-section`**, revealed by
+scroll progress. There is no stack of sections and no second pin.
 
-- **`Hero`** — cream-coloured hero (`#e2dfd2`): masked headline "we build worlds" where the "o" is the shared sun, tagline "software with its own gravity", and a scoped `FluidCursor` ink trail. The hero section also **owns the `ServicesDeck` overlay**.
-- **`HeroSun`** — the single shared sun for the whole page (one WebGL canvas, `SunCanvas`). The intro flies it from the loader "o" into the hero square; hero scroll then expands it.
-- **`useHeroAnimation`** — one pinned `ScrollTrigger` runs three phases: **(1) fill** (scrubbed: the black square grows to fill the viewport, sun rises), **(2) reveal** (at full fill, the `ServicesDeck` overlay appears on the now-full-black screen, `DECK_REVEAL_EVENT` fires), **(3) carousel** (snapped: scroll cycles the four service "craft"). There is no second pinned section glued on with a margin.
-- **`ServicesDeck`** — landing-pad carousel: one 3D vessel on a pad under a starfield, four services as a bottom strip. Scroll / drag-flick / click-a-name to switch craft. `deckServices.ts` is the single source of truth for the services copy + per-ship model/colours. Detailed tuning lives in `docs/services-deck-state.md`.
+```
+  INTRO      HERO       SERVICES     ══HANDOFF══   WORKS      ══REVEAL══   CHAMBER
+  ┌─────┐    ┌─────┐    ┌──────┐       (180vh)     ┌──────┐     (140vh)    ┌──────┐
+  │dust │───►│square───►│4 craft│── craft flies ──►│4 rocks│── camera ────►│ room │
+  │→ sun│    │fills │   │on pad │   becomes the    │one    │   backs out   │ + FAQ│
+  └─────┘    └─────┘    └──────┘   project meteor  │re-carve│  of "screen" │ holo │
+                                                   └──────┘                └──────┘
+   fillFraction ──┤├── carousel: stops separated by wide CROSSINGS ──────────────┤
+```
 
----
-
-## Naming Rules
-
-### Variables & Parameters
-
-**Never use abbreviations.** Names must describe exactly what the value is. This applies to every variable, parameter, destructured value, and callback argument without exception.
+**The layout is data, not arithmetic spread through the file.** `useHeroAnimation` declares a list
+of sections; `lib/carouselLayout.ts` derives everything else from it:
 
 ```ts
-// ❌ Wrong
-const p = req.params;
-const u = await getUser(id);
-const fn = (e: Event) => {};
-const d = new Date();
-const ref = useRef<HTMLDivElement>(null); // only if "ref" is vague — prefer descriptive names
-const { s, t } = useScroll();
-
-// ✅ Correct
-const routeParams = req.params;
-const currentUser = await getUserById(userId);
-const handleSubmit = (event: Event) => {};
-const createdAt = new Date();
-const heroContainerRef = useRef<HTMLDivElement>(null);
-const { scrollProgress, scrollTarget } = useScroll();
+const carouselSections = [
+  { key: 'services', stopCount: craftCount,   setActiveStop: …, crossingAfter: { scrollVh: 180, apply: applyServicesToWorksHandoff } },
+  { key: 'work',     stopCount: projectCount, setActiveStop: …, crossingAfter: { scrollVh: 140, apply: applyWorksToChamberReveal   } },
+  { key: 'process',  stopCount: 1 },   // the chamber — its beats run off the reveal landing
+];
 ```
 
-When a parameter is a bag of options or data, name it after what it contains — not a generic shorthand:
+`computeCarouselLayout()` returns the stop progress values, the crossing spans, the fill fraction
+and each section's navbar-meter span. **Adding a section is one entry in that list** — do not
+hand-roll new progress arithmetic.
+
+**A crossing** is a wide scrubbed span between two sections. One gesture from the last stop commits
+the whole glide, with input locked (`settleMs`) so it can't be cut short.
+
+### The rules that keep this working
+
+1. **ONE pin.** New transitions go *inside* it as a section or a crossing. This site was rebuilt
+   once already because a crossing ran on three clocks and fast scroll desynced them
+   (`docs/services-to-works-flight.md`).
+2. **ONE clock.** Every visual in a crossing is a **pure function of its progress `0..1`**. No
+   `gsap.to(…)` with a duration, no "arrived" flags, no sentinels. Each scene eases its own copy of
+   the progress per frame. Consequences fall out for free: it can't be outrun, it reverses
+   perfectly, and a resize just re-derives it. (The two deliberate exceptions are documented in
+   `docs/works-to-chamber-reveal.md` §3.8.)
+3. **Nothing scroll-driven exists before `REVEAL_EVENT`** — see Contract 2 below.
+
+### Why the Chamber lives inside the WorksField
+
+**A GPU texture cannot cross a WebGL context.** The space scene renders to a texture that gets
+painted onto a quad in the chamber room — so the room must be drawn by the *same renderer*. That is
+why `useWorksField.ts` hosts `chamberScene.ts` rather than the chamber owning a canvas. **Do not
+"tidy" this.**
+
+---
+
+## The intro (loading screen)
+
+`components/effects/IntroSequence/` gates every load. It is one GSAP timeline plus a WebGL "gather"
+field, driven by **real asset progress** — not a timer.
+
+- **`GatherCanvas` + `gather.worker.ts`** render dust streaming in from off-screen. The render loop
+  runs in a **Web Worker on an `OffscreenCanvas`** so it keeps painting while the main thread is
+  blocked parsing glTF and compiling shaders. A main-thread fallback exists for older Safari.
+- **The sun assembles.** At 100% the ten fracture shards of `fractured_sun.glb` sweep in from
+  outside the frame and lock together; the star lights inside the closing shell. The intro holds
+  its handoff on `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
+- Then the sun **flies from the wordmark's "o" into the hero square** and `REVEAL_EVENT` fires.
+
+### Contract 1 — scroll is locked for the whole intro
+
+`IntroSequence` locks scroll on mount (`html.scroll-locked`, non-passive `wheel`/`touchmove`
+blockers, scroll-key blockers, `scrollRestoration = 'manual'`, `scrollTo(0,0)`) and releases it
+**exactly once** in the timeline's `onComplete`. The component returns `null` when done but **stays
+mounted** — never rely on effect cleanup to unlock.
+
+### Contract 2 — no scroll-driven hero animation during the intro
+
+The pin is created **only** inside the `REVEAL_EVENT` handler, never on mount (with a fallback
+timeout if the intro is bypassed). Any new scroll-driven hero/sun animation must be gated the same
+way, or a restored scroll position moves things while the loader is still up.
+
+## The shared sun
+
+**There is exactly one sun: `HeroSun` → `SunModelCanvas` → `fractured_sun.glb`.** It is the same
+model authored in `/sun-lab`, and its constants **are** the lab's "Peaceful" preset — keep them in
+step with `sunLabPresets.ts` rather than drifting a second copy.
+
+The intro only *drives* it via `.hero-sun-layer` (outer: opacity + scroll transform) and
+`.hero-sun-flight` (inner: the o → square flight). Its z-index walks `10001` (during intro, above
+the veil) → `9500` (after) → `-1` (services, so the fleet and its labels paint in front).
+
+`AUTO_ROTATE_DEGREES_PER_SECOND` is **imported** from `HeroInstruments/heroReadouts.ts`, not
+copied — the HUD displays that exact rate, so one source of truth stops the telemetry lying.
+
+## Event contracts
+
+| Event | Constant | Fired by | Purpose |
+|---|---|---|---|
+| `voidix:reveal` | `REVEAL_EVENT` | IntroSequence | **The** intro→site handoff. Hero pin, navbar entrance, sun z-index all wait on it. |
+| `voidix:intro-active` | `INTRO_ACTIVE_EVENT` | IntroSequence | Intro is up. |
+| `voidix:sun-assemble` / `-assembled` | `SUN_ASSEMBLE_EVENT` / `SUN_ASSEMBLED_EVENT` | IntroSequence ↔ SunModelCanvas | Cue and completion of the shard assembly. The intro holds on the latter. |
+| `voidix:intro-ignite` | `IGNITE_EVENT` | IntroSequence | The gather field's final rush. |
+| `voidix:assets-warmup` | `ASSETS_WARMUP_EVENT` | IntroSequence | Asks each scene to compile shaders during a still beat, so the stall is invisible. |
+| `deck:reveal` / `deck:hide` | `DECK_REVEAL_EVENT` / `DECK_HIDE_EVENT` | useHeroAnimation | Fleet enters/leaves; drives `is-services`, the sun's z-index, the fluid cursor gate. |
+| `voidix:goto-services` | `GOTO_SERVICES_EVENT` | Navbar | Nav "Services" scrolls the pin to the revealed fleet. |
+| `voidix:handoff-progress` | `HANDOFF_PROGRESS_EVENT` | useHeroAnimation | The services→works crossing, `0..1`. |
+| `voidix:chamber-progress` | `CHAMBER_PROGRESS_EVENT` | useHeroAnimation | The works→chamber reveal, `0..1`. |
+| `voidix:chamber-hologram` | `CHAMBER_HOLOGRAM_EVENT` | chamberScene | The tour has arrived; the FAQ panel may unseal. |
+
+## Navbar & the per-section meters
+
+Two stacked fixed layers: `.nav-root` uses `mix-blend-mode: difference` (auto-inverts against
+whatever scrolls under it); `.nav-accent` sits behind holding everything that must stay brand-cyan
+(top line, orbital mark, the meters), so the blend never turns it red.
+
+Each nav item has a cyan meter. **A section feeds its meter by setting `--nav-progress-<key>` on
+`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`.
+`useNavbarAnimation` positions each meter by measuring live layout (re-run on resize and once fonts
+are ready), so a new section's meter works with zero navbar changes. Entrance plays on
+`REVEAL_EVENT`, items converging from the four directions in their `data-enter`.
+
+## Performance systems
+
+These exist and are load-bearing — don't reinvent them:
+
+| `lib/` | Job |
+|---|---|
+| `adaptivePixelRatio.ts` | Measures real frame times and trades resolution for smoothness. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. |
+| `performanceTier.ts` | `'low' \| 'high'` from measured frame times; picks which texture tier to fetch. |
+| `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size.** |
+| `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones. |
+
+**Only one heavy 3D scene ever draws at a time past the hero** — the deck and the works field gate
+each other off, and both stop on tab-hidden. Preserve that.
+
+Costs, roughly: WorksField + Chamber ●●●●● > ServicesDeck ●●●●○ ≈ FluidCursor ●●●●○ > sun ●●●○○.
+`UnrealBloom` is the recurring expensive pass. Full breakdown in `docs/performance-ratings.md`.
+
+## The `?tune` authoring panels
+
+The deck, the works field and the chamber each ship a `lil-gui` tuning panel, **dynamically
+imported only when the URL has `?tune`** — nothing reaches the default bundle. Shared plumbing:
+`lib/tunerDock.ts` (the column), `tunerExport.ts` (prints a paste-ready constants block to the
+console), `tunerReset.ts`, `tuneScrollLock.ts`.
+
+**These are general editors, not one-shot wizards.** When extending a lab or panel, give full
+control over the thing being edited rather than wiring a path to one preconceived outcome.
+
+## The labs (`/sun-lab`, `/letters`)
+
+Authoring tools, `robots: noindex`, separate routes — nothing reaches the homepage bundle.
+`/sun-lab` is a full editor for `fractured_sun.glb` and `black_hole.glb`: grouped object tree,
+per-material controls, snapshot presets, and a **complete five-phase sun→black-hole finale**
+(flash, shard implosion, gravitational redshift, spin-up + tremor, screen-space lensing, a
+120k-particle accretion spiral). See `docs/sun-lab-remaining-work.md`.
+
+---
+
+# PART 3 — Code style
+
+## Naming
+
+**Never abbreviate.** Every variable, parameter, destructured value and callback argument is named
+for exactly what it is.
 
 ```ts
 // ❌
+const p = req.params;  const fn = (e: Event) => {};  const { s, t } = useScroll();
 function animateParticles(p: ParticleConfig) {}
-function buildScene(opts: SceneOptions) {}
 
 // ✅
+const routeParams = req.params;  const handleSubmit = (event: Event) => {};
+const { scrollProgress, scrollTarget } = useScroll();
 function animateParticles(particleConfig: ParticleConfig) {}
-function buildScene(sceneOptions: SceneOptions) {}
 ```
 
-### Files
+**Files.** `.tsx` → PascalCase, named after the component it exports. `.ts` → camelCase: hooks are
+verb-first (`useHeroAnimation.ts`), utilities/config/data describe their contents
+(`measureUntransformedRect.ts`, `deckServices.ts`, `carouselLayout.ts`) — **never** `utils.ts` /
+`helpers.ts` / `misc.ts`. If the name doesn't tell you what's inside, rename it.
 
-- **`.tsx` files → PascalCase**, named after what they render: `Hero.tsx`, `Navbar.tsx`, `SunCanvas.tsx`, `IntroSequence.tsx`. A `.tsx` file that exports a component is named after that component.
-- **`.ts` files** keep their idiomatic casing:
-  - **hooks** → `camelCase`, verb-first: `useHeroAnimation.ts`, `useNavbarAnimation.ts`, `useServicesDeck.ts`.
-  - **utilities / config / data** → `camelCase`, describing what the file does or contains: `measureUntransformedRect.ts`, `prefersReducedMotion.ts`, `deckServices.ts` — never `utils.ts` / `helpers.ts` / `misc.ts`.
-- File names must describe what the file **does or contains**. If the name alone doesn't tell you what's inside, rename it.
-
-### Hooks
-
-Verb-first, action-describing names. The hooks that actually exist:
-
-```ts
-useHeroAnimation();   // the hero→services single-pin transition (fill → reveal → carousel)
-useNavbarAnimation(); // navbar entrance (on REVEAL_EVENT) + per-section meter positioning
-useFluidCursor();     // drives the hero ink-trail WebGL sim + its difference-blend invert canvas
-useServicesDeck();    // the homepage fleet Three.js scene (co-located in ServicesDeck/hooks/)
-```
-
-### Components
-
-PascalCase, named after what they render: `Hero` / `Navbar` / `IntroSequence` / `ServicesDeck`.
-
----
+**Hooks** are verb-first and action-describing. **Components** are PascalCase, named for what they
+render.
 
 ## Exports
 
-- **Pages & components** → `default export`
-- **Hooks, utils, lib, types, registries** → `named export`
-- **Next.js `page.tsx` and `layout.tsx`** → always `default export` (required)
-
----
-
-## Animation Philosophy
-
-Every animation must feel **purposeful and cinematic**, not decorative.
-
-Rules:
-
-1. **The intro (`IntroSequence`) gates the homepage.** It locks scroll and dispatches `REVEAL_EVENT` when the sun lands — don't bypass it with code edits, and don't build hero/sun scroll animation that runs before that event (see Contract 2 below).
-2. **Scroll reveals use GSAP `ScrollTrigger`** in a dedicated hook — not hand-rolled Intersection Observers. Register plugins once (`gsap.registerPlugin(ScrollTrigger, ScrollToPlugin)`) and kill triggers/timelines in the effect cleanup.
-3. **Scroll is native today.** There is no Lenis/smooth-scroll layer wired in. If you add one, do it deliberately and re-sync ScrollTrigger to it — don't assume it already exists.
-4. **WebGL canvases render behind content.** Never block scroll or pointer events (the one exception: the deck canvas accepts the pointer for dragging the craft).
-5. Animations respect `prefers-reduced-motion`. Use the standalone helper, then gate decorative motion behind it:
-
-```ts
-import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
-
-if (!prefersReducedMotion()) {
-  // run decorative GSAP / WebGL motion
-}
-```
-
----
+Pages & components → **default**. Hooks, utils, lib, types, registries → **named**.
+`page.tsx` / `layout.tsx` → always default (required by Next).
 
 ## Comments
 
-Comments explain **why** something is done or walk through **steps in complex logic**. They should read like a human wrote them — not like generated documentation or a narration of obvious code.
+Comments explain **why**, or walk through the steps of complex logic. They should read like a human
+wrote them — not generated documentation, not a narration of the obvious.
 
 ```ts
-// ❌ Obvious — says what the code already says
-// Brighten the particle
-brightness *= 1.5;
-
-// ❌ Robotic — generated doc style
-// This function calculates the orbital position based on angle and radius
-function getOrbitalPosition(angle: number, radius: number) {}
+// ❌ Says what the code already says
+brightness *= 1.5;   // Brighten the particle
 
 // ✅ Explains the why
-// Particles brighten as they lock in so the formed shape "pops" — this is what
-// makes the reveal read as building, not just arriving
+// Particles brighten as they lock in so the formed shape "pops" — this is what makes the
+// reveal read as building, not just arriving
 brightness *= 1.0 + gatherRaw * FORM_BRIGHTNESS_BOOST;
-
-// ✅ Human and contextual
-// We delay the hero reveal by one frame so the loader exit finishes painting
-// before GSAP tries to measure element positions — measuring mid-transition
-// gives wrong values and breaks the stagger
-requestAnimationFrame(() => timeline.play());
 ```
 
-For multi-step complex functions (especially animation timelines and shaders), number the steps:
+Number the steps in multi-step timelines and shaders. No JSDoc on every function — only where a
+shared `lib/` helper is genuinely reusable and non-obvious.
 
-```ts
-// 1. Intro — elements fade in / settle (anticipation)
-// 2. Build — staggered reveal ramps in
-// 3. Resolve — final polish, then hand off / reveal the site
-```
-
-No JSDoc on every function. Only add JSDoc where a utility is genuinely reusable and non-obvious (e.g. a shared `lib/` helper used across multiple components).
-
----
+**The codebase's comments carry hard-won traps** (composer buffer roles, transformed-rect
+measurement, `transferControlToOffscreen` under StrictMode, the optimizer's `join`/`instance`
+flags). When you fix something subtle, leave the reason behind.
 
 ## TypeScript
 
-- Prefer `interface` for object shapes, `type` for unions and computed types.
-- No `any`. Use `unknown` and narrow it.
-- Type shared contracts explicitly and export them (e.g. `DeckService` in `deckServices.ts`, the `*Refs` interfaces the animation hooks accept).
-- Generic hooks should be parameterised over the element type where it helps callers.
+`interface` for object shapes, `type` for unions/computed. **No `any`** — use `unknown` and narrow.
+Export shared contracts explicitly (`DeckService`, `WorksProject`, `CarouselLayout`, the `*Refs`
+interfaces the hooks accept).
+
+## Single responsibility
+
+Every file has one job. A component renders UI and delegates animation to hooks. A hook manages one
+concern. A shader file contains shader code — not scene setup, not React bindings. A config file
+holds static values — not logic.
+
+**Line count is a signal, not a rule.** A 300-line shader doing one thing well is fine; a 100-line
+component doing both animation orchestration and layout is not.
+
+## General rules
+
+- **No magic numbers.** Named constants at the top of the file, never inline.
+- No commented-out code in commits.
+- Import order: external → `@/` aliases → relative.
+- `'use client'` only where strictly necessary.
+- **Three.js / WebGL is always dynamically imported** (`next/dynamic`, `ssr: false`) — it cannot run
+  on the server.
+- WebGL canvases render behind content and never block scroll or pointer events. (Exceptions: the
+  deck canvas accepts drag; the works field accepts drag-to-look.)
+- **Backticks inside a `/* glsl */` template literal terminate the string.** This has bitten twice,
+  both times from a comment. Use plain words inside shader source.
+- Every animation respects `prefers-reduced-motion` via `prefersReducedMotion()`.
+
+## Verification
+
+**The user runs the app.** Don't spin up a dev server or a browser to verify — run `npx tsc
+--noEmit` and `npm run build`, self-review the diff, and hand off clearly stating what still needs
+eyes on it.
 
 ---
 
-## Single Responsibility
+# PART 4 — What is NOT built
 
-Every file has **one job**. If a file is doing two different things, it needs to be split.
+Be accurate about this; the previous revision of this file was wrong in both directions.
 
-- A component renders UI — it delegates animation logic to hooks, not inline in JSX
-- A hook manages one concern — scroll, cursor, GSAP lifecycle, etc.
-- A shader file contains shader code — not scene setup, not React bindings
-- A config/constants file holds static values — not logic, not side effects
+| | |
+|---|---|
+| **Contact** | No section, no CSS, no copy. Nav item 04 (`#contact`) points at nothing and the `nav-cta` "Start Project" button has **no handler**. |
+| **Process content** | The `process` meter key is wired to the Chamber, whose content is an FAQ hologram. **Decided:** process steps will be revealed on the chamber's walls as the camera tours. |
+| **The collapse finale** | Built and tuned in `/sun-lab`, never ported to the site. **Decided:** the star dies on the table's screen after the chamber, and the black hole carries into the Contact/footer section. |
+| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. |
+| **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Credit is legally required wherever it ships and is currently nowhere.** |
 
-**Line count is a signal, not a rule.** A 300-line shader that does one thing well is fine. A 100-line component doing both animation orchestration and layout is not. When a file starts owning two clearly different concerns, split it.
-
-Example — animation hook that also handles DOM measurement is doing two jobs:
-
-```ts
-// ❌ One file doing two things
-function useHeroAnimation(containerRef) {
-  // measures DOM — one concern
-  const bounds = containerRef.current.getBoundingClientRect();
-
-  // runs animation — different concern
-  gsap.from(containerRef.current, { opacity: 0, y: 40 });
-}
-
-// ✅ Separated
-function useElementBounds(ref) { ... }   // measures DOM
-function useHeroAnimation(ref) {         // runs animation, calls useElementBounds internally
-  const bounds = useElementBounds(ref);
-  ...
-}
-```
-
----
-
-## Intro & Hero Animation Timeline (read before adding or animating hero / scroll effects)
-
-The site is gated behind `IntroSequence` (the loading screen). It plays a single GSAP
-timeline, drives the one shared sun, then hands off to the hero. Two hard contracts
-protect it — break either and the sun will fight the scroll.
-
-### Phases (one GSAP timeline in `IntroSequence.tsx`, ~6s; durations come from the named constants there)
-
-1. **Frame in** — editorial frame scales in (0.7s) + corner chrome fades/staggers in (0.5s).
-2. **Counter** — ghost percentage climbs 0 → 100 (1.95s), running under everything.
-3. **Word cycle** — slot-machine of 6 words rips through the centre (0.2s each, ~1.2s total).
-4. **Sun solo** — wordmark container appears and the shared sun fades in alone inside the "o" (0.45s) + a short hold (0.2s).
-5. **Wordmark resolve** — "rbix" letters spring in from the centre (0.9s) + accent underline draws (0.7s).
-6. **Hold** before handoff (0.45s).
-7. **Handoff** — chrome/frame/counter/wordmark fade out (0.4s); the dark veil lifts (0.7s); the sun shrinks and flies from the "o" into the hero square (1.1s).
-8. **Reveal** — ~0.1s before the flight lands, `REVEAL_EVENT` fires → the hero reveals (headline rises from its masks, the black square "pours" in, tagline settles, 0.4s) → the timeline's `onComplete` unlocks scroll and the intro unmounts.
-
-### Contract 1 — scroll is locked for the entire intro
-
-`IntroSequence` locks scroll on mount (`html.scroll-locked` → `overflow:hidden`, plus
-`wheel` / `touchmove` / scroll-key `preventDefault`, plus `history.scrollRestoration =
-'manual'` and `scrollTo(0, 0)`) and releases it exactly once in the timeline's
-`onComplete`. The component returns `null` when done but **stays mounted**, so never rely
-on the effect cleanup to unlock — unlock where the intro actually finishes.
-
-### Contract 2 — no scroll-driven hero animation may exist during the intro
-
-The hero's pinned/scrubbed scroll-expansion ScrollTrigger is created **only when
-`REVEAL_EVENT` fires** (after the sun has landed), never on mount. Any new scroll-driven
-animation on the hero or the sun must be gated the same way — build it inside the reveal
-handler, or create it `disable()`d and `enable()` it on `REVEAL_EVENT`. Otherwise a
-restored or stray scroll moves the sun while the loader is still up.
-
-### The shared sun
-
-There is exactly one sun: `HeroSun` → `SunCanvas`. The intro only *drives* it via
-`.hero-sun-layer` (outer — opacity + the scroll transform) and `.hero-sun-flight` (inner —
-the o → square flight). `REVEAL_EVENT` is the single handoff signal from intro → hero;
-anything that must wait for "site ready" should listen for it (with a fallback timeout).
-
----
-
-## Navbar — entrance & per-section scroll meters
-
-The navbar (`components/layout/Navbar`) is two stacked fixed layers: `.nav-root` holds the
-text/links and uses `mix-blend-mode: difference` (auto-inverts against whatever scrolls
-under it); `.nav-accent` sits behind it holding everything that must stay brand-cyan (top
-line, logo orbital mark, the scroll meters) so the blend never turns it red.
-
-### Entrance (`useNavbarAnimation`)
-
-Plays on `REVEAL_EVENT` — in lockstep with the hero headline — not on mount (with a
-fallback timeout if the intro is bypassed). The items converge from four directions at
-once, set per item via `data-enter` on the `<li>`: Services `top`, Work `left`, Process
-`right`, Contact `bottom`. Logo scales/fades in, CTA slides from the right.
-
-### Per-section scroll meters (the cyan lines)
-
-The old single scroll-progress bar is replaced by one cyan meter per nav item plus one
-under the logo. Each meter is a faint always-on track with a fill that scales to its own
-section's scroll progress.
-
-How it's wired, so a section "just works" once built:
-
-1. The nav item carries `data-key="<key>"` (see `NAV_ITEMS` in `Navbar.tsx`); the logo's
-   meter uses the key `home`.
-2. The meter fill scales to `--nav-progress-<key>` (0..1), aliased through `--meter-progress`.
-3. **A section feeds its meter by setting `--nav-progress-<key>` on
-   `document.documentElement`** from its own ScrollTrigger `onUpdate` (`self.progress`).
-   The hero does this for `home` in `useHeroAnimation` — copy that pattern.
-4. `useNavbarAnimation` positions each meter under its item by measuring the live layout
-   (re-run on resize and once fonts are ready), so no manual coordinates are needed.
-
-Current keys: `home` → hero (wired). `work` / `process` / `contact` → their homepage
-sections (just set the var when those are built — no navbar changes needed). `services`
-is the deck overlay that lives inside the hero: its nav link has `href="/#services"` but on
-the homepage `handleNavClick` intercepts it and dispatches `GOTO_SERVICES_EVENT`, which the
-hero pin listens for and scrolls to the revealed fleet (a plain anchor would just jump to the
-top of the hero). Its meter isn't fed yet — wire it from the carousel phase if you want one.
-
----
-
-## General Rules
-
-- No magic numbers. Named constants only — declare them at the top of the file, never inline.
-- No commented-out code left in commits.
-- Import order: external packages → internal aliases (`@/`) → relative imports.
-- `'use client'` only where strictly necessary. Prefer Server Components for static markup; Client Components for animation-heavy or interactive sections.
-- Three.js / WebGL imports are **dynamic** (`next/dynamic` with `ssr: false`) when they'd otherwise enter the server graph — they can't run on the server.
-- Keep prototype code (`components/prototype/`, `/prototype`) isolated from the live homepage bundle.
+**Current plan of record: `docs/site-completion-plan.md`.** Section state docs:
+`services-deck-state.md`, `works-to-chamber-reveal.md`, `sun-lab-remaining-work.md`,
+`loader-sun-assembly-plan.md`.

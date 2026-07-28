@@ -110,20 +110,29 @@ const DECK_TUNING: DeckTuning = {
   cameraHeight: 1.7,
   cameraLookY: 0.75,
 
-  keyMultiplier: 1,
-  fillMultiplier: 1,
-  rimMultiplier: 1,
-  ambientIntensity: 0.16,
-  exposure: 1.18,
+  // Every stage light is OFF, on purpose (tuned 2026-07-28). The deck is no longer lit by a rig —
+  // the cracked sun behind it is the only light in the scene, exactly as the chamber is lit only by
+  // its own screen. Turning any of these back up washes that out instantly.
+  //
+  // Because nothing external lights the hulls any more, the ships have to carry their own
+  // brightness: `dormantBrightness` and `activeBrightness` are both at 1.3 (a craft no longer dims
+  // when it leaves the pad — there is no key light for it to fall out of), and the engine glow
+  // breathes harder and faster to compensate.
+  keyMultiplier: 0,
+  fillMultiplier: 0,
+  rimMultiplier: 0,
+  ambientIntensity: 0,
+  exposure: 1,
 
   litEmissiveIntensity: 1.3,
-  dormantBrightness: 0.4,
-  activeBrightness: 1.0,
-  emitPulseAmplitude: 0.22,
-  emitPulseSpeed: 1.6,
+  dormantBrightness: 1.3,
+  activeBrightness: 1.3,
+  emitPulseAmplitude: 0.35,
+  emitPulseSpeed: 2.9,
 
-  shadowOpacity: 0.5,
-  starOpacity: 0.85,
+  // Both pulled well down so the sun stays the brightest thing on the deck.
+  shadowOpacity: 0.23,
+  starOpacity: 0.34,
 
   showPad: true,
   padWidth: 5.0,

@@ -562,7 +562,9 @@ export default function IntroSequence() {
                   style={{
                     display: "inline-block",
                     color:
-                      index === WORDMARK_ACCENT_INDEX ? "var(--accent)" : "inherit",
+                      index === WORDMARK_ACCENT_INDEX
+                        ? "var(--sun-accent-bright)"
+                        : "inherit",
                   }}
                 >
                   {character}
@@ -575,7 +577,7 @@ export default function IntroSequence() {
                 width: "min(52vw, 400px)",
                 height: 1,
                 background:
-                  "linear-gradient(90deg, transparent, var(--accent), transparent)",
+                  "linear-gradient(90deg, transparent, var(--sun-accent), transparent)",
                 transform: "scaleX(0)",
               }}
             />

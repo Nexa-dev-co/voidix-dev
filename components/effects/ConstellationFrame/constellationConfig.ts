@@ -117,11 +117,21 @@ export const CONSTELLATION_CONFIG_LOW_POWER: ConstellationConfig = {
 export const LOW_POWER_MAX_WIDTH = 760;
 
 // ── Colours ──────────────────────────────────────────────────────────────
-// Blue only. Dots switch state: deep blue while un-bonded, bright blue while connected.
-export const DOT_DIM_RGB = '40 78 150';      // deep blue — a lone, un-bonded star
-export const DOT_BRIGHT_RGB = '130 195 255'; // bright blue — lit once it forms a connection
-export const DOT_GLOW_RGB = '120 175 255';   // soft highlight halo around a lone, un-bonded pin
-// Links read against the light beige hero, so "more connections" deepens toward a saturated royal
-// blue (higher contrast on cream) rather than washing out toward white.
-export const LINE_RGB = '86 116 205';        // sparse links — soft periwinkle
-export const LINE_BRIGHT_RGB = '34 60 180';  // busy clusters — deep vivid blue that pops on beige
+// The sun's amber, not the old brand blue — this dust is the star's own matter drifting in the
+// hero, so it is lit by the same light as the loader and the neon frame (--sun-accent).
+//
+// WHY THESE EXACT VALUES: the canvas draws source-over at normal blend, dark-on-cream (#e2dfd2),
+// so a colour only reads if its LUMINANCE is right — hue alone doesn't carry here. Each value
+// below is the amber at the same relative luminance as the blue it replaces, so the tuned
+// dim/bright/link relationships survive the reskin untouched. If you retune one, match its
+// luminance (0.2126 R + 0.7152 G + 0.0722 B), don't just pick a nicer orange.
+//
+// Dots switch state: deep ember while un-bonded, hot amber once connected.
+export const DOT_DIM_RGB = '138 62 16';      // deep ember — a lone, un-bonded star      (lum ≈ 75)
+export const DOT_BRIGHT_RGB = '255 176 96';  // hot amber — lit once it forms a connection (lum ≈ 187)
+export const DOT_GLOW_RGB = '255 170 95';    // soft highlight halo around a lone pin     (lum ≈ 183)
+// Links read against the light beige hero, so "more connections" deepens toward a saturated burnt
+// orange (higher contrast on cream) rather than washing out toward white — the same direction the
+// blue ramp went, and it lands in the accretion spiral's family (#d92a05).
+export const LINE_RGB = '190 105 45';        // sparse links — soft ember                (lum ≈ 119)
+export const LINE_BRIGHT_RGB = '150 42 8';   // busy clusters — deep burnt orange on beige (lum ≈ 63)

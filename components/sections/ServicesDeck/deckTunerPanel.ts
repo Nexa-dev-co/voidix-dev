@@ -95,7 +95,11 @@ export async function createDeckTunerPanel({
   glowFolder.add(tuning, 'shadowOpacity', 0, 1, 0.01).name('contact shadow');
   glowFolder.add(tuning, 'starOpacity', 0, 1, 0.01).name('starfield');
 
+  // Bloom ships DISABLED (see BLOOM_ENABLED in useServicesDeck) — so `enabled` comes first, or the
+  // three sliders below would all look broken: they'd move and change nothing, because a disabled
+  // pass is skipped by the composer entirely.
   const bloomFolder = gui.addFolder('Bloom');
+  bloomFolder.add(bloomPass, 'enabled').name('enabled (off by default)');
   bloomFolder.add(bloomPass, 'strength', 0, 3, 0.01);
   bloomFolder.add(bloomPass, 'radius', 0, 2, 0.01);
   bloomFolder.add(bloomPass, 'threshold', 0, 1, 0.01);

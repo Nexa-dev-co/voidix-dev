@@ -77,7 +77,16 @@ const RIM_LIGHT_TWEEN = 0.5;
 // The levels themselves are AUTHORED — brightness, emissive strength and the engine pulse all live in
 // deckTuning so the ?tune panel can dial them, and are applied every frame.
 
-// ── Selective bloom (threshold so only the bright accents/highlights glow) ──
+// ── Selective bloom — OFF ──
+// Removed from the fleet 2026-07-28: with every stage light at 0 (see deckTuning) the ships are lit
+// only by the cracked sun behind them, and blooming their accents on top of that read as haze rather
+// than as glowing engines.
+//
+// The pass is still CONSTRUCTED and still wired to the ?tune panel, so it is one checkbox away — but
+// it ships `enabled = false`, which makes EffectComposer skip it entirely rather than run the full
+// blur pyramid for a zero result. UnrealBloom is the most expensive pass on the site; a disabled one
+// costs nothing, a strength-0 one costs everything.
+const BLOOM_ENABLED        = false;
 const BLOOM_STRENGTH       = 0.85;
 const BLOOM_STRENGTH_LOW   = 0.5;  // gentler on low-power devices
 const BLOOM_RADIUS         = 0.5;
@@ -369,6 +378,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       BLOOM_RADIUS,
       BLOOM_THRESHOLD,
     );
+    bloomPass.enabled = BLOOM_ENABLED;
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
     // Smooth the hull edges the bloom pipeline leaves rough — a composer ignores the renderer's own

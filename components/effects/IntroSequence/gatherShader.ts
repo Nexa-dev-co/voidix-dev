@@ -71,10 +71,18 @@ export const GATHER_DEFAULTS = {
   size: 3.4,
   /** Master fade, so the whole field can be pulled out without tearing it down. */
   opacity: 1,
-  /** Cold dust in the void. */
-  colorCool: [0.35, 0.42, 0.75],
+  // The temperature ramp is the SUN's own, not a palette picked for the loader: these are the
+  // accretion spiral's authored colours from the lab (`#d92a05` → `#ffeeb8`, see
+  // `sunLabState.ts` DEFAULT accretion / `accretionShader.ts`). Same matter, same light — the dust
+  // that builds the star here is the dust that falls into the black hole at the end, so the two
+  // ends of the site read as one arc. Keep them in step if the spiral is ever retuned.
+  //
+  // It is also the physically honest ramp: cooling matter glows deep red and whitens as it heats.
+  // (This was a blue→gold ramp, which made the loader read as brand cyan rather than as a star.)
+  /** Cold dust in the void — deep ember. */
+  colorCool: [0.85, 0.16, 0.02],
   /** Starlight, at the moment it is absorbed. */
-  colorHot: [1.0, 0.86, 0.62],
+  colorHot: [1.0, 0.93, 0.72],
 } as const;
 
 export const GATHER_VERTEX_SHADER = /* glsl */ `

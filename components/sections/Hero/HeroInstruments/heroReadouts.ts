@@ -94,13 +94,21 @@ export const DISTORTION_ATTACK_RATE = 7; // 1/s glide when distortion rises (fas
 export const DISTORTION_DECAY_RATE = 1.4; // 1/s glide when it falls (…gentler settle to idle)
 
 // ── 05 Orbital Vector — mirrors the orb's hero spin so the HUD reads as synced ─
-// This is now the SOURCE of the sun's idle spin, not a copy of it: SunModelCanvas imports
-// VECTOR_DEG_PER_SECOND below and rotates at exactly that rate, so the readout and the sun cannot drift.
-// The rad/frame form is kept because that is how the original procedural sun expressed it.
-export const ORB_ROTATION_SPEED_RAD_PER_FRAME = 0.0018;
+// This is the SOURCE of the sun's idle spin, not a copy of it: SunModelCanvas imports
+// VECTOR_DEG_PER_SECOND and rotates at exactly that rate, so the readout and the sun cannot drift.
+//
+// The value is now the LAB's authored "Peaceful" spin (`sunLabPresets.ts` → `autoRotateSpeed: 16`),
+// so the hero sun turns at the speed it was actually authored at rather than at the old procedural
+// sun's rate. It used to be derived the other way round — from
+// `ORB_ROTATION_SPEED_RAD_PER_FRAME = 0.0018` rad/frame at 60fps, which works out to ~6.2°/s, i.e.
+// 2.6× slower than the lab. Keep this in step with the preset, not with the old constant.
+export const VECTOR_DEG_PER_SECOND = 16;
+
+// The rad/frame form, kept because that is how the original procedural sun expressed it. Now DERIVED
+// from the authored degrees-per-second above, so the two can never disagree.
 export const ORB_ASSUMED_FPS = 60;
-export const VECTOR_DEG_PER_SECOND =
-  ORB_ROTATION_SPEED_RAD_PER_FRAME * ORB_ASSUMED_FPS * (180 / Math.PI);
+export const ORB_ROTATION_SPEED_RAD_PER_FRAME =
+  (VECTOR_DEG_PER_SECOND * (Math.PI / 180)) / ORB_ASSUMED_FPS;
 
 // Shared frame-timing guards for the telemetry loop.
 export const TELEMETRY_MIN_FRAME_SECONDS = 1 / 240; // guard the velocity division against a zero-length frame

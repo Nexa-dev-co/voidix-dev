@@ -14,6 +14,9 @@ import {
 import { SUN_FRAMING_NUDGE_X } from '@/components/effects/IntroSequence/gatherShader';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { VECTOR_DEG_PER_SECOND } from './HeroInstruments/heroReadouts';
+import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
+import { createSunBloom } from './sunBloom';
+import { createSunParticles } from './sunParticles';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
 //
@@ -35,7 +38,15 @@ const MODEL_ROTATION = { x: 5, y: 106, z: -59 };
 // faster than the number on screen claims. One source of truth, so they cannot drift.
 const AUTO_ROTATE_DEGREES_PER_SECOND = VECTOR_DEG_PER_SECOND;
 const FLARE_SPIN_DEGREES_PER_SECOND = 15;
-/** The magma's glow. Higher than the lab's, because the lab has a bloom pass and this does not. */
+/**
+ * The magma's glow.
+ *
+ * This was raised to compensate for having no bloom pass — that reason is now GONE (see `sunBloom`),
+ * so the hero sun is running a Cracks-level emissive through a bloom it was tuned without. If the
+ * calm hero star reads too hot, this is the first number to pull down: the lab's Peaceful stage
+ * leaves magma at the model's own default and lets bloom do the work, and 2.4 is the value its
+ * CRACKS stage authors.
+ */
 const MAGMA_EMISSIVE = 2.4;
 const EXPOSURE = 1.42;
 const ENV_INTENSITY = 1.77;
@@ -139,16 +150,57 @@ const ASSEMBLE_CUE_FALLBACK_MS = 14000;
 /** An element only the loader renders — its presence means a cue is coming, so wait for it. */
 const INTRO_MARKER_SELECTOR = '.intro-o-slot';
 
-// ── Services energy (unchanged behaviour, ported from the procedural sun) ──
+// ── Services energy ──
+// The ramp that carries the sun from its hero state into its services state. 0 = hero, 1 = services.
 const INTENSITY_LERP = 0.05;
 const INTENSITY_SETTLE_EPSILON = 0.0005;
-const STILLNESS_EPSILON = 0.001;
+
+// ── Services: the lab's "Cracks" stage ──
+// The sun's SECOND state, and the next beat of the site's spine (peaceful → cracks → collapse →
+// singularity). Every number here mirrors CRACKS_STATE in `sunLabPresets.ts` — keep them in step
+// rather than drifting a second copy of the look.
+//
+// The star does not swap or reload: the same model eases from its Peaceful pose into this one on
+// `intensity`, so scrolling back up to the hero closes the cracks again.
+/** How far the ten shards part, × the shard radius. Positive opens; negative would collapse (Stage 3). */
+const CRACKS_FRACTURE_SPREAD = 0.18;
+/** It turns more restlessly once it starts coming apart. */
+const CRACKS_ROTATE_DEGREES_PER_SECOND = 20;
+const CRACKS_FLARE_SPIN_DEGREES_PER_SECOND = 22;
+/** A warm light INSIDE the shell, so the magma reads as pushing out through the widening gaps. */
+const CRACKS_CORE_LIGHT_COLOR = 0xffb060;
+const CRACKS_CORE_LIGHT_INTENSITY = 4;
+/** The cracks breathe — a slow inward (gravity) tug that never quite closes them. */
+const CRACKS_PULSE_AMOUNT = 0.12;
+const CRACKS_PULSE_SPEED = 0.3;
+/** Per-shard phase, so they breathe out of step. In lockstep it reads as one mechanical pulse. */
+const CRACKS_PULSE_PHASE_STEP = 0.7;
+
+/**
+ * Past this much of the services→works handoff the works field's opaque backdrop has fully covered
+ * the sun, so it stops animating and the demand-render gate takes over again.
+ *
+ * This matters more than it looks. `DECK_HIDE_EVENT` only fires when you scroll back UP to the
+ * hero — going forward into works it deliberately never fires (the field just covers the sun). So
+ * without this gate the cracked sun and its dust would keep animating, unseen, for the whole
+ * works → chamber span, which is exactly the waste the original freeze existed to prevent.
+ * The field's backdrop fades over [0.33, 0.55] of the handoff; this sits past the end of that.
+ */
+const SUN_COVERED_HANDOFF_PROGRESS = 0.62;
+
+const TWO_PI = Math.PI * 2;
 
 /** One fracture shard: where it belongs, and where it travels in from. */
 interface Shard {
   object: THREE.Object3D;
   home: THREE.Vector3;
   homeQuaternion: THREE.Quaternion;
+  /**
+   * Unit direction from the fracture's centroid out to this shard's home — the axis it parts along
+   * when the star cracks open. Same construction as the lab's `computeCellSpread`, so the site and
+   * `/sun-lab` open the shell identically.
+   */
+  outward: THREE.Vector3;
   /** Its starting offset from home, already converted into the model's local frame. */
   far: THREE.Vector3;
   /** How far back along the camera's view axis `far` puts it — the term that drives apparent size. */
@@ -215,17 +267,34 @@ export default function SunModelCanvas() {
     const fillLight = new THREE.DirectionalLight(FILL_COLOR, FILL_INTENSITY);
     fillLight.position.set(-4, -1, -3);
     const ambientLight = new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY);
-    scene.add(keyLight, fillLight, ambientLight);
+    // The Cracks stage's inner light. Dark on the hero (intensity 0) and ramped up with the services
+    // energy, it sits INSIDE the shell at the star's centre — so as the shards part, the light escapes
+    // through the widening gaps instead of the crack simply reading as a dark seam.
+    const coreLight = new THREE.PointLight(CRACKS_CORE_LIGHT_COLOR, 0);
+    scene.add(keyLight, fillLight, ambientLight, coreLight);
 
-    // NO post-processing, deliberately.
+    // Bloom — the lab's "Peaceful" glow, on a transparent canvas.
     //
-    // A bloom pass here drew a visible RECTANGLE around the sun: EffectComposer renders into its own
-    // targets and the final blit writes alpha across the whole buffer, so the canvas stopped being
-    // transparent and its box showed against the cream hero. The old procedural sun had no composer for
-    // the same reason. The glow instead comes from the magma's emissive (see the load handler), which
-    // costs nothing and cannot leak past the geometry.
+    // NOT an EffectComposer. One was tried and it drew a visible RECTANGLE around the sun: a composer
+    // ends by blitting its target to the canvas with a full-screen quad, and that quad writes alpha
+    // across the whole buffer, so the canvas stopped being transparent and its box showed against the
+    // cream hero. `sunBloom.ts` keeps the base scene rendering DIRECTLY to the canvas (so those pixels
+    // and their alpha are untouched) and only ADDS the blurred glow over it. See its header.
+    const bloom = createSunBloom(renderer);
+    // Sized up front as well as from `applySize`: the ResizeObserver's first callback can land after
+    // a frame has already drawn, and a 1×1 glow target for that frame would read as a flash.
+    bloom.setSize(initialWidth, initialHeight);
 
     let modelRoot: THREE.Object3D | null = null;
+    // Built only once the model has loaded — the ring radii are fractions of the visible frame, which
+    // isn't known until the camera has been fitted to the model.
+    let sunParticles: ReturnType<typeof createSunParticles> | null = null;
+    /**
+     * Visible half-height at the sun's own distance, set when the camera is fitted. The particle
+     * rings are sized against this so they can never spill past the canvas edge — which is what drew
+     * a hard rectangle around the sun when they were sized against the model instead.
+     */
+    let frameHalfHeightAtSun = 1;
     const shards: Shard[] = [];
     const coronaParts: CoronaPart[] = [];
     let shardRadius = 1;
@@ -238,13 +307,24 @@ export default function SunModelCanvas() {
 
     // ── Sizing ──
     let forceRender = true;
+    /**
+     * The half-extent the particle rings are measured against: the SMALLER of the frame's half-width
+     * and half-height, so a ring stays inside the canvas on a portrait aspect too. (Half-width is
+     * half-height × aspect, so anything under 1:1 is the limiting dimension.)
+     */
+    const particleFrameExtent = () =>
+      frameHalfHeightAtSun * Math.min(1, camera.aspect || 1);
     const applySize = () => {
       const width = canvas.clientWidth || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
       if (!width || !height) return;
       renderer.setSize(width, height, false);
+      // The bloom's targets follow the canvas, or the glow is sampled at the wrong scale.
+      bloom.setSize(width, height);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      // Re-fit the rings to the new frame — this is what keeps them from clipping on resize.
+      sunParticles?.setFrameExtent(particleFrameExtent());
       forceRender = true;
     };
     const observer = new ResizeObserver(applySize);
@@ -260,6 +340,19 @@ export default function SunModelCanvas() {
     };
     window.addEventListener(DECK_REVEAL_EVENT, energise);
     window.addEventListener(DECK_HIDE_EVENT, deEnergise);
+
+    // True once the works field's backdrop has fully covered the sun. See
+    // SUN_COVERED_HANDOFF_PROGRESS — this is what lets the cracked sun animate on services without
+    // leaving it animating, unseen, for the whole works → chamber span.
+    let covered = false;
+    const onHandoffProgress = (event: Event) => {
+      const wasCovered = covered;
+      covered = readHandoffProgress(event) >= SUN_COVERED_HANDOFF_PROGRESS;
+      // Uncovering has to draw again: the sun stopped redrawing while it was hidden, so without this
+      // scrolling back to services would reveal the stale frame it froze on.
+      if (wasCovered && !covered) forceRender = true;
+    };
+    window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
     // ── Assembly ──
     // A one-shot flight, cued when the load reaches 100%. The dust carries the wait; this is the reward
@@ -337,6 +430,34 @@ export default function SunModelCanvas() {
           home.z + far.z * travelling + Math.sin(time * ASSEMBLY_FLOAT_SPEED * 1.2 + phase) * drift,
         );
         object.quaternion.slerpQuaternions(tumble, homeQuaternion, arrival);
+      });
+    };
+
+    /**
+     * Open the shell into the Cracks pose. Same construction as the lab's `positionShardsAt`: each
+     * shard slides along its own outward axis by `spread × shardRadius`.
+     *
+     * Takes over shard positions from `positionShards` the moment the assembly finishes, so exactly
+     * one thing owns them at any time. At `cracks = 0` it resolves to precisely `home`, which is why
+     * it can be called unconditionally — scrolling back to the hero closes the star exactly, with no
+     * drift left behind.
+     */
+    const applyCracks = (cracks: number, time: number) => {
+      shards.forEach(({ object, home, outward }, index) => {
+        // The cracks breathe: a slow tug back toward the centre that never fully closes them. Each
+        // shard carries its own phase so they pull out of step — in lockstep it reads as one
+        // mechanical pulse rather than a star straining.
+        const breath = skipAssembly
+          ? 0
+          : (Math.sin(TWO_PI * CRACKS_PULSE_SPEED * time + index * CRACKS_PULSE_PHASE_STEP) * 0.5 +
+              0.5) *
+            CRACKS_PULSE_AMOUNT;
+        const distance = (CRACKS_FRACTURE_SPREAD - breath) * cracks * shardRadius;
+        object.position.set(
+          home.x + outward.x * distance,
+          home.y + outward.y * distance,
+          home.z + outward.z * distance,
+        );
       });
     };
 
@@ -441,6 +562,7 @@ export default function SunModelCanvas() {
       const fitDistance =
         (sphere.radius / Math.sin(THREE.MathUtils.degToRad(CAMERA_FOV * 0.5))) * CAMERA_FIT_MARGIN;
       const frameHalfHeight = fitDistance * Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV * 0.5));
+      frameHalfHeightAtSun = frameHalfHeight;
       const panX = frameHalfHeight * SUN_FRAMING_NUDGE_X;
       camera.position.set(panX, 0, fitDistance);
       camera.lookAt(panX, 0, 0);
@@ -517,12 +639,33 @@ export default function SunModelCanvas() {
             object: shard,
             home: shard.position.clone(),
             homeQuaternion: shard.quaternion.clone(),
+            // Cloned: `far` above consumed this vector via addScaledVector, and the cracks spread
+            // needs it intact for the lifetime of the scene.
+            outward: outward.clone(),
             far,
             depth,
             tumble,
             phase: Math.random() * Math.PI * 2,
           });
         });
+      }
+
+      // The services dust. Added to the SCENE rather than to `spinner` on purpose: the model is
+      // re-centred onto the spinner's origin above, so both frames share the star's centre — but the
+      // dust has its own orbital motion and should not also inherit the star's spin.
+      //
+      // Skipped entirely under reduced motion: a continuously falling particle field is exactly the
+      // kind of ambient motion that setting asks us not to run, and the cracked sun still reads
+      // without it.
+      if (!skipAssembly) {
+        sunParticles = createSunParticles(particleFrameExtent(), renderer.getPixelRatio());
+        // Centred on the VISIBLE star, not on the model's geometric origin. The camera is panned by
+        // SUN_FRAMING_NUDGE_X because the bright halo sits off the bounding box's centre, so the
+        // thing that reads as the sun is at x = panX. Rings left at the origin would orbit a point
+        // 5% of the frame off from the star they are supposed to be circling. The loader's dust
+        // applies this same correction, for the same reason.
+        sunParticles.object.position.x = panX;
+        scene.add(sunParticles.object);
       }
 
       if (skipAssembly) {
@@ -546,9 +689,12 @@ export default function SunModelCanvas() {
       const delta = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
 
       intensity += (targetIntensity - intensity) * INTENSITY_LERP;
-      // Freeze the sun completely once energised — it must read as perfectly still through the
-      // services → works → chamber span. Only the calm hero sun animates.
-      const stillness = Math.max(0, 1 - intensity * 1.5);
+      const elapsed = clock.getElapsedTime();
+      // The Cracks ramp — 0 on the hero, 1 on services. Every difference between the star's two
+      // states is a function of this one value, so the transition reverses for free.
+      const cracks = intensity;
+      // The star always turns; it only stops once the works field has covered it completely.
+      const moving = !covered;
 
       // Assembly: a one-shot flight in from deep space, run once the model is here AND the intro has
       // put the "o" on screen — whichever of those two lands last.
@@ -558,18 +704,28 @@ export default function SunModelCanvas() {
         // Checked before the increment, so the frame that reaches exactly 1 still places the pieces —
         // they land on their true home rather than a fraction short of it.
         assembly = Math.min(1, assembly + delta * rate);
-        positionShards(assembly, clock.getElapsedTime());
+        positionShards(assembly, elapsed);
         assembling = true;
         // The intro is holding its handoff on this. Fired from here rather than from a timer so it is the
         // frame the last shard actually lands, however long the flight ended up taking.
         if (assembly >= 1) window.dispatchEvent(new Event(SUN_ASSEMBLED_EVENT));
       }
 
-      if (stillness > STILLNESS_EPSILON) {
-        spinner.rotation.y +=
-          THREE.MathUtils.degToRad(AUTO_ROTATE_DEGREES_PER_SECOND) * delta * stillness;
-        const flareDelta =
-          THREE.MathUtils.degToRad(FLARE_SPIN_DEGREES_PER_SECOND) * delta * stillness;
+      if (moving) {
+        // Both rates ease from the Peaceful values to the Cracks ones — the star gets more restless
+        // as it comes apart, rather than changing speed at a threshold.
+        const rotateRate = THREE.MathUtils.lerp(
+          AUTO_ROTATE_DEGREES_PER_SECOND,
+          CRACKS_ROTATE_DEGREES_PER_SECOND,
+          cracks,
+        );
+        const flareRate = THREE.MathUtils.lerp(
+          FLARE_SPIN_DEGREES_PER_SECOND,
+          CRACKS_FLARE_SPIN_DEGREES_PER_SECOND,
+          cracks,
+        );
+        spinner.rotation.y += THREE.MathUtils.degToRad(rotateRate) * delta;
+        const flareDelta = THREE.MathUtils.degToRad(flareRate) * delta;
         flareSpins.forEach((spin) => {
           spin.angle += flareDelta;
           scratchSpin.setFromAxisAngle(spin.axis, spin.angle);
@@ -577,16 +733,27 @@ export default function SunModelCanvas() {
         });
       }
 
+      // The shell cracks open. Guarded on the assembly being finished so the two never fight over a
+      // shard's position — the flight owns them until it lands, this owns them afterwards.
+      if (assembly >= 1) applyCracks(cracks, elapsed);
+      // The light inside the shell, escaping through the gaps as they widen.
+      coreLight.intensity = CRACKS_CORE_LIGHT_INTENSITY * cracks;
+      // The dust falling in. Zeroed while covered so it costs nothing through works / chamber.
+      sunParticles?.update(elapsed, covered ? 0 : cracks);
+
       // Demand-render: only draw while the image is actually changing — while the state ramp eases,
-      // while the surface still turns, or while the shards are still arriving. Once energised it is an
-      // identical frame for the whole services → works → chamber span, so we stop redrawing it there.
+      // while the star still turns, or while the shards are still arriving.
+      //
+      // The sun used to freeze the moment services revealed, which made the whole
+      // services → works → chamber span free. It can't any more: the cracked star breathes and its
+      // dust falls, and both have to keep drawing to read as alive. `covered` buys most of that
+      // back — the instant the works field's backdrop hides the sun, `moving` goes false and this
+      // returns to one frozen frame for works and the chamber, which is the long tail of the scroll.
       // `wasAnimating` draws the one final settled frame; `forceRender` covers resize / tab-restore.
       const animating =
-        Math.abs(targetIntensity - intensity) > INTENSITY_SETTLE_EPSILON ||
-        stillness > STILLNESS_EPSILON ||
-        assembling;
+        Math.abs(targetIntensity - intensity) > INTENSITY_SETTLE_EPSILON || moving || assembling;
       if (!document.hidden && (animating || wasAnimating || forceRender)) {
-        renderer.render(scene, camera);
+        bloom.render(scene, camera);
         forceRender = false;
       }
       wasAnimating = animating;
@@ -600,6 +767,7 @@ export default function SunModelCanvas() {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener(DECK_REVEAL_EVENT, energise);
       window.removeEventListener(DECK_HIDE_EVENT, deEnergise);
+      window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
       window.clearTimeout(cueFallbackTimer);
@@ -609,6 +777,8 @@ export default function SunModelCanvas() {
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         materials.forEach((material) => material.dispose());
       });
+      sunParticles?.dispose();
+      bloom.dispose();
       environmentTexture.dispose();
       pmrem.dispose();
       dracoLoader.dispose();

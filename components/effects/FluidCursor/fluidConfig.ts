@@ -106,8 +106,14 @@ export const STAR_CELL_SIZE_PX = 46; // size of each grid cell — smaller cells
 export const STAR_FILL_RATIO = 0.55; // fraction of cells that actually hold a star (0–1) — higher = more stars
 export const STAR_BRIGHTNESS = 0.85; // peak brightness of a star
 export const STAR_TWINKLE_SPEED = 1.6; // how quickly stars pulse in and out
-// Every star randomly picks one of these colours (RGB, 0–1), so the field mixes white + cool blue.
+// Every star randomly picks one of these colours (RGB, 0–1), so the field mixes a pale core with a
+// warmer tint rather than reading as one flat colour.
+//
+// These are the SUN's palette, not the old white + cool blue: the pale gold is the gather field's
+// `colorHot` (#ffeeb8, `gatherShader.ts`) and the amber is `--sun-accent` (#ff8a1a). Everything on
+// this site that emits light now comes from the same star — the loader dust, the constellation, the
+// hero's neon frame, and these. Keep them in step if the star's colour is ever retuned.
 export const STAR_PALETTE: readonly (readonly [number, number, number])[] = [
-  [1.0, 1.0, 1.0], // white
-  [0.2, 0.4, 1.0], // dark blue
+  [1.0, 0.93, 0.72], // pale gold — starlight at its hottest
+  [1.0, 0.54, 0.1], // amber — the sun's own accent
 ];

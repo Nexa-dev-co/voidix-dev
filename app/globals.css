@@ -11,6 +11,17 @@
   --border: rgba(235, 232, 224, 0.08);
   --card: #0d0d0d;
 
+  /* ── The sun's palette ──
+     The star's own light: warm amber with a pale hot core. Anything that should read as coming
+     FROM the sun pulls from here — the loader (its whole job is the star assembling), the hero's
+     neon frame, the hero HUD. Deliberately NOT the brand cyan (--accent), which stays with the
+     navbar, the fleet and the deck. Retune the star's colour in these four lines and every
+     surface lit by it follows. */
+  --sun-accent: #ff8a1a;
+  --sun-accent-rgb: 255 138 26;
+  --sun-accent-bright: #ffcd8c;
+  --sun-accent-bright-rgb: 255 205 140;
+
   /* Fluid type scale for the small UI labels (the large display sizes carry their own
      clamp() inline). Each token scales smoothly between a phone and a large-desktop size,
      so nothing is locked to a fixed pixel height. Root font-size is left at the browser
@@ -438,13 +449,13 @@ body {
      toward mid-grey for a darker/softer one (which also lifts the resting black a touch). */
   --hero-invert-text: #c0c0c0;
 
-  /* Accent for the hero's own additions (HUD values, neon frame, orbital arcs) — a warm amber that
-     pops on the cream and inverts cleanly, kept separate from the site's brand cyan (--accent) so
-     the navbar/sun/deck stay cyan. Change these two lines to reskin all of today's hero accents.
-     The -rgb triplet feeds rgb(... / alpha) for the glows; -bright is the pale core of the neon. */
-  --hero-accent: #ff8a1a;
-  --hero-accent-rgb: 255 138 26;
-  --hero-accent-bright-rgb: 255 205 140;
+  /* Accent for the hero's own additions (HUD values, neon frame, orbital arcs) — aliased to the
+     sun's palette so the hero and the loader are lit by the same star and cannot drift apart.
+     Retune --sun-accent in :root, not here. The -rgb triplet feeds rgb(... / alpha) for the
+     glows; -bright is the pale core of the neon. */
+  --hero-accent: var(--sun-accent);
+  --hero-accent-rgb: var(--sun-accent-rgb);
+  --hero-accent-bright-rgb: var(--sun-accent-bright-rgb);
 
   /* Muted graphite for the ambient constellation frame — dark dust on the cream (read by
      useConstellationFrame via getComputedStyle). One place to retune the dust colour. */
@@ -1831,22 +1842,24 @@ body {
   text-align: right;
 }
 
-/* Something is happening on this row: the dot breathes and the word takes the accent. */
+/* Something is happening on this row: the dot breathes and the word takes the accent. The loader's
+   accent is the SUN's amber, not the brand cyan — the whole screen is a star assembling, so every
+   lit thing on it should read as light from that star. */
 .loader-row.is-active .loader-dot {
   border-color: transparent;
-  background: var(--accent);
+  background: var(--sun-accent);
   animation: loader-dot-pulse 1.15s ease-in-out infinite;
 }
 
 .loader-row.is-active .loader-state {
-  color: var(--accent);
+  color: var(--sun-accent-bright);
   opacity: 1;
 }
 
 /* Done: still lit, but it steps back so attention stays on whatever is still moving. */
 .loader-row.is-online .loader-dot {
   border-color: transparent;
-  background: var(--accent);
+  background: var(--sun-accent);
   opacity: 0.5;
 }
 
@@ -1878,7 +1891,7 @@ body {
 }
 
 /* On the frame's own bottom edge, so it reads as the frame filling rather than a bar stuck to the page.
-   Same faint-track + cyan-fill grammar as the navbar's per-section scroll meters. */
+   Same faint-track + lit-fill grammar as the navbar's per-section scroll meters, in the sun's amber. */
 .loader-meter {
   position: absolute;
   left: clamp(0.9rem, 2.5vw, 1.6rem);
@@ -1893,7 +1906,8 @@ body {
   display: block;
   width: 100%;
   height: 100%;
-  background: var(--accent);
+  background: var(--sun-accent);
+  box-shadow: 0 0 0.5rem rgb(var(--sun-accent-rgb) / 0.55);
   transform: scaleX(0);
   transform-origin: left center;
   will-change: transform;
