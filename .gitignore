@@ -18,6 +18,9 @@ build/
 .DS_Store
 *.pem
 
+# local tooling caches
+.impeccable/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
