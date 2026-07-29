@@ -1,7 +1,20 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Check, Clipboard, RotateCcw } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  Clipboard,
+  Pause,
+  Play,
+  RotateCcw,
+} from 'lucide-react';
+import { DEFAULT_GEODE_MORPH } from '@/components/sections/WorksField/markGeodeMorph';
+import {
+  DEFAULT_GEODE_PHASE_TIMING,
+  type GeodePhaseTiming,
+} from '@/components/sections/WorksField/markGeodePhases';
 import { useLetterLab, type LetterLabSettings } from './hooks/useLetterLab';
 import { useDebounced } from './hooks/useDebounced';
 import type { MarkMaterialVariant } from '@/components/sections/WorksField/markBody';
@@ -56,11 +69,120 @@ const BACKDROPS = [
   { id: 'site', label: 'Site', color: '#060606' },
 ] as const;
 
+/**
+ * The geode's starting point.
+ *
+ * `rockRadius` is deliberately a little larger than the mark's own half-extent (`TARGET_SIZE` is 2.6,
+ * so the mark reaches ~1.3): that puts the base rock at the reference's middle of the spectrum, where
+ * the mark is carved OUT of a rock that was always big enough and the crust is the old skin. Shrink it
+ * and the same build slides continuously toward a crystal mark grown out of a seed.
+ */
+const DEFAULT_GEODE: Pick<
+  LetterLabSettings,
+  | 'geodeProgress'
+  | 'geodePlaying'
+  | 'geodeCycleSeconds'
+  | 'geodePhaseTiming'
+  | 'rockOffsetX'
+  | 'rockOffsetY'
+  | 'rockOffsetZ'
+  | 'rockRadius'
+  | 'rockStretchX'
+  | 'rockStretchY'
+  | 'rockStretchZ'
+  | 'rockSeed'
+  | 'rockCarveAmplitude'
+  | 'cling'
+  | 'crustThickness'
+  | 'markCarveAmplitude'
+  | 'markCarveFrequency'
+  | 'markCarveInPlaneDamping'
+  | 'crystalPatchScale'
+  | 'silhouetteHold'
+  | 'crystalFacetScale'
+  | 'crystalFacetAmplitude'
+  | 'crystalColor'
+  | 'crystalEmissive'
+  | 'crystalRoughness'
+  | 'crystalMetalness'
+  | 'chargeStrength'
+  | 'facetShading'
+  | 'edgeBias'
+  | 'crystalCoverageForming'
+  | 'crystalCoverageSettled'
+  | 'wobbleAmplitude'
+  | 'capEdgeFraction'
+  | 'capSubdivisions'
+  | 'depthRings'
+  | 'holeSeedFraction'
+> = {
+  // Opens on the formed mark, so there is something to look at before you touch anything.
+  geodeProgress: 1,
+  geodePlaying: false,
+  geodeCycleSeconds: 6,
+  geodePhaseTiming: { ...DEFAULT_GEODE_PHASE_TIMING },
+  rockOffsetX: 0,
+  rockOffsetY: 0,
+  rockOffsetZ: 0,
+  rockRadius: 1.5,
+  rockStretchX: 1,
+  // Was 1.12 / 0.7 — a deliberately flattened egg. Rounder now, so what opens is a ROCK: the mark is
+  // a 0.7-deep slab, and a rock nearly as flat as the slab it becomes never reads as having been
+  // carved out of anything. Not taken all the way to 1 because `cling` (0.85) pulls the mark's outer
+  // face onto the rock's skin, and a much deeper rock swells the letter with it.
+  rockStretchY: 1,
+  rockStretchZ: 0.85,
+  // Project 01's rock seed, straight from worksProjects — so the base rock is literally one of the
+  // field's rocks rather than a shape that merely resembles them.
+  rockSeed: 149,
+  rockCarveAmplitude: 1,
+  cling: 0.85,
+  crustThickness: 0.18,
+  markCarveAmplitude: 0.035,
+  markCarveFrequency: 1.6,
+  // Most displacement still goes through the thickness — in-plane displacement is what eats a counter
+  // or rounds off a "V", and a mark that stops reading has failed at the only job it has. But at 0.7
+  // the outline came out a PERFECT letter with a rocky surface, which reads as a decal on stone. Let
+  // enough through that the silhouette is visibly hewn rather than typeset.
+  markCarveInPlaneDamping: 0.4,
+  // Cells want to be a few triangles across or the facets alias into noise rather than reading as
+  // plates. At the default edge fraction that puts them around here.
+  // A patch covers several facets, so it runs at a lower frequency than the facets themselves —
+  // otherwise coverage speckles individual facets instead of removing whole plates.
+  crystalPatchScale: 4,
+  // Hold the rock's outline while the rest of the shape resolves, so a letter's notch cuts in at the
+  // end instead of gaping through the whole morph. 0 restores the old distance-only delay.
+  silhouetteHold: 0.65,
+  crystalFacetScale: 12,
+  // Raised so the facets stand proud of the outline instead of sitting flush in it — a little geode
+  // overgrowing the letter's edge, which is what stops the cut looking machined.
+  crystalFacetAmplitude: 0.055,
+  // ── The crystal's LOOK is not authored here ──
+  // Every one of these is a uniform the shader already owns a default for, and `markGeodeMorph.ts`
+  // documents why each value is what it is (crystal is lit, not a lamp; the colour is the vein amber
+  // rather than the brand cyan; the coverage pair is the whole `spread` beat). Taken from that module
+  // rather than re-typed beside it, so the lab cannot open on a look the shipped default doesn't have.
+  crystalColor: DEFAULT_GEODE_MORPH.crystalColor,
+  crystalEmissive: DEFAULT_GEODE_MORPH.crystalEmissive,
+  crystalRoughness: DEFAULT_GEODE_MORPH.crystalRoughness,
+  crystalMetalness: DEFAULT_GEODE_MORPH.crystalMetalness,
+  chargeStrength: DEFAULT_GEODE_MORPH.chargeStrength,
+  facetShading: DEFAULT_GEODE_MORPH.facetShading,
+  edgeBias: DEFAULT_GEODE_MORPH.edgeBias,
+  crystalCoverageForming: DEFAULT_GEODE_MORPH.crystalCoverageForming,
+  crystalCoverageSettled: DEFAULT_GEODE_MORPH.crystalCoverageSettled,
+  wobbleAmplitude: DEFAULT_GEODE_MORPH.wobbleAmplitude,
+  capEdgeFraction: 0.017,
+  capSubdivisions: 3,
+  depthRings: 5,
+  holeSeedFraction: 0.04,
+};
+
 const DEFAULT_SETTINGS: Omit<LetterLabSettings, 'character' | 'svgMarkId'> = {
-  // Rock by default — it's the look that belongs in the works field; solid is the comparison.
-  // These four are the values authored in the lab on 2026-07-20 and approved; they're the baseline the
-  // works field should inherit, not arbitrary starting points.
-  body: 'rock',
+  ...DEFAULT_GEODE,
+  // Geode by default — it is the thing being judged this round. `rock` (the swarm it replaces) and
+  // `solid` are one click away, which is the whole point of keeping all three live.
+  body: 'geode',
   // Cloned, so editing the mix in the panel can never write back into the shared module default.
   chunkSpecs: DEFAULT_CHUNK_SPECS.map((spec) => ({ ...spec })),
   // The authored layout, imported rather than re-typed so the two can't drift apart.
@@ -105,15 +227,17 @@ interface SliderProps {
   min: number;
   max: number;
   step: number;
+  /** Digits in the read-out. Counts, seeds and subdivision rounds are integers — "149.00" is noise. */
+  decimals?: number;
   onChange: (value: number) => void;
 }
 
-function Slider({ label, value, min, max, step, onChange }: SliderProps) {
+function Slider({ label, value, min, max, step, decimals = 2, onChange }: SliderProps) {
   return (
     <label className="flex flex-col gap-1">
       <span className="flex justify-between text-[0.65rem] uppercase tracking-eyebrow text-muted">
         <span>{label}</span>
-        <span className="text-fg">{value.toFixed(2)}</span>
+        <span className="text-fg">{value.toFixed(decimals)}</span>
       </span>
       <input
         type="range"
@@ -147,6 +271,8 @@ export default function LetterLab() {
 
   const isLetters = subject === 'letters';
   const isRock = settings.body === 'rock';
+  const isGeode = settings.body === 'geode';
+  const isSolid = settings.body === 'solid';
   const character = GLYPHS[glyphIndex];
   const currentLogo = SVG_MARKS[logoIndex];
 
@@ -154,10 +280,30 @@ export default function LetterLab() {
   // shown is NOT debounced — stepping a glyph should answer immediately, and it's cheap.
   const settledSettings = useDebounced(settings, SCENE_SETTLE_MS);
 
-  const { replayFormation } = useLetterLab(canvasRef, {
+  const { replayFormation, crustShare } = useLetterLab(canvasRef, {
     ...settledSettings,
     character,
     svgMarkId: isLetters ? null : currentLogo?.id ?? null,
+    // ── Live, deliberately outside the debounce ──
+    // Everything here is a uniform or a playhead, so there is nothing to rebuild. The scrub is the
+    // primary control and a 220ms lag on it would feel broken; the crystal knobs are pushed onto the
+    // shader every frame. The geometry knobs — the rock's pose above all — stay debounced, because
+    // they are baked into the vertex buffers and each one re-carves the body.
+    body: settings.body,
+    geodeProgress: settings.geodeProgress,
+    geodePlaying: settings.geodePlaying,
+    geodeCycleSeconds: settings.geodeCycleSeconds,
+    geodePhaseTiming: settings.geodePhaseTiming,
+    crystalColor: settings.crystalColor,
+    crystalEmissive: settings.crystalEmissive,
+    crystalRoughness: settings.crystalRoughness,
+    crystalMetalness: settings.crystalMetalness,
+    chargeStrength: settings.chargeStrength,
+    facetShading: settings.facetShading,
+    edgeBias: settings.edgeBias,
+    crystalCoverageForming: settings.crystalCoverageForming,
+    crystalCoverageSettled: settings.crystalCoverageSettled,
+    wobbleAmplitude: settings.wobbleAmplitude,
   });
 
   // One stepper drives whichever list is showing, so the control stays in the same place.
@@ -183,6 +329,13 @@ export default function LetterLab() {
           ? { ...spec, edgeWeight: weights[index] }
           : { ...spec, interiorWeight: weights[index] },
       ),
+    }));
+
+  /** The phase curves are nested one level down, so they get their own updater. */
+  const updatePhase = (key: keyof GeodePhaseTiming, value: number) =>
+    setSettings((current) => ({
+      ...current,
+      geodePhaseTiming: { ...current.geodePhaseTiming, [key]: value },
     }));
 
   const updateChunkSpec = (index: number, next: ChunkMaterialSpec) =>
@@ -221,6 +374,50 @@ export default function LetterLab() {
         formationOrder: settings.formationOrder,
         freeRadius: settings.freeRadius,
         freeDriftAmplitude: settings.freeDriftAmplitude,
+      },
+      {
+        build: {
+          rockOffsetX: settings.rockOffsetX,
+          rockOffsetY: settings.rockOffsetY,
+          rockOffsetZ: settings.rockOffsetZ,
+          rockRadius: settings.rockRadius,
+          rockStretchX: settings.rockStretchX,
+          rockStretchY: settings.rockStretchY,
+          rockStretchZ: settings.rockStretchZ,
+          rockSeed: settings.rockSeed,
+          rockCarveAmplitude: settings.rockCarveAmplitude,
+          cling: settings.cling,
+          crustThickness: settings.crustThickness,
+          markCarveAmplitude: settings.markCarveAmplitude,
+          markCarveFrequency: settings.markCarveFrequency,
+          markCarveInPlaneDamping: settings.markCarveInPlaneDamping,
+          silhouetteHold: settings.silhouetteHold,
+          crystalPatchScale: settings.crystalPatchScale,
+          crystalFacetScale: settings.crystalFacetScale,
+          crystalFacetAmplitude: settings.crystalFacetAmplitude,
+          capEdgeFraction: settings.capEdgeFraction,
+          capSubdivisions: settings.capSubdivisions,
+          depthRings: settings.depthRings,
+          holeSeedFraction: settings.holeSeedFraction,
+        },
+        morph: {
+          crystalColor: settings.crystalColor,
+          crystalEmissive: settings.crystalEmissive,
+          crystalRoughness: settings.crystalRoughness,
+          crystalMetalness: settings.crystalMetalness,
+          // The lab drives the charge off the crystal's own colour — one energy, surfacing in stages.
+          chargeColor: settings.crystalColor,
+          chargeStrength: settings.chargeStrength,
+          facetShading: settings.facetShading,
+          edgeBias: settings.edgeBias,
+          crystalCoverageForming: settings.crystalCoverageForming,
+          crystalCoverageSettled: settings.crystalCoverageSettled,
+          wobbleAmplitude: settings.wobbleAmplitude,
+          // No slider — exported at the value actually in force, so a paste reproduces what you saw
+          // rather than silently reverting to whatever the module happens to hold later.
+          wobbleFrequency: DEFAULT_GEODE_MORPH.wobbleFrequency,
+        },
+        phases: settings.geodePhaseTiming,
       },
     );
     // Logged as well as copied: the clipboard needs a secure context, and this gets opened over plain
@@ -329,11 +526,12 @@ export default function LetterLab() {
           )}
         </div>
 
-        {/* Rock vs solid — the headline comparison, so it sits first. */}
+        {/* The headline comparison, so it sits first: one body that opens, six hundred that fly, and
+            the plain extrusion as the control. */}
         <div className="flex flex-col gap-2">
           <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">Body</span>
           <div className="flex gap-1 rounded-full border border-border p-1">
-            {(['rock', 'solid'] as const).map((option) => (
+            {(['geode', 'rock', 'solid'] as const).map((option) => (
               <button
                 key={option}
                 type="button"
@@ -347,6 +545,469 @@ export default function LetterLab() {
             ))}
           </div>
         </div>
+
+        {isGeode && (
+          <>
+            {/* The scrub IS the effect — one number, and every curve hangs off it. So it goes first,
+                and it runs backwards as freely as forwards, which is frames 7-12 of the storyboard. */}
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">Open</span>
+                <button
+                  type="button"
+                  onClick={() => update('geodePlaying', !settings.geodePlaying)}
+                  className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[0.6rem] uppercase tracking-eyebrow text-fg transition-colors hover:border-accent hover:text-accent"
+                >
+                  {settings.geodePlaying ? <Pause size={11} /> : <Play size={11} />}
+                  {settings.geodePlaying ? 'Pause' : 'Play'}
+                </button>
+              </div>
+              <Slider
+                label="Progress"
+                value={settings.geodeProgress}
+                min={0}
+                max={1}
+                step={0.005}
+                onChange={(value) => update('geodeProgress', value)}
+              />
+              <Slider
+                label="Round trip (s)"
+                value={settings.geodeCycleSeconds}
+                min={1}
+                max={20}
+                step={0.5}
+                onChange={(value) => update('geodeCycleSeconds', value)}
+              />
+              <p className="text-[0.6rem] leading-relaxed text-muted">
+                Play ping-pongs the whole cycle and ignores the scrub; pausing hands it straight back.
+              </p>
+            </div>
+
+            {/* Placing the rock badly is not an error, and without this you would just see a mark that
+                has mysteriously gone all crystal. */}
+            <div className="flex flex-col gap-1 border-t border-border pt-4">
+              <span className="flex justify-between text-[0.65rem] uppercase tracking-eyebrow text-muted">
+                <span>Crust share</span>
+                <span className={crustShare < 0.05 ? 'text-fg' : 'text-accent'}>
+                  {(crustShare * 100).toFixed(0)}%
+                </span>
+              </span>
+              {crustShare < 0.05 && (
+                <p className="text-[0.6rem] leading-relaxed text-muted">
+                  Almost none of this mark was ever the rock&apos;s skin — it is all fresh cut or new
+                  growth, so there is no geode read left. Move the rock so it intersects the mark, or
+                  widen the crust band.
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4">
+              <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">
+                Base rock
+              </span>
+              <p className="text-[0.6rem] leading-relaxed text-muted">
+                Not the mark&apos;s centre — it is placed. Radius alone slides from a geode carved out
+                of a rock (large) to a mark grown out of a seed (small).
+              </p>
+              <Slider
+                label="Radius"
+                value={settings.rockRadius}
+                min={0.2}
+                max={3}
+                step={0.02}
+                onChange={(value) => update('rockRadius', value)}
+              />
+              <Slider
+                label="Offset X"
+                value={settings.rockOffsetX}
+                min={-2}
+                max={2}
+                step={0.02}
+                onChange={(value) => update('rockOffsetX', value)}
+              />
+              <Slider
+                label="Offset Y"
+                value={settings.rockOffsetY}
+                min={-2}
+                max={2}
+                step={0.02}
+                onChange={(value) => update('rockOffsetY', value)}
+              />
+              <Slider
+                label="Offset Z"
+                value={settings.rockOffsetZ}
+                min={-2}
+                max={2}
+                step={0.02}
+                onChange={(value) => update('rockOffsetZ', value)}
+              />
+              <Slider
+                label="Stretch X"
+                value={settings.rockStretchX}
+                min={0.3}
+                max={2.5}
+                step={0.02}
+                onChange={(value) => update('rockStretchX', value)}
+              />
+              <Slider
+                label="Stretch Y"
+                value={settings.rockStretchY}
+                min={0.3}
+                max={2.5}
+                step={0.02}
+                onChange={(value) => update('rockStretchY', value)}
+              />
+              <Slider
+                label="Stretch Z"
+                value={settings.rockStretchZ}
+                min={0.1}
+                max={2.5}
+                step={0.02}
+                onChange={(value) => update('rockStretchZ', value)}
+              />
+              <Slider
+                label="Carve"
+                value={settings.rockCarveAmplitude}
+                min={0}
+                max={2}
+                step={0.02}
+                onChange={(value) => update('rockCarveAmplitude', value)}
+              />
+              {/* Ranged to cover worksProjects' own seeds (149 · 271 · 512 · 883) — the default is
+                  project 01's, and at the old 0–20 the thumb pinned at the top while the read-out
+                  said 149, so the first touch silently swapped the rock for a different one. */}
+              <Slider
+                label="Seed"
+                value={settings.rockSeed}
+                min={0}
+                max={1000}
+                step={1}
+                decimals={0}
+                onChange={(value) => update('rockSeed', value)}
+              />
+              <Slider
+                label="Idle breath"
+                value={settings.wobbleAmplitude}
+                min={0}
+                max={0.08}
+                step={0.002}
+                onChange={(value) => update('wobbleAmplitude', value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4">
+              <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">The cut</span>
+              <Slider
+                label="Cling to skin"
+                value={settings.cling}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => update('cling', value)}
+              />
+              <Slider
+                label="Crust thickness"
+                value={settings.crustThickness}
+                min={0.01}
+                max={0.8}
+                step={0.005}
+                onChange={(value) => update('crustThickness', value)}
+              />
+              <Slider
+                label="Rock carve"
+                value={settings.markCarveAmplitude}
+                min={0}
+                max={0.2}
+                step={0.002}
+                onChange={(value) => update('markCarveAmplitude', value)}
+              />
+              <Slider
+                label="Carve scale"
+                value={settings.markCarveFrequency}
+                min={0.2}
+                max={6}
+                step={0.05}
+                onChange={(value) => update('markCarveFrequency', value)}
+              />
+              <Slider
+                label="Silhouette protection"
+                value={settings.markCarveInPlaneDamping}
+                min={0}
+                max={1}
+                step={0.02}
+                onChange={(value) => update('markCarveInPlaneDamping', value)}
+              />
+              <p className="text-[0.6rem] leading-relaxed text-muted">
+                Cling at 1 makes the outer face the rock&apos;s own skin. Protection at 1 keeps the
+                carve out of the mark&apos;s plane, which is what stops it eating a counter.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4">
+              <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">Crystal</span>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-[0.6rem] uppercase tracking-eyebrow text-muted">Colour</span>
+                <input
+                  type="color"
+                  value={settings.crystalColor}
+                  onChange={(event) => update('crystalColor', event.target.value)}
+                  className="h-6 w-12 cursor-pointer rounded border border-border bg-transparent"
+                />
+              </label>
+              <Slider
+                label="Facet size"
+                value={settings.crystalFacetScale}
+                min={4}
+                max={80}
+                step={1}
+                decimals={0}
+                onChange={(value) => update('crystalFacetScale', value)}
+              />
+              <Slider
+                label="Facet depth"
+                value={settings.crystalFacetAmplitude}
+                min={0}
+                max={0.15}
+                step={0.002}
+                onChange={(value) => update('crystalFacetAmplitude', value)}
+              />
+              <Slider
+                label="Geode while forming"
+                value={settings.crystalCoverageForming}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => update('crystalCoverageForming', value)}
+              />
+              <Slider
+                label="Geode once formed"
+                value={settings.crystalCoverageSettled}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => update('crystalCoverageSettled', value)}
+              />
+              <Slider
+                label="Stay solid"
+                value={settings.silhouetteHold}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => update('silhouetteHold', value)}
+              />
+              <Slider
+                label="Patch size"
+                value={settings.crystalPatchScale}
+                min={1}
+                max={24}
+                step={0.5}
+                onChange={(value) => update('crystalPatchScale', value)}
+              />
+              <Slider
+                label="Crystal on edges"
+                value={settings.edgeBias}
+                min={0}
+                max={1}
+                step={0.02}
+                onChange={(value) => update('edgeBias', value)}
+              />
+              <Slider
+                label="Flat shading"
+                value={settings.facetShading}
+                min={0}
+                max={1}
+                step={0.02}
+                onChange={(value) => update('facetShading', value)}
+              />
+              <Slider
+                label="Glow"
+                value={settings.crystalEmissive}
+                min={0}
+                max={5}
+                step={0.05}
+                onChange={(value) => update('crystalEmissive', value)}
+              />
+              <Slider
+                label="Charge (through crust)"
+                value={settings.chargeStrength}
+                min={0}
+                max={4}
+                step={0.05}
+                onChange={(value) => update('chargeStrength', value)}
+              />
+              <Slider
+                label="Roughness"
+                value={settings.crystalRoughness}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => update('crystalRoughness', value)}
+              />
+              <Slider
+                label="Metalness"
+                value={settings.crystalMetalness}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => update('crystalMetalness', value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4">
+              <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">
+                Choreography
+              </span>
+              <p className="text-[0.6rem] leading-relaxed text-muted">
+                Where charge starts relative to grow is the entire feel of it — energy has to wake
+                before the rock gives way, or the mark opens out of an inert stone.
+              </p>
+              <Slider
+                label="Charge start"
+                value={settings.geodePhaseTiming.chargeStart}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('chargeStart', value)}
+              />
+              <Slider
+                label="Charge end"
+                value={settings.geodePhaseTiming.chargeEnd}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('chargeEnd', value)}
+              />
+              <Slider
+                label="Grow start"
+                value={settings.geodePhaseTiming.growStart}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('growStart', value)}
+              />
+              <Slider
+                label="Grow end"
+                value={settings.geodePhaseTiming.growEnd}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('growEnd', value)}
+              />
+              <Slider
+                label="Reveal start"
+                value={settings.geodePhaseTiming.revealStart}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('revealStart', value)}
+              />
+              <Slider
+                label="Reveal end"
+                value={settings.geodePhaseTiming.revealEnd}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('revealEnd', value)}
+              />
+              {/* The one beat that runs AFTER the mark is whole: crystal taking the finished
+                  surface. Charge now lands in the same window, so these two decide the completion. */}
+              <Slider
+                label="Spread start"
+                value={settings.geodePhaseTiming.spreadStart}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('spreadStart', value)}
+              />
+              <Slider
+                label="Spread end"
+                value={settings.geodePhaseTiming.spreadEnd}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('spreadEnd', value)}
+              />
+              <p className="text-[0.6rem] leading-relaxed text-muted">
+                Vein flare is inert as configured — it multiplies the material&apos;s emissive map and
+                the crust spec is <span className="text-fg">stone</span>, which has none. Switch the
+                crust to <span className="text-fg">meteor</span> before tuning these three.
+              </p>
+              <Slider
+                label="Vein flare"
+                value={settings.geodePhaseTiming.veinFlare}
+                min={0}
+                max={5}
+                step={0.05}
+                onChange={(value) => updatePhase('veinFlare', value)}
+              />
+              <Slider
+                label="Flare at"
+                value={settings.geodePhaseTiming.veinPeak}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(value) => updatePhase('veinPeak', value)}
+              />
+              <Slider
+                label="Flare width"
+                value={settings.geodePhaseTiming.veinWidth}
+                min={0.01}
+                max={0.6}
+                step={0.01}
+                onChange={(value) => updatePhase('veinWidth', value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4">
+              <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">
+                Tessellation
+              </span>
+              <p className="text-[0.6rem] leading-relaxed text-muted">
+                Edge length is a fraction of the mark, so every mark gets the same density whatever
+                scale its source arrived at. Each subdivision quadruples the triangle count.
+              </p>
+              <Slider
+                label="Edge fraction"
+                value={settings.capEdgeFraction}
+                min={0.004}
+                max={0.06}
+                step={0.001}
+                onChange={(value) => update('capEdgeFraction', value)}
+              />
+              <Slider
+                label="Subdivisions"
+                value={settings.capSubdivisions}
+                min={0}
+                max={4}
+                step={1}
+                decimals={0}
+                onChange={(value) => update('capSubdivisions', value)}
+              />
+              <Slider
+                label="Depth rings"
+                value={settings.depthRings}
+                min={1}
+                max={16}
+                step={1}
+                decimals={0}
+                onChange={(value) => update('depthRings', value)}
+              />
+              <Slider
+                label="Hole seed"
+                value={settings.holeSeedFraction}
+                min={0.005}
+                max={0.2}
+                step={0.005}
+                onChange={(value) => update('holeSeedFraction', value)}
+              />
+              <p className="text-[0.6rem] leading-relaxed text-muted">
+                A hole is a real tunnel at progress 0, just an ε-thin one — that is what lets the mark
+                keep its topology through the whole morph. Too small and its normals go bad; too large
+                and you can see the pinprick before it opens.
+              </p>
+            </div>
+          </>
+        )}
 
         {isRock && (
           <>
@@ -498,9 +1159,9 @@ export default function LetterLab() {
           </>
         )}
 
-        <div className={`flex flex-col gap-2 ${isRock ? 'opacity-40' : ''}`}>
+        <div className={`flex flex-col gap-2 ${isSolid ? '' : 'opacity-40'}`}>
           <span className="text-[0.65rem] uppercase tracking-eyebrow text-muted">
-            Material {isRock && '· solid only'}
+            Material {!isSolid && '· solid only'}
           </span>
           {VARIANTS.map((variant) => (
             <button
@@ -526,7 +1187,7 @@ export default function LetterLab() {
 
         {/* Depth is the slab thickness for rock and the extrusion for solid — it drives both. */}
         <Slider
-          label={isRock ? 'Slab depth' : 'Depth'}
+          label={isSolid ? 'Depth' : 'Slab depth'}
           value={settings.depth}
           min={0.05}
           max={1}
@@ -534,7 +1195,7 @@ export default function LetterLab() {
           onChange={(value) => update('depth', value)}
         />
 
-        {!isRock && (
+        {isSolid && (
           <>
             <Slider
               label="Bevel size"

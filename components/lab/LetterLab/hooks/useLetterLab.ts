@@ -1,5 +1,6 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -19,8 +20,19 @@ import {
 } from '@/components/sections/WorksField/markSwarm';
 import {
   createChunkMaterial,
+  GEODE_CRUST_SPEC_ID,
   type ChunkMaterialSpec,
 } from '@/components/sections/WorksField/markChunkMaterial';
+import { buildGeodeBody, type GeodeBody } from '@/components/sections/WorksField/markGeodeBody';
+import {
+  enableGeodeMorph,
+  DEFAULT_GEODE_MORPH,
+  type GeodeMorphUniforms,
+} from '@/components/sections/WorksField/markGeodeMorph';
+import {
+  evaluateGeodePhases,
+  type GeodePhaseTiming,
+} from '@/components/sections/WorksField/markGeodePhases';
 import { markById } from '@/components/sections/WorksField/marks';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 
@@ -53,6 +65,9 @@ const BLOOM_RADIUS = 0.55;
 const BLOOM_THRESHOLD = 0.6;
 const BLOOM_MSAA_SAMPLES = 4;
 
+/** Blur applied to the room probe. The works field's value — same probe, same look. */
+const ENVIRONMENT_BLUR = 0.04;
+
 const SWARM_SCALE_JITTER = 0.45;
 const SWARM_SEED = 149;
 /** How fast a free-drifting chunk wanders and tumbles. Slow — this is ambience, not activity. */
@@ -68,10 +83,75 @@ const MAX_DEVICE_PIXEL_RATIO = 2;
 
 export interface LetterLabSettings {
   /**
-   * How the mark is built: one bevelled solid, or an assembly of carved rock chunks holding the shape.
-   * The rock body is the one that belongs in this scene — see markAggregate.ts.
+   * How the mark is built.
+   *
+   *   solid  one bevelled extrusion — the plain comparison.
+   *   rock   the chunk swarm: ~600 instances flying out of a cloud into the outline.
+   *   geode  ONE body that is a base rock at p = 0 and the mark at p = 1, opening crystal where the
+   *          rock was cut. See markGeodeBody.ts and docs/mark-core-rock-plan.md.
+   *
+   * All three are kept live at once on purpose: the point of this round is judging the geode against
+   * the swarm it is meant to replace, and that decision cannot be made from memory.
    */
-  body: 'solid' | 'rock';
+  body: 'solid' | 'rock' | 'geode';
+
+  // ── The geode ──
+  /** 0 = the closed base rock, 1 = the mark fully formed. Everything else derives from this. */
+  geodeProgress: number;
+  /**
+   * Run the round trip on its own clock instead of following the scrub.
+   *
+   * While playing, `geodeProgress` is ignored — the loop owns the playhead and ping-pongs it, which is
+   * frames 1-12 of the storyboard. Pausing hands control straight back to the slider.
+   */
+  geodePlaying: boolean;
+  /** Seconds for one full open (and one full close) when the lab is playing it rather than scrubbing. */
+  geodeCycleSeconds: number;
+  geodePhaseTiming: GeodePhaseTiming;
+  /** Where the base rock sits in the mark's own space — NOT the mark's centre. */
+  rockOffsetX: number;
+  rockOffsetY: number;
+  rockOffsetZ: number;
+  /**
+   * Relative to the mark. Bigger than the mark carves a geode out of it; smaller makes the mark grow
+   * out of a seed. The whole spectrum is this one number.
+   */
+  rockRadius: number;
+  rockStretchX: number;
+  rockStretchY: number;
+  rockStretchZ: number;
+  rockSeed: number;
+  rockCarveAmplitude: number;
+  /** 0 = the mark keeps its own clean profile, 1 = its outer face IS the rock's skin. */
+  cling: number;
+  crustThickness: number;
+  markCarveAmplitude: number;
+  markCarveFrequency: number;
+  /** 1 protects the silhouette completely; 0 carves it as hard as the faces. */
+  markCarveInPlaneDamping: number;
+  /** How long the body stays solid before the mark's notches cut in, 0..1. Geometry: rebuilds. */
+  silhouetteHold: number;
+  /** How coarse the crystal patches are — lower means bigger islands. Geometry: rebuilds. */
+  crystalPatchScale: number;
+  crystalFacetScale: number;
+  crystalFacetAmplitude: number;
+  crystalColor: string;
+  crystalEmissive: number;
+  crystalRoughness: number;
+  crystalMetalness: number;
+  chargeStrength: number;
+  facetShading: number;
+  /** How hard the crystal is pushed onto the mark's edges rather than every opened face. */
+  edgeBias: number;
+  /** Share of the opened surface that is crystal while the mark is still forming, 0..1. */
+  crystalCoverageForming: number;
+  /** …and once it has settled. The `spread` phase crossfades between them. */
+  crystalCoverageSettled: number;
+  wobbleAmplitude: number;
+  capEdgeFraction: number;
+  capSubdivisions: number;
+  depthRings: number;
+  holeSeedFraction: number;
   /**
    * What the chunks are made of, and in what proportion. A mark's readability comes from the CONTRAST
    * between these — one surface for everything reads as a blob.
@@ -120,6 +200,14 @@ export interface LetterLabSettings {
 export interface LetterLabControls {
   /** Replay the formation from scattered. */
   replayFormation: () => void;
+  /**
+   * Mean crust across the geode's surface, 0..1.
+   *
+   * Reported because the base rock can be placed somewhere that produces no crust at all — fully
+   * inside the mark, or fully clear of it — and the result is a uniformly crystal mark with no geode
+   * read left. That is not a bug, but it is confusing without a number on it.
+   */
+  crustShare: number;
 }
 
 export function useLetterLab(
@@ -131,12 +219,19 @@ export function useLetterLab(
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // Surfaced to the panel, because a badly placed base rock can leave the mark with no crust at all
+  // and there is no way to tell that apart from "the crust texture isn't loading" by eye.
+  const [crustShare, setCrustShare] = useState(0);
+
   // Set by the scene effect so the settings effect can ask for a rebuild without re-running setup.
   const rebuildGeometryRef = useRef<(() => void) | null>(null);
   const rebuildMaterialRef = useRef<(() => void) | null>(null);
   const rebuildChunkMaterialsRef = useRef<(() => void) | null>(null);
   const replayFormationRef = useRef<(() => void) | null>(null);
   const rebuildSwarmRef = useRef<(() => void) | null>(null);
+
+  // Stable, so the scene effect never re-runs just because the panel re-rendered.
+  const reportCrustShare = useCallback((share: number) => setCrustShare(share), []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -151,6 +246,14 @@ export function useLetterLab(
     const camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 100);
     camera.position.set(0, 0, CAMERA_DISTANCE);
     camera.lookAt(0, 0, 0);
+
+    // Image-based lighting, matching the works field. Without it every material's `envMapIntensity`
+    // multiplies nothing — `createStoneMaterial` sets 0.35 and it was silently doing nothing here.
+    // Matte chunks barely noticed; anything with a specular read (crystal above all) depends on it.
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnvironment = new RoomEnvironment();
+    const environmentTarget = pmremGenerator.fromScene(roomEnvironment, ENVIRONMENT_BLUR);
+    scene.environment = environmentTarget.texture;
 
     const keyLight = new THREE.DirectionalLight(KEY_LIGHT_COLOR, KEY_LIGHT_INTENSITY);
     keyLight.position.set(4, 5, 6);
@@ -211,6 +314,26 @@ export function useLetterLab(
         material.dispose();
       });
       chunkMaterials = [];
+    };
+
+    // ── The geode ──
+    // One mesh, rebuilt per mark. A mark change closes to the rock, swaps, and reopens — so two marks
+    // never share a vertex layout and the cap triangulation is free to follow each shape.
+    let geodeBody: GeodeBody | null = null;
+    let geodeMesh: THREE.Mesh | null = null;
+    let geodeMaterial: THREE.MeshStandardMaterial | null = null;
+    let geodeUniforms: GeodeMorphUniforms | null = null;
+
+    const disposeGeode = () => {
+      if (geodeMesh) spin.remove(geodeMesh);
+      geodeMesh = null;
+      geodeBody?.dispose();
+      geodeBody = null;
+      // The material's map is a per-spec clone, exactly as in disposeChunkMaterials.
+      geodeMaterial?.map?.dispose();
+      geodeMaterial?.dispose();
+      geodeMaterial = null;
+      geodeUniforms = null;
     };
 
     const textureLoader = new THREE.TextureLoader();
@@ -340,26 +463,141 @@ export function useLetterLab(
       };
     };
 
-    /** Draw the current subject as either a solid extrusion or an assembly of rock. */
-    const buildFromSvg = (svgText: string) => {
-      if (settingsRef.current.body === 'rock') {
-        holdShape(svgToShapes(svgText), true);
+    // Bumped on every geode build, so a slow texture can't mount a body for a mark that has since been
+    // stepped past — the same async-race guard the chunk materials use.
+    let geodeToken = 0;
+
+    /** Carve the geode for a shape and mount it. Replaces the body outright; there is nothing to reuse. */
+    const buildGeode = (shapes: THREE.Shape[], flipY: boolean) => {
+      // The crust wears the material's own emissive map, which is where the gold veins come from — so
+      // it wants a `meteor` spec, the treatment that drives albedo AND emissive off one texture.
+      //
+      // Ask for the crust BY ID rather than taking the first `meteor` spec going. The only other one
+      // is `molten` — lava, tinted pure red at emissive 5 — and picking that made the crust a light
+      // source rather than veined stone. See GEODE_CRUST_SPEC_ID in markChunkMaterial.
+      const crustSpec =
+        settingsRef.current.chunkSpecs.find((spec) => spec.id === GEODE_CRUST_SPEC_ID) ??
+        settingsRef.current.chunkSpecs.find((spec) => spec.treatment === 'meteor') ??
+        settingsRef.current.chunkSpecs[0];
+      if (!crustSpec) return;
+
+      geodeToken += 1;
+      const token = geodeToken;
+
+      loadTexture(crustSpec.texturePath)
+        .then((texture) => {
+          if (isDisposed || token !== geodeToken) return;
+          disposeGeode();
+
+          // Re-read: a slider may have moved while the texture was in flight.
+          const current = settingsRef.current;
+          const body = buildGeodeBody({
+            shapes,
+            flipY,
+            targetSize: TARGET_SIZE,
+            depth: current.depth,
+            capEdgeFraction: current.capEdgeFraction,
+            capSubdivisions: current.capSubdivisions,
+            depthRings: current.depthRings,
+            rock: {
+              centre: new THREE.Vector3(
+                current.rockOffsetX,
+                current.rockOffsetY,
+                current.rockOffsetZ,
+              ),
+              radius: current.rockRadius,
+              stretch: new THREE.Vector3(
+                current.rockStretchX,
+                current.rockStretchY,
+                current.rockStretchZ,
+              ),
+              seed: current.rockSeed,
+              carveAmplitude: current.rockCarveAmplitude,
+            },
+            cling: current.cling,
+            crustThickness: current.crustThickness,
+            markCarveAmplitude: current.markCarveAmplitude,
+            markCarveFrequency: current.markCarveFrequency,
+            markCarveInPlaneDamping: current.markCarveInPlaneDamping,
+            silhouetteHold: current.silhouetteHold,
+            crystalPatchScale: current.crystalPatchScale,
+            crystalFacetScale: current.crystalFacetScale,
+            crystalFacetAmplitude: current.crystalFacetAmplitude,
+            textureRepeat: crustSpec.textureRepeat,
+            holeSeedFraction: current.holeSeedFraction,
+          });
+
+          geodeBody = body;
+          geodeMaterial = createChunkMaterial(texture, crustSpec);
+          geodeUniforms = enableGeodeMorph(geodeMaterial, {
+            ...DEFAULT_GEODE_MORPH,
+            crystalColor: current.crystalColor,
+            crystalEmissive: current.crystalEmissive,
+            crystalRoughness: current.crystalRoughness,
+            crystalMetalness: current.crystalMetalness,
+            // The charge is the same energy surfacing later as crystal, so it is the same colour.
+            chargeColor: current.crystalColor,
+            chargeStrength: current.chargeStrength,
+            facetShading: current.facetShading,
+            edgeBias: current.edgeBias,
+            crystalCoverageForming: current.crystalCoverageForming,
+            crystalCoverageSettled: current.crystalCoverageSettled,
+            wobbleAmplitude: current.wobbleAmplitude,
+          });
+
+          geodeMesh = new THREE.Mesh(body.geometry, geodeMaterial);
+          // It breathes while closed and bulges past its resting bounds, so a sphere fitted to the
+          // closed rock would cull it mid-open.
+          geodeMesh.frustumCulled = false;
+          spin.add(geodeMesh);
+          reportCrustShare(body.crustShare);
+        })
+        .catch(() => undefined);
+    };
+
+    /** Draw the current subject as a solid extrusion, a swarm of rock, or the geode. */
+    const buildFromShapes = (shapes: THREE.Shape[], flipY: boolean) => {
+      const current = settingsRef.current;
+
+      if (current.body === 'geode') {
+        buildGeode(shapes, flipY);
+        disposeMesh();
+        disposeSwarm();
+        return;
+      }
+
+      disposeGeode();
+
+      if (current.body === 'rock') {
+        holdShape(shapes, flipY);
         disposeMesh();
         return;
       }
-      mountGeometry(createSvgMarkGeometry(svgText, extrusionOptions()));
+
+      // The solid body extrudes from the raw shapes, so it needs the Y fix on the finished geometry —
+      // `createSvgMarkGeometry` does that itself. The other two take the flip on the outline instead.
       disposeSwarm();
     };
 
-    const buildFromLetter = (character: string, loadedFont: Font) => {
-      if (settingsRef.current.body === 'rock') {
-        // Typeface outlines are already Y-up, so no flip — see markBody's header note.
-        holdShape(letterToShapes(character, loadedFont), false);
-        disposeMesh();
+    const buildFromSvg = (svgText: string) => {
+      if (settingsRef.current.body === 'solid') {
+        mountGeometry(createSvgMarkGeometry(svgText, extrusionOptions()));
+        disposeSwarm();
+        disposeGeode();
         return;
       }
-      mountGeometry(createLetterMarkGeometry(character, loadedFont, extrusionOptions()));
-      disposeSwarm();
+      buildFromShapes(svgToShapes(svgText), true);
+    };
+
+    const buildFromLetter = (character: string, loadedFont: Font) => {
+      if (settingsRef.current.body === 'solid') {
+        mountGeometry(createLetterMarkGeometry(character, loadedFont, extrusionOptions()));
+        disposeSwarm();
+        disposeGeode();
+        return;
+      }
+      // Typeface outlines are already Y-up, so no flip — see markBody's header note.
+      buildFromShapes(letterToShapes(character, loadedFont), false);
     };
 
     const buildGeometry = () => {
@@ -489,6 +727,10 @@ export function useLetterLab(
     const clock = new THREE.Clock();
     let idleSpin = 0;
     let frameHandle = 0;
+    // The playhead only exists while `geodePlaying` is on; the scrub owns progress otherwise. Kept out
+    // of React entirely — writing 60 progress values a second into state would re-render the panel.
+    let geodePlayhead = 0;
+    let geodePlayDirection = 1;
 
     const renderFrame = () => {
       frameHandle = requestAnimationFrame(renderFrame);
@@ -520,6 +762,62 @@ export function useLetterLab(
         swarm.update(elapsed);
       }
 
+      // The geode is four curves of one number, so the whole frame is decided here. Nothing is
+      // stateful, which is what lets it be scrubbed backwards as freely as forwards.
+      if (geodeUniforms) {
+        const current = settingsRef.current;
+
+        if (current.geodePlaying && !reduceMotion) {
+          const cycle = Math.max(current.geodeCycleSeconds, 0.1);
+          geodePlayhead += (deltaSeconds / cycle) * geodePlayDirection;
+          if (geodePlayhead >= 1) {
+            geodePlayhead = 1;
+            geodePlayDirection = -1;
+          } else if (geodePlayhead <= 0) {
+            geodePlayhead = 0;
+            geodePlayDirection = 1;
+          }
+        } else if (!current.geodePlaying) {
+          // Seek, so pressing play resumes from wherever the scrub was left.
+          geodePlayhead = current.geodeProgress;
+          geodePlayDirection = 1;
+        }
+
+        // Reduced motion gets the finished mark, not a rock that never opens.
+        const progress = reduceMotion
+          ? 1
+          : current.geodePlaying
+            ? geodePlayhead
+            : current.geodeProgress;
+        const phases = evaluateGeodePhases(progress, current.geodePhaseTiming);
+
+        geodeUniforms.uGrow.value = phases.grow;
+        geodeUniforms.uCharge.value = phases.charge;
+        geodeUniforms.uReveal.value = phases.reveal;
+        geodeUniforms.uVeinFlare.value = phases.veinFlare;
+        // The crystal takes the surface only once the letter is whole — see the `spread` phase.
+        geodeUniforms.uCrystalCoverage.value = THREE.MathUtils.lerp(
+          current.crystalCoverageForming,
+          current.crystalCoverageSettled,
+          phases.spread,
+        );
+        // Frozen under reduced motion — the wobble is the one thing here that moves on its own.
+        geodeUniforms.uTime.value = reduceMotion ? 0 : elapsed;
+
+        // Pushed per frame rather than baked at build time, so the crystal's look stays live while the
+        // geometry knobs stay debounced behind a rebuild.
+        geodeUniforms.uCrystalColor.value.set(current.crystalColor);
+        geodeUniforms.uChargeColor.value.set(current.crystalColor);
+        geodeUniforms.uCrystalEmissive.value = current.crystalEmissive;
+        geodeUniforms.uCrystalRoughness.value = current.crystalRoughness;
+        geodeUniforms.uCrystalMetalness.value = current.crystalMetalness;
+        geodeUniforms.uChargeStrength.value = current.chargeStrength;
+        geodeUniforms.uFacetShading.value = current.facetShading;
+        geodeUniforms.uEdgeBias.value = current.edgeBias;
+
+        geodeUniforms.uWobbleAmplitude.value = current.wobbleAmplitude;
+      }
+
       if (!reduceMotion && !isDragging) {
         idleSpin += THREE.MathUtils.degToRad(IDLE_SPIN_DEGREES_PER_SECOND) * deltaSeconds;
       }
@@ -544,15 +842,18 @@ export function useLetterLab(
       rebuildSwarmRef.current = null;
       disposeMesh();
       disposeSwarm();
+      disposeGeode();
       disposeMaterials();
       disposeChunkMaterials();
       textureCache.forEach((texture) => texture.dispose());
       textureCache.clear();
+      environmentTarget.dispose();
+      pmremGenerator.dispose();
       bloomPass.dispose();
       composer.dispose();
       renderer.dispose();
     };
-  }, [canvasRef]);
+  }, [canvasRef, reportCrustShare]);
 
   // Geometry is baked, so a shape change needs a rebuild; material properties are pushed onto live
   // materials. Split so dragging a colour slider doesn't re-extrude the glyph every frame.
@@ -563,15 +864,20 @@ export function useLetterLab(
     settings.character,
     settings.svgMarkId,
     settings.body,
-    settings.depth,
     settings.bevelSize,
     settings.bevelThickness,
   ]);
 
   // Baked into the pool at construction — these can't be re-targeted, so they replace it.
+  //
+  // `depth` belongs HERE, not with the geometry above: the swarm reads it once, when it scatters the
+  // chunks through the slab (see markSwarm's setShape), so re-targeting the same pool leaves the old
+  // thickness in place. Rebuilding the pool covers the solid body too, because the rebuild ends in
+  // `buildGeometry()` either way.
   useEffect(() => {
     rebuildSwarmRef.current?.();
   }, [
+    settings.depth,
     settings.edgeChunkCount,
     settings.interiorChunkCount,
     settings.edgeChunkScale,
@@ -584,9 +890,42 @@ export function useLetterLab(
     settings.formationOrder,
   ]);
 
-  return {
-    replayFormation: () => replayFormationRef.current?.(),
-  };
+  // The geode's crust mask, growth delay and carves are all BAKED into the vertex buffers, so every one
+  // of these replaces the body. That includes the rock's pose: unlike a transform, moving the rock
+  // changes which parts of the mark count as old skin, and that is geometry.
+  //
+  // The look knobs (crystal colour, emissive, roughness, facet shading, wobble) are deliberately NOT
+  // here — they are pushed onto uniforms every frame, so they stay live while these stay debounced.
+  useEffect(() => {
+    rebuildGeometryRef.current?.();
+  }, [
+    settings.rockOffsetX,
+    settings.rockOffsetY,
+    settings.rockOffsetZ,
+    settings.rockRadius,
+    settings.rockStretchX,
+    settings.rockStretchY,
+    settings.rockStretchZ,
+    settings.rockSeed,
+    settings.rockCarveAmplitude,
+    settings.cling,
+    settings.crustThickness,
+    settings.markCarveAmplitude,
+    settings.markCarveFrequency,
+    settings.markCarveInPlaneDamping,
+    // Both of these were missing, and both are baked: `silhouetteHold` re-weights the per-vertex
+    // growth delay (markGeodeBody §7.5) and `crystalPatchScale` bakes the aCrystalPatch attribute.
+    // Without them here the two sliders moved React state and nothing else — they only ever landed if
+    // some OTHER geometry knob happened to be nudged afterwards.
+    settings.silhouetteHold,
+    settings.crystalPatchScale,
+    settings.crystalFacetScale,
+    settings.crystalFacetAmplitude,
+    settings.capEdgeFraction,
+    settings.capSubdivisions,
+    settings.depthRings,
+    settings.holeSeedFraction,
+  ]);
 
   // The chunk mix is an array of objects, so it's compared by serialised value rather than by
   // reference — the panel builds a new array on every keystroke and re-laying the mark for an
@@ -606,4 +945,12 @@ export function useLetterLab(
     settings.roughness,
     settings.metalness,
   ]);
+
+  // Last, so every effect above is actually reachable. These two used to sit BELOW this return and
+  // therefore never ran at all — which meant the whole chunk mix and every material control were
+  // inert, and "Copy config" exported numbers that had never been rendered.
+  return {
+    replayFormation: () => replayFormationRef.current?.(),
+    crustShare,
+  };
 }

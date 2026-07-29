@@ -152,7 +152,6 @@ components/
     ConstellationFrame/
   lab/
     SunLab/         # /sun-lab — the fractured-sun + black-hole editor
-    PadLab/         # /pad-lab — the landing-pad (champion_astro_ring) editor
     LetterLab/      # /letters
 
 lib/                # shared: the pin's layout maths, events, perf systems, tuner plumbing
@@ -178,7 +177,7 @@ scroll progress. There is no stack of sections and no second pin.
   INTRO      HERO       SERVICES     ══HANDOFF══   WORKS      ══REVEAL══   CHAMBER
   ┌─────┐    ┌─────┐    ┌──────┐       (180vh)     ┌──────┐     (140vh)    ┌──────┐
   │dust │───►│square───►│4 craft│── craft flies ──►│4 rocks│── camera ────►│ room │
-  │→ sun│    │fills │   │on pad │   becomes the    │one    │   backs out   │ + FAQ│
+  │→ sun│    │fills │   │+ gates│   becomes the    │one    │   backs out   │ + FAQ│
   └─────┘    └─────┘    └──────┘   project meteor  │re-carve│  of "screen" │ holo │
                                                    └──────┘                └──────┘
    fillFraction ──┤├── carousel: stops separated by wide CROSSINGS ──────────────┤
@@ -316,7 +315,7 @@ console), `tunerReset.ts`, `tuneScrollLock.ts`.
 **These are general editors, not one-shot wizards.** When extending a lab or panel, give full
 control over the thing being edited rather than wiring a path to one preconceived outcome.
 
-## The labs (`/sun-lab`, `/pad-lab`, `/letters`)
+## The labs (`/sun-lab`, `/letters`)
 
 Authoring tools, `robots: noindex`, separate routes — nothing reaches the homepage bundle.
 
@@ -324,11 +323,6 @@ Authoring tools, `robots: noindex`, separate routes — nothing reaches the home
   per-material controls, snapshot presets, and a **complete five-phase sun→black-hole finale**
   (flash, shard implosion, gravitational redshift, spin-up + tremor, screen-space lensing, a
   120k-particle accretion spiral). See `docs/sun-lab-remaining-work.md`.
-- **`/pad-lab`** — the services deck's landing pad (`champion_astro_ring.glb`). Per-part pose and
-  per-material colour/emissive, plus the **lights the pad casts** and a real craft from
-  `DECK_SERVICES` to judge them against. That light rig is the point: every rig light on the deck is
-  now `0`, so the pad is the only thing lighting a hull from underneath. Copy button emits the stage
-  literal plus the live material/part values.
 - **`/letters`** — extruded-glyph testbed.
 
 ---

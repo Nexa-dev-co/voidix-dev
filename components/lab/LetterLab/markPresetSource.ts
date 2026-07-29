@@ -1,5 +1,7 @@
 import { formatTuningSource } from '@/lib/tunerExport';
 import type { ChunkMaterialSpec } from '@/components/sections/WorksField/markChunkMaterial';
+import type { GeodeMorphDefaults } from '@/components/sections/WorksField/markGeodeMorph';
+import type { GeodePhaseTiming } from '@/components/sections/WorksField/markGeodePhases';
 
 /**
  * Turn a lab session into source you can paste.
@@ -31,6 +33,51 @@ export interface MarkFormationPreset {
   formationOrder: number;
   freeRadius: number;
   freeDriftAmplitude: number;
+}
+
+/**
+ * Everything the geode's GEOMETRY is carved from.
+ *
+ * Typed here rather than imported because these values have no module of their own yet — they live in
+ * the lab's `DEFAULT_GEODE`, which is where a copied block gets pasted back. When the geode ships to
+ * the works field this interface is what moves, and the export follows it.
+ */
+export interface GeodeBuildPreset {
+  rockOffsetX: number;
+  rockOffsetY: number;
+  rockOffsetZ: number;
+  rockRadius: number;
+  rockStretchX: number;
+  rockStretchY: number;
+  rockStretchZ: number;
+  rockSeed: number;
+  rockCarveAmplitude: number;
+  cling: number;
+  crustThickness: number;
+  markCarveAmplitude: number;
+  markCarveFrequency: number;
+  markCarveInPlaneDamping: number;
+  silhouetteHold: number;
+  crystalPatchScale: number;
+  crystalFacetScale: number;
+  crystalFacetAmplitude: number;
+  capEdgeFraction: number;
+  capSubdivisions: number;
+  depthRings: number;
+  holeSeedFraction: number;
+}
+
+/**
+ * A geode session, split by where each half belongs in the source.
+ *
+ * `morph` and `phases` are typed against the real module interfaces on purpose: add a field to either
+ * and this stops compiling until the export learns about it, which is the only reliable defence
+ * against an exporter that quietly drops the knob you spent an hour on.
+ */
+export interface GeodePreset {
+  build: GeodeBuildPreset;
+  morph: GeodeMorphDefaults;
+  phases: GeodePhaseTiming;
 }
 
 const HEADER_WIDTH = 78;
@@ -67,6 +114,7 @@ export function formatMarkPresetSource(
   chunkSpecs: ChunkMaterialSpec[],
   layout: MarkLayoutPreset,
   formation: MarkFormationPreset,
+  geode: GeodePreset,
 ): string {
   const edgeTotal = chunkSpecs.reduce((sum, spec) => sum + spec.edgeWeight, 0);
   const interiorTotal = chunkSpecs.reduce((sum, spec) => sum + spec.interiorWeight, 0);
@@ -82,6 +130,25 @@ export function formatMarkPresetSource(
     .join('\n');
 
   return [
+    // The geode goes first: it is the body being authored, and the three blocks below it belong to
+    // the swarm it is meant to replace.
+    sectionHeader('Geode build — paste into LetterLab.tsx DEFAULT_GEODE'),
+    '// Baked into the vertex buffers — every one of these re-carves the body.',
+    'const DEFAULT_GEODE_BUILD = {',
+    formatTuningSource(geode.build),
+    '};',
+    '',
+    sectionHeader('Geode look — paste into components/sections/WorksField/markGeodeMorph.ts'),
+    '// Pushed onto uniforms every frame; nothing here rebuilds geometry.',
+    'export const DEFAULT_GEODE_MORPH: GeodeMorphDefaults = {',
+    formatTuningSource(geode.morph),
+    '};',
+    '',
+    sectionHeader('Geode choreography — paste into components/sections/WorksField/markGeodePhases.ts'),
+    'export const DEFAULT_GEODE_PHASE_TIMING: GeodePhaseTiming = {',
+    formatTuningSource(geode.phases),
+    '};',
+    '',
     sectionHeader('Mark chunk mix — paste into components/sections/WorksField/markChunkMaterial.ts'),
     '// Resulting shares:',
     mixSummary,

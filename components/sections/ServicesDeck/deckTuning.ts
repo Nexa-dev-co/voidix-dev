@@ -2,7 +2,7 @@ import { DECK_SERVICES } from './deckServices';
 import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
 
 /**
- * The services deck's stage — where the camera stands, how the rig is lit, how the pad sits, and how
+ * The services deck's stage — where the camera stands, how the rig is lit, and how
  * each vessel is placed on it.
  *
  * ── What lives here, and what deliberately doesn't ───────────────────────────────────────────────
@@ -12,7 +12,7 @@ import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
  * create two places to change a hull colour and one of them would rot.
  *
  * So the panel writes to two files, and says which is which:
- *   • placement, culling, the rig, the pad  → here
+ *   • placement, culling, the rig          → here
  *   • palette + per-ship light              → deckServices.ts
  *
  * ── Culling ──────────────────────────────────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
  */
 
 export interface ShipPlacement {
-  /** Offset from the pad's centre, applied on top of the model's normalised pose. */
+  /** Offset from centre stage, applied on top of the model's normalised pose. */
   x: number;
   y: number;
   z: number;
@@ -66,7 +66,7 @@ export interface DeckTuning {
   // each `profile` in deckServices. What lives here is the part that is the same for every craft.
   /** How hard a centred craft's own emissive maps burn — its lit windows and engine bells. */
   litEmissiveIntensity: number;
-  /** Hull brightness as a craft leaves the pad (dim), and while it's centred (full). */
+  /** Hull brightness as a craft leaves the stage (dim), and while it's centred (full). */
   dormantBrightness: number;
   activeBrightness: number;
   /** The engine-glow breathing on the centred craft: how far it swings, and how fast. */
@@ -74,54 +74,8 @@ export interface DeckTuning {
   emitPulseSpeed: number;
 
   // ── The stage around it ──
-  /** The soft contact shadow under the centred craft. */
-  shadowOpacity: number;
   /** The starfield wrapping the deck. */
   starOpacity: number;
-
-  // ── The pad ──
-  // Authored in /pad-lab against a real craft; these are its numbers. The pad is not scenery here —
-  // with every rig light at 0 it is the ONLY thing lighting a hull from underneath.
-  showPad: boolean;
-  /** The pad is normalised to this width in world units, so its framing is model-independent. */
-  padWidth: number;
-  padScale: number;
-  padX: number;
-  padY: number;
-  padZ: number;
-  /** DEGREES. `padRotX: 90` lays the model flat with its lit face upward — it is authored standing. */
-  padRotX: number;
-  padRotY: number;
-  padRotZ: number;
-
-  // ── The glow (see PAD_GLOW_MATERIALS) ──
-  /** Master emissive on the pad's light-emitting materials, scaled by each one's weight. */
-  glowIntensity: number;
-  /**
-   * How much of an emissive TEXTURE's own colour survives. 0 = the map is a mask and the craft's
-   * `padGlow` owns the hue; 1 = the texture's authored colours. Two of the pad's panels ship an
-   * ORANGE emissive map, so anything above 0 stops them matching the rest of the pad.
-   */
-  glowMapHue: number;
-  /** Seconds the pad takes to cross-fade from one craft's colour to the next. */
-  glowTransitionSeconds: number;
-
-  // ── The light the pad casts up into the hull ──
-  padLightEnabled: boolean;
-  padLightIntensity: number;
-  padLightX: number;
-  padLightY: number;
-  padLightZ: number;
-  padLightDistance: number;
-  padLightDecay: number;
-
-  // ── Spin ──
-  /** Which parts turn, by MATERIAL name (several meshes can share one). Empty spins nothing. */
-  spinMaterial: string;
-  /** Degrees per second; negative reverses. */
-  spinSpeed: number;
-  /** Local axis: 0 = X, 1 = Y, 2 = Z. Z is the pad's face. */
-  spinAxis: number;
 
   /** One entry per vessel, in DECK_SERVICES order. */
   ships: ShipPlacement[];
@@ -150,8 +104,12 @@ const DECK_TUNING: DeckTuning = {
   //
   // Because nothing external lights the hulls any more, the ships have to carry their own
   // brightness: `dormantBrightness` and `activeBrightness` are both at 1.3 (a craft no longer dims
-  // when it leaves the pad — there is no key light for it to fall out of), and the engine glow
+  // when it leaves the stage — there is no key light for it to fall out of), and the engine glow
   // breathes harder and faster to compensate.
+  //
+  // The landing pad was removed 2026-07-29 along with the light it cast up into the hulls, so the
+  // only things reaching a craft now are the cracked sun behind the deck, the portal gate's own
+  // light as it closes on one, and its emissive. Undersides are meant to be dark.
   keyMultiplier: 0,
   fillMultiplier: 0,
   rimMultiplier: 0,
@@ -164,40 +122,8 @@ const DECK_TUNING: DeckTuning = {
   emitPulseAmplitude: 0.35,
   emitPulseSpeed: 2.9,
 
-  // Both pulled well down so the sun stays the brightest thing on the deck.
-  shadowOpacity: 0.23,
+  // Pulled well down so the sun stays the brightest thing on the deck.
   starOpacity: 0.34,
-
-  showPad: true,
-  padWidth: 5.0,
-  padScale: 1.04,
-  padX: 0.04,
-  padY: 0.03,
-  padZ: 0,
-  padRotX: 90,
-  padRotY: 0,
-  padRotZ: 0,
-
-  glowIntensity: 5.6,
-  glowMapHue: 0,
-  // Long enough to read as the pad re-tuning itself to the new craft rather than as a hard cut, and
-  // short enough to have finished by the time the incoming ship settles (the swap runs ~1.2s).
-  glowTransitionSeconds: 0.9,
-
-  padLightEnabled: true,
-  padLightIntensity: 6,
-  padLightX: 0,
-  padLightY: 0.25,
-  padLightZ: 1.6,
-  padLightDistance: 10,
-  padLightDecay: 2,
-
-  // Only the central hub turns. The lit-panel spinner authored in the lab is deliberately not
-  // carried over — one moving element under a craft reads as machinery; two competing rotations
-  // under a hovering ship read as busy.
-  spinMaterial: 'Object01Mtl',
-  spinSpeed: -18,
-  spinAxis: 2,
 
   // One per vessel, so adding a fifth ship to DECK_SERVICES can't leave the tuning short.
   ships: DECK_SERVICES.map(restingShip),

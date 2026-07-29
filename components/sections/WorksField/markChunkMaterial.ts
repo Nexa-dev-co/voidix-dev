@@ -34,6 +34,9 @@ export const CHUNK_TEXTURES = [
 
 export type ChunkTreatment = 'stone' | 'meteor';
 
+/** The spec the geode's crust is built from. Looked up by id — see DEFAULT_CHUNK_SPECS. */
+export const GEODE_CRUST_SPEC_ID = 'geode-crust';
+
 export interface ChunkMaterialSpec {
   /** Stable id, so the UI can key rows without depending on array position. */
   id: string;
@@ -107,6 +110,44 @@ export function createChunkMaterial(
  * rock with heat in it and becomes a light source, which is the sun's job on this page.
  */
 export const DEFAULT_CHUNK_SPECS: ChunkMaterialSpec[] = [
+  {
+    /**
+     * The geode's CRUST. Not a swarm chunk — both weights are 0, so it is never drawn as one; it
+     * exists so `buildGeode` has a surface of its own to ask for by id.
+     *
+     * This is the AUTHORED `black-stone` row below, repeated rather than invented. That row already
+     * carries ~63% of both the edge and the interior of the real mark mix, which makes it the stone
+     * this project is actually made of — so the base rock is made of it too.
+     *
+     * The two values easiest to get wrong are the two that decide whether this reads as rock at all:
+     *
+     *   `tint` is `#ffffff`, i.e. NO tint. It multiplies the albedo, so every "rock colour" tried here
+     *   before (`#8a9099`, `#b69090`, and briefly the `shard` row's `#ff0000`) was recolouring a
+     *   photograph of dark stone into something that was no longer dark stone.
+     *
+     *   `roughness` is 1. Below that the RoomEnvironment probe puts a sheen on it, the specular
+     *   highlights clear the bloom threshold, and matte rock comes out as wet gemstone — which is
+     *   exactly how the crust ended up competing with the crystal instead of grounding it.
+     *
+     * `textureRepeat` is the one deliberate departure. The authored 6 is sized for a CHUNK, and those
+     * are 0.04-0.06 across; the geode is the whole mark, so the same number grinds the stone into fine
+     * noise. Lower, so the plates read at the size they do in the source image.
+     *
+     * `stone`, not `meteor`: that treatment drives albedo AND emissive from one texture, which is what
+     * turned basalt-magma's seams into glowing veins. The charge still seeps through regardless —
+     * `markGeodeMorph` adds it to `totalEmissiveRadiance` in the shader rather than reading a map.
+     */
+    id: GEODE_CRUST_SPEC_ID,
+    label: 'Geode crust (black stone)',
+    texturePath: '/textures/meteor/black-stone-background-material_1127-22469.jpg',
+    treatment: 'stone',
+    tint: '#ffffff',
+    textureRepeat: 2,
+    roughness: 1,
+    emissiveIntensity: 0,
+    edgeWeight: 0,
+    interiorWeight: 0,
+  },
   {
     id: 'rim',
     label: 'Rim stone (pale)',

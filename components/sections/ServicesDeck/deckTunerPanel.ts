@@ -12,7 +12,7 @@ import type { HullShaderUniforms } from './hullMaterial';
  * The services deck's authoring panel — `?tune` only, dynamically imported, never in the shipped bundle.
  *
  * ── It writes to TWO files, and says so ──────────────────────────────────────────────────────────
- * The stage (camera, rig, pad, per-ship placement, culling) lives in deckTuning.ts. Each hull's colour
+ * The stage (camera, rig, per-ship placement, culling) lives in deckTuning.ts. Each hull's colour
  * lives in deckServices.ts, where it always has. The panel edits both live and gives you a copy button
  * per destination, because pasting a palette into the placement file would quietly do nothing.
  *
@@ -90,7 +90,6 @@ export async function createDeckTunerPanel({
   glowFolder.add(tuning, 'dormantBrightness', 0, 3, 0.01).name('brightness (leaving)');
   glowFolder.add(tuning, 'emitPulseAmplitude', 0, 1, 0.01).name('engine pulse ±');
   glowFolder.add(tuning, 'emitPulseSpeed', 0, 8, 0.05).name('engine pulse speed');
-  glowFolder.add(tuning, 'shadowOpacity', 0, 1, 0.01).name('contact shadow');
   glowFolder.add(tuning, 'starOpacity', 0, 1, 0.01).name('starfield');
 
   // Bloom ships DISABLED (see BLOOM_ENABLED in useServicesDeck) — so `enabled` comes first, or the
@@ -102,39 +101,6 @@ export async function createDeckTunerPanel({
   bloomFolder.add(bloomPass, 'radius', 0, 2, 0.01);
   bloomFolder.add(bloomPass, 'threshold', 0, 1, 0.01);
   bloomFolder.close();
-
-  // ── Pad ──
-  // The pad is the deck's light source (every rig multiplier above is 0), so its glow is the closest
-  // thing this stage has to a key light. Its per-craft COLOUR is not here — that is part of each
-  // craft's identity and lives in deckServices as `padGlow`. Full authoring lives at /pad-lab.
-  const padFolder = gui.addFolder('Landing pad');
-  padFolder.add(tuning, 'showPad');
-  padFolder.add(tuning, 'padWidth', 1, 20, 0.05).name('width (reload to apply)');
-  padFolder.add(tuning, 'padScale', 0.1, 3, 0.01).name('scale');
-  padFolder.add(tuning, 'padX', -5, 5, 0.01).name('x');
-  padFolder.add(tuning, 'padY', -5, 5, 0.01).name('height');
-  padFolder.add(tuning, 'padZ', -5, 5, 0.01).name('z');
-  padFolder.add(tuning, 'padRotX', -180, 180, 0.5).name('rot X (90 lays it flat)');
-  padFolder.add(tuning, 'padRotY', -180, 180, 0.5).name('rot Y');
-  padFolder.add(tuning, 'padRotZ', -180, 180, 0.5).name('rot Z');
-
-  const padGlowFolder = padFolder.addFolder('Glow + cast light');
-  padGlowFolder.add(tuning, 'glowIntensity', 0, 30, 0.05).name('glow');
-  padGlowFolder.add(tuning, 'glowMapHue', 0, 1, 0.01).name('texture hue (0 = one colour)');
-  padGlowFolder.add(tuning, 'glowTransitionSeconds', 0, 4, 0.05).name('colour fade (s)');
-  padGlowFolder.add(tuning, 'padLightEnabled').name('cast light');
-  padGlowFolder.add(tuning, 'padLightIntensity', 0, 60, 0.1).name('light intensity');
-  padGlowFolder.add(tuning, 'padLightX', -8, 8, 0.01).name('light x');
-  padGlowFolder.add(tuning, 'padLightY', -4, 8, 0.01).name('light height');
-  padGlowFolder.add(tuning, 'padLightZ', -8, 8, 0.01).name('light z');
-  padGlowFolder.add(tuning, 'padLightDistance', 0, 40, 0.1).name('light reach');
-  padGlowFolder.add(tuning, 'padLightDecay', 0, 4, 0.01).name('light falloff');
-
-  const padSpinFolder = padFolder.addFolder('Spin');
-  padSpinFolder.add(tuning, 'spinMaterial').name('material (empty = off)');
-  padSpinFolder.add(tuning, 'spinSpeed', -180, 180, 0.5).name('deg / sec');
-  padSpinFolder.add(tuning, 'spinAxis', { X: 0, Y: 1, Z: 2 }).name('axis');
-  padFolder.close();
 
   // ── The active ship ──
   // Everything below re-targets whenever the carousel moves, so the panel is always editing the craft
@@ -320,28 +286,6 @@ export async function createDeckTunerPanel({
         `  rimMultiplier: ${tuning.rimMultiplier},`,
         `  ambientIntensity: ${tuning.ambientIntensity},`,
         `  exposure: ${tuning.exposure},`,
-        `  showPad: ${tuning.showPad},`,
-        `  padWidth: ${tuning.padWidth},`,
-        `  padScale: ${tuning.padScale},`,
-        `  padX: ${tuning.padX},`,
-        `  padY: ${tuning.padY},`,
-        `  padZ: ${tuning.padZ},`,
-        `  padRotX: ${tuning.padRotX},`,
-        `  padRotY: ${tuning.padRotY},`,
-        `  padRotZ: ${tuning.padRotZ},`,
-        `  glowIntensity: ${tuning.glowIntensity},`,
-        `  glowMapHue: ${tuning.glowMapHue},`,
-        `  glowTransitionSeconds: ${tuning.glowTransitionSeconds},`,
-        `  padLightEnabled: ${tuning.padLightEnabled},`,
-        `  padLightIntensity: ${tuning.padLightIntensity},`,
-        `  padLightX: ${tuning.padLightX},`,
-        `  padLightY: ${tuning.padLightY},`,
-        `  padLightZ: ${tuning.padLightZ},`,
-        `  padLightDistance: ${tuning.padLightDistance},`,
-        `  padLightDecay: ${tuning.padLightDecay},`,
-        `  spinMaterial: '${tuning.spinMaterial}',`,
-        `  spinSpeed: ${tuning.spinSpeed},`,
-        `  spinAxis: ${tuning.spinAxis},`,
         '  ships: [',
         ...tuning.ships.map(
           (ship) =>

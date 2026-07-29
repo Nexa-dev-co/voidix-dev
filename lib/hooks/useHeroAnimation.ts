@@ -83,8 +83,13 @@ const TOUCH_STEP_THRESHOLD_PX = 42; // vertical swipe travel (px) that counts as
 // actually see is the scene transition it triggers: the deck's craft swap, or the works' camera warp.
 // So the input stays locked well past the glide, giving that transition room to play out before
 // another step can interrupt it. Keep this roughly in step with the scene durations in
-// useServicesDeck (SWAP_*) and useWorksField (TRAVEL_DURATION).
-const STAGE_STEP_HOLD_MS = 1400;
+// useServicesDeck (the PORTAL_* beats) and useWorksField (TRAVEL_DURATION).
+//
+// Sized to the LONGER of the two, which is the deck's portal swap: the gates form, the craft turns
+// onto one and flies through it, its replacement comes out of the other and settles, and the gates
+// collapse — ~2.77s end to end. At the old 1400 a second gesture landed while the gates were still
+// standing and cut the cinematic in half.
+const STAGE_STEP_HOLD_MS = 2900;
 // Entering the carousel out of the free-scrolling fill: glide onto craft 01 and hold, so a hard flick
 // through the fill can never dump the user on craft 02 (see the arrival branch in onUpdate).
 const CAROUSEL_ARRIVAL_DURATION = 0.5;

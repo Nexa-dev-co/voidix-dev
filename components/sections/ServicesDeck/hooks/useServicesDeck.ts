@@ -18,17 +18,20 @@ import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hull
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 import { getDeckTuning } from '../deckTuning';
-import { PAD_MODEL_PATH, preparePad, type PreparedPad } from '../padModel';
+import {
+  createPortalGate,
+  PORTAL_GATE_RADIUS_X,
+  PORTAL_GATE_RADIUS_Y,
+} from '../portalGate';
 
-// ── Framing + the pad ───────────────────────────────────────────────────
-// The camera's pose, the pad's size and colour, and each hull's placement are all AUTHORED — they live
+// ── Framing ─────────────────────────────────────────────────────────────
+// The camera's pose and each hull's placement are all AUTHORED — they live
 // in deckTuning.ts and are pushed onto the scene every frame, so the ?tune panel can move them live.
 // Only the things that aren't adjustable stay here.
-const GROUND_Y       = 0; // the pad's top surface sits here; the craft hovers just above it
 
 // ── Starfield ───────────────────────────────────────────────────────────
 const STAR_COUNT         = 1200;
-const STAR_INNER_RADIUS  = 18;  // a spherical shell so stars wrap the scene without crowding the pad
+const STAR_INNER_RADIUS  = 18;  // a spherical shell so stars wrap the scene without crowding the craft
 const STAR_OUTER_RADIUS  = 60;
 const STAR_SIZE          = 0.16;
 const STAR_DRIFT         = 0.011; // radians/second of yaw drift — the "floating through space" feel
@@ -37,7 +40,7 @@ const STAR_DRIFT         = 0.011; // radians/second of yaw drift — the "floati
 const DRACO_DECODER_PATH = '/draco/';
 const TARGET_SIZE = 2.3;  // largest dimension every vessel is normalised to
 const BASE_YAW    = -0.6; // resting 3/4 view so hulls don't read flat-on
-const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the pad (was floating high)
+const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the stage plane
 const FLOAT_AMPLITUDE = 0.1;   // vertical hover bob (up + down) on the centred craft
 const FLOAT_SPEED     = 1.1;
 const AUTO_ROTATE_SPEED = 0.35; // radians/sec — slow showroom turntable spin on the centred craft
@@ -53,11 +56,6 @@ const FLIGHT_WEAVE_PITCH_SPEED = 0.5;
 const FLIGHT_WEAVE_SWAY_AMP    = 0.13; // world units of side-to-side drift
 const FLIGHT_WEAVE_SWAY_SPEED  = 0.45;
 
-// ── Contact shadow (one soft blob on the pad, under the centred craft) ──
-const SHADOW_TEXTURE_PX = 256;
-const SHADOW_SIZE       = 2.2;
-const SHADOW_LIFT       = 0.01; // nudge above the pad to avoid z-fighting
-
 // ── Lighting (shared stage rig; the centred craft is always powered) ──
 const KEY_LIGHT_COLOR      = 0xfff2e2; // warm key so the hull reads with its own colour, not washed cold
 const KEY_LIGHT_INTENSITY  = 2.4;      // directional → reveals the surface/normal detail
@@ -71,7 +69,7 @@ const RIM_LIGHT_TWEEN = 0.5;
 // ── Powered-on look ──
 // Each hull wears a graded-palette shader (see hullMaterial.ts): the model's own albedo luminance
 // is mapped onto the ship's shadow/hull/highlight tones, so it stays multi-tonal. The centred craft
-// sits bright; a craft leaving the pad dims back as it fades. The accent glow + rim live in the
+// sits bright; a craft leaving the stage dims back as it fades. The accent glow + rim live in the
 // shader; here we only drive the shared brightness uniform + the native emissive intensity.
 //
 // The levels themselves are AUTHORED — brightness, emissive strength and the engine pulse all live in
@@ -93,29 +91,91 @@ const BLOOM_RADIUS         = 0.5;
 const BLOOM_THRESHOLD      = 0.7;
 const BLOOM_MSAA_SAMPLES   = 4;    // MSAA on the composer target (antialias:true is ignored once a composer renders)
 
-// ── Carousel swap (single pad: the current craft flies off, THEN the next flies on) ──
-// The two halves are sequenced — the outgoing craft fully clears the pad before the incoming one
-// arrives — so they never overlap/clip through each other at centre. Each banks + warps in scale
-// for a more cinematic hand-off.
-// Paced to read as a deliberate hand-off, not a snap: with the scroll now stepping one craft per
-// gesture, the swap IS the transition the user sees, so it gets room to breathe. The hero pin holds
-// its input lock (STAGE_STEP_HOLD_MS) across roughly this long so a new step can't cut it short.
-const SWAP_OUT_DURATION = 0.8;  // the leaving craft's exit
-const SWAP_GAP          = 0.12; // empty beat on the pad between the two
-const SWAP_IN_DURATION  = 1.0;  // the arriving craft's entrance
-const SWAP_OFFSET_X     = 3.6;  // how far to the side a craft sits while off-stage
-const SWAP_OFFSET_Y     = 0.55; // lift as it leaves / arrives so it arcs rather than slides flat
-const SWAP_BANK         = 0.5;  // radians the craft rolls (banks) as it slides off / in
-const SWAP_ENTER_SCALE  = 0.6;  // the craft warps in from this scale
-const SWAP_EXIT_SCALE   = 0.7;  // and shrinks to this as it leaves
+// ── The portal swap ──
+// Two gates form; the craft turns to face one, flies through it, and its replacement comes out of the
+// other. See docs/services-portal-swap-plan.md.
+//
+// All beats are absolute seconds on ONE timeline, so the sequencing is readable in one place rather
+// than as a chain of delays. The gates reach "ready" (PORTAL_FORM_DURATION) just as the craft
+// arrives at one, so it flies WHILE they finish forming.
+//
+// The hero pin holds its input lock (STAGE_STEP_HOLD_MS) across the whole of this. Lengthen the swap
+// and that constant has to follow, or a second gesture cuts the gate in half.
+const PORTAL_FORM_DURATION     = 1.25; // gates: nothing → ready
+const PORTAL_AIM_DURATION      = 0.55; // the craft swings its nose onto the gate
+const PORTAL_LAUNCH_AT         = 0.75; // …holds a beat, then goes
+const PORTAL_FLIGHT_DURATION   = 0.55; // craft → gate (ends at 1.30, just past "ready")
+const SWAP_GAP                 = 0.12; // empty beat, so one gate never reads as two ships in one hole
+const PORTAL_ARRIVE_DURATION   = 0.65; // replacement → centre stage
+const PORTAL_COLLAPSE_DURATION = 0.70; // gates un-form through the same stages, in reverse
+/** How long the turntable stays suppressed after the craft lands, before the showroom spin resumes. */
+const PORTAL_GRIP_RELEASE      = 0.4;
+/** Scale a craft shrinks to as it passes through the gate, and grows from as it comes out. */
+const PORTAL_THROUGH_SCALE     = 0.12;
+/** Residual roll as the craft peels away — a fraction of the old slide-off bank, not a full barrel. */
+const PORTAL_BANK              = 0.22;
+
+// ── Gate placement ──
+// Derived from the LIVE frame, never from world constants: at portrait the visible half-width at the
+// stage collapses to ~1.2 world units while every hull is normalised to 2.3, so a fixed lateral offset
+// is off-screen by ~3× (see the plan doc §2).
+/**
+ * How far BEHIND centre stage the gates stand.
+ *
+ * Not scenery depth — it is what makes the craft fly *through* a gate rather than slide sideways into
+ * it. A gate is billboarded to face the camera, so at the stage's own plane the craft's travel is 71
+ * degrees off the gate's normal: it grazes the face instead of passing through it. Setting the gates
+ * back swings the travel round to ~23 degrees, and everything below is measured at THIS depth so the
+ * push costs nothing in framing (see computePortalLayout).
+ *
+ * Perfect alignment is only possible for a gate directly behind the craft, which is exactly what the
+ * narrow layout gets — the reason it reads better there.
+ */
+const GATE_DEPTH           = 5.0;
+/**
+ * Quad height as a fraction of the frame's half-height AT THE GATE'S DEPTH — so the gate's on-screen
+ * size is the same wherever GATE_DEPTH is set.
+ *
+ * This sizes the QUAD, not the visible ring: the quad now carries a wide fade margin around the ring
+ * (PORTAL_GATE_RADIUS_* are derived through it), so this number is larger than the ring looks. Raised
+ * from 1.05 alongside that margin purely to leave the ring the same size on screen.
+ */
+const GATE_SIZE_FRACTION   = 1.51;
+/** Where the pair sits, as a fraction of the frame's half-width, before the clearances clamp it. */
+const GATE_X_FRACTION      = 0.62;
+/**
+ * Where the gates sit vertically, as a fraction of the frame's half-height at their depth, measured
+ * from the camera's own aim line. Negative is below it — this is the knob that puts them low in the
+ * frame rather than standing at eye level.
+ */
+const GATE_Y_FRACTION      = -0.22;
+/** Half of TARGET_SIZE — the room a hull needs before a gate can sit beside it. */
+const SHIP_HALF_EXTENT     = TARGET_SIZE / 2;
+// Clearances are SCREEN fractions, not world units. The hull and the gates now sit at different
+// depths, so their world x tells you nothing about whether they overlap in frame — only where they
+// land on screen does.
+const GATE_SHIP_CLEARANCE  = 0.12; // clear air between the hull's edge and a gate's near edge
+const GATE_FRAME_MARGIN    = 0.04; // …and between a gate's far edge and the edge of frame
+// ── The narrow-viewport layout ──
+// Below the aspect at which a pair still fits (~0.97 with these clearances) it collapses to ONE gate
+// directly behind the craft. Depth is not constrained by aspect, so that gate is in frame at any
+// width with the camera exactly where it is.
+/** Where the lone gate sits, as a fraction of the frame's half-width — just off the axis, so the
+ *  hull does not stand squarely in front of it. */
+const GATE_SINGLE_X        = 0.18;
+/**
+ * A formation the gates are held at while the shaders are pre-compiled. Any non-zero value builds the
+ * same program — every stage is a runtime branch inside one shader — it just has to clear the
+ * visibility cut-off, because `compileAsync` walks only visible objects.
+ */
+const PORTAL_PREWARM_FORMATION = 0.5;
 
 // ── Departure — the services → works flight (the ship no longer exits; it flies you in) ──
 // Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT. The ship's motion + the camera come from the
 // shared choreography in lib/handoffFlightPath.ts (see docs/services-to-works-flight.md); here we own
-// only the deck-local anchors: the pad + sun STAY put (the camera leaves the pad behind by moving),
+// only the deck-local anchors: the gates + sun STAY put (the camera leaves them behind by moving),
 // the contact shadow fades as the ship lifts off, and the deck starfield fades out during the fly-left
 // so the works field's streaking stars take over. Each value reverses cleanly when scrolled back.
-const SHADOW_FADE_WINDOW:    [number, number] = [0.03, 0.20]; // shadow fades as the ship lifts (Phase A)
 const DECK_STAR_FADE_WINDOW: [number, number] = [0.30, 0.55]; // deck stars fade out during the fly-left (Phase B)
 const DEPART_SMOOTHING = 0.09;   // per-frame ease toward the scrubbed target
 const TURNTABLE_SETTLE = 0.12;   // how quickly the accumulated showroom spin settles for the flight
@@ -133,7 +193,7 @@ const EXIT_PROGRESS_END   = 1.0;  // …fully off-screen by progress 1 (parked o
 const EXIT_DELTA = new THREE.Vector3(-2, -3.5, 9); // dives down-left and PAST the camera → off-screen
 const EXIT_SCALE_GAIN = 0.25; // a touch bigger as it powers past
 // Fully parked at works browsing (handoff at 1): the ship has whooshed off-screen and the camera has
-// tracked so far left (near x=−15) that the pad at the origin sits well outside its frustum — so the
+// tracked so far left (near x=−15) that the origin sits well outside its frustum — so the
 // deck draws nothing. Stop paying for its bloom pipeline past this; it resumes the instant a
 // scroll-back eases the handoff below 1 and the ship flies back on. (Verified from the flight-path
 // geometry in lib/handoffFlightPath.ts, not guessed.)
@@ -151,7 +211,7 @@ const HEADING_EASE_RATE       = 7;          // fps-independent ease toward the t
 const HEADING_MAX_RAD_PER_SEC = 8;          // cap the turn so a scrub-reversal eases round instead of snapping
 const HEADING_PHASE           = 2.0 + Math.PI / 2; // atan2(velX, velZ)+this → nose ∥ velocity (2.0 = nose screen-left datum)
 const REST_BLEND_START = 0.0;
-const REST_BLEND_END   = 0.12;              // ease the heading back to the pad's rest pose near progress 0
+const REST_BLEND_END   = 0.12;              // ease the heading back to the resting pose near progress 0
 
 // ── Drag-to-rotate + flick (replaces the old passive mouse-track) ──
 // A small drag on the craft rotates it (springs back on release); a big horizontal flick switches
@@ -174,7 +234,7 @@ export interface DeckStatus {
 
 interface DeckOptions {
   canvasRef: RefObject<HTMLCanvasElement | null>;
-  /** Index of the craft currently on the pad. Read live from the render loop / handlers. */
+  /** Index of the craft currently centre stage. Read live from the render loop / handlers. */
   activeIndex: number;
   /** A horizontal flick on the craft asks to switch: +1 = next, -1 = previous. */
   onFlick: (direction: number) => void;
@@ -201,30 +261,12 @@ interface DeckShip {
   emitPulseUniform: { value: number };
   /** 0 = dim (leaving), 1 = fully powered (centred). GSAP tweens this → brightness + emissive. */
   litState: { value: number };
-  /** 0 = off-stage/invisible, 1 = on the pad. GSAP tweens this → material opacity. */
+  /** 0 = off-stage/invisible, 1 = centre stage. GSAP tweens this → material opacity. */
   presence: { value: number };
 }
 
-// Soft dark blob → the contact shadow the centred craft casts onto the pad.
-function createShadowTexture(): THREE.Texture {
-  const textureCanvas = document.createElement('canvas');
-  textureCanvas.width = SHADOW_TEXTURE_PX;
-  textureCanvas.height = SHADOW_TEXTURE_PX;
-  const context = textureCanvas.getContext('2d');
-  if (context) {
-    const center = SHADOW_TEXTURE_PX / 2;
-    const gradient = context.createRadialGradient(center, center, 0, center, center, center);
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
-    gradient.addColorStop(0.7, 'rgba(0, 0, 0, 0.18)');
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, SHADOW_TEXTURE_PX, SHADOW_TEXTURE_PX);
-  }
-  return new THREE.CanvasTexture(textureCanvas);
-}
-
 // A spherical shell of faint points wrapping the scene — the "stars in the section". Additive so
-// they glint against the black without lighting the pad.
+// they glint against the black without lighting the craft.
 function createStarfield(): THREE.Points {
   const positions = new Float32Array(STAR_COUNT * 3);
   for (let starIndex = 0; starIndex < STAR_COUNT; starIndex += 1) {
@@ -251,13 +293,13 @@ function createStarfield(): THREE.Points {
 }
 
 // Centre the model, scale so every hull reads at the same size, and rest its base on y = 0 (origin
-// at the base, not the centre) so a craft sits ON the pad when its rig is at y = 0.
+// at the base, not the centre) so a craft sits ON the stage plane when its rig is at y = 0.
 function prepareVessel(
   loadedScene: THREE.Group,
   rotationDegrees?: { x?: number; y?: number; z?: number },
 ): THREE.Group {
   // Apply any per-ship base rotation BEFORE measuring, so the bounding box (and the base-on-ground
-  // placement below) accounts for the new orientation — a flipped hull still sits right on the pad.
+  // placement below) accounts for the new orientation — a flipped hull still sits right on the stage.
   if (rotationDegrees) {
     loadedScene.rotation.set(
       THREE.MathUtils.degToRad(rotationDegrees.x ?? 0),
@@ -310,7 +352,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const lowPower =
       window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
 
-    // The authored stage: camera, rig intensities, the pad, and where each hull sits. Read live every
+    // The authored stage: camera, rig intensities, and where each hull sits. Read live every
     // frame so the ?tune panel's sliders take effect with nothing to rebuild.
     const tuning = getDeckTuning();
 
@@ -392,19 +434,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const starfieldMaterial = starfield.material as THREE.PointsMaterial;
     scene.add(starfield);
 
-    // ── Contact shadow (one blob centred on the pad) ──
-    const shadowTexture  = createShadowTexture();
-    const shadowMaterial = new THREE.MeshBasicMaterial({
-      map: shadowTexture,
-      transparent: true,
-      opacity: tuning.shadowOpacity,
-      depthWrite: false,
-    });
-    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(SHADOW_SIZE, SHADOW_SIZE), shadowMaterial);
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = GROUND_Y + SHADOW_LIFT;
-    scene.add(shadow);
-
     // ── Ship rigs (created empty up-front so status works before models arrive) ──
     const ships: DeckShip[] = DECK_SERVICES.map(() => {
       const stage  = new THREE.Group();
@@ -445,8 +474,18 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       });
     };
 
-    // Fold a ship's presence (0 off-stage → 1 on the pad) into its material opacity.
+    // Fold a ship's presence (0 off-stage → 1 centre stage) into its material opacity.
     const applyOpacity = (ship: DeckShip) => {
+      // Stop drawing a craft entirely once it has faded out, rather than leaving it at opacity 0.
+      //
+      // The hulls are `transparent` but keep three's default `depthWrite: true`, so an invisible one
+      // still STAMPS ITS SHAPE INTO THE DEPTH BUFFER. That was harmless while parked craft sat off to
+      // the side; the moment they park at the origin (they leave through a gate now, so there is no
+      // off-stage spot) three of them stack on the visible craft, all at the same view depth, and
+      // whichever happens to draw first wins — punching a ship-shaped hole through the one you can
+      // see, and through any gate standing behind it. Not drawing it at all is both the fix and
+      // cheaper than drawing a fully transparent hull.
+      ship.stage.visible = ship.presence.value > 0.001;
       ship.materials.forEach((material) => {
         const baseOpacity = (material.userData.baseOpacity as number | undefined) ?? 1;
         material.opacity = baseOpacity * ship.presence.value;
@@ -487,12 +526,18 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       });
     };
 
-    // Snap a ship to its off-stage parked pose (invisible, waiting at the side).
-    const parkShip = (ship: DeckShip, fromX: number) => {
-      gsap.killTweensOf([ship.stage.position, ship.stage.rotation, ship.stage.scale, ship.presence, ship.litState]);
-      ship.stage.position.set(fromX, SWAP_OFFSET_Y, 0);
+    // Snap a ship out of play: invisible, at rest. Where it sits no longer matters once presence is 0
+    // (applyOpacity takes its materials to zero), so it does not need an off-stage parking spot the
+    // way the old side-to-side carousel did — a craft leaves through a gate now.
+    const parkShip = (ship: DeckShip) => {
+      gsap.killTweensOf([
+        ship.stage.position, ship.stage.rotation, ship.stage.scale,
+        ship.lift.rotation, ship.presence, ship.litState,
+      ]);
+      ship.stage.position.set(0, 0, 0);
       ship.stage.rotation.set(0, 0, 0);
       ship.stage.scale.setScalar(1);
+      ship.lift.rotation.y = 0;
       ship.presence.value = 0;
       ship.litState.value = 0;
       applyOpacity(ship);
@@ -504,63 +549,191 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     let stagedIndex = activeIndexRef.current;
     applyShipLighting(stagedIndex, true);
 
-    // Warp a craft onto the pad: snap it off-stage (banked + shrunk, hidden) then ease it to centre.
-    // `delay` lets the swap hold it off until the outgoing craft has cleared.
-    const enterShip = (ship: DeckShip, direction: number, delay: number) => {
-      gsap.killTweensOf([ship.stage.position, ship.stage.rotation, ship.stage.scale, ship.presence, ship.litState]);
-      ship.stage.position.set(direction * SWAP_OFFSET_X, SWAP_OFFSET_Y, 0);
-      ship.stage.rotation.set(0, 0, direction * SWAP_BANK);
-      ship.stage.scale.setScalar(SWAP_ENTER_SCALE);
-      ship.spin.rotation.set(0, BASE_YAW, 0);
-      ship.presence.value = 0;
-      applyOpacity(ship);
+    // ── The gates ──
+    // Two are always built. A narrow frame simply never shows the second and routes both halves of
+    // the swap through the one standing behind the craft (see computePortalLayout).
+    const exitGate = createPortalGate();
+    const entryGate = createPortalGate();
+    scene.add(exitGate.object, entryGate.object);
+    // `formation` 0..1 drives both gates through all ten stages; `grip` holds the showroom turntable
+    // still so the craft can actually keep a heading. Both are plain tweened numbers, so an
+    // interrupted swap re-tweens from wherever it had got to instead of snapping.
+    const portalState = { formation: 0, grip: 0 };
+    let singleGateLayout = false;
+    let swapActive = false;
+    let swapTimeline: gsap.core.Timeline | null = null;
 
-      gsap.to(ship.stage.position, {
-        x: 0, y: 0, z: 0, duration: SWAP_IN_DURATION, delay, ease: 'power3.out', overwrite: true,
-      });
-      gsap.to(ship.stage.rotation, {
-        z: 0, duration: SWAP_IN_DURATION, delay, ease: 'power3.out', overwrite: true,
-      });
-      gsap.to(ship.stage.scale, {
-        x: 1, y: 1, z: 1, duration: SWAP_IN_DURATION, delay, ease: 'back.out(1.5)', overwrite: true,
-      });
-      gsap.to(ship.presence, {
-        value: 1, duration: SWAP_IN_DURATION * 0.7, delay, ease: 'power2.out', overwrite: true,
-        onUpdate: () => applyOpacity(ship),
-      });
-      gsap.to(ship.litState, {
-        value: 1, duration: SWAP_IN_DURATION, delay, ease: 'power2.out', overwrite: true,
-        onUpdate: () => applyLitState(ship),
-      });
+    /** Where the gates stand, how big they are, and whether the frame can hold a pair. */
+    interface PortalLayout {
+      exitPosition: THREE.Vector3;
+      entryPosition: THREE.Vector3;
+      gateSize: number;
+      singleGate: boolean;
+    }
+
+    // Derived from the LIVE frame on every swap, never from world constants — and measured at the
+    // GATE'S OWN DEPTH rather than the stage's, which is what lets GATE_DEPTH be a free choice: push the
+    // gates back for a better entry angle and they keep the same size and the same place on screen.
+    //
+    // At portrait the visible half-width at the stage collapses to ~1.2 world units while every hull is
+    // normalised to 2.3, so a fixed lateral offset puts both gates off-screen by roughly 3x.
+    const computePortalLayout = (direction: number): PortalLayout => {
+      const viewDistance = Math.hypot(
+        tuning.cameraDistance,
+        tuning.cameraHeight - tuning.cameraLookY,
+      );
+      const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(tuning.cameraFov / 2));
+      // The camera looks slightly DOWN, so a world-z offset is not quite a depth offset. This is the
+      // z component of its forward axis — ~0.993 at the resting shot, but it stays honest if the
+      // panel raises the camera.
+      const forwardZ = tuning.cameraDistance / viewDistance;
+      const frameAt = (depth: number) => {
+        const halfHeight = (viewDistance - depth * forwardZ) * tanHalfFov;
+        return { halfHeight, halfWidth: halfHeight * (camera.aspect || 1) };
+      };
+
+      const stageFrame = frameAt(0);
+      const gateFrame = frameAt(-GATE_DEPTH);
+
+      const gateSize = gateFrame.halfHeight * GATE_SIZE_FRACTION;
+      // The quad spans +/- gateSize/2, and the visible ring fills these fractions of it.
+      const gateHalfWidth = (gateSize * PORTAL_GATE_RADIUS_X) / 2;
+
+      // Vertically the gate is placed in the FRAME, like it is horizontally — not stood on the ground.
+      // There is no ground five units behind the stage to stand it on, and what actually matters is
+      // where it lands in shot. This is the camera's aim line at the gate's depth, offset by
+      // GATE_Y_FRACTION.
+      const aimY =
+        tuning.cameraHeight +
+        (tuning.cameraLookY - tuning.cameraHeight) *
+          ((tuning.cameraDistance + GATE_DEPTH) / tuning.cameraDistance);
+      const gateCentreY = aimY + GATE_Y_FRACTION * gateFrame.halfHeight;
+
+      // Whether a pair fits is a SCREEN question: the hull is centre stage and the gates are five units
+      // behind it, so comparing their world x would say nothing about whether they overlap in frame.
+      const hullScreenHalf = SHIP_HALF_EXTENT / stageFrame.halfWidth;
+      const gateScreenHalf = gateHalfWidth / gateFrame.halfWidth;
+      const nearestScreenX = hullScreenHalf + gateScreenHalf + GATE_SHIP_CLEARANCE;
+      const furthestScreenX = 1 - gateScreenHalf - GATE_FRAME_MARGIN;
+      const singleGate = furthestScreenX < nearestScreenX;
+
+      if (singleGate) {
+        // One gate, directly behind the craft — which is also the only placement a craft can fly
+        // through dead square, since the gate faces the camera and so does the craft's exit path.
+        const behind = new THREE.Vector3(
+          GATE_SINGLE_X * gateFrame.halfWidth * direction,
+          gateCentreY,
+          -GATE_DEPTH,
+        );
+        return { exitPosition: behind, entryPosition: behind.clone(), gateSize, singleGate };
+      }
+
+      // The old carousel convention, kept: next (+1) leaves screen-left, arrives from screen-right.
+      const screenX = THREE.MathUtils.clamp(GATE_X_FRACTION, nearestScreenX, furthestScreenX);
+      const gateX = screenX * gateFrame.halfWidth;
+      return {
+        exitPosition: new THREE.Vector3(-direction * gateX, gateCentreY, -GATE_DEPTH),
+        entryPosition: new THREE.Vector3(direction * gateX, gateCentreY, -GATE_DEPTH),
+        gateSize,
+        singleGate,
+      };
     };
 
-    // Fly a craft off the pad toward the trailing side — banking, shrinking, dimming, fading.
-    const exitShip = (ship: DeckShip, direction: number) => {
-      gsap.killTweensOf([ship.stage.position, ship.stage.rotation, ship.stage.scale, ship.presence, ship.litState]);
-      gsap.to(ship.stage.position, {
-        x: -direction * SWAP_OFFSET_X, y: SWAP_OFFSET_Y, z: 0,
-        duration: SWAP_OUT_DURATION, ease: 'power3.in', overwrite: true,
-      });
-      gsap.to(ship.stage.rotation, {
-        z: -direction * SWAP_BANK, duration: SWAP_OUT_DURATION, ease: 'power2.in', overwrite: true,
-      });
-      gsap.to(ship.stage.scale, {
-        x: SWAP_EXIT_SCALE, y: SWAP_EXIT_SCALE, z: SWAP_EXIT_SCALE,
-        duration: SWAP_OUT_DURATION, ease: 'power2.in', overwrite: true,
-      });
-      gsap.to(ship.presence, {
-        value: 0, duration: SWAP_OUT_DURATION, ease: 'power2.in', overwrite: true,
+    // The yaw that points the nose along a travel direction. HEADING_PHASE is this file's own datum —
+    // the same one the services to works flight steers by — so the two agree about which way a hull
+    // faces instead of each carrying its own guess at it.
+    const aimYawTowards = (deltaX: number, deltaZ: number) =>
+      Math.atan2(deltaX, deltaZ) + HEADING_PHASE;
+
+    // Turn onto the gate, hold while it builds, then fly through it.
+    const flyShipIntoGate = (
+      ship: DeckShip,
+      gate: THREE.Vector3,
+      timeline: gsap.core.Timeline,
+    ) => {
+      gsap.killTweensOf([
+        ship.stage.position, ship.stage.rotation, ship.stage.scale,
+        ship.lift.rotation, ship.presence, ship.litState,
+      ]);
+      // Settle the accumulated showroom spin onto a whole turn as the craft aims, so the aim below
+      // means the same thing wherever the turntable happened to be. Same trick the handoff uses.
+      const settledYaw = Math.round(ship.lift.rotation.y / (Math.PI * 2)) * (Math.PI * 2);
+      timeline.to(ship.lift.rotation, {
+        y: settledYaw, duration: PORTAL_AIM_DURATION, ease: 'power2.inOut',
+      }, 0);
+      timeline.to(ship.stage.rotation, {
+        y: aimYawTowards(gate.x, gate.z), duration: PORTAL_AIM_DURATION, ease: 'power2.inOut',
+      }, 0);
+
+      timeline.to(ship.stage.position, {
+        x: gate.x, y: gate.y, z: gate.z,
+        duration: PORTAL_FLIGHT_DURATION, ease: 'power2.in',
+      }, PORTAL_LAUNCH_AT);
+      timeline.to(ship.stage.rotation, {
+        z: PORTAL_BANK, duration: PORTAL_FLIGHT_DURATION, ease: 'power2.in',
+      }, PORTAL_LAUNCH_AT);
+      timeline.to(ship.stage.scale, {
+        x: PORTAL_THROUGH_SCALE, y: PORTAL_THROUGH_SCALE, z: PORTAL_THROUGH_SCALE,
+        duration: PORTAL_FLIGHT_DURATION, ease: 'power2.in',
+      }, PORTAL_LAUNCH_AT);
+      // Presence drops late and fast: the craft is swallowed BY the gate rather than fading out on
+      // the way there, which would read as it giving up half way.
+      timeline.to(ship.presence, {
+        value: 0, duration: PORTAL_FLIGHT_DURATION * 0.45, ease: 'power2.in',
         onUpdate: () => applyOpacity(ship),
-      });
-      gsap.to(ship.litState, {
-        value: 0, duration: SWAP_OUT_DURATION, ease: 'power2.in', overwrite: true,
-        onUpdate: () => applyLitState(ship),
-      });
+      }, PORTAL_LAUNCH_AT + PORTAL_FLIGHT_DURATION * 0.55);
     };
 
-    // Snap a craft straight onto the pad, no animation (reduced motion).
+    // Come out of a gate and settle centre stage, straightening into the resting three-quarter view.
+    const flyShipOutOfGate = (
+      ship: DeckShip,
+      gate: THREE.Vector3,
+      timeline: gsap.core.Timeline,
+      at: number,
+    ) => {
+      gsap.killTweensOf([
+        ship.stage.position, ship.stage.rotation, ship.stage.scale,
+        ship.lift.rotation, ship.presence, ship.litState,
+      ]);
+      // Posed in a callback rather than up front: the craft has to stay parked until its moment, and
+      // on the single-gate layout that moment is after the outgoing one has cleared the same hole.
+      timeline.call(() => {
+        ship.stage.position.copy(gate);
+        ship.stage.rotation.set(0, aimYawTowards(-gate.x, -gate.z), -PORTAL_BANK);
+        ship.stage.scale.setScalar(PORTAL_THROUGH_SCALE);
+        ship.spin.rotation.set(0, BASE_YAW, 0);
+        ship.lift.rotation.y = 0; // off-stage and invisible, so this snap costs nothing to look at
+        ship.presence.value = 0;
+        ship.litState.value = 0;
+        applyOpacity(ship);
+        applyLitState(ship);
+      }, undefined, at);
+
+      timeline.to(ship.stage.position, {
+        x: 0, y: 0, z: 0, duration: PORTAL_ARRIVE_DURATION, ease: 'power3.out',
+      }, at);
+      timeline.to(ship.stage.rotation, {
+        y: 0, z: 0, duration: PORTAL_ARRIVE_DURATION, ease: 'power3.out',
+      }, at);
+      timeline.to(ship.stage.scale, {
+        x: 1, y: 1, z: 1, duration: PORTAL_ARRIVE_DURATION, ease: 'power2.out',
+      }, at);
+      timeline.to(ship.presence, {
+        value: 1, duration: PORTAL_ARRIVE_DURATION * 0.5, ease: 'power2.out',
+        onUpdate: () => applyOpacity(ship),
+      }, at);
+      timeline.to(ship.litState, {
+        value: 1, duration: PORTAL_ARRIVE_DURATION, ease: 'power2.out',
+        onUpdate: () => applyLitState(ship),
+      }, at);
+    };
+
+    // Snap a craft straight to centre stage, no animation (reduced motion).
     const snapToCenter = (ship: DeckShip) => {
-      gsap.killTweensOf([ship.stage.position, ship.stage.rotation, ship.stage.scale, ship.presence, ship.litState]);
+      gsap.killTweensOf([
+        ship.stage.position, ship.stage.rotation, ship.stage.scale,
+        ship.lift.rotation, ship.presence, ship.litState,
+      ]);
       ship.stage.position.set(0, 0, 0);
       ship.stage.rotation.set(0, 0, 0);
       ship.stage.scale.setScalar(1);
@@ -571,51 +744,90 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       applyLitState(ship);
     };
 
-    // Fly the current craft off the pad and — once it has cleared — the next one on. Direction
-    // (+1 next / −1 prev) decides which side each enters/leaves from, so the swap reads as the
-    // carousel moving. The arrival is delayed past the exit so the two never collide at centre.
-    const enterDelay = SWAP_OUT_DURATION + SWAP_GAP;
+    // The one timeline a swap runs on. `outgoingIndex` is null for an entrance with nothing to send
+    // away (the section scrolling back into view), which is why the gates still form but only the
+    // arrival half of the choreography is used.
+    const runPortalSwap = (nextIndex: number, outgoingIndex: number | null, direction: number) => {
+      const layout = computePortalLayout(direction);
+      singleGateLayout = layout.singleGate;
+      exitGate.setPose(layout.exitPosition, camera.position, layout.gateSize);
+      entryGate.setPose(layout.entryPosition, camera.position, layout.gateSize);
+
+      swapTimeline?.kill();
+      swapActive = true;
+      portalState.grip = 1;
+      const timeline = gsap.timeline({
+        onComplete: () => {
+          swapActive = false;
+          swapTimeline = null;
+        },
+      });
+      swapTimeline = timeline;
+
+      // The gates build to "ready" just as the craft reaches one, so it crosses WHILE they finish.
+      timeline.to(portalState, {
+        formation: 1, duration: PORTAL_FORM_DURATION, ease: 'power2.inOut',
+      }, 0);
+
+      const arriveAt = outgoingIndex === null
+        ? PORTAL_FORM_DURATION * 0.72
+        : PORTAL_LAUNCH_AT + PORTAL_FLIGHT_DURATION + SWAP_GAP;
+
+      if (outgoingIndex !== null) {
+        flyShipIntoGate(ships[outgoingIndex], layout.exitPosition, timeline);
+        // Fully reset only once it is through the gate and out of sight.
+        timeline.call(() => parkShip(ships[outgoingIndex]), undefined, arriveAt);
+      }
+      flyShipOutOfGate(ships[nextIndex], layout.entryPosition, timeline, arriveAt);
+
+      const collapseAt = arriveAt + PORTAL_ARRIVE_DURATION;
+      timeline.to(portalState, {
+        formation: 0, duration: PORTAL_COLLAPSE_DURATION, ease: 'power2.in',
+      }, collapseAt);
+      // Hand the showroom turntable back only once the craft has actually settled.
+      timeline.to(portalState, {
+        grip: 0, duration: PORTAL_GRIP_RELEASE, ease: 'power2.out',
+      }, collapseAt);
+    };
+
+    // Send the current craft through a gate and bring the next one out of the other. Direction
+    // (+1 next / -1 prev) decides which gate is which, so it still reads as the carousel moving.
     const setStage = (nextIndex: number) => {
       if (nextIndex === stagedIndex && ships[nextIndex]?.presence.value === 1) return;
       const direction = nextIndex > stagedIndex ? 1 : -1;
       const previousIndex = stagedIndex;
       stagedIndex = nextIndex;
       applyShipLighting(nextIndex);
-      startPadGlowTransition(nextIndex);
 
+      if (reduceMotion) {
+        ships.forEach((ship, index) => {
+          if (index === nextIndex) snapToCenter(ship);
+          else parkShip(ship);
+        });
+        return;
+      }
+
+      // Everything that is neither arriving nor leaving goes straight out of play.
       ships.forEach((ship, index) => {
-        const isCenter  = index === nextIndex;
-        const isLeaving = index === previousIndex && previousIndex !== nextIndex;
-        if (reduceMotion) {
-          if (isCenter) snapToCenter(ship);
-          else parkShip(ship, direction * SWAP_OFFSET_X);
-        } else if (isCenter) {
-          enterShip(ship, direction, enterDelay);
-        } else if (isLeaving) {
-          exitShip(ship, direction);
-        } else {
-          parkShip(ship, direction * SWAP_OFFSET_X);
-        }
+        if (index !== nextIndex && index !== previousIndex) parkShip(ship);
       });
+      runPortalSwap(nextIndex, previousIndex === nextIndex ? null : previousIndex, direction);
     };
     setStageRef.current = setStage;
 
     // Replay the whole entrance for the currently-staged craft — fired by DECK_REVEAL_EVENT every
     // time the section scrolls back into view, so "scroll away then back" runs the animation again.
+    // Nothing is leaving, so the gates form and the craft simply steps out of one.
     const replayEntrance = () => {
       const index = activeIndexRef.current;
       stagedIndex = index;
       applyShipLighting(index);
-      ships.forEach((ship, shipIndex) => {
-        if (shipIndex !== index) {
-          parkShip(ship, SWAP_OFFSET_X);
-        } else if (reduceMotion) {
-          snapToCenter(ship);
-        } else {
-          // Nothing is leaving, so it flies straight in (no exit delay).
-          enterShip(ship, 1, 0);
-        }
-      });
+      ships.forEach((ship) => parkShip(ship));
+      if (reduceMotion) {
+        snapToCenter(ships[index]);
+        return;
+      }
+      runPortalSwap(index, null, 1);
     };
     window.addEventListener(DECK_REVEAL_EVENT, replayEntrance);
 
@@ -658,6 +870,24 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // bloom passes lands after the promise resolves, while the deck is still hidden.
     let disposed = false;
     const prewarmPipeline = () => {
+      // Open the gates a crack first. `compileAsync` walks only VISIBLE objects, and a gate hides
+      // itself at formation 0 (see PortalGate.update) — so without this the portal shader is not
+      // built until the first swap, which is the exact stall this whole warm-up exists to prevent.
+      // The deck is off screen throughout, and the render loop's own draw is gated off, so nothing
+      // is on screen to see them. Cleared on every exit path below.
+      portalState.formation = PORTAL_PREWARM_FORMATION;
+      // Same reason, and the reason this matters for the FLEET as well: a parked craft is no longer
+      // drawn at all (see applyOpacity), so only the centred hull would be walked here and the other
+      // three would compile on the frame they first fly out of a gate. Show every hull for the
+      // compile; applyOpacity puts each back where its presence says it belongs.
+      ships.forEach((ship) => {
+        ship.stage.visible = true;
+      });
+      const finishWarmup = () => {
+        portalState.formation = 0;
+        ships.forEach((ship) => applyOpacity(ship));
+        reportWarmupDone('deck'); // the intro holds the reveal until this fires
+      };
       renderer
         .compileAsync(scene, camera)
         .then(() => {
@@ -665,93 +895,17 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           // Forces the bloom passes to compile too (this is the only part that can still block, and
           // only on a GPU with no parallel-compile extension — during the intro hold, never at reveal).
           composer.render();
-          reportWarmupDone('deck'); // the intro holds the reveal until this fires
+          finishWarmup();
         })
-        .catch(() => { if (!disposed) reportWarmupDone('deck'); });
+        .catch(() => { if (!disposed) finishWarmup(); });
     };
     window.addEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
 
-    // ── Load the landing pad (once) ──
+    // ── Model loading (Draco-compressed) ──
     const dracoLoader = new DRACOLoader();
     dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
     const gltfLoader = new GLTFLoader();
     gltfLoader.setDRACOLoader(dracoLoader);
-
-    // ── The pad's glow, cross-fading between craft ──
-    // The colour actually on screen, plus the ends of the fade it is currently running. Starting
-    // `from` and `target` on the same colour means the first frame is already settled — no flash of
-    // a default colour before the initial craft's own takes over.
-    const initialPadGlow = DECK_SERVICES[activeIndexRef.current]?.padGlow ?? '#ffffff';
-    const padGlowColor  = new THREE.Color(initialPadGlow);
-    const padGlowFrom   = new THREE.Color(initialPadGlow);
-    const padGlowTarget = new THREE.Color(initialPadGlow);
-    let padGlowMix = 1;
-    const padSpinEuler = new THREE.Euler();
-    const padSpinQuaternion = new THREE.Quaternion();
-
-    /**
-     * Begin a fade to the craft's pad colour.
-     *
-     * Starts from the colour CURRENTLY on screen rather than from the previous craft's authored one,
-     * so flicking through the carousel mid-fade continues from where the pad actually got to instead
-     * of jumping back to a colour it had already left.
-     */
-    const startPadGlowTransition = (shipIndex: number) => {
-      const next = DECK_SERVICES[shipIndex]?.padGlow;
-      if (!next) return;
-      padGlowFrom.copy(padGlowColor);
-      padGlowTarget.set(next);
-      padGlowMix = reduceMotion ? 1 : 0;
-      if (reduceMotion) padGlowColor.copy(padGlowTarget);
-    };
-
-    let padGroup: THREE.Group | null = null;
-    let preparedPad: PreparedPad | null = null;
-    /** The meshes the spin turns, resolved from the tuning's material name. */
-    let padSpinMeshes: { mesh: THREE.Mesh; baseQuaternion: THREE.Quaternion }[] = [];
-    let padSpinAngle = 0;
-
-    // The light the pad throws up into the hull. Its own group, following the pad's POSITION but not
-    // its rotation — the pad is laid flat by `padRotX: 90`, and inheriting that would turn "height
-    // above the pad" into a horizontal offset.
-    const padLightGroup = new THREE.Group();
-    scene.add(padLightGroup);
-    const padLight = new THREE.PointLight(0xffffff, 0);
-    padLightGroup.add(padLight);
-
-    gltfLoader.load(
-      PAD_MODEL_PATH,
-      (gltf) => {
-        const loadedScene = gltf.scene;
-        // Applies the authored material look, patches the emissive maps to act as masks, and
-        // catalogues the meshes by material. See padModel.ts.
-        preparedPad = preparePad(loadedScene, tuning.glowMapHue);
-
-        const boundingBox = new THREE.Box3().setFromObject(loadedScene);
-        const size   = boundingBox.getSize(new THREE.Vector3());
-        const center = boundingBox.getCenter(new THREE.Vector3());
-        loadedScene.position.sub(center);
-
-        // Normalised by its widest horizontal axis. This model is authored STANDING (its bbox is
-        // 45 × 366 × 366), so before `padRotX` lays it down its width runs across Y/Z, not X/Z —
-        // hence the max of all three rather than of x and z.
-        const padFit = tuning.padWidth / (Math.max(size.x, size.y, size.z) || 1);
-        const group = new THREE.Group();
-        group.add(loadedScene);
-        scene.add(group);
-        padGroup = group;
-        group.userData.fit = padFit;
-
-        // Resolve the spin target by material, so a piece made of several meshes turns as one.
-        const spinMeshes = preparedPad.partsByMaterial.get(tuning.spinMaterial) ?? [];
-        padSpinMeshes = spinMeshes.map((mesh) => ({
-          mesh,
-          baseQuaternion: mesh.quaternion.clone(),
-        }));
-      },
-      undefined,
-      (error) => console.error(`Failed to load landing pad: ${PAD_MODEL_PATH}`, error),
-    );
 
     // ── Load the four vessels (Draco-compressed) ──
     const loadProgress = new Array(ships.length).fill(0);
@@ -800,7 +954,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
             ship.presence.value = 1;
             ship.litState.value = 1;
           } else {
-            ship.stage.position.set(SWAP_OFFSET_X, SWAP_OFFSET_Y, 0);
+            // No off-stage parking spot any more — presence 0 is what hides a craft (see parkShip).
+            ship.stage.position.set(0, 0, 0);
             ship.presence.value = 0;
             ship.litState.value = 0;
           }
@@ -832,7 +987,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const activeShip = () => ships[activeIndexRef.current];
 
     const handlePointerDown = (event: PointerEvent) => {
-      // Drag only rotates the craft on the resting pad — it's disabled during the flight (the
+      // Drag only rotates the resting craft — it's disabled during the flight (the
       // camera is scripted there, so a drag would fight it).
       if (reduceMotion || departState.engaged) return;
       drag.active = true;
@@ -932,88 +1087,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // The flight owns the camera once it engages; before that the resting shot is the tuning's.
       if (!departState.engaged) applyCameraFromTuning();
 
-      // At rest the departure isn't driving these, so the authored values apply directly.
-      if (!departState.engaged) {
-        shadowMaterial.opacity = tuning.shadowOpacity;
-        starfieldMaterial.opacity = tuning.starOpacity;
-      }
-
-      if (padGroup && preparedPad) {
-        padGroup.visible = tuning.showPad;
-        padGroup.scale.setScalar((padGroup.userData.fit as number) * tuning.padScale);
-        padGroup.rotation.set(
-          THREE.MathUtils.degToRad(tuning.padRotX),
-          THREE.MathUtils.degToRad(tuning.padRotY),
-          THREE.MathUtils.degToRad(tuning.padRotZ),
-        );
-
-        // Sit the pad's TOP SURFACE on GROUND_Y, which is where the craft hover from (SHIP_HOVER is
-        // measured off it). Aligning by the model's centre instead would bury the ship inside the
-        // pad — the lab floats its test craft well clear, so its padY is not a deck-ready offset.
-        //
-        // Measured rather than derived from the raw bbox height, because the pad is ROTATED flat:
-        // after `padRotX: 90` its vertical extent runs along what was the model's Z, so `size.y`
-        // describes the wrong axis entirely.
-        //
-        // Cached on scale+rotation. A Box3 every frame would be wasteful, but the tuner has to keep
-        // working live, so it recomputes exactly when one of those changes.
-        const alignKey = `${padGroup.scale.x}|${tuning.padRotX}|${tuning.padRotY}|${tuning.padRotZ}`;
-        if (padGroup.userData.alignKey !== alignKey) {
-          padGroup.userData.alignKey = alignKey;
-          padGroup.position.set(0, 0, 0);
-          padGroup.updateMatrixWorld(true);
-          padGroup.userData.topOffset = new THREE.Box3().setFromObject(padGroup).max.y;
-        }
-        padGroup.position.set(
-          tuning.padX,
-          GROUND_Y + tuning.padY - (padGroup.userData.topOffset as number),
-          tuning.padZ,
-        );
-
-        // ── The glow, cross-fading between craft ──
-        // The pad is the only thing lighting a hull from underneath, so switching craft has to
-        // re-tune it rather than cut. `padGlowMix` runs 0 → 1 across `glowTransitionSeconds` from
-        // whatever colour was actually on screen when the change landed, so interrupting a fade
-        // half-way starts the next one from where it got to instead of snapping back.
-        if (padGlowMix < 1) {
-          padGlowMix = Math.min(1, padGlowMix + deltaSeconds / Math.max(tuning.glowTransitionSeconds, 0.0001));
-          // Smoothstep, so it eases out of the old colour and into the new one.
-          const eased = padGlowMix * padGlowMix * (3 - 2 * padGlowMix);
-          padGlowColor.lerpColors(padGlowFrom, padGlowTarget, eased);
-        }
-
-        preparedPad.glowMaterials.forEach(({ material, weight }) => {
-          material.emissive.copy(padGlowColor);
-          material.emissiveIntensity = tuning.glowIntensity * weight;
-        });
-        preparedPad.mapHueUniforms.forEach((uniform) => {
-          uniform.value = tuning.glowMapHue;
-        });
-
-        // ── The light it casts ──
-        padLightGroup.position.copy(padGroup.position);
-        padLight.visible = tuning.padLightEnabled;
-        padLight.color.copy(padGlowColor);
-        padLight.intensity = tuning.padLightIntensity;
-        padLight.position.set(tuning.padLightX, tuning.padLightY, tuning.padLightZ);
-        padLight.distance = tuning.padLightDistance;
-        padLight.decay = tuning.padLightDecay;
-
-        // ── The spin ──
-        // Every node in this model sits at translation [0,0,0] with its offset baked into the
-        // geometry, so a local rotation carries a part AROUND the pad's centre rather than twisting
-        // it on the spot.
-        padSpinAngle += THREE.MathUtils.degToRad(tuning.spinSpeed) * deltaSeconds;
-        padSpinMeshes.forEach(({ mesh, baseQuaternion }) => {
-          padSpinEuler.set(
-            tuning.spinAxis === 0 ? padSpinAngle : 0,
-            tuning.spinAxis === 1 ? padSpinAngle : 0,
-            tuning.spinAxis === 2 ? padSpinAngle : 0,
-          );
-          padSpinQuaternion.setFromEuler(padSpinEuler);
-          mesh.quaternion.copy(baseQuaternion).multiply(padSpinQuaternion);
-        });
-      }
+      // At rest the departure isn't driving this, so the authored value applies directly.
+      if (!departState.engaged) starfieldMaterial.opacity = tuning.starOpacity;
 
       ships.forEach((ship, shipIndex) => {
         const placement = tuning.ships[shipIndex];
@@ -1050,8 +1125,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         ship.lift.position.y = SHIP_HOVER + (animateCentred ? Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE : 0);
         // 2. Slow turntable spin — paused while dragging so manual rotation stays precise, and
         //    wound down as the departure takes its grip so the craft can hold a heading.
+        //    A swap grips it too: the craft has to hold the heading it just turned onto, and the
+        //    turntable underneath would drag it off the gate while it flew.
         if (animateCentred && !drag.active) {
-          ship.lift.rotation.y += AUTO_ROTATE_SPEED * deltaSeconds * (1 - departGrip);
+          ship.lift.rotation.y +=
+            AUTO_ROTATE_SPEED * deltaSeconds * (1 - departGrip) * (1 - portalState.grip);
         }
         // 3. Engine-glow breathing.
         ship.emitPulseUniform.value = animateCentred
@@ -1064,6 +1142,15 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         ship.lift.rotation.x = Math.sin(elapsed * FLIGHT_WEAVE_PITCH_SPEED + 1.3) * FLIGHT_WEAVE_PITCH_AMP * flightIdle;
         ship.lift.position.x = Math.sin(elapsed * FLIGHT_WEAVE_SWAY_SPEED + 0.7) * FLIGHT_WEAVE_SWAY_AMP * flightIdle;
       });
+
+      // ── The gates ──
+      // Forced shut for the whole services → works handoff. They cannot normally overlap it (a swap
+      // runs on an index change, the handoff is the crossing after the last one), but an interrupted
+      // swap could otherwise leave a gate standing in the shot as the craft flies you out.
+      const gateFormation = departState.engaged ? 0 : portalState.formation;
+      exitGate.update(elapsed, gateFormation);
+      // On a narrow frame both halves of the swap share the exit gate, so the second never appears.
+      entryGate.update(elapsed, singleGateLayout ? 0 : gateFormation);
 
       // ── The services → works flight ──
       if (departState.engaged) {
@@ -1124,11 +1211,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           camera.updateProjectionMatrix();
         }
 
-        // The pad + sun are the stationary anchors — the pad does NOT sink (the camera leaves it
-        // behind by tracking away). Only the contact shadow fades as the ship lifts off, and the deck
-        // starfield fades out during the fly-left so the works field's streaking stars take over.
-        shadowMaterial.opacity =
-          tuning.shadowOpacity * (1 - departWindow(SHADOW_FADE_WINDOW, departure));
+        // The gates + sun are the stationary anchors — they do NOT sink (the camera leaves them
+        // behind by tracking away). The deck starfield fades out during the fly-left so the works
+        // field's streaking stars take over.
         starfieldMaterial.opacity =
           tuning.starOpacity * (1 - departWindow(DECK_STAR_FADE_WINDOW, departure));
 
@@ -1157,8 +1242,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // looking at, and ESPECIALLY not "hidden behind" some motion: the tweens keep advancing in real
       // time through the stall, so the motion visibly JUMPS on the far side of it. So we wait for a
       // genuinely idle moment — the deck off screen (the fill phase, or parked behind works) or the
-      // tab backgrounded. Also frozen entirely through the handoff.
-      if (!handoffActive) {
+      // tab backgrounded. Also frozen entirely through the handoff — and through a portal swap, which
+      // is the same hazard for the same reason: ~2.8s of tweened motion the user is watching, where a
+      // reallocation stall would let the timeline advance behind it and land the craft somewhere else.
+      if (!handoffActive && !swapActive) {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
           // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
@@ -1232,19 +1319,12 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       gsap.killTweensOf(keyLight.color);
       gsap.killTweensOf(keyLight);
       gsap.killTweensOf(fillLight.color);
-      padGroup?.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          const meshMaterials = Array.isArray(child.material) ? child.material : [child.material];
-          meshMaterials.forEach((material) => material.dispose());
-        }
-      });
       dracoLoader.dispose();
-      shadow.geometry.dispose();
-      shadowMaterial.dispose();
-      shadowTexture.dispose();
       starfield.geometry.dispose();
       starfieldMaterial.dispose();
+      swapTimeline?.kill();
+      exitGate.dispose();
+      entryGate.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();
       // EffectComposer.dispose() only frees its own targets + copy pass, not added passes —
