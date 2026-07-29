@@ -5,7 +5,6 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
 import {
   REVEAL_EVENT,
   SUN_ASSEMBLE_EVENT,
@@ -18,6 +17,10 @@ import {
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { VECTOR_DEG_PER_SECOND } from './HeroInstruments/heroReadouts';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
+import {
+  HERO_SERVICES_PROGRESS_EVENT,
+  readHeroServicesProgress,
+} from '@/lib/heroServicesEvents';
 import { createSunBloom } from './sunBloom';
 import { createSunParticles } from './sunParticles';
 
@@ -158,10 +161,60 @@ const ASSEMBLE_CUE_FALLBACK_MS = 14000;
 /** An element only the loader renders — its presence means a cue is coming, so wait for it. */
 const INTRO_MARKER_SELECTOR = '.intro-o-slot';
 
-// ── Services energy ──
-// The ramp that carries the sun from its hero state into its services state. 0 = hero, 1 = services.
-const INTENSITY_LERP = 0.05;
-const INTENSITY_SETTLE_EPSILON = 0.0005;
+// ── The hero → services state ramp ──
+// What carries the sun from Peaceful into Cracks. It is a pure function of SCROLL (the pin's
+// HERO_SERVICES_PROGRESS_EVENT), which is the whole point: the star comes apart under your finger as
+// the void closes over the page, and scrolling back closes it again, exactly.
+//
+// It used to be a boolean — DECK_REVEAL_EVENT flipped a target to 1 and a per-frame chase ran after
+// it — and that was wrong three separate ways. It fired at a THRESHOLD, so the square filled for
+// 120vh with a completely peaceful star and the change then played out unconnected to the scroll. It
+// eased `× 0.05` per FRAME, so the whole thing ran ~2.4× faster on a 144Hz display than on a 60Hz one.
+// And an exponential chase spends its life in the tail — 63% of the way there in the first 0.33s,
+// then two more seconds creeping through the last few percent. That last one is what hid the ring:
+// its formation is real (see sunParticles) but every visible frame of it was crammed into ~0.3s and
+// the remaining 80% of the duration was spent where nothing moves. Same failure the shard assembly
+// documents in `positionShards` — the motion was real, it was just spent where the eye can't see it.
+
+/**
+ * When the shell comes apart, in the pin's FILL space (0 = top of the page, 1 = the black square has
+ * covered the viewport).
+ *
+ * Measured in `fill` rather than in the transition's own progress so the star finishes opening on the
+ * exact frame the page goes black — a landmark, not a number that drifts if the layout changes.
+ *
+ * The opening therefore begins while the cream hero and the headline are still on screen, which is
+ * deliberate: the star straining is the REASON the void grows. Raise the start if it reads as busy.
+ */
+const CRACKS_WINDOW: readonly [number, number] = [0.3, 1.0];
+/**
+ * When the orbital ring assembles, in the TRANSITION's space (0 = top of the page, 1 = fleet on
+ * screen) — so it completes on the fleet, a beat after the cracks finish.
+ *
+ * Two constraints pin this window down, and they are why it is late and in a different space:
+ *
+ *  1. The grains are ADDITIVELY blended, and they enter from 2.1× their final orbit — outside the
+ *     canvas, clipped, the way the shards do. Over the cream hero that washes out and reads as
+ *     broken. The black square covers this canvas (which is SUN_CANVAS_HEADROOM × the square, and
+ *     the sun is also RISING away from it) at ~0.31–0.40 of the fill across every viewport tested,
+ *     so anything from ~0.45 up is safely on black.
+ *  2. The hero headline is cut instantly at the end of the fill, and the ring's outer radius reaches
+ *     past where the "rlds" glyphs sit. Starting at 0.55 leaves only the earliest arrivals — where
+ *     `settled` is still near 0 and they are barely drawn — overlapping any text.
+ */
+const RING_WINDOW: readonly [number, number] = [0.55, 1.0];
+/**
+ * Per-frame ease toward the scrubbed targets, as every crossing does — but expressed as a RATE, so
+ * `1 - exp(-rate × delta)` is genuinely frame-rate independent (the same form as useServicesDeck's
+ * HEADING_EASE_RATE). 6/s reproduces the feel of the crossings' `0.09` per frame at 60Hz on every
+ * display instead of only on that one.
+ */
+const STATE_EASE_RATE = 6;
+const STATE_SETTLE_EPSILON = 0.0005;
+
+/** A 0..1 across a window of some other 0..1, flat outside it. */
+const rampWindow = (range: readonly [number, number], value: number) =>
+  THREE.MathUtils.clamp((value - range[0]) / (range[1] - range[0]), 0, 1);
 
 // ── Services: the lab's "Cracks" stage ──
 // The sun's SECOND state, and the next beat of the site's spine (peaceful → cracks → collapse →
@@ -338,16 +391,18 @@ export default function SunModelCanvas() {
     const observer = new ResizeObserver(applySize);
     observer.observe(canvas.parentElement ?? canvas);
 
-    // ── Services energy ──
-    let targetIntensity = 0;
-    const energise = () => {
-      targetIntensity = 1;
+    // ── The hero → services state ramp ──
+    // Two windows on one scrubbed signal (see CRACKS_WINDOW / RING_WINDOW). The pin publishes the
+    // span's layout; the meaning is entirely here, so `useHeroAnimation` knows nothing about how the
+    // star looks.
+    let targetCracks = 0;
+    let targetRingForm = 0;
+    const onHeroServicesProgress = (event: Event) => {
+      const { progress, fill } = readHeroServicesProgress(event);
+      targetCracks = rampWindow(CRACKS_WINDOW, fill);
+      targetRingForm = rampWindow(RING_WINDOW, progress);
     };
-    const deEnergise = () => {
-      targetIntensity = 0;
-    };
-    window.addEventListener(DECK_REVEAL_EVENT, energise);
-    window.addEventListener(DECK_HIDE_EVENT, deEnergise);
+    window.addEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
 
     // True once the works field's backdrop has fully covered the sun. See
     // SUN_COVERED_HANDOFF_PROGRESS — this is what lets the cracked sun animate on services without
@@ -365,7 +420,9 @@ export default function SunModelCanvas() {
     // ── Assembly ──
     // A one-shot flight, cued when the load reaches 100%. The dust carries the wait; this is the reward
     // for it ending, so it runs on its own clock and the intro holds its handoff until it finishes.
-    const skipAssembly = prefersReducedMotion();
+    // Gates more than the assembly, despite living here: it also kills the cracks' breathing pulse,
+    // drops the orbital ring entirely, and snaps the state ramp instead of easing it.
+    const reduceMotion = prefersReducedMotion();
     let assembly = 0;
     let modelReady = false;
     let assemblyCued = false;
@@ -455,7 +512,7 @@ export default function SunModelCanvas() {
         // The cracks breathe: a slow tug back toward the centre that never fully closes them. Each
         // shard carries its own phase so they pull out of step — in lockstep it reads as one
         // mechanical pulse rather than a star straining.
-        const breath = skipAssembly
+        const breath = reduceMotion
           ? 0
           : (Math.sin(TWO_PI * CRACKS_PULSE_SPEED * time + index * CRACKS_PULSE_PHASE_STEP) * 0.5 +
               0.5) *
@@ -665,7 +722,7 @@ export default function SunModelCanvas() {
       // Skipped entirely under reduced motion: a continuously falling particle field is exactly the
       // kind of ambient motion that setting asks us not to run, and the cracked sun still reads
       // without it.
-      if (!skipAssembly) {
+      if (!reduceMotion) {
         sunParticles = createSunParticles(particleFrameExtent(), renderer.getPixelRatio());
         // Centred on the VISIBLE star, not on the model's geometric origin. The camera is panned by
         // SUN_FRAMING_NUDGE_X because the bright halo sits off the bounding box's centre, so the
@@ -676,7 +733,7 @@ export default function SunModelCanvas() {
         scene.add(sunParticles.object);
       }
 
-      if (skipAssembly) {
+      if (reduceMotion) {
         assembly = 1; // leave the shards home — no flight to reduce
         window.dispatchEvent(new Event(SUN_ASSEMBLED_EVENT)); // never make the intro wait for a flight
       } else {
@@ -689,18 +746,23 @@ export default function SunModelCanvas() {
 
     // ── Render loop ──
     const clock = new THREE.Clock();
-    let intensity = 0;
+    // The Cracks ramp — 0 on the hero, 1 on services. Every difference between the star's two states
+    // is a function of this one value, so the transition reverses for free. `ringForm` is the same
+    // idea on its own window of the same scroll.
+    let cracks = 0;
+    let ringForm = 0;
     let wasAnimating = true;
     let animationFrame = 0;
     const animate = () => {
       animationFrame = requestAnimationFrame(animate);
       const delta = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
 
-      intensity += (targetIntensity - intensity) * INTENSITY_LERP;
+      // Ease our own copy of the scrubbed targets, so the choreography can't be outrun by a fast
+      // flick and never steps between the pin's ticks and our own frames.
+      const stateEase = reduceMotion ? 1 : 1 - Math.exp(-STATE_EASE_RATE * delta);
+      cracks += (targetCracks - cracks) * stateEase;
+      ringForm += (targetRingForm - ringForm) * stateEase;
       const elapsed = clock.getElapsedTime();
-      // The Cracks ramp — 0 on the hero, 1 on services. Every difference between the star's two
-      // states is a function of this one value, so the transition reverses for free.
-      const cracks = intensity;
       // The star always turns; it only stops once the works field has covered it completely.
       const moving = !covered;
 
@@ -746,8 +808,10 @@ export default function SunModelCanvas() {
       if (assembly >= 1) applyCracks(cracks, elapsed);
       // The light inside the shell, escaping through the gaps as they widen.
       coreLight.intensity = CRACKS_CORE_LIGHT_INTENSITY * cracks;
-      // The dust falling in. Zeroed while covered so it costs nothing through works / chamber.
-      sunParticles?.update(elapsed, covered ? 0 : cracks);
+      // The ring forming. On its OWN window of the scroll rather than the cracks ramp — it has to
+      // assemble on black (see RING_WINDOW). Zeroed while covered so it costs nothing through works
+      // / chamber.
+      sunParticles?.update(elapsed, covered ? 0 : ringForm);
 
       // Demand-render: only draw while the image is actually changing — while the state ramp eases,
       // while the star still turns, or while the shards are still arriving.
@@ -759,7 +823,10 @@ export default function SunModelCanvas() {
       // returns to one frozen frame for works and the chamber, which is the long tail of the scroll.
       // `wasAnimating` draws the one final settled frame; `forceRender` covers resize / tab-restore.
       const animating =
-        Math.abs(targetIntensity - intensity) > INTENSITY_SETTLE_EPSILON || moving || assembling;
+        Math.abs(targetCracks - cracks) > STATE_SETTLE_EPSILON ||
+        Math.abs(targetRingForm - ringForm) > STATE_SETTLE_EPSILON ||
+        moving ||
+        assembling;
       if (!document.hidden && (animating || wasAnimating || forceRender)) {
         bloom.render(scene, camera);
         forceRender = false;
@@ -773,8 +840,7 @@ export default function SunModelCanvas() {
       cancelAnimationFrame(animationFrame);
       observer.disconnect();
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener(DECK_REVEAL_EVENT, energise);
-      window.removeEventListener(DECK_HIDE_EVENT, deEnergise);
+      window.removeEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);

@@ -26,6 +26,10 @@ import {
   CHAMBER_PROGRESS_EVENT,
   type ChamberProgressDetail,
 } from "@/lib/chamberEvents";
+import {
+  HERO_SERVICES_PROGRESS_EVENT,
+  type HeroServicesProgressDetail,
+} from "@/lib/heroServicesEvents";
 
 // Marks the hero while a full-black scene (fleet or works) is on screen. Scopes the layering (sun
 // drops behind, intervening hero layers go transparent) so it never touches the fill phase.
@@ -482,6 +486,32 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       });
     };
 
+    // ── The hero → services transition ──
+    // The square filling the screen IS this transition, and the sun comes apart across it. Published
+    // as two plain fractions (see lib/heroServicesEvents): the pin owns the LAYOUT of the span — where
+    // the square finishes covering the viewport, where the fleet lands — and the sun owns what to do
+    // with it, so nothing about the star's look leaks in here.
+    //
+    // Unlike a crossing this is dispatched from EVERY update including the fill's early return, because
+    // the fill is exactly where it does its work.
+    let lastHeroServicesProgress = -1;
+    const applyHeroServicesProgress = (progress: number) => {
+      const transitionProgress = gsap.utils.clamp(0, 1, progress / carouselStart);
+      // Deduped on the transition alone: both fractions rise together and saturate together (fill
+      // reaches 1 first, at fillFraction, which is inside carouselStart), so one is enough to tell
+      // whether anything moved.
+      if (transitionProgress === lastHeroServicesProgress) return;
+      lastHeroServicesProgress = transitionProgress;
+      window.dispatchEvent(
+        new CustomEvent<HeroServicesProgressDetail>(HERO_SERVICES_PROGRESS_EVENT, {
+          detail: {
+            progress: transitionProgress,
+            fill: gsap.utils.clamp(0, 1, progress / fillFraction),
+          },
+        }),
+      );
+    };
+
     // 2. The single pin — built lazily at reveal, never on mount (Contract 2). While the loader
     //    plays the page is locked at the top, but the binding must not exist at all: a restored or
     //    stray scroll would otherwise drive the sun/square while it's still flying in.
@@ -686,6 +716,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             // Scrub every crossing in every stage, so even a jump from the top of the page to the
             // last project passes through (and lands in) the right state.
             applyCrossings(progress);
+            // Same reasoning, and deliberately ABOVE the fill's early return — this span's whole job
+            // is inside the fill, and a jump past it still has to land the sun fully open.
+            applyHeroServicesProgress(progress);
 
             if (progress < fillFraction) {
               wasInFill = true;

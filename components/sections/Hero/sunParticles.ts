@@ -95,25 +95,66 @@ const PARTICLE_BRIGHTNESS = 1.9;
 const TWINKLE_AMOUNT = 0.35;
 const TWINKLE_SPEED = 1.3;
 
-// ── Forming ──
-// The ring does not just fade up: it ASSEMBLES. Grains fall in from wider orbits and arrive
-// staggered around the circumference, so the band draws itself around the star.
+// ── Forming: the ejection ──
+// The ring is THROWN OUT of the star, not gathered into it. Every grain erupts from ONE point under
+// the star's surface, bursts through the limb, and sweeps forward around the orbit into its own
+// place — so what you watch is a knot of ejecta stretching into an arc, the arc wrapping around, and
+// the ring closing. The band is drawn BY the star coming apart, which is the whole reason it exists;
+// the previous version had grains falling in from wider orbits, which looked fine but was caused by
+// nothing.
 //
-// Driven by the same services ramp as everything else, so it reverses on scroll-up for free — the
-// ring un-forms and scatters back out rather than blinking off.
-/** How far out a grain starts, as a multiple of its final orbit. */
-const FORM_ENTRY_RADIUS_SCALE = 2.1;
+// Driven by scroll, so it reverses on scroll-up for free — the ring un-forms, sweeps back into the
+// knot and sinks into the star rather than blinking off.
+//
+// It runs on its OWN WINDOW of that scroll rather than on the star's cracks ramp (RING_WINDOW in
+// SunModelCanvas), for a reason that is invisible from in here: these grains are additive, so they
+// only read once the hero's black square has covered the frame. A window is not a second clock —
+// both values are pure functions of the same scrubbed progress, so the ring cannot desync from the
+// star it came out of, and still reverses exactly.
+
 /**
- * Fraction of the form spent staggering arrivals. 0 = every grain lands together (reads as a fade);
- * approaching 1 = the last grain only starts as the first finishes (reads as slow and gappy).
+ * Where on the orbit the eruption happens, in degrees around the ring's own plane. 0 is the ring's
+ * `u` axis — the star's LIMB, chosen so grains emerge sideways against black rather than over the
+ * star's own bright disc, where the bloom would swallow them.
  */
-const FORM_STAGGER = 0.55;
+const FORM_LAUNCH_ANGLE_DEGREES = 0;
 /**
- * Blends each grain's arrival order between a clean sweep around the ring (0) and pure random (1).
- * All-sweep reads mechanical, like a loading bar bent into a circle; a little randomness keeps the
- * leading edge ragged and organic while the sweep still reads as direction.
+ * Launch radius, as a fraction of the final orbit.
+ *
+ * The band sits at 1.18 body radii, so the star's surface is at 1/1.18 ≈ 0.85 of the orbit: anything
+ * below that starts a grain INSIDE the body, where the depth test hides it. That is the point — the
+ * grain is buried for the first ~12% of its flight and bursts through the surface already moving,
+ * rather than switching on in empty space. Raise it toward 0.85 to have them peel off the limb
+ * instead; lower it to bury them longer.
  */
-const FORM_SCATTER = 0.45;
+const FORM_LAUNCH_RADIUS = 0.75;
+/**
+ * Angular rate the knot itself orbits at while it is still a knot, so a half-formed arc left sitting
+ * mid-scroll is still alive rather than frozen. It is the FIRST ring's speed by construction: every
+ * ring erupts from the same point, so they share one launch.
+ */
+const FORM_LAUNCH_SPIN = RINGS[0].speed;
+/**
+ * Fraction of the form spent staggering launches. 0 = every grain erupts at once (reads as a pop);
+ * approaching 1 = the last grain only leaves as the first arrives (reads as slow and gappy).
+ *
+ * Deliberately NOT keyed to a grain's final angle any more, the way the old fall-in was: that angle
+ * now sets how FAR the grain must travel, and delaying the far ones as well would leave the ring
+ * closing in one late lurch.
+ */
+const FORM_STAGGER = 0.3;
+/**
+ * How much hotter fresh ejecta runs than settled ejecta, as a multiple of its resting brightness.
+ * Without it the eruption reads as grains fading up rather than as the star throwing something off.
+ * If the launch blows out into a white blob, this is the first dial — then FORM_LAUNCH_RADIUS.
+ */
+const FORM_EJECT_HEAT = 1.6;
+/**
+ * How quickly the field's master fade reaches full, as a fraction of the form. It has to be fast: the
+ * eruption's first instant is its brightest, and a master fade tracking the form linearly would dim
+ * exactly the frames that carry it.
+ */
+const PRESENCE_RAMP = 0.08;
 
 const PARTICLE_VERTEX_SHADER = /* glsl */ `
   precision highp float;
@@ -137,44 +178,71 @@ const PARTICLE_VERTEX_SHADER = /* glsl */ `
   uniform float uTwinkleAmount;
   uniform float uTwinkleSpeed;
   uniform float uForm;
-  uniform float uFormEntryScale;
   uniform float uFormStagger;
-  uniform float uFormScatter;
+  uniform float uLaunchAngle;
+  uniform float uLaunchSpin;
+  uniform float uLaunchRadius;
+  uniform float uEjectHeat;
 
   varying float vHeat;
   varying float vFade;
 
   const float TWO_PI = 6.283185307;
+  // How much of a grain's own flight is spent ramping up out of nothing, so it arrives rather than
+  // pops. Short — it is buried inside the star for longer than this anyway.
+  const float LAUNCH_FADE = 0.12;
 
   void main() {
-    // ── Arrival order ──
-    // Sweeping by start angle draws the ring around the star; blending in the grain's own random
-    // phase keeps the leading edge ragged instead of a hard clock hand.
-    float sweepDelay = fract(aOrbit.y / TWO_PI);
-    float randomDelay = fract(aLook.y / TWO_PI);
-    float delay = mix(sweepDelay, randomDelay, uFormScatter) * uFormStagger;
-    // Each grain runs its own 0..1 form across the window left after its delay.
+    // ── The ejection ──
+    // 1. Launch order. Purely random, so the eruption has duration and a ragged leading edge.
+    float delay = fract(aLook.y / TWO_PI) * uFormStagger;
+    // Each grain runs its own 0..1 flight across the window left after its delay.
     float grainForm = clamp((uForm - delay) / max(1.0 - uFormStagger, 0.001), 0.0, 1.0);
-    // Ease out: it decelerates into its orbit rather than arriving at full speed.
-    float settled = 1.0 - pow(1.0 - grainForm, 3.0);
 
-    float angle = aOrbit.y + uTime * aOrbit.z;
-    // Falls inward from a wider orbit as it forms.
-    float radius = aOrbit.x * mix(uFormEntryScale, 1.0, settled) * uFrameExtent;
+    // 2. Two curves off that one flight. The radial climb runs AHEAD of the angular sweep, so a
+    //    grain clears the star's limb before it starts travelling around: it bursts out, then curls.
+    float climb = 1.0 - pow(1.0 - grainForm, 4.0);
+    float sweep = grainForm * grainForm * (3.0 - 2.0 * grainForm);
+
+    // 3. How far around the grain still has to go, measured from the knot AS IT IS RIGHT NOW and
+    //    reduced into a single turn. At sweep 0 every grain is exactly on the knot, which orbits as
+    //    one body; at sweep 1 this resolves exactly to the settled band.
+    //
+    //    Reducing the offset matters far more than it looks. The band SHEARS — every grain runs at
+    //    its own rate — so a grain's true offset from the knot grows without bound as the page ages.
+    //    Interpolate toward that raw offset and the angular speed picks up a factor of elapsed time:
+    //    scroll ten seconds after load and the sweep is clean, but sit on the hero for five minutes
+    //    first and every grain whips 2.4 extra turns on its way round (thirty minutes: fourteen).
+    //    Reduced, the sweep looks the same at one second as at one hour.
+    //
+    //    The cost is a seam: a grain whose offset crosses zero relocates mid-flight. That is ~8
+    //    grains out of 700 over a formation — against a smear across all of them.
+    float settledAngle = aOrbit.y + uTime * aOrbit.z;
+    float knotAngle = uLaunchAngle + uTime * uLaunchSpin;
+    float offset = mod(settledAngle - knotAngle, TWO_PI);
+    float angle = knotAngle + offset * sweep;
+
+    // 4. Out from under the surface and into the orbit. The band's thickness opens up from the
+    //    launch too, so at rest the ejecta is a knot rather than an already-spread smear.
+    float radius = aOrbit.x * mix(uLaunchRadius, 1.0, climb) * uFrameExtent;
 
     vec3 normal = cross(aRingU, aRingV);
     vec3 position =
       (aRingU * cos(angle) + aRingV * sin(angle)) * radius +
-      normal * (aOrbit.w * uFrameExtent);
+      normal * (aOrbit.w * uFrameExtent * climb);
 
     vec4 modelViewPosition = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * modelViewPosition;
 
     vHeat = aLook.x;
 
+    // 5. Fresh ejecta is hot and cools as it settles. Tied to the climb rather than the sweep so the
+    //    grain is at its hottest the moment it breaks the surface, not later out on the orbit.
+    float ignition = 1.0 + uEjectHeat * (1.0 - climb);
+    float launched = smoothstep(0.0, LAUNCH_FADE, grainForm);
     // A slow shimmer, out of phase per grain.
     float twinkle = 1.0 - uTwinkleAmount * (0.5 + 0.5 * sin(uTime * uTwinkleSpeed + aLook.y));
-    vFade = twinkle * uPresence * settled;
+    vFade = twinkle * uPresence * launched * ignition;
 
     // Perspective size — the only cue that separates the near and far halves of an orbit.
     float perspectiveSize = uSize * uPixelRatio / max(-modelViewPosition.z, 0.001);
@@ -209,7 +277,7 @@ const PARTICLE_FRAGMENT_SHADER = /* glsl */ `
 export interface SunParticles {
   /** Add this to the sun's scene. */
   object: THREE.Points;
-  /** `presence` is the services energy ramp (0 hero → 1 services). */
+  /** `presence` is the ring's own scrubbed ramp (0 = absent, 1 = fully formed). */
   update(elapsedSeconds: number, presence: number): void;
   /**
    * The visible half-extent at the sun's distance. Every ring is a fraction of this, so calling it
@@ -289,9 +357,11 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
       uTwinkleAmount: { value: TWINKLE_AMOUNT },
       uTwinkleSpeed: { value: TWINKLE_SPEED },
       uForm: { value: 0 },
-      uFormEntryScale: { value: FORM_ENTRY_RADIUS_SCALE },
       uFormStagger: { value: FORM_STAGGER },
-      uFormScatter: { value: FORM_SCATTER },
+      uLaunchAngle: { value: THREE.MathUtils.degToRad(FORM_LAUNCH_ANGLE_DEGREES) },
+      uLaunchSpin: { value: FORM_LAUNCH_SPIN },
+      uLaunchRadius: { value: FORM_LAUNCH_RADIUS },
+      uEjectHeat: { value: FORM_EJECT_HEAT },
       uBrightness: { value: PARTICLE_BRIGHTNESS },
       uColorCool: { value: new THREE.Vector3(...GATHER_DEFAULTS.colorCool) },
       uColorHot: { value: new THREE.Vector3(...GATHER_DEFAULTS.colorHot) },
@@ -314,10 +384,13 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
     object.visible = presence > 0.001;
     if (!object.visible) return;
     material.uniforms.uTime.value = elapsedSeconds;
-    material.uniforms.uPresence.value = presence;
-    // Form runs off the SAME ramp as the fade rather than its own clock. That is deliberate: one
-    // clock means the assembly reverses exactly on scroll-up, and it can never desync from the
-    // sun's own cracks ramp, which is driven by that same value.
+    // The master fade snaps up almost at once (see PRESENCE_RAMP) — the per-grain `launched` term in
+    // the shader is what actually staggers the field in, and the eruption's first frames are its
+    // brightest, so a master fade tracking the form linearly would dim exactly those.
+    material.uniforms.uPresence.value = Math.min(presence / PRESENCE_RAMP, 1);
+    // Form and fade run off the SAME value rather than each getting a clock. That is deliberate: it
+    // means the ejection reverses exactly on scroll-up — the band sweeps back into the knot and sinks
+    // into the star — and a grain is only ever drawn as brightly as it has erupted.
     material.uniforms.uForm.value = presence;
   };
 
