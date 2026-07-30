@@ -26,9 +26,14 @@ import {
  * ACCRETION — the mark grown out of a seed, then overgrown with geode.
  *
  * ── The beat, from the reference ─────────────────────────────────────────────────────────────────
- * Dark pitted basalt with hairline veins burning through it, and amber crystal points erupting from its
- * edges and cavities. Crucially the two are SEQUENTIAL, not simultaneous: it is stone all the way up,
- * and only once the mark is whole does the geode grow on the edges.
+ * Dark rock veined with amber crystal, and faceted points erupting from its edges and cavities.
+ * Crucially the two are SEQUENTIAL, not simultaneous: the body is whole all the way up, and only once
+ * the mark has landed do the points grow on the edges.
+ *
+ * The body's surface is the geode itself (`geode-druse.png`) rather than the crust around it. It was
+ * basalt, on the reading that the mark is stone until the very end — but that made the points arrive as
+ * decoration on an unrelated material. Growing them out of a body that is already visibly geode makes
+ * them the finish of something rather than an addition to it.
  *
  *   p=0          p≈0.25         p≈0.5          p≈0.78         p=1
  *   the mark     outer stones   two streams    stone whole    geode grown
@@ -58,57 +63,205 @@ const MIN_CARVE_RADIUS = 0.55;
 /** Radius before the rest/peak scales act on it, as a share of the mark. */
 const CORE_RADIUS_FRACTION = 0.24;
 
-/** Dark basalt with veins in its bright channel — `createMeteorMaterial`'s whole reason to exist. */
-const STONE_TEXTURE_PATH = '/textures/meteor/basalt-magma.png';
-/** The reference's geode interior, for the cavities the stone opens into. */
-const CAVITY_TEXTURE_PATH = '/textures/geode/geode-druse.png';
-const STONE_TEXTURE_REPEAT = 3;
+/**
+ * The mark's surface: cold fractured rock, carrying no light of its own.
+ *
+ * It has been all three of the repo's candidates now, and the reasoning that settles it is the
+ * reference's: the body is DARK, and every bit of light in the frame comes from the crystal or from
+ * what the crystal is growing out of. Both earlier choices fought that.
+ *
+ *   basalt-magma  a lava network baked into the albedo — the body glowed everywhere by construction,
+ *                 and no tint could reach it because the same image drives the emissive map.
+ *   geode-druse   bright crystal across most of its area, so the whole mark read as the pocket. It is
+ *                 a SUBJECT, and a subject tiled across a surface stops being legible as itself.
+ *   black-stone   angular facets, no bright channel at all. The body can finally be a body.
+ *
+ * Already registered in `markChunkMaterial`'s `CHUNK_TEXTURES` as "Black stone", and it is the same
+ * image the geode crust spec uses — so the crust and this are literally the same rock.
+ */
+// Typed as `string` rather than left as a literal: these two are meant to be repointed while authoring,
+// and the loader below compares them. Narrowed to literals, that comparison is provably false and the
+// compiler rejects it — which would mean deleting a guard that matters the moment they agree again.
+const STONE_TEXTURE_PATH: string = '/textures/meteor/black-stone-background-material_1127-22469.jpg';
+/**
+ * What an opened cavity shows — and now that the body is dark again, this is the whole light source.
+ *
+ * This is the pairing the reference actually describes: cold rock that OPENS into glowing geode. It
+ * briefly matched the surface, which made a cavity a scale change rather than a reveal; against black
+ * stone the druse does the job it was picked for.
+ */
+const CAVITY_TEXTURE_PATH: string = '/textures/geode/geode-druse.png';
+/** Tiles across the core's diameter. The mark's own repeat is authored — see `stoneTextureRepeat`. */
+const CORE_TEXTURE_REPEAT = 2;
 
 /**
- * The stone's own look — dark and matte, per the reference.
+ * ── Why every colour here is scaled down, and what happens when one isn't ────────────────────────
  *
- * The reference letter is very nearly black, and every bit of light in the image comes from the crystal
- * or from hairline seams. `STONE_TINT` multiplies the basalt albedo, so this is the main lever on how
- * dark the body sits; the vein emissive is deliberately low because it is multiplied by the texture's
- * own bright channel AND then bloomed.
+ * The rig tone-maps with `NeutralToneMapping` (Khronos PBR Neutral), and that operator DESATURATES
+ * toward white as a channel is pushed past its knee — see three's `tonemapping_pars_fragment`, which
+ * ends `return mix( color, vec3( newPeak ), g )`. So an over-bright amber does not clip to a hotter
+ * amber the way a naive filmic curve would; it clips to WHITE. Every look knob in this file was cooled
+ * once already on the assumption that brightness clips to saturated orange. It does not, which is why
+ * cooling the emissive alone never recovered the colour.
+ *
+ * The practical rule: keep a lit surface's peak channel under roughly 0.75 in linear and the hue
+ * survives intact. Above that it washes, and no amount of emissive tuning brings it back.
+ *
+ * Two things dominate that budget, and both are ALBEDO rather than emissive — which is why they were
+ * missed. `STONE_TINT` already does the job for the basalt. `crystalAlbedo` and `cavityAlbedo` are the
+ * same lever for the other two surfaces, and `envIntensity` is the ceiling over all of them.
  */
-const STONE_TINT = '#55555a';
-const STONE_ROUGHNESS = 0.97;
-const STONE_VEIN_EMISSIVE = 0.3;
 
-/** The crystal — a glossy dielectric with light escaping from behind it, never a bulb. */
+/**
+ * The stone's own look — a cool cast over the rock, not a dimmer on it.
+ *
+ * It was `#55555a`, roughly a tenth in linear, and that number existed to CRUSH a texture that carried
+ * its own fire. Against a rock that is already dark it would take the body to near-black and throw away
+ * the facets that are the whole reason this texture was chosen. So it is near-neutral now, and slightly
+ * blue — the field's debris runs a cool slate (`meteorMaterial.ts`) for the same reason, which is that
+ * a cold body is what makes the amber in the cavities read as heat rather than as the general colour of
+ * everything.
+ *
+ * `stoneAlbedo` scales it, and is the knob to reach for rather than editing this.
+ *
+ * ⚠ It reaches the albedo ONLY. `createMeteorMaterial` points `emissiveMap` at the same texture, and the
+ * emissive path is `emissive × emissiveIntensity × emissiveMap` — the material's tint is not in it.
+ * That mattered enormously with a lava texture; with this one the emissive channel has almost nothing
+ * bright to multiply, which is exactly why the body can now be trusted to stay dark.
+ */
+const STONE_TINT = '#aab2bd';
+
+/** Scratch for the stone's albedo scale, so a per-frame tint costs no allocation. */
+const STONE_BASE_COLOR = new THREE.Color(STONE_TINT);
+
+/**
+ * The crystal's HUE. Its brightness is the `crystalAlbedo` control, not this.
+ *
+ * At full strength this is linear red 1.0 — a fully saturated maximum-red diffuse, which clips from
+ * ordinary lighting before a single unit of emissive is added. The panel used to offer four knobs for
+ * the emissive half and none for the albedo, so the one value that was actually blowing the crystal out
+ * could not be reached from the lab at all.
+ */
 const CRYSTAL_COLOR = '#ff8a1f';
 const CRYSTAL_EMISSIVE_COLOR = '#ff7a2a';
-const CRYSTAL_EMISSIVE = 0.45;
-const CRYSTAL_ROUGHNESS = 0.32;
 const CRYSTAL_METALNESS = 0;
+
+/** Scratch for the albedo scale, so a per-frame tint costs no allocation. */
+const CRYSTAL_BASE_COLOR = new THREE.Color(CRYSTAL_COLOR);
 
 const ACCRETION_CONTROLS: TuningControl[] = [
   // ── The stone, cut and roughened. Rebuilds. ──
-  { key: 'rimSpacing', label: 'Rim stone size', min: 0.04, max: 0.4, step: 0.005, value: 0.13, rebuilds: true },
-  { key: 'coreSpacing', label: 'Core stone size', min: 0.1, max: 1.2, step: 0.01, value: 0.42, rebuilds: true },
-  { key: 'spacingFalloff', label: 'Rim depth', min: 0.05, max: 1, step: 0.01, value: 0.3, rebuilds: true },
-  { key: 'capEdgeFraction', label: 'Tessellation', min: 0.008, max: 0.05, step: 0.001, value: 0.022, rebuilds: true },
+  //
+  // ⚠ The size hierarchy is authored HARD: rim stones at the slider's floor, core masses at its
+  // ceiling. Fine detail exactly where the eye reads the outline, few large masses behind it. It is
+  // also the expensive end of both sliders — see the note on tessellation below.
+  { key: 'rimSpacing', label: 'Rim stone size', min: 0.04, max: 0.4, step: 0.005, value: 0.04, rebuilds: true },
+  { key: 'coreSpacing', label: 'Core stone size', min: 0.1, max: 1.2, step: 0.01, value: 1.2, rebuilds: true },
+  { key: 'spacingFalloff', label: 'Rim depth', min: 0.05, max: 1, step: 0.01, value: 0.33, rebuilds: true },
+  // ⚠ At the floor, and the floor is dense: edge length is `capEdgeFraction × targetSize`, so 0.008 asks
+  // for ~0.021 world units on a 2.6 mark, and each subdivision quadruples what that produced. Paired
+  // with a 0.04 rim spacing this is by far the heaviest setting in the file. Watch the rig's triangle
+  // and build-time read-outs before carrying it into the section.
+  { key: 'capEdgeFraction', label: 'Tessellation', min: 0.008, max: 0.05, step: 0.001, value: 0.008, rebuilds: true },
   { key: 'capSubdivisions', label: 'Subdivisions', min: 0, max: 3, step: 1, value: 2, decimals: 0, rebuilds: true },
+  // Both back on, and this only became authorable once the wall UVs were fixed. While every wall
+  // sampled one identical sliver of texture, any displacement read as more of the same banding, so the
+  // two were indistinguishable from the bug and got zeroed together chasing it.
+  //
+  // Pit scale sits at its floor — big slow undulations through the thickness rather than fine noise,
+  // which is what keeps this reading as a hewn face and not as sandpaper.
   { key: 'capAmplitude', label: 'Face pitting', min: 0, max: 0.12, step: 0.002, value: 0.03, rebuilds: true },
-  { key: 'capFrequency', label: 'Pit scale', min: 0.4, max: 6, step: 0.05, value: 2.4, rebuilds: true },
-  { key: 'inPlaneAmplitude', label: 'Edge chipping', min: 0, max: 0.12, step: 0.002, value: 0.028, rebuilds: true },
-  { key: 'silhouetteProtection', label: 'Keep outline', min: 0, max: 1, step: 0.02, value: 0.5, rebuilds: true },
-  { key: 'chunkInflate', label: 'Seam close', min: 0, max: 0.01, step: 0.0005, value: 0.002, rebuilds: true },
+  { key: 'capFrequency', label: 'Pit scale', min: 0.4, max: 6, step: 0.05, value: 0.4, rebuilds: true },
+  // Chipping is ON, harder than it ever was — but protection is at 1, and the pair is the whole point.
+  //
+  // `restPositionOf` damps the in-plane displacement by `1 − protection × rimProximity`, so at
+  // protection 1 the silhouette gets NOTHING and the interior gets the full 0.05. The outline stays the
+  // mark's own contour, exactly, while the partition inside it is visibly hewn. That is the combination
+  // the earlier "clean cut" pass could not reach by moving one slider: it needed both ends at once.
+  //
+  // The protected band is `rimSpacing × 2` wide — now 0.08, narrow, because the rim stones are fine.
+  { key: 'inPlaneAmplitude', label: 'Edge chipping', min: 0, max: 0.12, step: 0.002, value: 0.05, rebuilds: true },
+  { key: 'silhouetteProtection', label: 'Keep outline', min: 0, max: 1, step: 0.02, value: 1, rebuilds: true },
+  // ⚠ OFF, and this is the one value here with a known failure mode. It exists so neighbouring stones
+  // interpenetrate slightly and floating-point error cannot open a hairline crack between them
+  // (`accretionChunks` §8). At 0 nothing pushes them together, so seams can show as light leaking
+  // through the body. If pinholes appear along the partition at rest, this is the knob — 0.0005 is
+  // enough. Deliberate for now: with the faces pitted, visible fracture lines may be wanted.
+  { key: 'chunkInflate', label: 'Seam close', min: 0, max: 0.01, step: 0.0005, value: 0, rebuilds: true },
   // ── The geode. Rebuilds. ──
-  { key: 'crystalCoverage', label: 'Geode coverage', min: 0, max: 1, step: 0.02, value: 0.42, rebuilds: true },
+  // Fewer sites, tighter patches, but six points at each and barely sunk in — clusters that read as
+  // distinct druse rather than a trim running the whole outline.
+  { key: 'crystalCoverage', label: 'Geode coverage', min: 0, max: 1, step: 0.02, value: 0.36, rebuilds: true },
   { key: 'crystalSiteSpacing', label: 'Geode spacing', min: 0.03, max: 0.4, step: 0.005, value: 0.075, rebuilds: true },
-  { key: 'crystalPatchScale', label: 'Geode patch size', min: 0.5, max: 8, step: 0.1, value: 2.2, rebuilds: true },
-  { key: 'crystalCluster', label: 'Points per site', min: 1, max: 10, step: 1, value: 4, decimals: 0, rebuilds: true },
+  { key: 'crystalPatchScale', label: 'Geode patch size', min: 0.5, max: 8, step: 0.1, value: 1.7, rebuilds: true },
+  { key: 'crystalCluster', label: 'Points per site', min: 1, max: 10, step: 1, value: 6, decimals: 0, rebuilds: true },
   { key: 'crystalLength', label: 'Point length', min: 0.04, max: 0.5, step: 0.005, value: 0.17, rebuilds: true },
-  { key: 'crystalSpread', label: 'Fan', min: 0, max: 1.1, step: 0.02, value: 0.5, rebuilds: true },
-  { key: 'crystalEmbed', label: 'Sink in', min: 0, max: 0.6, step: 0.02, value: 0.28, rebuilds: true },
+  { key: 'crystalSpread', label: 'Fan', min: 0, max: 1.1, step: 0.02, value: 0.38, rebuilds: true },
+  // Low: the points stand proud of the stone rather than emerging from it. Raise toward 0.3 if they
+  // start reading as perched on the surface instead of grown out of it.
+  { key: 'crystalEmbed', label: 'Sink in', min: 0, max: 0.6, step: 0.02, value: 0.1, rebuilds: true },
+  // ── How dark each surface sits. Live, and the FIRST thing to reach for. ──
+  // These are albedo, not glow. See the tone-mapping note above: a surface whose peak channel clears
+  // ~0.75 in linear loses its hue to the operator's highlight desaturation, and no emissive knob below
+  // can undo that. Every one of these was previously a hardcoded value with no control at all.
+  //
+  // The probe is the ceiling over all three. RoomEnvironment carries emissive area lights at 50…100, so
+  // at full strength it dominates the key light, and leaving these materials at three's default of 1
+  // was the single largest reason the whole mark once read as molten.
+  //
+  // 0.8 is well above the 0.35 the shipped field's rocks use (`createStoneMaterial`, `meteorMaterial`),
+  // and that is a deliberate trade rather than a regression: the stone is held down by `stoneAlbedo` at
+  // 0.2 instead, so the body stays dark while the crystal and the cavities — which want the specular —
+  // get a probe strong enough to shape them. Lower this and the geode goes flat, so lower `stoneAlbedo`
+  // with it if the body ever comes up too bright.
+  { key: 'envIntensity', label: 'Probe strength', min: 0, max: 1.5, step: 0.05, value: 0.8, rebuilds: false },
+  // Scales STONE_TINT, and it is doing the heavy lifting now — see the probe above. A fifth of the
+  // tint, which is what keeps a body lit at 0.8 from reading as a lamp.
+  { key: 'stoneAlbedo', label: 'Stone body', min: 0, max: 2, step: 0.02, value: 0.2, rebuilds: false },
+  // ── These two are the reflectivity, and nothing else is ──
+  // Roughness at 1 is fully matte: the specular lobe spreads so wide it stops reading as a reflection
+  // at all, leaving only the ~4% dielectric Fresnel that every non-metal has. This is the knob that was
+  // making the body look wet — at 0.54 against a 0.8 probe, RoomEnvironment's area lights (50…100) come
+  // back as a broad gloss, which is exactly what `markChunkMaterial`'s note warns happens below 1.
+  //
+  // Turning the PROBE down is the wrong fix for it: `envMapIntensity` scales the environment's diffuse
+  // and its specular together, so dropping it to kill the sheen also unlights the body. Kill the
+  // specular here and let the probe go on doing the lighting.
+  { key: 'stoneRoughness', label: 'Stone roughness', min: 0, max: 1, step: 0.02, value: 1, rebuilds: false },
+  // Was hardcoded at 0.05 by `createMeteorMaterial`, with no control — small, but metalness tints the
+  // reflection with the albedo and drops the diffuse, so even a little of it reads as sheen on a dark
+  // body. Rock is a dielectric; 0 is the physically honest value and the least reflective one.
+  { key: 'stoneMetalness', label: 'Stone metalness', min: 0, max: 1, step: 0.02, value: 0, rebuilds: false },
+  { key: 'crystalAlbedo', label: 'Crystal body', min: 0, max: 1, step: 0.02, value: 0.5, rebuilds: false },
+  { key: 'cavityAlbedo', label: 'Cavity body', min: 0, max: 1, step: 0.02, value: 0.48, rebuilds: false },
+  // Tiles of the rock across the mark. The black stone is a SURFACE — its facets are grain, so it wants
+  // to tile more often than the druse ever could without turning to noise.
+  //
+  // Labelled for the surface, not "Geode scale" — the `crystalCoverage`/`crystalSiteSpacing` group
+  // already owns "Geode" for the points that grow on the edges, and two knobs reading the same in one
+  // panel is how you spend ten minutes dragging the wrong one.
+  { key: 'stoneTextureRepeat', label: 'Surface scale', min: 0.4, max: 12, step: 0.1, value: 2.2, rebuilds: false },
   // ── How hot it burns. Live, and deliberately low: it all lands on top of a bloom pass. ──
-  { key: 'stoneVeinGlow', label: 'Vein glow', min: 0, max: 2, step: 0.02, value: 0.3, rebuilds: false },
-  { key: 'cavityCoverage', label: 'Open cavities', min: 0, max: 1, step: 0.02, value: 0.34, rebuilds: false },
-  { key: 'cavityWidth', label: 'Cavity reach', min: 0.02, max: 0.5, step: 0.01, value: 0.16, rebuilds: false },
+  // Nearly off, and it barely matters now — this multiplies the emissive MAP, and the black stone has
+  // no bright channel for it to find. That is the point of the texture: the body cannot glow by
+  // accident any more, so all the light in the frame has to come from the cavities and the crystal.
+  // Raising it warms the facet highlights rather than lighting seams; there are no seams.
+  { key: 'stoneVeinGlow', label: 'Surface glow', min: 0, max: 2, step: 0.02, value: 0.1, rebuilds: false },
+  // Fewer stones open, but each opens FURTHER and burns brighter — a cavity is now an event on the
+  // body rather than a speckle across it. Coverage picks whole stones (see `accretionGrowth`'s hash),
+  // so dropping it removes pockets rather than dimming them, which is the read that was wanted.
+  { key: 'cavityCoverage', label: 'Open cavities', min: 0, max: 1, step: 0.02, value: 0.14, rebuilds: false },
+  // Reaches well in from the outline: a cavity narrower than the druse's own crystal pockets can only
+  // ever show a fragment of one, and the texture needs room before it reads as a geode at all.
+  { key: 'cavityWidth', label: 'Cavity reach', min: 0.02, max: 0.6, step: 0.01, value: 0.42, rebuilds: false },
   { key: 'cavityGlow', label: 'Cavity glow', min: 0, max: 4, step: 0.05, value: 0.8, rebuilds: false },
-  { key: 'crystalGlow', label: 'Crystal glow', min: 0, max: 3, step: 0.02, value: 0.45, rebuilds: false },
+  // Tiles of the druse across the mark, independent of the stone's. It sits near the stone's own 2.2
+  // rather than far below it — with the cavities now wide and sparse, each one has room for whole
+  // pockets without the texture having to be blown up to find them.
+  { key: 'cavityRepeat', label: 'Pocket scale', min: 0.25, max: 6, step: 0.05, value: 2.05, rebuilds: false },
+  // Held down deliberately: this rides on top of the root multiplier below AND a bloom pass, so the
+  // crystal reads as a lit dielectric rather than a bulb. The colour comes from `crystalAlbedo`.
+  { key: 'crystalGlow', label: 'Crystal glow', min: 0, max: 3, step: 0.02, value: 0.36, rebuilds: false },
   { key: 'crystalRootGlow', label: 'Crystal root glow', min: 0, max: 4, step: 0.05, value: 1.2, rebuilds: false },
   { key: 'crystalTipGlow', label: 'Crystal tip glow', min: 0, max: 2, step: 0.02, value: 0.3, rebuilds: false },
   // Roughness, not gloss — LOW is shiny. Raised from 0.16, because a near-mirror crystal against the
@@ -135,12 +288,31 @@ const ACCRETION_CONTROLS: TuningControl[] = [
     options: ['Travel', 'In place', 'Extend', 'Creep'],
     rebuilds: false,
   },
+  // Its own control, not the arrival reversed — see `uDeparture`. `Recede` is the storyboard's own
+  // answer: the outgoing mark streams back into the core while the incoming one grows out of it, which
+  // is what makes the middle of the transition read as two flows crossing rather than as one mark
+  // evaporating in place while another swells behind it.
+  {
+    key: 'departure',
+    label: 'How a stone leaves',
+    min: 0,
+    max: 3,
+    step: 1,
+    value: 0,
+    decimals: 0,
+    kind: 'choice',
+    options: ['Recede', 'In place', 'Collapse', 'Withdraw'],
+    rebuilds: false,
+  },
   { key: 'growthSteps', label: 'Growth waves', min: 1, max: 12, step: 1, value: 5, decimals: 0, rebuilds: false },
   { key: 'growStagger', label: 'Grow procession', min: 0, max: 0.95, step: 0.05, value: 0.72, rebuilds: false },
   { key: 'shrinkStagger', label: 'Retract procession', min: 0, max: 0.95, step: 0.05, value: 0.62, rebuilds: false },
   { key: 'crystalStagger', label: 'Geode procession', min: 0, max: 0.95, step: 0.05, value: 0.6, rebuilds: false },
   { key: 'orderJitter', label: 'Front jitter', min: 0, max: 0.5, step: 0.01, value: 0.08, rebuilds: false },
   { key: 'overshoot', label: 'Slam', min: 0, max: 3, step: 0.05, value: 1.15, rebuilds: false },
+  // The slam is an ARRIVAL gesture. Sharing it with the retraction made every stone swell past full
+  // size just before it vanished, which is most of why the departure looked mushy. Off by default.
+  { key: 'shrinkOvershoot', label: 'Slam (leaving)', min: 0, max: 3, step: 0.05, value: 0, rebuilds: false },
   { key: 'scaleLead', label: 'Grow: scale done by', min: 0.2, max: 1, step: 0.02, value: 0.55, rebuilds: false },
   // 1 means it shrinks across the whole retraction rather than holding full size and blinking out.
   { key: 'shrinkScaleLead', label: 'Shrink: over', min: 0.2, max: 1, step: 0.02, value: 1, rebuilds: false },
@@ -250,14 +422,21 @@ class AccretionTransition implements MarkTransitionStrategy {
 
     this.coreRadius = options.targetSize * CORE_RADIUS_FRACTION;
     const coreMaterial = createMeteorMaterial(
-      stoneTexture ? cloneRepeated(stoneTexture, 2) : new THREE.Texture(),
+      stoneTexture ? cloneRepeated(stoneTexture, CORE_TEXTURE_REPEAT) : new THREE.Texture(),
       false,
     );
     if (!stoneTexture) {
       coreMaterial.map = null;
       coreMaterial.emissiveMap = null;
     }
-    coreMaterial.emissiveIntensity = STONE_VEIN_EMISSIVE;
+    // The same tint the stones get. It was missing, so the core rendered at `createMeteorMaterial`'s
+    // undimmed white albedo — a rock an order of magnitude brighter than every stone around it, which
+    // is not what "the core is visibly a sibling" was supposed to mean.
+    coreMaterial.color.copy(STONE_BASE_COLOR).multiplyScalar(tuning.stoneAlbedo);
+    coreMaterial.roughness = tuning.stoneRoughness;
+    coreMaterial.metalness = tuning.stoneMetalness;
+    coreMaterial.emissiveIntensity = tuning.stoneVeinGlow;
+    coreMaterial.envMapIntensity = tuning.envIntensity;
     this.core = new THREE.Mesh(createCoreGeometry(), coreMaterial);
     // It swells past its resting size at the midpoint, so a sphere fitted to rest would cull it exactly
     // when it matters.
@@ -307,7 +486,7 @@ class AccretionTransition implements MarkTransitionStrategy {
 
       const stoneMaterial = createMeteorMaterial(
         this.stoneTexture
-          ? cloneRepeated(this.stoneTexture, STONE_TEXTURE_REPEAT)
+          ? cloneRepeated(this.stoneTexture, this.tuning.stoneTextureRepeat)
           : new THREE.Texture(),
         false,
       );
@@ -318,9 +497,11 @@ class AccretionTransition implements MarkTransitionStrategy {
         stoneMaterial.map = null;
         stoneMaterial.emissiveMap = null;
       }
-      stoneMaterial.color.set(STONE_TINT);
-      stoneMaterial.roughness = STONE_ROUGHNESS;
-      stoneMaterial.emissiveIntensity = STONE_VEIN_EMISSIVE;
+      stoneMaterial.color.copy(STONE_BASE_COLOR).multiplyScalar(this.tuning.stoneAlbedo);
+      stoneMaterial.roughness = this.tuning.stoneRoughness;
+      stoneMaterial.metalness = this.tuning.stoneMetalness;
+      stoneMaterial.emissiveIntensity = this.tuning.stoneVeinGlow;
+      stoneMaterial.envMapIntensity = this.tuning.envIntensity;
       const stoneUniforms = enableStoneGrowth(stoneMaterial, this.cavityTexture);
 
       const stone = new THREE.Mesh(chunks.geometry, stoneMaterial);
@@ -381,11 +562,14 @@ class AccretionTransition implements MarkTransitionStrategy {
     }
 
     const crystalMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(CRYSTAL_COLOR),
+      // Scaled, not raw — see CRYSTAL_COLOR. `THREE.Color` holds linear-sRGB once ColorManagement has
+      // converted the hex, so this multiply lands in the space the shader actually reads.
+      color: CRYSTAL_BASE_COLOR.clone().multiplyScalar(this.tuning.crystalAlbedo),
       emissive: new THREE.Color(CRYSTAL_EMISSIVE_COLOR),
-      emissiveIntensity: CRYSTAL_EMISSIVE,
-      roughness: CRYSTAL_ROUGHNESS,
+      emissiveIntensity: this.tuning.crystalGlow,
+      roughness: this.tuning.crystalRoughness,
       metalness: CRYSTAL_METALNESS,
+      envMapIntensity: this.tuning.envIntensity,
       // Every facet its own plane. A crystal that shades smoothly is a lump, and the facets are the
       // entire reason this reads as mineral.
       flatShading: true,
@@ -449,6 +633,7 @@ class AccretionTransition implements MarkTransitionStrategy {
     const stone = layer.stoneUniforms;
     stone.uMode.value = mode;
     stone.uArrival.value = this.tuning.arrival;
+    stone.uDeparture.value = this.tuning.departure;
     stone.uGrowDelay.value = this.tuning.growDelay;
     stone.uGrowStagger.value = this.tuning.growStagger;
     stone.uShrinkWindow.value = this.tuning.shrinkWindow;
@@ -456,6 +641,7 @@ class AccretionTransition implements MarkTransitionStrategy {
     stone.uOrderJitter.value = this.tuning.orderJitter;
     stone.uGrowthSteps.value = this.tuning.growthSteps;
     stone.uOvershoot.value = this.tuning.overshoot;
+    stone.uShrinkOvershoot.value = this.tuning.shrinkOvershoot;
     stone.uScaleLead.value = this.tuning.scaleLead;
     stone.uShrinkScaleLead.value = this.tuning.shrinkScaleLead;
     stone.uRotateLead.value = this.tuning.rotateLead;
@@ -467,11 +653,25 @@ class AccretionTransition implements MarkTransitionStrategy {
     stone.uCavityWidth.value = this.tuning.cavityWidth;
     stone.uCavityCoverage.value = this.tuning.cavityCoverage;
     stone.uCavityGlow.value = this.tuning.cavityGlow;
+    stone.uCavityTint.value = this.tuning.cavityAlbedo;
+    // Authored as tiles across the mark, like the basalt's — but the shader reads `vMapUv`, which the
+    // basalt's repeat has already scaled. Dividing here is what lets the two be independent numbers in
+    // the panel instead of one being expressed as a fraction of the other.
+    stone.uCavityUvScale.value =
+      this.tuning.cavityRepeat / Math.max(this.tuning.stoneTextureRepeat, 1e-4);
 
     // Material properties rather than uniforms, so they are set here rather than injected — but they are
     // just as live, which matters because how hot this burns is the hardest thing to judge from a number.
     const stoneMaterial = layer.stone.material as THREE.MeshStandardMaterial;
     stoneMaterial.emissiveIntensity = this.tuning.stoneVeinGlow;
+    stoneMaterial.envMapIntensity = this.tuning.envIntensity;
+    stoneMaterial.roughness = this.tuning.stoneRoughness;
+    stoneMaterial.metalness = this.tuning.stoneMetalness;
+    stoneMaterial.color.copy(STONE_BASE_COLOR).multiplyScalar(this.tuning.stoneAlbedo);
+    // `map` and `emissiveMap` are the same clone, so one assignment retiles both. A repeat is folded
+    // into the uv transform each frame anyway (`matrixAutoUpdate`), so this costs no upload — which is
+    // why the basalt scale can be a live knob rather than a rebuilding one.
+    stoneMaterial.map?.repeat.setScalar(this.tuning.stoneTextureRepeat);
 
     const crystal = layer.crystalUniforms;
     if (!crystal || !layer.crystal) return;
@@ -485,6 +685,8 @@ class AccretionTransition implements MarkTransitionStrategy {
     const crystalMaterial = layer.crystal.material as THREE.MeshStandardMaterial;
     crystalMaterial.emissiveIntensity = this.tuning.crystalGlow;
     crystalMaterial.roughness = this.tuning.crystalRoughness;
+    crystalMaterial.envMapIntensity = this.tuning.envIntensity;
+    crystalMaterial.color.copy(CRYSTAL_BASE_COLOR).multiplyScalar(this.tuning.crystalAlbedo);
   }
 
   setTransition(fromIndex: number, toIndex: number, progress: number): void {
@@ -529,6 +731,15 @@ class AccretionTransition implements MarkTransitionStrategy {
     this.core.visible = this.tuning.coreVisible > 0.5;
     if (!this.core.visible) return;
 
+    // Only while it is on screen — the core is off by default, and there is no sense pushing three
+    // properties a frame at an object nobody is looking at.
+    const coreMaterial = this.core.material as THREE.MeshStandardMaterial;
+    coreMaterial.emissiveIntensity = this.tuning.stoneVeinGlow;
+    coreMaterial.envMapIntensity = this.tuning.envIntensity;
+    coreMaterial.roughness = this.tuning.stoneRoughness;
+    coreMaterial.metalness = this.tuning.stoneMetalness;
+    coreMaterial.color.copy(STONE_BASE_COLOR).multiplyScalar(this.tuning.stoneAlbedo);
+
     // Swells at the midpoint and returns. A sine rather than a ramp, so the resting scale is reached
     // exactly at both ends and the beat has no corner in it.
     const swell = isStill ? 0 : Math.sin(Math.PI * clamped);
@@ -560,7 +771,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     coreMaterial.map?.dispose();
     coreMaterial.dispose();
     this.stoneTexture?.dispose();
-    this.cavityTexture?.dispose();
+    // Guarded, because the two roles normally share one image — disposing it twice would free a texture
+    // the second reference still thinks it owns.
+    if (this.cavityTexture !== this.stoneTexture) this.cavityTexture?.dispose();
   }
 }
 
@@ -570,10 +783,12 @@ export const accretionTransitionFactory: MarkTransitionFactory = {
   identity: 'A seed — a persistent core that grows the mark out of itself, then overgrows it with geode.',
   tuningControls: ACCRETION_CONTROLS,
   create: async (marks, options, tuning) => {
-    const [stoneTexture, cavityTexture] = await Promise.all([
-      loadTexture(STONE_TEXTURE_PATH),
-      loadTexture(CAVITY_TEXTURE_PATH),
-    ]);
+    // The surface and the cavity are the same geode at two different scales, so this is normally ONE
+    // image — loading it per role would put a second copy of it on the GPU for nothing. Still written as
+    // two lookups, because pointing the cavity back at the basalt has to keep working (see the paths).
+    const sharesOneImage = STONE_TEXTURE_PATH === CAVITY_TEXTURE_PATH;
+    const stoneTexture = await loadTexture(STONE_TEXTURE_PATH);
+    const cavityTexture = sharesOneImage ? stoneTexture : await loadTexture(CAVITY_TEXTURE_PATH);
     return new AccretionTransition(
       marks,
       options,

@@ -30,8 +30,6 @@ import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
  */
 
 const FONT_PATH = '/fonts/helvetiker_bold.typeface.json';
-/** The shared rock surface. One texture for every candidate, so nobody wins on albedo. */
-const SURFACE_TEXTURE_PATH = '/textures/meteor/basalt-magma.png';
 
 const MARK_DEPTH = 0.7;
 
@@ -188,22 +186,6 @@ async function prepareMarks(): Promise<PreparedMark[]> {
   return prepared.filter((mark): mark is PreparedMark => mark !== null);
 }
 
-function loadSurfaceTexture(): Promise<THREE.Texture | null> {
-  return new Promise((resolve) => {
-    new THREE.TextureLoader().load(
-      SURFACE_TEXTURE_PATH,
-      (texture) => {
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.wrapS = THREE.RepeatWrapping;
-        texture.wrapT = THREE.RepeatWrapping;
-        resolve(texture);
-      },
-      undefined,
-      () => resolve(null),
-    );
-  });
-}
-
 export function useTransitionLab(
   canvasRef: RefObject<HTMLCanvasElement | null>,
   strategyId: MarkTransitionId,
@@ -230,11 +212,25 @@ export function useTransitionLab(
   // re-reads the metrics, because a rebuilding knob changes the reported build time.
   const applyTuningRef = useRef<((tuning: TransitionTuning) => void) | null>(null);
 
+  /**
+   * Looked up in render rather than inside the effect, so it can be an effect DEPENDENCY.
+   *
+   * That is the whole point. A strategy's look lives in module constants — its textures, its tints, its
+   * declared control defaults — and none of those are React state. Keyed only on `strategyId`, the
+   * effect never re-ran when one of those modules was edited: Fast Refresh re-executed the module, but
+   * the already-constructed strategy survived, still holding the texture it was built with. Saving a
+   * new surface and seeing the old one is not a slow rebuild, it is no rebuild at all, and the only way
+   * out was a hard reload — which is a miserable authoring loop for a rig whose entire job is authoring.
+   *
+   * Re-executing the registry gives this object a new identity, so the effect tears down and rebuilds.
+   * In production the identity is stable and this changes nothing.
+   */
+  const factory = MARK_TRANSITION_FACTORIES[strategyId];
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const factory = MARK_TRANSITION_FACTORIES[strategyId];
     if (!factory) {
       setIsBuilt(false);
       setIsReady(false);
@@ -245,7 +241,6 @@ export function useTransitionLab(
     const rig = createMarkLabRig(canvas);
     let isDisposed = false;
     let strategy: MarkTransitionStrategy | null = null;
-    let surfaceTexture: THREE.Texture | null = null;
 
     const restSamples = new FrameSamples();
     const transitionSamples = new FrameSamples();
@@ -363,10 +358,9 @@ export function useTransitionLab(
       }
     };
 
-    Promise.all([prepareMarks(), loadSurfaceTexture()])
-      .then(async ([marks, texture]) => {
+    prepareMarks()
+      .then(async (marks) => {
         if (isDisposed) return;
-        surfaceTexture = texture;
         if (marks.length === 0) throw new Error('No marks could be loaded.');
         setMarkLabels(marks.map((mark) => mark.label));
 
@@ -375,7 +369,16 @@ export function useTransitionLab(
           {
             targetSize: MARK_LAB_TARGET_SIZE,
             depth: MARK_DEPTH,
-            surfaceTexture: texture,
+            // ── The harness no longer supplies one ──
+            // It used to hand every candidate `basalt-magma.png`, so that no strategy could win the
+            // comparison on albedo. Accretion outgrew that: it needs a surface AND a cavity texture,
+            // picked together, and it loads both itself — at which point the harness's copy was fetched
+            // on every page load and read by nobody.
+            //
+            // The fairness the shared texture was protecting now rests on the shared rig instead
+            // (`markLabRig` owns the camera, the lights, the probe and the bloom), which is the part
+            // that actually decides whether a comparison is honest.
+            surfaceTexture: null,
             // The rig is for authoring on a desktop; a candidate that needs the low tier can be measured
             // by throttling the GPU rather than by being handed a smaller budget here.
             performanceTier: 'high',
@@ -421,10 +424,11 @@ export function useTransitionLab(
         rig.spin.remove(strategy.object);
         strategy.dispose();
       }
-      surfaceTexture?.dispose();
+      // No texture to release here any more — a strategy owns whatever surfaces it loaded, and
+      // `strategy.dispose()` above is what frees them.
       rig.dispose();
     };
-  }, [canvasRef, strategyId]);
+  }, [canvasRef, strategyId, factory]);
 
   // Compared by serialised value, not by reference: the panel builds a fresh tuning object on every
   // keystroke, and re-packing four marks for an identical set of numbers would fight the sliders.

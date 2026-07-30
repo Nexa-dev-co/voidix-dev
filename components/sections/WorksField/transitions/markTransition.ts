@@ -67,7 +67,17 @@ export interface MarkTransitionBuildOptions {
    * `markGeodeBody` gets this right and is the reference.
    */
   depth: number;
-  /** The shared rock surface. One texture for everyone, so nobody wins on albedo. */
+  /**
+   * A surface offered to strategies that want one — currently always null.
+   *
+   * It was a shared rock texture handed to every candidate, so none could win the comparison on albedo.
+   * That did not survive contact with a strategy whose look is a PAIR of textures chosen together (see
+   * accretion's surface and cavity), so it loads its own and the harness's copy was being fetched and
+   * ignored. Kept nullable rather than deleted because a simpler candidate may still want the offer.
+   *
+   * The fairness this was protecting now rests entirely on `markLabRig` — same camera, lights, probe
+   * and bloom for everyone — which is the part that actually decides whether a comparison is honest.
+   */
   surfaceTexture: THREE.Texture | null;
   /** Lets a strategy pick a step count or an instance budget without measuring the device itself. */
   performanceTier: 'low' | 'high';

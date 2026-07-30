@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { Syne, DM_Sans } from 'next/font/google';
-import Navbar from '@/components/layout/Navbar/Navbar';
+import NavbarGate from '@/components/layout/Navbar/NavbarGate';
 import './globals.css';
 
 const syne = Syne({
@@ -37,7 +37,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${syne.variable} ${dmSans.variable}`}>
       <body>
-        <Navbar />
+        {/* Gated, not rendered directly: the bar is a fixed full-width click target at z-9999, and on
+            the authoring routes it is invisible and catches everything. See NavbarGate. */}
+        <NavbarGate />
         {children}
       </body>
     </html>

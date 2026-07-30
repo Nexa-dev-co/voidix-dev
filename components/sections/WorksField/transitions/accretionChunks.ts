@@ -440,18 +440,34 @@ export function buildAccretionChunks(
       if (edge.count !== 1) return;
       const from = points[edge.first];
       const to = points[edge.second];
-      // Texture the wall along its own direction: continuous along the run, and the jump at each
-      // fracture is what a broken stone face actually looks like.
-      wallScratch.set(to.x - from.x, to.y - from.y);
-      const run = wallScratch.length() * uvScale;
       const depthSpan = options.depth * uvScale;
+
+      // ── The wall's U is a POSITION, not a run starting at zero ──
+      // It used to be `0 → edgeLength`, restarted for every edge. Every wall in the mark therefore
+      // sampled the same sliver of texture — u never exceeded about 0.02 — stretched over the full
+      // depth. Hundreds of walls all showing one identical smeared column is what read as banding, and
+      // no amount of retuning the surface could fix it, because the surface was never the problem.
+      //
+      // Projecting each end onto the wall's own direction keeps the texel density EXACTLY as it was
+      // (uTo − uFrom is still the edge's length), while making the coordinate a function of where the
+      // wall actually sits. Two stones either side of a fracture now sample different texture, and a
+      // straight run across several edges stays continuous — the same property `restPositionOf` relies
+      // on, for the same reason: position-derived values agree wherever geometry agrees.
+      wallScratch.set(to.x - from.x, to.y - from.y);
+      const edgeLength = wallScratch.length();
+      // A zero-length edge has no direction to project onto. It is degenerate either way, so this only
+      // has to avoid a NaN reaching the buffer — a NaN UV takes the whole draw call with it.
+      if (edgeLength > 1e-9) wallScratch.divideScalar(edgeLength);
+      else wallScratch.set(1, 0);
+      const uFrom = (from.x * wallScratch.x + from.y * wallScratch.y) * uvScale;
+      const uTo = (to.x * wallScratch.x + to.y * wallScratch.y) * uvScale;
 
       // Wall vertices are NOT shared with the caps, so cap and wall meet at a hard edge and the stone
       // reads faceted rather than inflated.
-      const frontFrom = pushVertex(edge.first, 1, 0, 0);
-      const frontTo = pushVertex(edge.second, 1, run, 0);
-      const backTo = pushVertex(edge.second, -1, run, depthSpan);
-      const backFrom = pushVertex(edge.first, -1, 0, depthSpan);
+      const frontFrom = pushVertex(edge.first, 1, uFrom, 0);
+      const frontTo = pushVertex(edge.second, 1, uTo, 0);
+      const backTo = pushVertex(edge.second, -1, uTo, depthSpan);
+      const backFrom = pushVertex(edge.first, -1, uFrom, depthSpan);
       indices.push(frontFrom, frontTo, backTo, frontFrom, backTo, backFrom);
     });
 

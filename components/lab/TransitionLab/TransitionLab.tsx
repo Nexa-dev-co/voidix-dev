@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
-import { ArrowLeftRight, Pause, Play, RotateCcw } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeftRight, Check, Clipboard, Pause, Play, RotateCcw } from 'lucide-react';
 import LabNav from '@/components/lab/LabNav';
 import { useDebounced } from '@/components/lab/useDebounced';
 import { MARK_TRANSITION_FACTORIES } from '@/components/sections/WorksField/transitions/registry';
@@ -14,6 +14,7 @@ import {
   type MarkTransitionId,
 } from '@/components/sections/WorksField/transitions/transitionCatalog';
 import { useTransitionLab } from './hooks/useTransitionLab';
+import { formatTransitionPresetSource } from './transitionPresetSource';
 
 /**
  * The comparison rig: one candidate transition, driven by hand, with its numbers on screen.
@@ -47,6 +48,9 @@ const MAX_ROUND_TRIP_SECONDS = 12;
  */
 const REBUILD_SETTLE_MS = 220;
 
+/** How long the copy button stays confirmed before reverting. Matches the letter lab's. */
+const COPY_FEEDBACK_MS = 1600;
+
 /** A backdrop is an authoring aid; `Site` is the only one that counts. Same set as the letter lab. */
 const BACKDROPS = [
   { id: 'site', label: 'Site', color: '#060606' },
@@ -78,12 +82,41 @@ export default function TransitionLab({ strategyId }: TransitionLabProps) {
   const [isSpinning, setIsSpinning] = useState(false);
   const [roundTripSeconds, setRoundTripSeconds] = useState(DEFAULT_ROUND_TRIP_SECONDS);
   const [backdrop, setBackdrop] = useState<string>(BACKDROPS[0].id);
+  const [hasCopied, setHasCopied] = useState(false);
 
-  const controls = useMemo(
-    () => MARK_TRANSITION_FACTORIES[strategyId]?.tuningControls ?? [],
-    [strategyId],
-  );
+  // Memoised on the FACTORY, not on `strategyId` — same reasoning as `useTransitionLab`'s effect
+  // dependency. Keyed on the id alone this array kept its old identity when the strategy module was
+  // edited, so the panel went on offering the previous declared defaults.
+  const factory = MARK_TRANSITION_FACTORIES[strategyId];
+  const controls = useMemo(() => factory?.tuningControls ?? [], [factory]);
   const [tuning, setTuning] = useState<TransitionTuning>(() => tuningDefaults(controls));
+
+  /**
+   * Adopt newly declared defaults without discarding what you have moved by hand.
+   *
+   * Seeding this state once was the other half of the stale-look problem: rebuilding the strategy is no
+   * use if it is rebuilt from the values the panel captured on first mount, so a changed default would
+   * still not show. But re-seeding wholesale is worse — twenty minutes of tuning thrown away because a
+   * comment was edited in the strategy module.
+   *
+   * So a knob still sitting on the default it was seeded with follows the new one, and a knob you have
+   * actually touched keeps your value. Comparing against the PREVIOUS defaults rather than the current
+   * ones is what makes that distinction possible at all.
+   */
+  const seededDefaultsRef = useRef<TransitionTuning>(tuningDefaults(controls));
+  useEffect(() => {
+    const nextDefaults = tuningDefaults(controls);
+    setTuning((current) => {
+      const merged: TransitionTuning = {};
+      Object.keys(nextDefaults).forEach((key) => {
+        const isUntouched =
+          current[key] === undefined || current[key] === seededDefaultsRef.current[key];
+        merged[key] = isUntouched ? nextDefaults[key] : current[key];
+      });
+      return merged;
+    });
+    seededDefaultsRef.current = nextDefaults;
+  }, [controls]);
 
   // Rebuilding knobs wait for you to let go; live ones are pushed straight through. Split rather than
   // debouncing everything, because a 220 ms lag on the choreography would feel broken while a lag on a
@@ -118,6 +151,22 @@ export default function TransitionLab({ strategyId }: TransitionLabProps) {
     setToIndex(fromIndex);
   };
 
+  /**
+   * Exports the LIVE tuning, not the debounced one — what you are looking at is what lands in the
+   * paste. `settledTuning` can be up to 220 ms stale, and exporting that would hand back a value you
+   * had already moved past.
+   */
+  const copyPreset = () => {
+    const source = formatTransitionPresetSource(entry?.label ?? strategyId, controls, tuning);
+    // Logged as well as copied: the clipboard needs a secure context, and this gets opened over plain
+    // http on a LAN address often enough that the console is the fallback that always works. Same
+    // reasoning as `lib/tunerExport`'s copy and the letter lab's.
+    navigator.clipboard?.writeText(source).catch(() => {});
+    console.log(source);
+    setHasCopied(true);
+    window.setTimeout(() => setHasCopied(false), COPY_FEEDBACK_MS);
+  };
+
   return (
     <div
       className="relative h-[100dvh] w-full overflow-hidden transition-colors duration-300"
@@ -142,6 +191,21 @@ export default function TransitionLab({ strategyId }: TransitionLabProps) {
                 Reset
               </button>
             </div>
+
+            {/* Sticky, so it stays reachable however far down forty-odd knobs you have scrolled — the
+                same reasoning as the letter lab's. A session you cannot copy is a session you lose. */}
+            <button
+              type="button"
+              onClick={copyPreset}
+              className={`sticky top-0 z-10 flex items-center justify-center gap-2 rounded border px-3 py-2 text-[0.55rem] uppercase tracking-eyebrow backdrop-blur transition-colors ${
+                hasCopied
+                  ? 'border-accent bg-accent/10 text-accent'
+                  : 'border-border bg-card/90 text-fg hover:border-accent hover:text-accent'
+              }`}
+            >
+              {hasCopied ? <Check size={11} /> : <Clipboard size={11} />}
+              {hasCopied ? 'Copied — also logged' : 'Copy config'}
+            </button>
             {controls.map((control) => {
               const value = tuning[control.key] ?? control.value;
 

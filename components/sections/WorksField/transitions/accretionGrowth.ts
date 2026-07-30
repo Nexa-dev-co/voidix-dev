@@ -52,6 +52,20 @@ export interface StoneGrowthUniforms {
    *               itself like frost instead of being assembled from outside. Travel of one stone's width.
    */
   uArrival: { value: number };
+  /**
+   * …and HOW IT LEAVES, which is a separate question with the same four answers.
+   *
+   * It used to share `uArrival`, which forced the departure to be the arrival played backwards. That is
+   * the wrong default: material arriving wants to grow in place and lock (`extend`), but material
+   * leaving wants to go SOMEWHERE — and `extend` in reverse just collapses every stone onto a point on
+   * its own inner face, which reads as the mark blinking out rather than being reclaimed.
+   *
+   *   0 recede    back to the core's skin, the true reverse of the storyboard's two streams.
+   *   1 in place  shrinks at its own centroid.
+   *   2 collapse  the old shared behaviour — onto the inner face, no translation.
+   *   3 withdraw  retreats into the neighbour it grew from.
+   */
+  uDeparture: { value: number };
   /** Where the core sits, so the spiral has an axis to swing about. */
   uCoreCentre: { value: THREE.Vector3 };
 
@@ -75,6 +89,15 @@ export interface StoneGrowthUniforms {
   uGrowthSteps: { value: number };
 
   uOvershoot: { value: number };
+  /**
+   * The rebound on the way OUT, and it wants to be 0.
+   *
+   * `uOvershoot` exists so an arriving stone slams past its resting place and settles — that is the
+   * whole "locks in" read. Applied to a departure the same curve makes every stone SWELL past full size
+   * before vanishing, which is why the retraction looked soft: the last thing you saw a stone do before
+   * it disappeared was get bigger.
+   */
+  uShrinkOvershoot: { value: number };
   /** When scale finishes on the way IN, so a stone arrives already solid and then slots home. */
   uScaleLead: { value: number };
   /**
@@ -102,6 +125,25 @@ export interface StoneGrowthUniforms {
   /** Share of stones that carry one. Whole stones, not speckles, which is how the reference reads. */
   uCavityCoverage: { value: number };
   uCavityGlow: { value: number };
+  /**
+   * Scales the cavity texture's albedo, and it is NOT optional.
+   *
+   * `geode-druse.png` is a blazing fire-geode — its cores are near white. The stone it replaces has
+   * already been multiplied down to roughly a tenth by the material's tint, so mixing the cavity in raw
+   * put an eleven-fold albedo jump on whichever stones happened to open. That is not a cavity catching
+   * light, it is a hole cut through to a brighter scene.
+   */
+  uCavityTint: { value: number };
+  /**
+   * The cavity map's tiling, relative to the basalt's.
+   *
+   * It needs its own, because the two textures are read at completely different scales. The basalt is a
+   * surface — it wants to tile often enough that its craters are grain. The druse is a SUBJECT: a
+   * recognisable geode interior with distinct crystal pockets, and tiled as often as the basalt it
+   * turned into orange mush with no readable structure at all. Sampling both off `vMapUv` meant one
+   * repeat governed both, so making the stone finer necessarily destroyed the geode.
+   */
+  uCavityUvScale: { value: number };
 }
 
 /** Shared GLSL: the easings, and rotation without a matrix. */
@@ -141,8 +183,9 @@ const GROWTH_HELPERS = /* glsl */ `
 /**
  * Teach a stone material to grow out of the core.
  *
- * Injected into standard PBR rather than hand-written, so the basalt albedo and the veins burning
- * through the emissive channel keep working untouched — the same reasoning `meteorMorph` gives.
+ * Injected into standard PBR rather than hand-written, so the surface albedo and whatever burns through
+ * the emissive channel keep working untouched — the same reasoning `meteorMorph` gives. That is what
+ * let the body's texture be swapped from basalt to the geode without this file changing at all.
  */
 export function enableStoneGrowth(
   material: THREE.MeshStandardMaterial,
@@ -153,6 +196,8 @@ export function enableStoneGrowth(
     uMode: { value: ACCRETION_MODE.settled },
     // `extend` by default: it is the only one of the four that is genuinely growth rather than delivery.
     uArrival: { value: 2 },
+    // `recede` — material going back where it came from. See uDeparture.
+    uDeparture: { value: 0 },
     uCoreCentre: { value: new THREE.Vector3() },
     uGrowDelay: { value: 0.4 },
     uGrowStagger: { value: 0.68 },
@@ -161,6 +206,7 @@ export function enableStoneGrowth(
     uOrderJitter: { value: 0.08 },
     uGrowthSteps: { value: 5 },
     uOvershoot: { value: 1.15 },
+    uShrinkOvershoot: { value: 0 },
     uScaleLead: { value: 0.55 },
     uShrinkScaleLead: { value: 1 },
     uRotateLead: { value: 0.72 },
@@ -181,7 +227,9 @@ export function enableStoneGrowth(
     uCavityMap: { value: cavityMap },
     uCavityWidth: { value: 0.16 },
     uCavityCoverage: { value: 0.34 },
-    uCavityGlow: { value: 0.8 },
+    uCavityGlow: { value: 0.5 },
+    uCavityTint: { value: 0.35 },
+    uCavityUvScale: { value: 1 },
   };
 
   material.onBeforeCompile = (shader) => {
@@ -204,6 +252,7 @@ export function enableStoneGrowth(
         uniform float uProgress;
         uniform float uMode;
         uniform float uArrival;
+        uniform float uDeparture;
         uniform vec3 uCoreCentre;
         uniform float uGrowDelay;
         uniform float uGrowStagger;
@@ -212,6 +261,7 @@ export function enableStoneGrowth(
         uniform float uOrderJitter;
         uniform float uGrowthSteps;
         uniform float uOvershoot;
+        uniform float uShrinkOvershoot;
         uniform float uScaleLead;
         uniform float uShrinkScaleLead;
         uniform float uRotateLead;
@@ -269,7 +319,9 @@ export function enableStoneGrowth(
         float accretionLead = uMode > 1.5 ? uShrinkScaleLead : uScaleLead;
         float accretionScale = accretionEaseOut( accretionGrowth / max( accretionLead, 1e-4 ) );
         float accretionAlign = accretionEaseOut( accretionGrowth / max( uRotateLead, 1e-4 ) );
-        float accretionTravel = accretionBackOut( accretionGrowth, uOvershoot );
+        // The rebound belongs to arrivals only — a departure that swells before it goes reads as soft.
+        float accretionRebound = uMode > 1.5 ? uShrinkOvershoot : uOvershoot;
+        float accretionTravel = accretionBackOut( accretionGrowth, accretionRebound );
 
         // Retracting stones tumble harder than growing ones, so the mess reads as coming apart rather
         // than as the assembly played in reverse.
@@ -293,22 +345,25 @@ export function enableStoneGrowth(
 
         vec3 accretionCentre;
 
-        if ( uArrival > 1.5 && uArrival < 2.5 ) {
-          // EXTEND. No translation at all: a uniform scale anchored on a point on the stone's inner
-          // face, so its near side stays put and its material extends outward. The centroid does not
-          // move, which is what separates growth from delivery.
+        // Coming or going are authored separately — the same four paths, chosen by role. See uDeparture.
+        float accretionPath = uMode > 1.5 ? uDeparture : uArrival;
+
+        if ( accretionPath > 1.5 && accretionPath < 2.5 ) {
+          // EXTEND / COLLAPSE. No translation at all: a uniform scale anchored on a point on the stone's
+          // inner face, so its near side stays put and its material extends outward. The centroid does
+          // not move, which is what separates growth from delivery.
           vec3 accretionAnchor = aChunkCentroid - accretionDir * aRadius + accretionShake;
           vec3 accretionRestPoint = aChunkCentroid + accretionLocal;
           accretionLocal = ( accretionRestPoint - accretionAnchor ) * accretionTravel;
           accretionCentre = accretionAnchor;
         } else {
-          // TRAVEL, IN PLACE and CREEP are one path with three origins. In place uses the stone's own
-          // centroid, so the mix collapses and it becomes a pure swell — with the overshoot landing on
-          // the SCALE rather than on a journey, which is what gives it a snap instead of a fade.
-          vec3 accretionOrigin = uArrival < 0.5
+          // TRAVEL/RECEDE, IN PLACE and CREEP/WITHDRAW are one path with three origins. In place uses the
+          // stone's own centroid, so the mix collapses and it becomes a pure swell — with the overshoot
+          // landing on the SCALE rather than on a journey, which is what gives it a snap instead of a fade.
+          vec3 accretionOrigin = accretionPath < 0.5
             ? aSeedPoint
-            : ( uArrival < 1.5 ? aChunkCentroid : aParentPoint );
-          float accretionFill = uArrival < 1.5 && uArrival > 0.5 ? accretionTravel : accretionScale;
+            : ( accretionPath < 1.5 ? aChunkCentroid : aParentPoint );
+          float accretionFill = accretionPath < 1.5 && accretionPath > 0.5 ? accretionTravel : accretionScale;
           accretionLocal *= accretionFill;
           accretionCentre = mix( accretionOrigin, aChunkCentroid, accretionTravel ) + accretionShake;
         }
@@ -343,6 +398,8 @@ export function enableStoneGrowth(
         /* glsl */ `#include <common>
         uniform sampler2D uCavityMap;
         uniform float uCavityGlow;
+        uniform float uCavityTint;
+        uniform float uCavityUvScale;
         uniform vec3 uFlashColor;
         uniform float uFlashStrength;
         varying float vFlash;
@@ -351,9 +408,14 @@ export function enableStoneGrowth(
       .replace(
         '#include <color_fragment>',
         /* glsl */ `#include <color_fragment>
-        // Where the stone has opened, the surface is druse rather than basalt.
-        vec4 accretionCavity = texture2D( uCavityMap, vMapUv );
-        diffuseColor.rgb = mix( diffuseColor.rgb, accretionCavity.rgb, vCavity );`,
+        // Where the stone has opened, the surface is druse rather than basalt — scaled to sit in the
+        // same range as the stone it replaces, because the raw texture is far brighter than the tinted
+        // basalt around it. See uCavityTint.
+        //
+        // vMapUv already carries the basalt's repeat, so this rescales it to the cavity's own tiling
+        // rather than inheriting a number chosen for a completely different texture. See uCavityUvScale.
+        vec4 accretionCavity = texture2D( uCavityMap, vMapUv * uCavityUvScale );
+        diffuseColor.rgb = mix( diffuseColor.rgb, accretionCavity.rgb * uCavityTint, vCavity );`,
       )
       .replace(
         '#include <emissivemap_fragment>',
@@ -456,8 +518,20 @@ export function enableCrystalGrowth(
         // so extending Y here lengthens the crystal about its own root. Girth trails, so it reads as
         // pushing out and thickening rather than inflating.
         float accretionLength = accretionCrystal * accretionCrystal * ( 3.0 - 2.0 * accretionCrystal );
+
+        // ── Girth has to reach ZERO, not 22% ──
+        // This was a bare mix( 0.22, 1.0, length ), so at growth 0 the length collapsed but the girth
+        // did not: every ungrown crystal stayed a flat hexagon at 22% radius, sitting at its own root.
+        // Hundreds of those across a mark are the orange dots that showed before anything had formed.
+        // They carried no emissive — that is already gated on growth — but their ALBEDO was still lit,
+        // and a lit disc is perfectly visible.
+        //
+        // Folding the length back in keeps the trailing read (girth still lags, so a point pushes out
+        // before it thickens) while guaranteeing the prism degenerates to a single point at 0, which
+        // rasterises nothing at all.
+        float accretionGirth = accretionLength * mix( 0.22, 1.0, accretionLength );
         transformed.y *= accretionLength;
-        transformed.xz *= mix( 0.22, 1.0, accretionLength );`,
+        transformed.xz *= accretionGirth;`,
       );
 
     shader.fragmentShader = shader.fragmentShader
