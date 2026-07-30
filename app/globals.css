@@ -1234,6 +1234,16 @@ body {
   z-index: 30; /* above the services deck (z 25); its opaque backdrop covers the fixed sun in works */
   overflow: hidden;
   opacity: 0;
+
+  /* Accent for everything the works section draws — aliased to the SUN's palette, exactly as the hero
+     does with --hero-accent, and for the same reason: this section is lit by the star. The mark's
+     geode burns amber, the sun behind it is collapsing, and the loader that introduced the whole site
+     ramps ember → starlight. Cyan was the one thing left in here that belonged to a different system.
+
+     Retune --sun-accent in :root, not here. Alias rather than using --sun-accent directly at each site
+     so the section can be re-pointed in one line if it ever wants its own colour again. */
+  --works-accent: var(--sun-accent);
+  --works-accent-rgb: var(--sun-accent-rgb);
 }
 
 .works-backdrop {
@@ -1284,8 +1294,8 @@ body {
   width: 2.125rem;
   height: 2.125rem;
   border-radius: 50%;
-  border: 1.5px solid rgba(0, 229, 255, 0.18);
-  border-top-color: var(--accent);
+  border: 1.5px solid rgb(var(--works-accent-rgb) / 0.18);
+  border-top-color: var(--works-accent);
   animation: fleet-spin 0.9s linear infinite;
 }
 
@@ -1295,7 +1305,7 @@ body {
   font-weight: 400;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(0, 229, 255, 0.6);
+  color: rgb(var(--works-accent-rgb) / 0.6);
 }
 
 /* Overlay — head (eyebrow + active detail) above, the arrow nav pinned to the bottom. Ignores the
@@ -1352,7 +1362,7 @@ body {
   font-size: var(--fs-tiny);
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--works-accent);
   margin-bottom: 1rem;
 }
 
@@ -1406,9 +1416,9 @@ body {
 }
 
 .works-arrow:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(0, 229, 255, 0.06);
+  border-color: var(--works-accent);
+  color: var(--works-accent);
+  background: rgb(var(--works-accent-rgb) / 0.06);
 }
 
 .works-arrow:active:not(:disabled) {
@@ -1416,7 +1426,7 @@ body {
 }
 
 .works-arrow:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 1px solid var(--works-accent);
   outline-offset: 0.25rem;
 }
 
@@ -1436,7 +1446,7 @@ body {
 .works-counter-current {
   font-weight: 700;
   font-size: clamp(1rem, 1.6vw, 1.35rem);
-  color: var(--accent);
+  color: var(--works-accent);
 }
 
 .works-counter-sep {

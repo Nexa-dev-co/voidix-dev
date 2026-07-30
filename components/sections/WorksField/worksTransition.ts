@@ -3,31 +3,40 @@
  *
  * ── Why these numbers aren't in worksTuning ──────────────────────────────────────────────────────
  * This transition spans both halves of the section: the overlay text shears apart and back (DOM,
- * `useWorksTextTransition`) while the rock spins up, re-carves and settles (WebGL, `useWorksField`).
- * Neither owns the other, but they have to agree on WHEN the swap happens — the whole illusion is
- * that the new rock appears at the exact moment the spin is too fast to read. So the schedule lives
- * here, in a file both import, rather than inside either one's tuning.
+ * `useWorksTextTransition`) while the mark comes apart and regrows (WebGL, `useWorksField`). Neither
+ * owns the other, but they have to agree on how long the change takes and when the copy may come
+ * back. So the schedule lives here, in a file both import, rather than inside either one's tuning.
  *
  * ── The shape of it ──────────────────────────────────────────────────────────────────────────────
  *
- *   0s          0.84       1.15  1.45                                        2.90s
- *   ├────────────┼──────────┼─────┼───────────────────────────────────────────┤
- *   │ text OUT   │          │     │                                           │
- *   │ ├──────────┤          │     │                                           │
- *   │ rock spins up ────────┤▓▓▓▓▓│ rock spins DOWN to idle ──────────────────┤
- *   │ field counter-spins ──┤ ✷   │ field counter-spins down ─────────────────┤
- *   │                    peak  re-carve                                       │
- *   │                          │     ├── text IN (settles from centre) ──┤    │
+ *   0s      1.1       1.6      2.5           3.7        5.0        6.0s
+ *   ├────────┼─────────┼────────┼─────────────┼──────────┼─────────┤
+ *   │text OUT│  text IN│        │             │          │         │
+ *   │ ├──────┤ ├───────┤        │             │          │         │
+ *   │ geode retracts   │        │             │          │         │
+ *   │ ├────────────────┤        │             │          │         │
+ *   │ stones let go ────────────┤             │          │         │
+ *   │           stones grow ─────────────────────────────┤         │
+ *   │                                                    │ geode ──┤
+ *   │ camera hop ──────────────┤ (2.05s — deliberately NOT stretched)
  *
- * The text leaves BEFORE the swap so nothing legible is on screen while the body changes, and comes
- * back after it so the new copy and the new rock arrive together. There is a deliberate beat of empty
- * screen at the peak — just the whirling rock and the counter-whirling field — which is the moment the
- * whole transition exists for.
+ * The COPY is quick and the MARK is slow, on purpose. The label belongs to the stop you picked, so it
+ * comes straight back; the stone is the thing you stay and watch.
  *
- * ── Two things spinning, opposite ways ───────────────────────────────────────────────────────────
- * The rock spins one way and the debris + starfield whirl the other. Their rates add into the
- * apparent speed, so the moment reads far faster than either alone — see
- * ENVIRONMENT_COUNTER_SPIN_DEGREES_PER_SECOND.
+ * ── Nothing is hidden any more, and that is the change ───────────────────────────────────────────
+ * This used to be a 2.90s wind-up to 1150 deg/s, a hard cut on the one frame the body was turning too
+ * fast to read, and a long spin-down. The blur existed because `attachMorphTarget` cannot interpolate
+ * two extruded marks — they disagree on vertex count — so there was genuinely nothing to show.
+ *
+ * The accretion strategy replaced that with a real change: the geode retracts, the stones let go and
+ * stream back toward the core while the next mark's stream sprays out of it, and the geode grows back
+ * once the stone is whole. So the transition IS the thing to look at, and a blur over the top would
+ * only obscure it. The body is steady throughout; the sense of movement comes from the camera orbit.
+ *
+ * The text no longer waits for the mark, though. It used to leave before the swap and return with the
+ * new body, because the body changed on a single hidden frame and the two could arrive together. There
+ * is no such instant now — the build takes six seconds — so holding the copy back for it left the
+ * section wordless for most of the change. See TEXT_IN_AT_SECONDS.
  *
  * ── Direction is the whole point ─────────────────────────────────────────────────────────────────
  * Each block keeps flowing the same way across the whole transition: the left block exits left and
@@ -54,74 +63,41 @@ export const TEXT_ENTER_SHIFT_PERCENT = 60;
 /** Degrees of shear while a block is in motion. Shared by both blocks, so the whole plane skews as one. */
 export const TEXT_SHEAR_DEGREES = -8;
 
-/** Seconds the rock takes to wind up from its idle spin to peak. */
-export const SPIN_RAMP_SECONDS = 1.15;
-/** Seconds it holds at peak — the body is a blur here, and the re-carve happens inside this window. */
-export const SPIN_PEAK_HOLD_SECONDS = 0.3;
-/** Seconds it takes to wind back down to the idle spin. The longest beat: the settle is what sells it. */
-export const SPIN_DECAY_SECONDS = 1.45;
 /**
- * Peak spin, in degrees per second — an ABSOLUTE rate, not a multiple of the idle `meteorSpin`.
- * At ~1150°/s the body turns roughly 19° per frame at 60fps, which is more than enough to stop the
- * eye tracking a feature across the swap. Expressing it as a multiplier would have tied the illusion
- * to a tuning value that exists for a completely different reason (the idle drift).
- */
-export const SPIN_PEAK_DEGREES_PER_SECOND = 1150;
-
-/**
- * How fast the surrounding field — debris and stars — whirls the OTHER WAY at peak, in degrees per
- * second.
+ * Seconds one mark takes to become the next — the whole beat, end to end.
  *
- * The rock alone spinning has nothing to be fast against: it's a lone body on black, so past a certain
- * rate it stops reading as faster and just reads as a flicker. Counter-rotating the environment gives
- * the eye a reference frame moving the opposite way, so the two rates ADD into the apparent speed —
- * which is why this can be a fraction of the rock's own spin and still double how fast the moment
- * feels. It's also why it must stay a fraction: matching the rock would read as the camera rolling,
- * not as the rock spinning.
+ * This is the ONE clock. `useWorksField` moves a single `progress` value from 0 to 1 across it and
+ * hands that to `setTransition`, which is a pure function; every curve inside the change is a
+ * function of that number evaluated in the vertex shader. So there is nothing here to keep in step
+ * with anything else, which is what the old spin/morph/re-carve schedule spent most of its comments on.
  *
- * Integrated into the drift rather than assigned, so it eases in and out with the same envelope and
- * leaves the field parked wherever it stopped — there's no home orientation for debris to snap back to.
+ * The camera hop is DELIBERATELY not stretched to match. `travelSeconds` stays at 2.05, so the camera
+ * arrives at the new stop about a third of the way in and you spend the rest of the change watching
+ * the mark build from a settled viewpoint. Tying the two together would mean a six-second camera move,
+ * which is a drift, not a shot — and the growth is the thing worth looking at, not the travel.
+ *
+ * ⚠ Several of the strategy's knobs are spans of PROGRESS, not seconds, so they all stretch with this.
+ * At 6s: the geode is gone by ~1.1s, the stones have retracted by ~2.5s, growth runs ~1.6s → ~5.0s,
+ * and the geode grows back over the last second. `moltenCool` at 0.17 is now ~1.0s, which is what it
+ * was authored against at the lab's six-second round trip — so this duration and the lab's now agree.
  */
-export const ENVIRONMENT_COUNTER_SPIN_DEGREES_PER_SECOND = 165;
-
-/** The moment the rock begins changing shape: the end of the wind-up, while it's turning fastest. */
-export const SWAP_AT_SECONDS = SPIN_RAMP_SECONDS;
+export const MARK_CHANGE_SECONDS = 6;
 
 /**
- * Seconds the body takes to morph from one rock into the next.
+ * When the incoming text starts settling. ABSOLUTE seconds, and deliberately NOT a fraction of the
+ * change.
  *
- * Deliberately longer than the peak hold, so the reshape is still finishing as the spin starts coming
- * down — you get a good look at the new silhouette settling rather than having it handed to you
- * already finished. It used to be an instant swap on a single frame, which is why it needed to hide
- * behind the blur; now the blur only flatters something that would survive being watched.
- */
-export const MORPH_SECONDS = 1.0;
-
-/**
- * How far, in world units, every vertex bulges along its normal at the halfway point of the morph.
+ * It was briefly a fraction, on the reasoning that the copy should keep its relationship to the mark.
+ * That is wrong at this duration: 0.62 of a six-second build put the text back at 3.7s, so the section
+ * spent more than three seconds with no copy on screen at all. The label belongs to the STOP you have
+ * arrived at, not to how far the stone has got — you have chosen the project, so its name should be
+ * back almost immediately.
  *
- * This is not decoration — it's a correction. Two irregular bodies average out ROUNDER than either of
- * them, so an uncorrected morph visibly deflates toward a smooth blob at the midpoint. The swell
- * cancels that and turns the artefact into the read you actually want: molten, then set.
+ * So the text swaps quickly and the mark keeps building underneath it. 1.4s leaves a short beat after
+ * the outgoing copy has cleared (0.6s + stagger), which is enough for the change to register as a
+ * change without turning into dead air.
  */
-export const MORPH_SWELL_UNITS = 0.16;
+export const TEXT_IN_AT_SECONDS = 1.4;
 
-/**
- * How much hotter the lava veins burn at the peak of the morph, as a multiple of `meteorEmissive`.
- * The field already runs a bloom pass, so this blooms with it — the rock flares as it reshapes and
- * cools back into the new body.
- */
-export const MORPH_EMISSIVE_FLARE = 2.4;
-/** The incoming text starts just after the swap, so it never overlaps the body changing. */
-export const TEXT_IN_AT_SECONDS = SWAP_AT_SECONDS + SPIN_PEAK_HOLD_SECONDS;
-
-/**
- * Total length of the transition (~2.9s), derived so the relationship to the camera hop stays visible.
- *
- * This deliberately OUTLASTS `travelSeconds` (2.05s in worksTuning): the camera finishes its move to
- * the new stop while the rock is still shedding speed, so you arrive and watch it settle rather than
- * arriving to a scene that has already finished moving. Shortening the decay to match the hop is what
- * made the change feel abrupt.
- */
-export const TRANSITION_TOTAL_SECONDS =
-  SWAP_AT_SECONDS + SPIN_PEAK_HOLD_SECONDS + SPIN_DECAY_SECONDS;
+/** Total length of the transition. The change owns the whole span now, so these are the same number. */
+export const TRANSITION_TOTAL_SECONDS = MARK_CHANGE_SECONDS;

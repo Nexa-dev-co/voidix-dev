@@ -17,13 +17,17 @@ export type AssetSource = (typeof EXPECTED_SOURCES)[number];
 
 // Weight the combined progress by each source's rough download weight so the counter climbs at an
 // honest pace — an unweighted average would leap to 50% the instant the lighter source finished, then
-// crawl. The fleet is ~8.5 MB of vessels; the field is ~3.5 MB, almost all of it the one basalt texture
-// its rock and its debris share. Weights sum to 1.
+// crawl. Weights sum to 1.
 //
-// RE-WEIGH THESE if either side's assets change size. They were 0.93/0.07 when the field was ~0.6 MB of
-// small maps, and leaving them there after the field grew would have parked the counter at 93% for the
-// whole of the largest single download on the site.
-const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.71, works: 0.29 };
+//   deck   ~8.5 MB of vessels
+//   works  ~7.0 MB — the basalt its debris wears (3.5), the geode druse the mark's cavities open
+//          onto (3.4), the black stone of the mark's body, three logo outlines and a typeface
+//
+// RE-WEIGH THESE if either side's assets change size. They were 0.93/0.07 when the field was ~0.6 MB
+// of small maps, then 0.71/0.29 when it was ~3.5 MB; leaving them at an old value after the field
+// grows parks the counter near the top for the whole of the largest download on the site — which is
+// exactly what "the counter is honest because of this" is supposed to prevent.
+const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.55, works: 0.45 };
 
 const progressBySource = new Map<AssetSource, number>();
 const warmedSources = new Set<AssetSource>();

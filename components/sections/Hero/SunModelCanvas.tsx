@@ -21,7 +21,13 @@ import {
   HERO_SERVICES_PROGRESS_EVENT,
   readHeroServicesProgress,
 } from '@/lib/heroServicesEvents';
-import { createSunBloom } from './sunBloom';
+import {
+  createSunBloom,
+  BLOOM_STRENGTH,
+  BLOOM_RADIUS,
+  BLOOM_THRESHOLD,
+} from './sunBloom';
+import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { createSunParticles } from './sunParticles';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
@@ -202,7 +208,16 @@ const CRACKS_WINDOW: readonly [number, number] = [0.3, 1.0];
  *     past where the "rlds" glyphs sit. Starting at 0.55 leaves only the earliest arrivals — where
  *     `settled` is still near 0 and they are barely drawn — overlapping any text.
  */
-const RING_WINDOW: readonly [number, number] = [0.55, 1.0];
+const RING_WINDOW: readonly [number, number] = [0.3, 1.0];
+/**
+ * The window of the services→works HANDOFF over which the outer two rings erupt.
+ *
+ * A second eruption on a second scroll, rather than all three arriving at once on the first. Services
+ * shows a single band thrown off the newly cracked star; flying to works fills the system out. It ends
+ * before the handoff does so the rings have settled by the time you arrive, and starts after it begins
+ * so they are not already forming while the ship is still on the pad.
+ */
+const RING_WORKS_WINDOW: readonly [number, number] = [0.05, 1.0];
 /**
  * Per-frame ease toward the scrubbed targets, as every crossing does — but expressed as a RATE, so
  * `1 - exp(-rate × delta)` is genuinely frame-rate independent (the same form as useServicesDeck's
@@ -237,17 +252,58 @@ const CRACKS_PULSE_SPEED = 0.3;
 /** Per-shard phase, so they breathe out of step. In lockstep it reads as one mechanical pulse. */
 const CRACKS_PULSE_PHASE_STEP = 0.7;
 
+// ── The sun's THIRD state: COLLAPSE ──
+// The star the works section is lit by. Every number mirrors COLLAPSE_STATE in `sunLabPresets.ts` —
+// keep them in step rather than drifting a second copy of the look.
+//
+// This is not new machinery. Collapse is the SAME ten-shard rig the cracks already drive, carried
+// past zero: where the cracks part the shell by +0.18 of a shard radius, this crushes it inward by
+// −0.5. Everything else — the spin-up, the white-hot core, the hotter grade — follows the same one
+// ramp, so it reverses exactly on scroll-back like every other scrubbed state on this site.
+//
+// ⚠ It is a POSE, not the finale. Stage 4 (Singularity) arms the flash, the accretion spiral and the
+// black hole, and that still belongs after the chamber — see docs/sun-to-blackhole-finale-plan.md.
+// Nothing here should ever advance on its own.
+/** Shards crushed INWARD, × the shard radius. The sign is the whole difference from cracks. */
+const COLLAPSE_FRACTURE_SPREAD = -0.5;
+/** It shrinks to a dense core as it implodes. */
+const COLLAPSE_MODEL_SCALE = 0.5;
+/** Conservation of angular momentum — it winds up as it contracts. */
+const COLLAPSE_ROTATE_DEGREES_PER_SECOND = 45;
+const COLLAPSE_FLARE_SPIN_DEGREES_PER_SECOND = 40;
+/** White-hot compression light, well past the cracks' warm amber. */
+const COLLAPSE_CORE_LIGHT_COLOR = 0xffe6c8;
+const COLLAPSE_CORE_LIGHT_INTENSITY = 18;
+/** Super-glowy: the grade is most of why a collapse reads as violent rather than as a shrink. */
+const COLLAPSE_BLOOM_STRENGTH = 2.5;
+const COLLAPSE_BLOOM_RADIUS = 1;
+const COLLAPSE_BLOOM_THRESHOLD = 0.42;
+const COLLAPSE_EXPOSURE = 1.6;
+const COLLAPSE_MAGMA_EMISSIVE = 5;
+
 /**
- * Past this much of the services→works handoff the works field's opaque backdrop has fully covered
- * the sun, so it stops animating and the demand-render gate takes over again.
+ * Past this much of the works→chamber reveal the star stops animating and the demand-render gate takes
+ * over.
  *
- * This matters more than it looks. `DECK_HIDE_EVENT` only fires when you scroll back UP to the
- * hero — going forward into works it deliberately never fires (the field just covers the sun). So
- * without this gate the cracked sun and its dust would keep animating, unseen, for the whole
- * works → chamber span, which is exactly the waste the original freeze existed to prevent.
- * The field's backdrop fades over [0.33, 0.55] of the handoff; this sits past the end of that.
+ * ── What "covered" means now, and what it does NOT mean ──
+ * It used to mean "off screen, so stop paying for it". That is no longer true anywhere: the sun is
+ * sampled into the works render and painted on the chamber's display, so it is visible for the whole
+ * reveal AND the whole room. This is therefore a FREEZE, not a hide — the last drawn frame stays on the
+ * tablet, and nothing may change the look on the way into it.
+ *
+ * ⚠ It used to key off the services→works HANDOFF, on the stated grounds that "the works field's opaque
+ * backdrop has fully covered the sun". That premise was false, and globals.css says so:
+ * `.hero-section.is-services .works-backdrop` is forced to `opacity: 0` precisely so the sun stays
+ * visible through works. The star was freezing on one frame for the whole section and nobody noticed,
+ * because a motionless star still looks like a star — which stopped being acceptable when works became
+ * where it COLLAPSES.
+ *
+ * Set past `TOUR_START` (0.55 in chamberScene): the pull-back owns [0, 0.55] and is the half where the
+ * display still fills much of the frame, so the star stays alive for all of it. It freezes only once
+ * the tour has turned away and the screen is a small rectangle across the room, where a still frame and
+ * a live one are indistinguishable.
  */
-const SUN_COVERED_HANDOFF_PROGRESS = 0.62;
+const SUN_COVERED_CHAMBER_PROGRESS = 0.62;
 
 const TWO_PI = Math.PI * 2;
 
@@ -347,6 +403,10 @@ export default function SunModelCanvas() {
     bloom.setSize(initialWidth, initialHeight);
 
     let modelRoot: THREE.Object3D | null = null;
+    /** The glTF's own root scale, so the collapse can shrink FROM it rather than replace it. */
+    const modelBaseScale = new THREE.Vector3(1, 1, 1);
+    /** Scratch for the core light's collapse tint, so a per-frame lerp allocates nothing. */
+    const collapseCoreColor = new THREE.Color(COLLAPSE_CORE_LIGHT_COLOR);
     // Built only once the model has loaded — the ring radii are fractions of the visible frame, which
     // isn't known until the camera has been fitted to the model.
     let sunParticles: ReturnType<typeof createSunParticles> | null = null;
@@ -404,18 +464,34 @@ export default function SunModelCanvas() {
     };
     window.addEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
 
-    // True once the works field's backdrop has fully covered the sun. See
-    // SUN_COVERED_HANDOFF_PROGRESS — this is what lets the cracked sun animate on services without
-    // leaving it animating, unseen, for the whole works → chamber span.
-    let covered = false;
+    // ── The collapse ──
+    // Driven by the services→works crossing's own 0..1, so the star implodes as you fly across and
+    // un-implodes if you scroll back. Nothing here is a flag or a timer: it is the same "publish a
+    // scrubbed fraction, let each scene ease its own copy" contract the cracks already use, which is
+    // why the whole thing reverses for free and cannot be outrun by a fast flick.
+    let targetCollapse = 0;
+    let targetRingWorks = 0;
     const onHandoffProgress = (event: Event) => {
-      const wasCovered = covered;
-      covered = readHandoffProgress(event) >= SUN_COVERED_HANDOFF_PROGRESS;
-      // Uncovering has to draw again: the sun stopped redrawing while it was hidden, so without this
-      // scrolling back to services would reveal the stale frame it froze on.
-      if (wasCovered && !covered) forceRender = true;
+      const progress = THREE.MathUtils.clamp(readHandoffProgress(event), 0, 1);
+      targetCollapse = progress;
+      // Its own window of the same scrubbed signal — a window is not a second clock, so the rings
+      // cannot desync from the collapse they erupt around, and both reverse together.
+      targetRingWorks = rampWindow(RING_WORKS_WINDOW, progress);
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+
+    // True once the chamber reveal has faded the sun out — see SUN_COVERED_CHAMBER_PROGRESS. This is
+    // what lets the collapsing sun stay alive for the whole works section while still costing nothing
+    // once the room has taken over.
+    let covered = false;
+    const onChamberProgress = (event: Event) => {
+      const wasCovered = covered;
+      covered = readChamberProgress(event) >= SUN_COVERED_CHAMBER_PROGRESS;
+      // Uncovering has to draw again: the sun stopped redrawing while it was hidden, so without this
+      // scrolling back out of the room would reveal the stale frame it froze on.
+      if (wasCovered && !covered) forceRender = true;
+    };
+    window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
 
     // ── Assembly ──
     // A one-shot flight, cued when the load reaches 100%. The dust carries the wait; this is the reward
@@ -507,17 +583,31 @@ export default function SunModelCanvas() {
      * it can be called unconditionally — scrolling back to the hero closes the star exactly, with no
      * drift left behind.
      */
-    const applyCracks = (cracks: number, time: number) => {
+    const applyCracks = (cracks: number, collapse: number, time: number) => {
+      // Where the shell sits: parted by the cracks, then crushed inward as the collapse takes over.
+      // One number, carried across zero — see COLLAPSE_FRACTURE_SPREAD.
+      const spread = THREE.MathUtils.lerp(
+        CRACKS_FRACTURE_SPREAD,
+        COLLAPSE_FRACTURE_SPREAD,
+        collapse,
+      );
       shards.forEach(({ object, home, outward }, index) => {
         // The cracks breathe: a slow tug back toward the centre that never fully closes them. Each
         // shard carries its own phase so they pull out of step — in lockstep it reads as one
         // mechanical pulse rather than a star straining.
+        //
+        // Faded out by the collapse: a star being crushed is not idling, and a breathing pulse on top
+        // of an implosion reads as the shell bouncing rather than as it giving way.
         const breath = reduceMotion
           ? 0
           : (Math.sin(TWO_PI * CRACKS_PULSE_SPEED * time + index * CRACKS_PULSE_PHASE_STEP) * 0.5 +
               0.5) *
-            CRACKS_PULSE_AMOUNT;
-        const distance = (CRACKS_FRACTURE_SPREAD - breath) * cracks * shardRadius;
+            CRACKS_PULSE_AMOUNT *
+            (1 - collapse);
+        // The collapse must reach its pose even at `cracks = 1`, so it is applied OUTSIDE the cracks
+        // ramp rather than multiplied by it — otherwise the crush would be capped by however far the
+        // shell happened to have opened.
+        const distance = (spread - breath) * Math.max(cracks, collapse) * shardRadius;
         object.position.set(
           home.x + outward.x * distance,
           home.y + outward.y * distance,
@@ -541,6 +631,7 @@ export default function SunModelCanvas() {
     gltfLoader.load(MODEL_PATH, (gltf) => {
       if (disposed) return;
       modelRoot = gltf.scene;
+      modelBaseScale.copy(modelRoot.scale);
 
       // The magma ships an emissive TEXTURE but no emissive factor, so by the glTF spec it renders
       // dead-black. Prime it to white or the sun has no glow at all.
@@ -751,6 +842,9 @@ export default function SunModelCanvas() {
     // idea on its own window of the same scroll.
     let cracks = 0;
     let ringForm = 0;
+    let ringWorksForm = 0;
+    /** The Collapse ramp — 0 through the hero and services, 1 across works. Eased like `cracks`. */
+    let collapse = 0;
     let wasAnimating = true;
     let animationFrame = 0;
     const animate = () => {
@@ -762,9 +856,11 @@ export default function SunModelCanvas() {
       const stateEase = reduceMotion ? 1 : 1 - Math.exp(-STATE_EASE_RATE * delta);
       cracks += (targetCracks - cracks) * stateEase;
       ringForm += (targetRingForm - ringForm) * stateEase;
+      ringWorksForm += (targetRingWorks - ringWorksForm) * stateEase;
+      collapse += (targetCollapse - collapse) * stateEase;
       const elapsed = clock.getElapsedTime();
       // The star always turns; it only stops once the works field has covered it completely.
-      const moving = !covered;
+    const moving = !covered;
 
       // Assembly: a one-shot flight in from deep space, run once the model is here AND the intro has
       // put the "o" on screen — whichever of those two lands last.
@@ -782,17 +878,26 @@ export default function SunModelCanvas() {
       }
 
       if (moving) {
-        // Both rates ease from the Peaceful values to the Cracks ones — the star gets more restless
-        // as it comes apart, rather than changing speed at a threshold.
+        // Peaceful → Cracks → Collapse, in that order, so the star gets steadily more restless rather
+        // than changing speed at a threshold. The second lerp is the figure-skater effect: it winds up
+        // as it contracts.
         const rotateRate = THREE.MathUtils.lerp(
-          AUTO_ROTATE_DEGREES_PER_SECOND,
-          CRACKS_ROTATE_DEGREES_PER_SECOND,
-          cracks,
+          THREE.MathUtils.lerp(
+            AUTO_ROTATE_DEGREES_PER_SECOND,
+            CRACKS_ROTATE_DEGREES_PER_SECOND,
+            cracks,
+          ),
+          COLLAPSE_ROTATE_DEGREES_PER_SECOND,
+          collapse,
         );
         const flareRate = THREE.MathUtils.lerp(
-          FLARE_SPIN_DEGREES_PER_SECOND,
-          CRACKS_FLARE_SPIN_DEGREES_PER_SECOND,
-          cracks,
+          THREE.MathUtils.lerp(
+            FLARE_SPIN_DEGREES_PER_SECOND,
+            CRACKS_FLARE_SPIN_DEGREES_PER_SECOND,
+            cracks,
+          ),
+          COLLAPSE_FLARE_SPIN_DEGREES_PER_SECOND,
+          collapse,
         );
         spinner.rotation.y += THREE.MathUtils.degToRad(rotateRate) * delta;
         const flareDelta = THREE.MathUtils.degToRad(flareRate) * delta;
@@ -803,28 +908,79 @@ export default function SunModelCanvas() {
         });
       }
 
-      // The shell cracks open. Guarded on the assembly being finished so the two never fight over a
-      // shard's position — the flight owns them until it lands, this owns them afterwards.
-      if (assembly >= 1) applyCracks(cracks, elapsed);
-      // The light inside the shell, escaping through the gaps as they widen.
-      coreLight.intensity = CRACKS_CORE_LIGHT_INTENSITY * cracks;
-      // The ring forming. On its OWN window of the scroll rather than the cracks ramp — it has to
-      // assemble on black (see RING_WINDOW). Zeroed while covered so it costs nothing through works
-      // / chamber.
-      sunParticles?.update(elapsed, covered ? 0 : ringForm);
+      // The shell cracks open, then implodes. Guarded on the assembly being finished so the two never
+      // fight over a shard's position — the flight owns them until it lands, this owns them afterwards.
+      if (assembly >= 1) applyCracks(cracks, collapse, elapsed);
+
+      // ── Everything else the collapse touches ──
+      // All of it a pure function of the same ramp, so scrolling back out of works restores the star
+      // exactly. Written unconditionally rather than behind an `if (collapse > 0)`: at 0 every lerp
+      // resolves to the value it already had, and a guard would only add a branch that has to be kept
+      // in step with the list below.
+      //
+      // The light inside the shell — amber escaping through widening gaps, then white-hot compression.
+      coreLight.intensity = THREE.MathUtils.lerp(
+        CRACKS_CORE_LIGHT_INTENSITY * cracks,
+        COLLAPSE_CORE_LIGHT_INTENSITY,
+        collapse,
+      );
+      coreLight.color.set(CRACKS_CORE_LIGHT_COLOR).lerp(collapseCoreColor, collapse);
+      // It shrinks to a dense core as it crushes in. Multiplied onto the model's OWN scale rather than
+      // assigned with setScalar: nothing else scales the root, but the glTF is free to arrive with a
+      // non-uniform one, and flattening that would silently reshape the star.
+      if (modelRoot) {
+        modelRoot.scale
+          .copy(modelBaseScale)
+          .multiplyScalar(THREE.MathUtils.lerp(1, COLLAPSE_MODEL_SCALE, collapse));
+      }
+      // The grade. This is most of why a collapse reads as violent rather than as a shrink — see the
+      // note on `setGrade` in sunBloom.
+      bloom.setGrade(
+        THREE.MathUtils.lerp(BLOOM_STRENGTH, COLLAPSE_BLOOM_STRENGTH, collapse),
+        THREE.MathUtils.lerp(BLOOM_RADIUS, COLLAPSE_BLOOM_RADIUS, collapse),
+        THREE.MathUtils.lerp(BLOOM_THRESHOLD, COLLAPSE_BLOOM_THRESHOLD, collapse),
+      );
+      renderer.toneMappingExposure = THREE.MathUtils.lerp(EXPOSURE, COLLAPSE_EXPOSURE, collapse);
+      // Guarded on the assembly, because the intro drives these same materials hot while the shards
+      // are still inbound (see ASSEMBLY_HEAT). Writing here unconditionally would overwrite that heat
+      // with the resting value on the very frames it exists for.
+      if (assembly >= 1) {
+        const magmaIntensity = THREE.MathUtils.lerp(
+          MAGMA_EMISSIVE,
+          COLLAPSE_MAGMA_EMISSIVE,
+          collapse,
+        );
+        heatedMaterials.forEach((material) => {
+          material.emissiveIntensity = magmaIntensity;
+        });
+      }
+      // The rings, on their OWN windows of the scroll rather than the cracks ramp — they have to
+      // assemble on black (see RING_WINDOW / RING_WORKS_WINDOW).
+      //
+      // ⚠ These are NOT zeroed when the star freezes, and that is load-bearing. They used to be, back
+      // when freezing meant the sun was off screen and the rings were pure cost. The sun is now sampled
+      // into the works render and shown on the chamber's display (WorksField/sunBackdrop.ts), so the
+      // frozen frame is the picture on the tablet. Zeroing here hard-cut `uForm` to 0, which returns
+      // every grain to the launch knot inside the star and hides the layer — so the star visibly lost
+      // its rings the moment the reveal passed the freeze point, and scrubbing across it flickered them
+      // on and off. Whatever the freeze does, it must not CHANGE the frame it freezes on.
+      sunParticles?.update(elapsed, ringForm, ringWorksForm);
 
       // Demand-render: only draw while the image is actually changing — while the state ramp eases,
       // while the star still turns, or while the shards are still arriving.
       //
       // The sun used to freeze the moment services revealed, which made the whole
-      // services → works → chamber span free. It can't any more: the cracked star breathes and its
-      // dust falls, and both have to keep drawing to read as alive. `covered` buys most of that
-      // back — the instant the works field's backdrop hides the sun, `moving` goes false and this
-      // returns to one frozen frame for works and the chamber, which is the long tail of the scroll.
+      // services → works → chamber span free. It cannot any more: the cracked star breathes, its dust
+      // falls, and it collapses across the handoff — all of which have to keep drawing to read as
+      // alive, and all of which are now also the picture on the chamber's display. `covered` buys back
+      // only the tail: once the tour has turned away from the screen, `moving` goes false and this
+      // holds one frozen frame for the rest of the room.
       // `wasAnimating` draws the one final settled frame; `forceRender` covers resize / tab-restore.
       const animating =
         Math.abs(targetCracks - cracks) > STATE_SETTLE_EPSILON ||
         Math.abs(targetRingForm - ringForm) > STATE_SETTLE_EPSILON ||
+        Math.abs(targetRingWorks - ringWorksForm) > STATE_SETTLE_EPSILON ||
+        Math.abs(targetCollapse - collapse) > STATE_SETTLE_EPSILON ||
         moving ||
         assembling;
       if (!document.hidden && (animating || wasAnimating || forceRender)) {
@@ -842,6 +998,7 @@ export default function SunModelCanvas() {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
+      window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
       window.clearTimeout(cueFallbackTimer);

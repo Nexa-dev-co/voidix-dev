@@ -54,7 +54,7 @@ interface WorksTunerOptions {
     drive: ((deltaSeconds: number, camera: THREE.PerspectiveCamera) => void) | null,
   ) => void;
   /** Rebuild the rock — its silhouette is baked into geometry, so a shape change needs a new one. */
-  rebuildMeteor: () => void;
+  rebuildMark: () => void;
   /** Re-derive the spline from the key list, after keys are added, replaced or removed. */
   rebuildPath: () => void;
   onDispose: (cleanup: () => void) => void;
@@ -73,7 +73,7 @@ export async function createWorksTunerPanel({
   camera,
   bloomPass,
   setCameraOverride,
-  rebuildMeteor,
+  rebuildMark,
   rebuildPath,
   onDispose,
 }: WorksTunerOptions): Promise<void> {
@@ -247,27 +247,25 @@ export async function createWorksTunerPanel({
     },
   };
 
-  const rockFolder = gui.addFolder('The rock');
-  const reshape = () => rebuildMeteor();
-  rockFolder.add(tuning, 'meteorRadius', 0.5, 12, 0.05).onFinishChange(reshape);
-  rockFolder.add(tuning, 'meteorDetail', 1, 6, 1).onFinishChange(reshape);
-  rockFolder.add(tuning, 'meteorSeed', 1, 200, 1).onFinishChange(reshape).name('seed (silhouette)');
-  rockFolder.add(tuning, 'meteorStretchX', 0.4, 2, 0.01).onFinishChange(reshape);
-  rockFolder.add(tuning, 'meteorStretchY', 0.4, 2, 0.01).onFinishChange(reshape);
-  rockFolder.add(tuning, 'meteorStretchZ', 0.4, 2, 0.01).onFinishChange(reshape);
-  rockFolder.add(tuning, 'meteorFlatShading').onFinishChange(reshape);
-  rockFolder.add(tuning, 'meteorX', -20, 20, 0.05);
-  rockFolder.add(tuning, 'meteorY', -20, 20, 0.05);
-  rockFolder.add(tuning, 'meteorZ', -20, 20, 0.05);
-  rockFolder.add(tuning, 'meteorSpin', -30, 30, 0.1).name('spin °/sec');
+  // ── The mark ──
+  // Only what the SECTION owns is authorable here. How the mark LOOKS — the stone size hierarchy, the
+  // geode, the choreography, all ~60 of it — is authored in the lab at /letters/transition/accretion
+  // and inherited wholesale (see `buildMark`). Duplicating those knobs here would fork the look the
+  // moment either side moved, and the lab is the better place to judge them anyway: it can scrub the
+  // change and read triangles and build time off the panel.
+  const markFolder = gui.addFolder('The mark');
+  const reshape = () => rebuildMark();
+  markFolder
+    .add(tuning, 'markTargetSize', 1, 8, 0.05)
+    .onFinishChange(reshape)
+    .name('size (world units)');
+  markFolder.add(tuning, 'markDepth', 0.1, 3, 0.01).onFinishChange(reshape).name('slab depth');
+  markFolder.add(tuning, 'markX', -20, 20, 0.05);
+  markFolder.add(tuning, 'markY', -20, 20, 0.05);
+  markFolder.add(tuning, 'markZ', -20, 20, 0.05);
 
-  const surfaceFolder = gui.addFolder('Surface');
-  surfaceFolder.add(tuning, 'meteorEmissive', 0, 6, 0.05).name('vein glow');
-  surfaceFolder.addColor(tuning, 'meteorEmissiveColor').name('vein colour');
-  surfaceFolder.addColor(tuning, 'meteorColor').name('rock tint');
-  surfaceFolder.add(tuning, 'meteorRoughness', 0, 1, 0.01);
-  surfaceFolder.add(tuning, 'meteorMetalness', 0, 1, 0.01);
-  surfaceFolder.add(tuning, 'meteorTextureRepeat', 0.25, 8, 0.25).name('texture tiling');
+  const surfaceFolder = gui.addFolder('Debris');
+  surfaceFolder.add(tuning, 'shardTextureRepeat', 0.25, 8, 0.25).name('texture tiling');
 
   const bloomFolder = gui.addFolder('Bloom');
   bloomFolder.add(bloomPass, 'strength', 0, 3, 0.01);
@@ -304,7 +302,7 @@ export async function createWorksTunerPanel({
   // reset has to rebuild both — restoring the numbers alone would leave the scene showing the old shape.
   const resetWorks = () => {
     resetWorksTuning();
-    rebuildMeteor();
+    rebuildMark();
     refresh(); // rebuilds the path + re-ranges the key slider
     gui.controllersRecursive().forEach((controller) => controller.updateDisplay());
   };

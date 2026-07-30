@@ -4,18 +4,21 @@ import { GATHER_DEFAULTS, SUN_BODY_FILL } from '@/components/effects/IntroSequen
 /**
  * The dust orbiting the cracked sun on the services deck.
  *
- * One ring, lying along the X axis — a shallow horizontal band sweeping left to right across the
- * star, the way a planetary ring sits. So the sun reads as the centre of an orbital system, which is
- * the brand's whole metaphor, rather than as a ball in a cloud.
+ * Three crossing bands sweeping across the star, the way a planetary ring sits. So the sun reads as
+ * the centre of an orbital system, which is the brand's whole metaphor, rather than as a ball in a
+ * cloud. Grains split evenly across whatever is in `RINGS`, in one draw call.
  *
- * The small `tilt` is what makes it a ring rather than a line. At 0 the plane is exactly edge-on to
- * the camera and the band collapses to a horizontal stroke; ~20° opens it into a flattened ellipse
+ * The small `tilt` is what makes each one a ring rather than a line. At 0 the plane is exactly edge-on
+ * to the camera and the band collapses to a horizontal stroke; ~20° opens it into a flattened ellipse
  * while keeping it clearly horizontal. Don't take it far past that — a near face-on ring stops
  * passing BEHIND the star, and that occlusion on every orbit is the only thing that makes it read as
  * going around something rather than as a decal drawn over the top.
  *
- * (`RINGS` is still a list — add entries back for crossing orbits; grains split evenly across
- * whatever is in it.)
+ * ── They outlive the star's own size ─────────────────────────────────────────────────────────────
+ * Radii are fractions of the FRAME, not of the model, so when the works section crushes the sun to
+ * half scale the bands stay where they are and the star implodes inside them. That is the intended
+ * read — matter left in orbit around something collapsing — and it is why nothing here needs to know
+ * about the collapse at all.
  *
  * ── The box, and why radii are fractions of the FRAME ────────────────────────────────────────────
  * The first version scattered grains through a spherical shell measured in units of the sun's shard
@@ -42,10 +45,10 @@ import { GATHER_DEFAULTS, SUN_BODY_FILL } from '@/components/effects/IntroSequen
 /**
  * How many grains, split evenly across the rings. One draw call regardless.
  *
- * Down from 1100 with the drop to a single ring: three rings spread that across three separate
- * bands, but concentrating the same count into one near-edge-on band would read as a solid bar.
+ * Split by each ring's `share`, not evenly. The services ring holds half of it, which is the ~700 it
+ * had when it was the only band; the two that erupt on the way into works divide the rest.
  */
-const PARTICLE_COUNT = 700;
+const PARTICLE_COUNT = 1400;
 
 /**
  * The rings. `radius` and `thickness` are in units of the STAR'S OWN BODY RADIUS, so 1.0 sits exactly
@@ -54,25 +57,45 @@ const PARTICLE_COUNT = 700;
  * There is a hard band to stay inside, and both edges bite:
  *
  *   • below 1.0 a ring is INSIDE the star and the depth test hides it completely
- *   • above ~1.38 it is outside the visible frame and gets clipped into a rectangle by the canvas
+ *   • past the frame edge it gets clipped into a rectangle by the canvas
  *
- * That ceiling is not arbitrary: the star's body is `SUN_BODY_FILL` (0.723) of the frame half-extent
- * — see the framing maths in `gatherShader` — so the frame edge sits at 1 / 0.723 ≈ 1.383 body
- * radii. `ringRadiusFraction` below converts these into frame fractions and the shader scales them
- * by the live frame extent, which is what makes the whole thing resize-safe.
+ * ⚠ That ceiling is DERIVED, and this comment used to state it wrongly. The frame edge sits at
+ * `1 / SUN_BODY_FILL` body radii, and `SUN_BODY_FILL` is `0.723 / SUN_CANVAS_HEADROOM` — so it moves
+ * whenever the headroom does. The old text quoted 1.383, which is `1 / 0.723`: the value from before
+ * the canvas was ever given headroom. At the current headroom of 2.6 the real ceiling is ≈ 3.6 body
+ * radii, and it was ≈ 2.2 even when this file was cut down to a single ring for want of room.
  *
- * Leave real headroom under that 1.383, though: the whole field is shifted sideways by the framing
- * pan (`SUN_FRAMING_NUDGE_X`, 5% of the frame), so a ring sitting flush against the edge would clip
- * on one side only. The widest ring here reaches 0.90 of the frame, leaving room for the pan.
+ * `ringRadiusFraction` below converts these into frame fractions and the shader scales them by the
+ * live frame extent, which is what makes the whole thing resize-safe.
+ *
+ * Leave real headroom under that ceiling: the whole field is shifted sideways by the framing pan
+ * (`SUN_FRAMING_NUDGE_X`, 5% of the frame), so a ring sitting flush against the edge would clip on
+ * one side only. The widest ring here reaches ~0.54 of the frame, which is comfortable.
  *
  * `tilt` and `yaw` are DEGREES and define the orbital plane. Rings 0 and 1 carry opposite tilts and
  * counter-rotate — that is what draws the X.
  */
+/**
+ * `formsOn` is which section erupts the ring out of the star, and it is the reason there is more than
+ * one form ramp. Services shows ONE band — the star has just cracked open and thrown off a single
+ * orbit. The other two erupt on the way into works, so arriving at the project field is the moment the
+ * system fills out. Two eruptions, each on its own scroll, rather than one that has already happened.
+ *
+ * `share` is that ring's slice of PARTICLE_COUNT. Not an even split: the services ring is alone on
+ * screen for a whole section, so it keeps the ~700 grains it had when it was the only ring — an even
+ * third would have quietly thinned the one band that was already tuned.
+ */
 const RINGS = [
   // Thicker than a steeply-tilted ring would need: seen this close to edge-on the band is compressed
   // into a few pixels vertically, so the depth is what gives it any body at all.
-  { radius: 1.18, thickness: 0.09, tilt: 20, yaw: 8, speed: 0.45 },
-];
+  { radius: 1.18, thickness: 0.09, tilt: 20, yaw: 8, speed: 0.45, formsOn: 'services', share: 0.5 },
+  // Opposite tilt AND opposite direction. Two bands crossing at a shallow angle is what draws the X;
+  // matching their direction would read as one thick wobbling band instead of two orbits.
+  { radius: 1.52, thickness: 0.07, tilt: -24, yaw: -6, speed: -0.34, formsOn: 'works', share: 0.28 },
+  // The outer band: wider, finer, slower. Keplerian shear is the read — an orbit further out takes
+  // longer — and it is also what stops three rings looking like a printed pattern.
+  { radius: 1.95, thickness: 0.05, tilt: 9, yaw: 14, speed: 0.22, formsOn: 'works', share: 0.22 },
+] as const;
 
 /** Body radii → frame fractions, which is what the shader's `uFrameExtent` scales. */
 const ringRadiusFraction = (bodyRadii: number) => bodyRadii * SUN_BODY_FILL;
@@ -168,9 +191,13 @@ const PARTICLE_VERTEX_SHADER = /* glsl */ `
   attribute vec4 aOrbit;
   // x = heat along the ember-to-gold ramp, y = twinkle phase.
   attribute vec2 aLook;
+  // 0 = this grain belongs to the ring that forms on services, 1 = one of the works rings. Used to
+  // pick between the two form ramps, so one set can be mid-eruption while the other is untouched.
+  attribute float aFormGroup;
 
   uniform float uTime;
   uniform float uPresence;
+  uniform float uPresenceWorks;
   uniform float uFrameExtent;
   uniform float uSize;
   uniform float uMinSize;
@@ -178,6 +205,7 @@ const PARTICLE_VERTEX_SHADER = /* glsl */ `
   uniform float uTwinkleAmount;
   uniform float uTwinkleSpeed;
   uniform float uForm;
+  uniform float uFormWorks;
   uniform float uFormStagger;
   uniform float uLaunchAngle;
   uniform float uLaunchSpin;
@@ -196,8 +224,11 @@ const PARTICLE_VERTEX_SHADER = /* glsl */ `
     // ── The ejection ──
     // 1. Launch order. Purely random, so the eruption has duration and a ragged leading edge.
     float delay = fract(aLook.y / TWO_PI) * uFormStagger;
+    // Whichever eruption this grain belongs to. Everything below is unchanged — the two sets simply
+    // run the same flight off different scrolls.
+    float form = mix(uForm, uFormWorks, aFormGroup);
     // Each grain runs its own 0..1 flight across the window left after its delay.
-    float grainForm = clamp((uForm - delay) / max(1.0 - uFormStagger, 0.001), 0.0, 1.0);
+    float grainForm = clamp((form - delay) / max(1.0 - uFormStagger, 0.001), 0.0, 1.0);
 
     // 2. Two curves off that one flight. The radial climb runs AHEAD of the angular sweep, so a
     //    grain clears the star's limb before it starts travelling around: it bursts out, then curls.
@@ -242,7 +273,7 @@ const PARTICLE_VERTEX_SHADER = /* glsl */ `
     float launched = smoothstep(0.0, LAUNCH_FADE, grainForm);
     // A slow shimmer, out of phase per grain.
     float twinkle = 1.0 - uTwinkleAmount * (0.5 + 0.5 * sin(uTime * uTwinkleSpeed + aLook.y));
-    vFade = twinkle * uPresence * launched * ignition;
+    vFade = twinkle * mix(uPresence, uPresenceWorks, aFormGroup) * launched * ignition;
 
     // Perspective size — the only cue that separates the near and far halves of an orbit.
     float perspectiveSize = uSize * uPixelRatio / max(-modelViewPosition.z, 0.001);
@@ -277,8 +308,14 @@ const PARTICLE_FRAGMENT_SHADER = /* glsl */ `
 export interface SunParticles {
   /** Add this to the sun's scene. */
   object: THREE.Points;
-  /** `presence` is the ring's own scrubbed ramp (0 = absent, 1 = fully formed). */
-  update(elapsedSeconds: number, presence: number): void;
+  /**
+   * Both eruption ramps, each 0 (absent) to 1 (fully formed).
+   *
+   * Two rather than one because the bands do not arrive together: the services ring erupts as the star
+   * cracks open, and the works rings erupt on the flight into the project field. Each is a pure
+   * function of its own scrubbed scroll, so both reverse independently.
+   */
+  update(elapsedSeconds: number, servicesPresence: number, worksPresence: number): void;
   /**
    * The visible half-extent at the sun's distance. Every ring is a fraction of this, so calling it
    * on resize is what keeps the rings inside the canvas at any aspect.
@@ -309,14 +346,30 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
   const ringV = new Float32Array(PARTICLE_COUNT * 3);
   const orbit = new Float32Array(PARTICLE_COUNT * 4);
   const look = new Float32Array(PARTICLE_COUNT * 2);
+  const formGroup = new Float32Array(PARTICLE_COUNT);
   // A dummy position attribute: three needs one to infer the draw count, but the vertex shader
   // computes every real position from the attributes above, so its contents are never read.
   const positions = new Float32Array(PARTICLE_COUNT * 3);
 
   const bases = RINGS.map((ring) => ringBasis(ring.tilt, ring.yaw));
 
+  // Grains per ring, from its `share`. The last ring takes the remainder so rounding can never leave
+  // the tail of the buffer unassigned — an unassigned grain would sit at the origin with a ring basis
+  // of all zeros and render as a dead pixel at the star's centre.
+  const ringCounts = RINGS.map((ring) => Math.round(PARTICLE_COUNT * ring.share));
+  ringCounts[ringCounts.length - 1] =
+    PARTICLE_COUNT - ringCounts.slice(0, -1).reduce((total, count) => total + count, 0);
+  const ringOfParticle = new Uint8Array(PARTICLE_COUNT);
+  let assigned = 0;
+  ringCounts.forEach((count, ringIndex) => {
+    for (let taken = 0; taken < count && assigned < PARTICLE_COUNT; taken += 1) {
+      ringOfParticle[assigned] = ringIndex;
+      assigned += 1;
+    }
+  });
+
   for (let index = 0; index < PARTICLE_COUNT; index += 1) {
-    const ringIndex = index % RINGS.length;
+    const ringIndex = ringOfParticle[index];
     const ring = RINGS[ringIndex];
     const { u, v } = bases[ringIndex];
 
@@ -336,6 +389,8 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
     // the loader's palette scattered through the orbit.
     look[lookOffset] = Math.random();
     look[lookOffset + 1] = Math.random() * Math.PI * 2;
+
+    formGroup[index] = ring.formsOn === 'works' ? 1 : 0;
   }
 
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -343,6 +398,7 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
   geometry.setAttribute('aRingV', new THREE.BufferAttribute(ringV, 3));
   geometry.setAttribute('aOrbit', new THREE.BufferAttribute(orbit, 4));
   geometry.setAttribute('aLook', new THREE.BufferAttribute(look, 2));
+  geometry.setAttribute('aFormGroup', new THREE.BufferAttribute(formGroup, 1));
   // The shader places everything, so three's own culling maths has nothing meaningful to test.
   geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), frameHalfExtent * 4);
 
@@ -350,6 +406,7 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
     uniforms: {
       uTime: { value: 0 },
       uPresence: { value: 0 },
+      uPresenceWorks: { value: 0 },
       uFrameExtent: { value: frameHalfExtent },
       uSize: { value: PARTICLE_SIZE },
       uMinSize: { value: MIN_PARTICLE_SIZE },
@@ -357,6 +414,7 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
       uTwinkleAmount: { value: TWINKLE_AMOUNT },
       uTwinkleSpeed: { value: TWINKLE_SPEED },
       uForm: { value: 0 },
+      uFormWorks: { value: 0 },
       uFormStagger: { value: FORM_STAGGER },
       uLaunchAngle: { value: THREE.MathUtils.degToRad(FORM_LAUNCH_ANGLE_DEGREES) },
       uLaunchSpin: { value: FORM_LAUNCH_SPIN },
@@ -379,19 +437,27 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
   object.frustumCulled = false;
   object.visible = false;
 
-  const update = (elapsedSeconds: number, presence: number) => {
-    // Fully skipped on the hero, where presence is 0 — no draw, no cost.
-    object.visible = presence > 0.001;
+  const update = (
+    elapsedSeconds: number,
+    servicesPresence: number,
+    worksPresence: number,
+  ) => {
+    // Fully skipped on the hero, where BOTH are 0 — no draw, no cost. It has to be both: the works
+    // rings are still absent through the whole of services, and the services ring is still there
+    // through the whole of works, so either one alone would hide grains that should be on screen.
+    object.visible = servicesPresence > 0.001 || worksPresence > 0.001;
     if (!object.visible) return;
     material.uniforms.uTime.value = elapsedSeconds;
     // The master fade snaps up almost at once (see PRESENCE_RAMP) — the per-grain `launched` term in
     // the shader is what actually staggers the field in, and the eruption's first frames are its
     // brightest, so a master fade tracking the form linearly would dim exactly those.
-    material.uniforms.uPresence.value = Math.min(presence / PRESENCE_RAMP, 1);
+    material.uniforms.uPresence.value = Math.min(servicesPresence / PRESENCE_RAMP, 1);
+    material.uniforms.uPresenceWorks.value = Math.min(worksPresence / PRESENCE_RAMP, 1);
     // Form and fade run off the SAME value rather than each getting a clock. That is deliberate: it
     // means the ejection reverses exactly on scroll-up — the band sweeps back into the knot and sinks
     // into the star — and a grain is only ever drawn as brightly as it has erupted.
-    material.uniforms.uForm.value = presence;
+    material.uniforms.uForm.value = servicesPresence;
+    material.uniforms.uFormWorks.value = worksPresence;
   };
 
   const setFrameExtent = (halfExtent: number) => {

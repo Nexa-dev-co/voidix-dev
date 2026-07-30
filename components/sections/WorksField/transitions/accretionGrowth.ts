@@ -224,7 +224,7 @@ const GROWTH_HELPERS = /* glsl */ `
  * Teach a stone material to grow out of the core.
  *
  * Injected into standard PBR rather than hand-written, so the surface albedo and whatever burns through
- * the emissive channel keep working untouched — the same reasoning `meteorMorph` gives. That is what
+ * the emissive channel keep working untouched — the same reasoning every injection here gives. That is what
  * let the body's texture be swapped from basalt to the geode without this file changing at all.
  */
 export function enableStoneGrowth(

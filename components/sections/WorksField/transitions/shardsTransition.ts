@@ -134,7 +134,7 @@ const SHARD_HELPERS = /* glsl */ `
  * Teach a stone material to rearrange itself into another mark.
  *
  * Injected into standard PBR rather than hand-written, so the map, the tint and the roughness keep
- * working untouched — the same reasoning `accretionGrowth` and `meteorMorph` give.
+ * working untouched — the same reasoning `accretionGrowth` gives.
  */
 function enableShardRearrange(
   material: THREE.MeshStandardMaterial,

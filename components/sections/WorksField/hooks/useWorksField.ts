@@ -11,38 +11,28 @@ import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
 import { createStoneMaterial } from '../meteorMaterial';
-import { createMeteorGeometry, createMeteorMaterial } from '../meteorBody';
 import { getWorksTuning } from '../worksTuning';
-import { WORKS_PROJECTS, type ProjectRock } from '../worksProjects';
-import {
-  SPIN_RAMP_SECONDS,
-  SPIN_PEAK_HOLD_SECONDS,
-  SPIN_DECAY_SECONDS,
-  SPIN_PEAK_DEGREES_PER_SECOND,
-  ENVIRONMENT_COUNTER_SPIN_DEGREES_PER_SECOND,
-  MORPH_SECONDS,
-  MORPH_SWELL_UNITS,
-  MORPH_EMISSIVE_FLARE,
-} from '../worksTransition';
-import {
-  enableMeteorMorph,
-  attachMorphTarget,
-  bakeMorphTarget,
-  type MeteorMorphUniforms,
-} from '../meteorMorph';
+import { WORKS_PROJECTS } from '../worksProjects';
+import { MARK_CHANGE_SECONDS } from '../worksTransition';
+import { prepareMarks } from '../prepareMarks';
+import { accretionTransitionFactory } from '../transitions/accretionTransition';
+import type { MarkTransitionStrategy } from '../transitions/markTransition';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
 import { hideHologram } from '@/lib/hologramPose';
+import { measureSunScreenRect } from '@/lib/sunPlacement';
+import { createSunBackdrop, type SunBackdrop } from '../sunBackdrop';
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
 // ── Textures ────────────────────────────────────────────────────────────
-// ONE texture for the whole field: dark basalt shot through with glowing lava veins. The meteor wears
-// it as both albedo AND emissive map, which is what replaced the fire shader (see meteorBody.ts); the
-// debris wears it as plain rock. There is no normal map any more — the carving is real geometry.
+// The DEBRIS texture: dark basalt shot through with glowing lava veins, worn as plain rock by the
+// ambient shards. It used to clothe the section's body too, as both albedo and emissive map — the
+// mark loads its own pair instead (cold black stone, opening onto geode druse), because that look is
+// a pairing chosen together rather than one image doing two jobs. See accretionTransition.ts.
 const TEXTURE_SURFACE = '/textures/meteor/basalt-magma.png';
 
 // ── Camera / framing ────────────────────────────────────────────────────
@@ -80,15 +70,17 @@ const DRAG_YAW_CLAMP   = 0.6;
 const DRAG_PITCH_CLAMP = 0.4;
 const VIEW_RETURN_EASE = 0.06; // spring the look-offset back to centre on release
 
-// ── The one meteor ───────────────────────────────────────────────────────
-// There used to be four rocks and the camera flew between them. Now there is ONE, and the camera moves
-// around it — so a project is a camera POSE rather than a place (see worksTuning.ts). The rock itself is
-// procedural, carved the same way as the debris that surrounds it, and it has no fire shell: its lava
-// veins come out of the texture's emissive channel and glow through the bloom pass.
+// ── The one body ─────────────────────────────────────────────────────────
+// There used to be four rocks and the camera flew between them; then one carved rock that re-morphed.
+// Now it is the project's MARK, cut into interlocking stones and grown out of a core — and the camera
+// moves around it, so a project is a camera POSE rather than a place (see worksTuning.ts).
+//
+// It does not spin. The camera path is what goes around, and a body that also turned would fight it.
+// The float below is all the motion it has of its own, so a parked mark still breathes.
 const FLOAT_AMPLITUDE = 0.12; // gentle vertical bob
 const FLOAT_SPEED     = 0.9;
 
-// ── The services → works flight (the CAMERA flies in; the meteors + debris stay put) ──
+// ── The services → works flight (the CAMERA flies in; the body + debris stay put) ──
 // During the handoff the field camera rides the SAME shared path as the deck ship (see
 // lib/handoffFlightPath.ts), offset so the field's origin — where meteor 01 sits — lands on the
 // shared meteor spot. So the debris reads ahead → surrounding as we fly in, and the two canvases
@@ -109,9 +101,27 @@ const WORKS_RENDER_THRESHOLD = 0.28;
 // the swap is invisible — see components/sections/Chamber/chamberScene.ts.
 const CHAMBER_ENGAGE_EPSILON = 0.001;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
+// ── Which of the two sun images is the live one ──
+//
+// The sun exists twice: as a fixed DOM billboard behind this canvas, and as a copy of that same canvas
+// sampled into the space render (sunBackdrop.ts). Exactly one may ever be on screen.
+//
+// ⚠ This is a THRESHOLD, not a cross-fade, and that is the whole point. It was a fade, three times, and
+// every version put both suns on screen at once — because a fade needs the two halves to agree frame by
+// frame, and they were being driven from different copies of the progress with different easing. The
+// two images are the same canvas at the same screen rectangle, so there is nothing for a fade to hide:
+// a hard swap is invisible, and a single boolean makes the two states mutually exclusive by
+// construction rather than by timing.
+//
+// Placed past HANDOFF_FIELD_FADE's end (0.55 — where the works field's own DOM opacity finishes coming
+// in), so the render is definitely on screen before the billboard is taken away. Below it the billboard
+// owns the sun; above it the render does, for the whole of works AND the chamber.
+const SUN_TAKEOVER_PROGRESS = 0.6;
+/** The OUTER sun element — hidden wholesale, rather than fading something inside it. */
+const SUN_LAYER_SELECTOR = '.hero-sun-layer';
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
-// ── Meteor arrival — real, FAR rocks that ALL fly in the same way as the flight completes ──
+// ── The body's arrival — it flies in from the far dark as the flight completes ──
 // The field's meteors stay hidden through most of the flight (only debris + streaking stars show).
 // The arrival is driven straight off the handoff progress, so it can never be skipped or desync from
 // the scroll. Every meteor travels in from far behind ITS OWN spot over the window below (a long, slow
@@ -129,11 +139,11 @@ const METEOR_VISIBLE_EPSILON = 0.001; // below this the rock is hidden (during t
 const SHARD_COUNT       = 260;
 const SHARD_COUNT_LOW   = 90;
 const SHARD_FIELD       = new THREE.Vector3(13, 6.5, 14); // half-extents the debris fills (z biased back)
-const SHARD_Z_CENTER    = -16; // pushed BEHIND the meteor cluster (meteors sit z 0…-13.5) so debris never occludes a project
+const SHARD_Z_CENTER    = -16; // pushed BEHIND the body (which sits at the origin) so debris never occludes it
 const SHARD_MIN_SCALE   = 0.05;
 const SHARD_MAX_SCALE   = 0.28; // capped so a chunk never reads as a giant boulder
 const SHARD_DRIFT_SPEED = 0.012; // rad/s slow yaw drift on the whole debris field
-const SHARD_TINT        = 0x1c2530; // darker than the meteors so the projects read as the subjects
+const SHARD_TINT        = 0x1c2530; // darker than the body so the mark reads as the subject
 // Debris keeps clear of a sphere around every pose the camera can hold, so a chunk never spawns right
 // on top of the lens and blows up huge in perspective when you arrive at a stop.
 const SHARD_CAMERA_KEEPOUT  = 5;
@@ -160,7 +170,8 @@ const STAR_OPACITY      = 0.85;
 const STAR_DRIFT        = 0.008;
 
 // ── Lighting ─────────────────────────────────────────────────────────────
-const KEY_LIGHT_COLOR      = 0xdfe7ff; // cool key so the stone meteors read blue-grey, not warm
+const KEY_LIGHT_COLOR      = 0xdfe7ff; // cool key so the stone reads blue-grey, not warm — this is
+                                       // what makes the mark's amber geode read as heat
 const KEY_LIGHT_INTENSITY  = 2.1;
 const FILL_LIGHT_COLOR     = 0x2a3550;
 const FILL_LIGHT_INTENSITY = 0.6;
@@ -168,8 +179,16 @@ const AMBIENT_INTENSITY    = 0.18;
 const TONE_MAPPING_EXPOSURE = 1.15;
 
 // ── Bloom (only the fire blooms) ─────────────────────────────────────────
-const BLOOM_STRENGTH     = 0.9;
-const BLOOM_STRENGTH_LOW = 0.55;
+// Lowered from 0.9 (and 0.55 on the low tier) because the mark's geode was blooming into a haze that
+// ate its own facets. This is the HALO only — every material's `emissiveIntensity` is untouched, so the
+// crystal and the open cavities burn exactly as hot as they were authored; there is just less bleed
+// around them. Threshold and radius are deliberately left alone: raising the threshold would change
+// WHICH surfaces bloom, which is a different edit from how far the glow spreads.
+//
+// ⚠ Keep in step with `markLabRig.ts`. Its numbers exist to match this scene so a judgement made in the
+// transition lab transfers to the section; they were changed with this.
+const BLOOM_STRENGTH     = 0.48;
+const BLOOM_STRENGTH_LOW = 0.3;
 const BLOOM_RADIUS       = 0.55;
 const BLOOM_THRESHOLD    = 0.6;
 const BLOOM_MSAA_SAMPLES = 4;
@@ -190,12 +209,22 @@ interface FieldOptions {
   onStatus: (status: FieldStatus) => void;
 }
 
-/** The one rock: its rig, the carved body, and the surface that glows in its cracks. */
-interface MeteorRig {
+/**
+ * The one body: the mark, grown out of stone.
+ *
+ * The strategy owns its own meshes, materials and geometry — everything under `strategy.object`. This
+ * rig owns only where that object sits and how it is faded in, which is the same division the meteor
+ * had between its `group` and its mesh.
+ *
+ * `materials` is collected once at build for the arrival fade. Safe to cache because the strategy only
+ * reallocates its layers inside `applyTuning`, and the section never calls it — the tuning is handed
+ * over whole at `create` and never moves. If that ever changes, this cache goes stale silently.
+ */
+interface MarkRig {
   group: THREE.Group;
   basePosition: THREE.Vector3;
-  geometry: THREE.BufferGeometry;
-  material: THREE.MeshStandardMaterial;
+  strategy: MarkTransitionStrategy;
+  materials: THREE.MeshStandardMaterial[];
 }
 
 // The live uniforms the render loop drives on the streak layer as the camera warps.
@@ -677,8 +706,18 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       }
     };
 
-    // ── Load textures, then build the meteors + shards ──
-    const meteorRigs: MeteorRig[] = [];
+    // ── Load textures, then build the mark + shards ──
+    // Declared up here rather than beside the warm-up that used to own it: the mark's build is
+    // asynchronous (outlines, typeface, two surfaces), so it has to be able to check whether the
+    // section was torn down while it was awaiting — otherwise a fast unmount leaves an orphaned
+    // strategy holding GPU buffers with nothing to dispose it.
+    let disposed = false;
+    const markRigs: MarkRig[] = [];
+    // Null on a viewport that never mounted a sun (see useIsLowPowerViewport) — the field simply goes
+    // without one rather than failing to build.
+    let sunBackdrop: SunBackdrop | null = null;
+    let sunBackdropAttempts = 0;
+    let sunLayerElement: HTMLElement | null = null;
     let shardMeshes: THREE.InstancedMesh[] = [];
     const shardGeometries: THREE.BufferGeometry[] = [];
     const shardMaterials: THREE.MeshStandardMaterial[] = [];
@@ -695,61 +734,39 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     surfaceMap.wrapT = THREE.RepeatWrapping;
     disposableTextures.push(surfaceMap);
 
-    // The rock gets its OWN view of that image. `repeat` is a property of the texture, not of the
-    // material, and the debris shards are drawn with `surfaceMap` too — so setting the meteor's grain
-    // on the shared map would rescale every shard in the field along with it. A clone shares the same
-    // uploaded GPU image (no extra VRAM, no second decode) while owning its own repeat.
-    const meteorMap = surfaceMap.clone();
-    meteorMap.needsUpdate = true;
-    disposableTextures.push(meteorMap);
+    // ── Which mark each project shows ──
+    // Resolved by id against whatever `prepareMarks` actually returned, because a mark whose file
+    // failed to load is simply absent — matching by position would quietly shift every later project
+    // onto its neighbour's logo, which looks like a content mistake rather than a load failure.
+    // Filled in by buildMark; until then every project points at mark 0.
+    let markIndexOfProject: number[] = WORKS_PROJECTS.map(() => 0);
 
-    // ── The rock, per project ──
-    // Geometry-baked values (seed, size) need a re-carve; material values (colour, grain) are pushed
-    // every frame like the rest of the tuning. A project without a profile falls back to the global
-    // tuning, so the tuner still drives the rock when nothing overrides it.
-    const fallbackRock = (): ProjectRock => ({
-      seed: tuning.meteorSeed,
-      sizeScale: 1,
-      color: tuning.meteorColor,
-      textureRepeat: tuning.meteorTextureRepeat,
-    });
-    // Which rock is CURRENTLY carved — deliberately lagging the active project. The index changes the
-    // instant you scroll, but the body must not: the colour and grain are pushed every frame, so
-    // reading the live index here would repaint the rock before the spin had a chance to hide it. This
-    // only advances at the peak of the wind-up, in step with the re-carve (see scheduleRockSwap).
-    let renderedRockIndex = activeIndexRef.current;
-    const rockAt = (index: number): ProjectRock =>
-      WORKS_PROJECTS[index]?.rock ?? fallbackRock();
-    const activeRock = (): ProjectRock => rockAt(renderedRockIndex);
+    // ── The transition, as ONE piece of state ──
+    // `setTransition(from, to, progress)` is a pure function by contract — no timers, no "arrived"
+    // flags — so the whole change is these three numbers and a tween that moves the third. That is
+    // also why interrupting is free: the old vertex morph needed `settleMorph`/`bakeMorphTarget` to
+    // fold an in-flight shape back into the geometry before a new morph could be armed, and a pure
+    // function has no such residue to clear.
+    // Indices into the PREPARED MARKS, not into the projects — the two only coincide by accident.
+    // Seeded at 0 rather than at the active project because `markIndexOfProject` cannot be resolved
+    // until the outlines have loaded; `buildMark` sets the real starting mark once it can.
+    const markState = { from: 0, to: 0, progress: 0 };
+    let markTween: gsap.core.Tween | null = null;
 
-    // ── Morph state ──
-    // The shape lerps on the GPU (see meteorMorph.ts); the material properties that AREN'T geometry —
-    // the tint and the texture grain — have to be blended here in step with it, or the rock would
-    // change colour instantly while its silhouette was still halfway there.
-    let meteorMorphUniforms: MeteorMorphUniforms | null = null;
-    let morphTargetIndex = renderedRockIndex;
-    let morphTween: gsap.core.Tween | null = null;
-    // Hoisted: these are written every frame, and allocating two Colors per frame is exactly the kind
-    // of garbage that shows up as jitter once the bloom pass is already competing for the budget.
-    const morphColorFrom = new THREE.Color();
-    const morphColorTo = new THREE.Color();
-
-    // Survives a rebuild so the re-carve doesn't snap the body's spin back to zero (see buildMeteor).
-    let meteorYaw = 0;
-    // The counter-rotation the debris + stars have accumulated. Integrated per frame rather than
-    // derived from `elapsed`, because the rate is not constant — it swells and fades with the spin
-    // envelope, and a value computed from elapsed time would jump the instant the rate changed.
-    let environmentCounterYaw = 0;
-    // 0 = the idle drift authored in `meteorSpin`, 1 = SPIN_PEAK_DEGREES_PER_SECOND. Tweened by the
-    // project-change timeline; the render loop just reads it. Same `{ value }` + gsap.to pattern the
-    // travel and arrival already use.
-    const spinBoost = { value: 0 };
-
+    // ── What 'works' progress actually covers ──
+    // The manager only knows about the debris texture. The MARK then fetches its outlines, a typeface
+    // and two more surfaces — including the 3.4 MB geode druse — inside `buildField`, which runs after
+    // the manager has already called itself done. Reporting the manager's fraction straight through
+    // would race to 99% and then sit there for the whole of the largest download in this source, which
+    // is precisely the dishonesty `assetLoadProgress` exists to prevent.
+    //
+    // So the source's 0..1 is split into stages and the manager owns only the first of them.
+    const WORKS_TEXTURE_SHARE = 0.45; // the debris texture, via the manager
+    const WORKS_OUTLINES_DONE = 0.55; // + logo outlines and the typeface
+    // …and the strategy's own surfaces plus the cut take it the rest of the way to 1.
     loadingManager.onProgress = (_url, loaded, total) => {
       const fraction = loaded / Math.max(total, 1);
-      // Cap below 1 until buildField runs — 'works' only counts as ready once the rock and the shard
-      // materials actually exist, so the intro never warms or reveals before they're built.
-      reportAssetProgress('works', Math.min(0.99, fraction));
+      reportAssetProgress('works', fraction * WORKS_TEXTURE_SHARE);
       onStatus({ isLoading: true, percent: Math.round(fraction * 100) });
     };
     // If the texture fails, onLoad never fires, so buildField never runs — don't let that trap the
@@ -760,54 +777,136 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       reportAssetProgress('works', 1);
     };
 
-    // Build the bodies once the textures AND the meteor model are in (the meteors need both).
-    // Carve the rock and put it in the scene. Split out from buildField because the tuner re-runs it:
-    // the silhouette is baked into geometry, so changing the seed or the stretch means a new body.
-    const buildMeteor = () => {
-      // Tear down whatever is there first, or retuning the shape leaks a mesh per nudge.
-      meteorRigs.forEach((rig) => {
-        scene.remove(rig.group);
-        rig.geometry.dispose();
-        rig.material.dispose();
-      });
-      meteorRigs.length = 0;
+    /**
+     * Build the mark — the section's one body.
+     *
+     * Async, and it is the only asynchronous thing in the build: the outlines are fetched, the
+     * typeface is parsed, and the strategy loads its own two surfaces. `buildField` therefore awaits
+     * it before reporting the section ready, or the intro's counter would reach 100% while the body
+     * was still being cut.
+     *
+     * ── The tuning is deliberately EMPTY ──
+     * `accretionTransitionFactory.create` resolves `{ ...tuningDefaults(ACCRETION_CONTROLS), ...tuning }`,
+     * so passing nothing inherits every value authored in the lab exactly. That is the point: the lab
+     * at /letters/transition/accretion IS this section's tuning surface, and copying its ~60 numbers
+     * into a second file here would fork the look the moment either side was touched. Override a key
+     * here only when the SECTION genuinely needs to differ from the lab.
+     */
+    const buildMark = async () => {
+      const marks = await prepareMarks();
+      if (disposed || marks.length === 0) return;
+      reportAssetProgress('works', WORKS_OUTLINES_DONE);
 
-      const rock = activeRock();
-      const geometry = createMeteorGeometry({
-        radius: tuning.meteorRadius * rock.sizeScale,
-        detail: tuning.meteorDetail,
-        seed: rock.seed,
-        stretchX: tuning.meteorStretchX,
-        stretchY: tuning.meteorStretchY,
-        stretchZ: tuning.meteorStretchZ,
+      markIndexOfProject = WORKS_PROJECTS.map((project) => {
+        const found = marks.findIndex((mark) => mark.id === project.markId);
+        return found >= 0 ? found : 0;
       });
-      const material = createMeteorMaterial(meteorMap, tuning.meteorFlatShading);
-      // Transparent so the arrival can fade it up out of the far dark.
-      material.transparent = true;
-      // Teach it to interpolate between shapes. Done here rather than inside createMeteorMaterial so
-      // the material stays a plain MeshStandardMaterial for anything else that wants one.
-      meteorMorphUniforms = enableMeteorMorph(material);
-      morphTargetIndex = renderedRockIndex;
+
+      const strategy = await accretionTransitionFactory.create(
+        marks,
+        {
+          targetSize: tuning.markTargetSize,
+          depth: tuning.markDepth,
+          // The strategy loads the pair of surfaces its look depends on (cold stone + glowing druse),
+          // chosen together. Handing it one here would be fetched and ignored — see the note on
+          // `surfaceTexture` in markTransition.ts.
+          surfaceTexture: null,
+          performanceTier: lowPower ? 'low' : 'high',
+        },
+        {},
+      );
+      if (disposed) {
+        strategy.dispose();
+        return;
+      }
+
+      // Every material under the strategy, for the arrival fade. `transparent` is set ONCE, here —
+      // toggling it per frame invalidates the program and recompiles the shader, which is a stutter at
+      // exactly the moment the section is trying to look expensive.
+      const materials: THREE.MeshStandardMaterial[] = [];
+      strategy.object.traverse((child) => {
+        const material = (child as THREE.Mesh).material;
+        if (!material) return;
+        (Array.isArray(material) ? material : [material]).forEach((entry) => {
+          const standard = entry as THREE.MeshStandardMaterial;
+          standard.transparent = true;
+          standard.opacity = 1;
+          materials.push(standard);
+        });
+      });
 
       const group = new THREE.Group();
-      group.position.set(tuning.meteorX, tuning.meteorY, tuning.meteorZ);
-      // Carry the spin across a rebuild. Without this a re-carve snaps the body back to 0 rad — which
-      // is a hard visible jump at the exact moment the swap is supposed to be invisible, and a jump
-      // every time the ?tune panel nudges the shape.
-      group.rotation.y = meteorYaw;
-      group.add(new THREE.Mesh(geometry, material));
+      group.position.set(tuning.markX, tuning.markY, tuning.markZ);
+      group.add(strategy.object);
       scene.add(group);
 
-      meteorRigs.push({
+      markRigs.push({
         group,
         basePosition: group.position.clone(),
-        geometry,
-        material,
+        strategy,
+        materials,
       });
+
+      // Park on the active project. `from === to` is the strategy's "sit still on this mark".
+      const startMark = markIndexOfProject[activeIndexRef.current] ?? 0;
+      markState.from = startMark;
+      markState.to = startMark;
+      markState.progress = 0;
     };
 
-    const buildField = () => {
-      buildMeteor();
+    /**
+     * Tear the mark down and cut it again.
+     *
+     * Only the `?tune` panel calls this, and only for the two knobs that are baked into geometry —
+     * size and slab depth. Everything else about the mark's look is inherited from the lab and never
+     * changes at runtime, so there is nothing else that could need a rebuild.
+     */
+    const rebuildMark = async () => {
+      markTween?.kill();
+      markTween = null;
+      markRigs.forEach((rig) => {
+        scene.remove(rig.group);
+        rig.strategy.dispose();
+      });
+      markRigs.length = 0;
+      await buildMark();
+    };
+
+    /**
+     * The sun, as part of the picture rather than as a billboard behind it. Added to the SPACE scene,
+     * so it travels with the render onto the chamber's display exactly as the mark does.
+     *
+     * ⚠ Retried rather than done once, because the element it samples may not exist yet. `SunCanvas` is
+     * dynamically imported with `ssr: false`, so its canvas mounts on its own schedule — and while it
+     * has always won that race in practice, losing it once would mean no sun on the table at all, with
+     * nothing on screen to explain why. Cheap to retry: one `querySelector` per frame, and only until
+     * it succeeds.
+     *
+     * Capped so a viewport that genuinely has no sun (see `useIsLowPowerViewport`) stops asking.
+     */
+    const SUN_BACKDROP_MAX_ATTEMPTS = 240;
+    const attachSunBackdrop = () => {
+      if (sunBackdrop || sunBackdropAttempts >= SUN_BACKDROP_MAX_ATTEMPTS) return;
+      sunBackdropAttempts += 1;
+      sunBackdrop = createSunBackdrop(
+        document.querySelector<HTMLCanvasElement>('.sun-canvas'),
+        BLOOM_THRESHOLD,
+        TONE_MAPPING_EXPOSURE,
+      );
+      if (!sunBackdrop) return;
+      scene.add(sunBackdrop.object);
+      // Placed here as well as in `applyRendererSize`, because that has already run by the time this
+      // resolves — without it the backdrop would sit at its default rect until the first resize, which
+      // on a desktop may never come.
+      const sunRect = measureSunScreenRect();
+      if (sunRect) sunBackdrop.setRect(sunRect, viewportWidth, viewportHeight);
+    };
+
+    const buildField = async () => {
+      await buildMark();
+      if (disposed) return;
+
+      attachSunBackdrop();
 
       // Ambient shard debris — two irregular base shapes, each instanced across the field.
       const totalShards = lowPower ? SHARD_COUNT_LOW : SHARD_COUNT;
@@ -863,7 +962,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         shardMaterials.push(material);
       }
 
-      // Light the focused meteor immediately (no cross-fade on first build).
+      // Land on the focused project immediately (no transition on first build).
       applyFocus(activeIndexRef.current, true);
       onStatus({ isLoading: false, percent: 100 });
       // Fully built → mark the field ready for the intro's loader gate. The shader warm-up itself is
@@ -872,166 +971,84 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       reportAssetProgress('works', 1);
     };
 
-    // The rock is procedural, so the texture is the only thing to wait for.
-    loadingManager.onLoad = buildField;
+    // The debris texture is what the manager is waiting on; the mark then fetches its own outlines,
+    // typeface and surfaces inside `buildField`, which is why that is async.
+    //
+    // The catch is not optional. `onLoad` discards the promise, so without it a failure anywhere in
+    // the mark build — an unreachable SVG, a font parse — would be an unhandled rejection AND would
+    // leave `reportAssetProgress('works', …)` capped at 0.99 forever, which hangs the intro on a
+    // loader that never reaches 100%. Report ready and let the section degrade instead.
+    loadingManager.onLoad = () => {
+      buildField().catch((cause: unknown) => {
+        console.error('Works field failed to build:', cause);
+        onStatus({ isLoading: false, percent: 100 });
+        reportAssetProgress('works', 1);
+      });
+    };
 
     // ── Focus a project ──
     // Nothing ignites and nothing cools any more — there is one rock, and a project is a place to stand
     // and look at it from. So focusing a project is simply travelling to its stop on the path.
     let stagedIndex = activeIndexRef.current;
 
-    // ── The re-carve, hidden inside the spin ──
-    // Winding the rock up to a blur, swapping the body at the peak, then letting it settle. The swap
-    // itself is a full teardown + rebuild (buildMeteor already does exactly this for the tuner), which
-    // is only affordable because it happens once per project change, on the one frame where the body
-    // is turning too fast to read.
-    let spinTimeline: gsap.core.Timeline | null = null;
-    // The duration is passed in rather than derived from `spinBoost` inside, because the two callers
-    // read it at different times: the interrupt branch runs immediately (so the live value is right),
-    // while the swap branch is queued behind the ramp and will always start from a full spin.
-    const windDownSpin = (
-      timeline: gsap.core.Timeline,
-      durationSeconds: number,
-      /** GSAP position: seconds from the timeline's start, or a relative string like `+=0.3`. */
-      at?: number | string,
-    ) =>
-      timeline.to(spinBoost, {
-        value: 0,
-        duration: durationSeconds,
-        // Sheds the bulk of the speed quickly, then a long gentle tail into the idle drift — so it
-        // comes to rest instead of stopping.
-        ease: 'power3.out',
-      }, at);
+    // ── The change: one mark grows out of the other ──
+    // There is no wind-up and nothing to hide behind any more. The old body spun to 1150 deg/s so a
+    // hard cut could happen inside a blur; the accretion strategy makes the change itself the thing
+    // you watch, so a blur would only obscure it (see worksTransition.ts).
+    //
+    // All this does is move `markState.progress` from 0 to 1. Every curve — when a stone lets go, how
+    // it travels, when the geode grows back — lives in the shader as a function of that one number,
+    // which is why the ease here is `none`: easing the driver as well would double-apply it.
+    const stageMark = (index: number) => {
+      const target = markIndexOfProject[index] ?? 0;
+      if (target === markState.to) return;
 
-    /** Finish any morph still in flight right now, so a new one can be armed from a settled shape. */
-    const settleMorph = () => {
-      const rig = meteorRigs[0];
-      morphTween?.kill();
-      morphTween = null;
-      if (!rig || !meteorMorphUniforms) return;
-      if (meteorMorphUniforms.uMorph.value > 0) bakeMorphTarget(rig.geometry);
-      meteorMorphUniforms.uMorph.value = 0;
-      meteorMorphUniforms.uSwell.value = 0;
-      renderedRockIndex = morphTargetIndex;
-    };
+      // ── Interrupting mid-change ──
+      // Whichever mark is currently dominant becomes the new starting point. There is a small visible
+      // jump when this fires at exactly the halfway crossover, and it is bounded and deliberate: the
+      // alternative is a three-way blend, which the strategy has no concept of because `setTransition`
+      // takes exactly two marks. In practice the pin locks input for longer than a change takes
+      // (STAGE_STEP_HOLD_MS), so only a programmatic jump — a works arrow, a nav link — can reach it.
+      markTween?.kill();
+      markState.from = markState.progress >= 0.5 ? markState.to : markState.from;
+      markState.to = target;
+      markState.progress = 0;
 
-    /**
-     * Start the rock reshaping into `index`. Returns false if the two shapes can't be interpolated —
-     * only possible if `meteorDetail` changed between builds, which the tuner can do — so the caller
-     * can fall back to the old hard swap rather than draw a torn body.
-     */
-    const startMorph = (index: number): boolean => {
-      const rig = meteorRigs[0];
-      if (!rig || !meteorMorphUniforms) return false;
-
-      // A morph already running would have its target overwritten mid-flight, which reads as the rock
-      // snapping. Land it first, then reshape from there.
-      settleMorph();
-      if (index === renderedRockIndex) return true;
-
-      const rock = rockAt(index);
-      const targetGeometry = createMeteorGeometry({
-        radius: tuning.meteorRadius * rock.sizeScale,
-        detail: tuning.meteorDetail,
-        seed: rock.seed,
-        stretchX: tuning.meteorStretchX,
-        stretchY: tuning.meteorStretchY,
-        stretchZ: tuning.meteorStretchZ,
-      });
-      const armed = attachMorphTarget(rig.geometry, targetGeometry);
-      // Its buffers have been copied into the live geometry's attributes; the geometry itself was only
-      // ever scaffolding.
-      targetGeometry.dispose();
-      if (!armed) return false;
-
-      morphTargetIndex = index;
-      const uniforms = meteorMorphUniforms;
-      // The shader shapes the swell's curve (a sine over uMorph); this only sets its height, so it's
-      // a one-off, not something to write every frame.
-      uniforms.uSwell.value = MORPH_SWELL_UNITS;
-      morphTween = gsap.to(uniforms.uMorph, {
-        value: 1,
-        duration: MORPH_SECONDS,
-        // Eases out of the old shape and into the new one, so neither end has a visible start/stop —
-        // the linear middle is where the swell does its work.
-        ease: 'power1.inOut',
+      markTween = gsap.to(markState, {
+        progress: 1,
+        duration: MARK_CHANGE_SECONDS,
+        ease: 'none',
         onComplete: () => {
-          renderedRockIndex = index;
-          uniforms.uMorph.value = 0;
-          uniforms.uSwell.value = 0;
-          bakeMorphTarget(rig.geometry);
-          morphTween = null;
+          // Settled: `from === to` is the strategy's "sit still on this mark", so the resting frame is
+          // the same code path as every other frame rather than a special case.
+          markState.from = target;
+          markState.progress = 0;
+          markTween = null;
         },
       });
-      return true;
     };
-
-    const scheduleRockSwap = (index: number) => {
-      const needsRecarve = index !== renderedRockIndex || index !== morphTargetIndex;
-      // Already showing this rock and already at rest — nothing to do.
-      if (!needsRecarve && spinBoost.value === 0) return;
-
-      spinTimeline?.kill();
-      spinTimeline = gsap.timeline();
-
-      // Stepping forward then straight back lands on the rock that's already carved. There's no shape
-      // change to make, but the previous wind-up is still spinning — so just bring it back to rest.
-      // Without this branch the killed timeline would leave `spinBoost` parked mid-ramp and the rock
-      // would spin fast forever.
-      if (!needsRecarve) {
-        // Scaled by how much speed is actually left, so winding down a half-spun rock doesn't crawl
-        // through a full-length decay.
-        windDownSpin(spinTimeline, SPIN_DECAY_SECONDS * spinBoost.value);
-        return;
-      }
-
-      // From wherever the spin currently is — an interrupted change keeps its momentum instead of
-      // restarting the wind-up from the idle drift.
-      const rampSeconds = SPIN_RAMP_SECONDS * (1 - spinBoost.value) || SPIN_RAMP_SECONDS;
-
-      // Positioned absolutely rather than chained, because the morph owns its own tween (it has to be
-      // able to not exist, if the shapes turn out to be incompatible) and so can't sit in this
-      // timeline's sequence.
-      spinTimeline.to(spinBoost, {
-        value: 1,
-        duration: rampSeconds,
-        // Barely moves for the first third, then runs away. The slow start is what makes the wind-up
-        // feel like something building rather than like a speed being switched on.
-        ease: 'power3.in',
-      }, 0);
-
-      spinTimeline.call(() => {
-        if (startMorph(index)) return;
-        // Incompatible shapes — no morph is possible, so fall back to the original hard swap.
-        renderedRockIndex = index;
-        buildMeteor();
-      }, [], rampSeconds);
-
-      windDownSpin(spinTimeline, SPIN_DECAY_SECONDS, rampSeconds + SPIN_PEAK_HOLD_SECONDS);
-    };
-
     const applyFocus = (index: number, instant: boolean) => {
       stagedIndex = index;
       const targetU = stopKeyIndex[index] ?? 0;
       travelToU = targetU;
       if (instant || reduceMotion) {
         pathU = targetU;
-        // No spin to hide behind, so the rock just becomes the new one.
-        if (renderedRockIndex !== index) {
-          renderedRockIndex = index;
-          if (meteorRigs.length > 0) buildMeteor();
-        }
+        // Reduced motion gets the destination, never the journey — land on the mark, fully formed.
+        markTween?.kill();
+        markTween = null;
+        const target = markIndexOfProject[index] ?? 0;
+        markState.from = target;
+        markState.to = target;
+        markState.progress = 0;
         updateCamera(true);
         return;
       }
-      // Always called, even when the rock is already the right one — a step forward and straight back
-      // still has a wind-up in flight that has to be brought to rest. scheduleRockSwap decides.
-      scheduleRockSwap(index);
+      stageMark(index);
       startTravel(targetU);
     };
 
     const setFocus = (index: number) => {
-      if (index === stagedIndex || !meteorRigs.length) return;
+      if (index === stagedIndex || !markRigs.length) return;
       applyFocus(index, false);
     };
     setFocusRef.current = setFocus;
@@ -1091,7 +1108,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // thread — a synchronous compile at the intro's warm-up beat froze ~0.2s right before the reveal.
     // The field isn't shown until the handoff, so there's time; the bloom-warming composer.render()
     // lands after the promise resolves, while the field is still hidden.
-    let disposed = false;
     const warmUpField = () => {
       renderer
         .compileAsync(scene, camera)
@@ -1173,6 +1189,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       appliedPixelRatio = ratio;
       viewportWidth = width;
       viewportHeight = height;
+      const sunRect = measureSunScreenRect();
+      if (sunBackdrop && sunRect) sunBackdrop.setRect(sunRect, width, height);
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
       // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
@@ -1201,102 +1219,66 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const deltaSeconds = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
       const elapsed = clock.elapsedTime;
 
-      // ── The field whirls the other way ──
-      // The rock spins +Y, so this goes -Y: during a project change the debris and stars sweep against
-      // it, and the two rates add into the apparent speed. Outside a change `spinBoost` is 0 and this
-      // contributes nothing, so the resting drift is exactly what it always was.
-      if (!reduceMotion) {
-        environmentCounterYaw -=
-          THREE.MathUtils.degToRad(ENVIRONMENT_COUNTER_SPIN_DEGREES_PER_SECOND) *
-          spinBoost.value *
-          deltaSeconds;
-      }
-
-      starSystem.group.rotation.y = elapsed * STAR_DRIFT + environmentCounterYaw;
+      // The debris and the starfield keep their slow ambient drift and nothing else. They used to
+      // counter-rotate against the body during a change, so the two rates would add into the apparent
+      // speed — but the body is steady now, and a field spinning on its own reads as the camera
+      // rolling rather than as anything moving (which is exactly what that constant's own comment
+      // warned about). The sense of going around comes from the camera orbit instead.
+      starSystem.group.rotation.y = elapsed * STAR_DRIFT;
       shardMeshes.forEach((mesh, meshIndex) => {
         // Opposite drift on the two fields gives the debris a parallax shimmer.
-        mesh.rotation.y =
-          elapsed * SHARD_DRIFT_SPEED * (meshIndex === 0 ? 1 : -1) + environmentCounterYaw;
+        mesh.rotation.y = elapsed * SHARD_DRIFT_SPEED * (meshIndex === 0 ? 1 : -1);
       });
 
-      // The rock turns on its own axis and breathes, whichever stop you're parked at — it is the same
-      // object seen from different places, so it never stops being alive.
-      // Idle drift most of the time; during a project change the boost lifts it to a blur and back.
-      const spinDegreesPerSecond = THREE.MathUtils.lerp(
-        tuning.meteorSpin,
-        SPIN_PEAK_DEGREES_PER_SECOND,
-        spinBoost.value,
-      );
-      // The shape is mid-morph on the GPU; the tint and grain have to travel the same 0..1 so the rock
-      // arrives at its new look and its new silhouette together.
-      const morph = meteorMorphUniforms?.uMorph.value ?? 0;
-      const fromRock = activeRock();
-      const toRock = rockAt(morphTargetIndex);
-      morphColorFrom.set(fromRock.color);
-      morphColorTo.set(toRock.color);
-      morphColorFrom.lerp(morphColorTo, morph);
-      // Sine, not the raw morph: the flare peaks with the swell in the molten middle and is back to
-      // the authored value at both ends, so a settled rock is exactly as hot as the tuner says.
-      const flare = 1 + MORPH_EMISSIVE_FLARE * Math.sin(morph * Math.PI);
-
-      meteorRigs.forEach((rig) => {
+      // ── The mark ──
+      // Steady. It does not turn on its own axis: the camera path orbits it, and a body that also
+      // spun would fight that — you could no longer tell whether the mark or the world was moving.
+      // The float is kept, so a parked mark still breathes rather than sitting dead in space.
+      //
+      // One call drives the entire change. Everything else — which stones are travelling, how far the
+      // geode has grown, how hot a break face burns — is a pure function of these three numbers,
+      // evaluated in the vertex shader.
+      markRigs.forEach((rig) => {
+        rig.strategy.setTransition(markState.from, markState.to, markState.progress);
+        rig.strategy.update(reduceMotion ? 0 : elapsed);
         if (reduceMotion) return;
-        rig.group.rotation.y += THREE.MathUtils.degToRad(spinDegreesPerSecond) * deltaSeconds;
-        meteorYaw = rig.group.rotation.y;
         rig.group.position.y =
           rig.basePosition.y + Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE;
-        rig.material.emissive.set(tuning.meteorEmissiveColor);
-        rig.material.emissiveIntensity = tuning.meteorEmissive * flare;
-        rig.material.color.copy(morphColorFrom);
-        rig.material.roughness = tuning.meteorRoughness;
-        rig.material.metalness = tuning.meteorMetalness;
       });
-      // The meteor's grain comes from the active project; the shards keep the global tuning value.
-      const activeRepeat = THREE.MathUtils.lerp(
-        fromRock.textureRepeat,
-        toRock.textureRepeat,
-        morph,
-      );
-      if (meteorMap.repeat.x !== activeRepeat) {
-        meteorMap.repeat.setScalar(activeRepeat);
-      }
-      if (surfaceMap.repeat.x !== tuning.meteorTextureRepeat) {
-        surfaceMap.repeat.setScalar(tuning.meteorTextureRepeat);
+
+      if (surfaceMap.repeat.x !== tuning.shardTextureRepeat) {
+        surfaceMap.repeat.setScalar(tuning.shardTextureRepeat);
       }
 
-      // ── Meteor 01 arrival (sentinel-driven) ──
-      // Every meteor stays HIDDEN until the ship has arrived + left the screen — so the flight shows
-      // only debris + streaking stars. Once `meteorArrival` lifts off 0, meteor 01 flies in from far
-      // and lights as it settles; the others simply appear at their spots. Fully in → the focus/float
-      // system owns meteor 01 again (browsing between projects works as before).
-      // Reversible progress-driven arrival: tracks the eased handoff progress both ways, so the rocks
-      // recede to the far dark on scroll-back exactly as the ship flies back on. At 1 they're landed.
+      // ── The mark's arrival ──
+      // It stays HIDDEN until the ship has flown out of frame, so the handoff shows only debris and
+      // streaking stars. Then it travels in from far behind its spot — perspective grows it as it
+      // nears, so it never reads as spawning — and fades up out of the far dark.
+      //
+      // Driven by the eased handoff progress rather than by a timer, so scrolling back recedes it into
+      // the dark exactly as the ship flies back on. At 1 it is landed and the float block above owns it.
       const arrival = THREE.MathUtils.smoothstep(flightState.current, METEOR_ARRIVE_PROGRESS_START, 1);
       meteorArrival.value = arrival;
-      const meteorsVisible = arrival > METEOR_VISIBLE_EPSILON;
+      const markVisible = arrival > METEOR_VISIBLE_EPSILON;
       if (arrival < 0.999) {
-        // The rock travels in from far behind its spot, and perspective grows it as it nears — NOT a
-        // scale inflation, so it never reads as spawning. It fades up out of the far dark as it comes.
         const appear = THREE.MathUtils.smoothstep(arrival, 0, METEOR_APPEAR_FRACTION);
-        meteorRigs.forEach((rig) => {
-          rig.group.visible = meteorsVisible;
-          if (!meteorsVisible) return;
+        markRigs.forEach((rig) => {
+          rig.group.visible = markVisible;
+          if (!markVisible) return;
           meteorArriveFrom.copy(rig.basePosition).add(METEOR_ARRIVE_OFFSET);
           rig.group.position.lerpVectors(meteorArriveFrom, rig.basePosition, arrival);
           rig.group.position.y += Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE * arrival;
-          rig.material.opacity = appear;
+          rig.materials.forEach((material) => { material.opacity = appear; });
         });
       } else {
-        // Landed → the spin/float block above owns it from here.
-        meteorRigs.forEach((rig) => {
-          rig.group.visible = meteorsVisible;
-          rig.material.opacity = 1;
-          rig.basePosition.set(tuning.meteorX, tuning.meteorY, tuning.meteorZ);
+        markRigs.forEach((rig) => {
+          rig.group.visible = markVisible;
+          rig.materials.forEach((material) => { material.opacity = 1; });
+          rig.basePosition.set(tuning.markX, tuning.markY, tuning.markZ);
           rig.group.position.x = rig.basePosition.x;
           rig.group.position.z = rig.basePosition.z;
         });
       }
-
       // ── Camera: fly the shared path during the handoff, else the normal focus-follow ──
       if (flightState.engaged) {
         // Ease at the same rate as the deck ship so the two cameras stay locked together.
@@ -1381,6 +1363,31 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
       const handoffActive = flightState.current > 0.001 && flightState.current < 0.999;
       const revealScrubbing = revealing && revealProgress < CHAMBER_SCRUB_END;
+      // ── The one sun ──
+      // Both images are decided by this single value, so they cannot both be on screen: whichever one
+      // is not the live one is fully off in the same frame. See SUN_TAKEOVER_PROGRESS.
+      if (!sunBackdrop) attachSunBackdrop();
+      const renderOwnsSun = flightState.current >= SUN_TAKEOVER_PROGRESS;
+      if (sunBackdrop) {
+        sunBackdrop.setOpacity(renderOwnsSun ? 1 : 0);
+        sunBackdrop.refresh();
+      }
+      // Queried lazily: `SunCanvas` is dynamically imported, so the element may not exist on the first
+      // frames. Re-queried only while missing, then held.
+      if (!sunLayerElement) {
+        sunLayerElement = document.querySelector<HTMLElement>(SUN_LAYER_SELECTOR);
+      }
+      if (sunLayerElement) {
+        // `visibility` rather than `opacity`, and on the OUTER layer rather than the flight inside it:
+        // it is the most complete hide available, it takes the element's whole subtree with it, and it
+        // is a property nothing else on this element writes. The canvas keeps rendering while hidden —
+        // CSS visibility does not touch the drawing buffer — so the backdrop can still sample it.
+        const wanted = renderOwnsSun ? 'hidden' : '';
+        if (sunLayerElement.style.visibility !== wanted) {
+          sunLayerElement.style.visibility = wanted;
+        }
+      }
+
       const isDrawing = worksShouldRender && !document.hidden;
       if (isDrawing) {
         // Stage 1 into the texture, stage 2 out to the canvas. Never one without the other — the
@@ -1454,7 +1461,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
                   // as its delta and the fly lurches.
                   lastOverrideFrame = performance.now();
                 },
-                rebuildMeteor: buildMeteor,
+                rebuildMark: () => { void rebuildMark(); },
                 rebuildPath,
                 onDispose: (cleanup) => tunerCleanups.push(cleanup),
               }),
@@ -1475,17 +1482,17 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
       chamber?.dispose();
 
-      meteorRigs.forEach((rig) => {
-        rig.geometry.dispose();
-        rig.material.dispose();
-      });
+      // The strategy owns every geometry, material and texture it built, so this one call frees the
+      // whole mark — including the two surfaces it loaded for itself.
+      markRigs.forEach((rig) => rig.strategy.dispose());
+      markRigs.length = 0;
+      sunBackdrop?.dispose();
       shardGeometries.forEach((geometry) => geometry.dispose());
       shardMaterials.forEach((material) => material.dispose());
       shardMeshes = [];
       disposableTextures.forEach((texture) => texture.dispose());
       gsap.killTweensOf(travel);
-      spinTimeline?.kill();
-      morphTween?.kill();
+      markTween?.kill();
       starSystem.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();

@@ -8,6 +8,7 @@ import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { SUN_CANVAS_HEADROOM } from '@/components/effects/IntroSequence/gatherShader';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
+import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 
 // The single sun for the whole page. It lives here (not in the hero card and not in the loader) so
 // exactly one WebGL sun exists: the intro flies it from the loader "o" into the hero square, then
@@ -68,14 +69,27 @@ export default function HeroSun() {
     };
     syncToSquare();
 
+    // ── Which side of the canvas the sun sits on. ONE owner. ──
+    // Resolved through a single function rather than written from each listener directly. Kept that way
+    // after a chamber listener was briefly added here and wrote the SERVICES rank whenever reveal
+    // progress was 0 — which the pin publishes on its very FIRST update, so the star was buried behind
+    // the hero's cream background before the visitor had scrolled at all. Anything that wants a say in
+    // this must go through `applyZIndex`, never `layer.style.zIndex`.
+    let baseZIndex = Z_DURING_INTRO;
+    const applyZIndex = () => {
+      layer.style.zIndex = String(baseZIndex);
+    };
+
     // After the intro hands the sun over it stays visible (opacity:1). Track that so the resize
     // fade only runs post-intro and never fights the intro's own opacity animation.
     let introDone = false;
     const onReveal = () => {
-      layer.style.zIndex = String(Z_AFTER_INTRO);
+      baseZIndex = Z_AFTER_INTRO;
+      applyZIndex();
       introDone = true;
     };
     window.addEventListener(REVEAL_EVENT, onReveal);
+
 
     // Keeping the sun perfectly locked to the square *during* a live resize is a losing battle —
     // the square's base box (here) and the pin's scroll transform (ScrollTrigger) update on
@@ -123,7 +137,8 @@ export default function HeroSun() {
     // in front) and swell it into a big background; reverse it when the fleet hides. The faster
     // churn / explosions live in SunCanvas, which listens to the same events.
     const onServicesEnter = () => {
-      layer.style.zIndex = String(Z_SERVICES);
+      baseZIndex = Z_SERVICES;
+      applyZIndex();
       if (flight) {
         gsap.to(flight, {
           scale: SERVICES_SUN_SCALE,
@@ -134,7 +149,8 @@ export default function HeroSun() {
       }
     };
     const onServicesLeave = () => {
-      layer.style.zIndex = String(Z_AFTER_INTRO);
+      baseZIndex = Z_AFTER_INTRO;
+      applyZIndex();
       if (flight) {
         gsap.to(flight, {
           scale: 1,

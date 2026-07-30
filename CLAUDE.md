@@ -144,7 +144,7 @@ components/
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
     ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial + tuner
-    WorksField/     # the project field + FieldCanvas + meteor/mark systems + tuner
+    WorksField/     # the project field + FieldCanvas + the mark systems + transitions/ + tuner
     Chamber/        # the room, its walls/ground, FaqHologram/, tuner
   effects/
     IntroSequence/  # loader: GatherCanvas, gather.worker, LoaderTelemetry/
@@ -176,10 +176,12 @@ scroll progress. There is no stack of sections and no second pin.
 ```
   INTRO      HERO       SERVICES     ══HANDOFF══   WORKS      ══REVEAL══   CHAMBER
   ┌─────┐    ┌─────┐    ┌──────┐       (180vh)     ┌──────┐     (140vh)    ┌──────┐
-  │dust │───►│square───►│4 craft│── craft flies ──►│4 rocks│── camera ────►│ room │
-  │→ sun│    │fills │   │+ gates│   becomes the    │one    │   backs out   │ + FAQ│
-  └─────┘    └─────┘    └──────┘   project meteor  │re-carve│  of "screen" │ holo │
+  │dust │───►│square───►│4 craft│── craft flies ──►│4 marks│── camera ────►│ room │
+  │→ sun│    │fills │   │+ gates│   off, then the  │grown  │   backs out   │ + FAQ│
+  └─────┘    └─────┘    └──────┘   mark arrives    │from   │  of "screen"  │ holo │
+                                   from the dark   │stone  │               │      │
                                                    └──────┘                └──────┘
+                                    ── the sun COLLAPSES across the handoff and holds ──
    fillFraction ──┤├── carousel: stops separated by wide CROSSINGS ──────────────┤
 ```
 
@@ -255,7 +257,10 @@ model authored in `/sun-lab`, and its constants **are** the lab's "Peaceful" pre
 step with `sunLabPresets.ts` rather than drifting a second copy.
 
 The intro only *drives* it via `.hero-sun-layer` (outer: opacity + scroll transform) and
-`.hero-sun-flight` (inner: the o → square flight). Its z-index walks `10001` (during intro, above
+`.hero-sun-flight` (inner: the o → square flight). A third element, `.hero-sun-screen`, sits between
+them and is owned solely by `HeroSun`: it **follows the chamber's display into the room** so the star
+shrinks onto the table's screen instead of hanging in front of it (`lib/screenPose.ts`). Three nested
+transforms, one owner each — sharing one element between two of them is how you get a sun that jumps. Its z-index walks `10001` (during intro, above
 the veil) → `9500` (after) → `-1` (services, so the fleet and its labels paint in front).
 
 `AUTO_ROTATE_DEGREES_PER_SECOND` is **imported** from `HeroInstruments/heroReadouts.ts`, not
@@ -275,6 +280,11 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:handoff-progress` | `HANDOFF_PROGRESS_EVENT` | useHeroAnimation | The services→works crossing, `0..1`. |
 | `voidix:chamber-progress` | `CHAMBER_PROGRESS_EVENT` | useHeroAnimation | The works→chamber reveal, `0..1`. |
 | `voidix:chamber-hologram` | `CHAMBER_HOLOGRAM_EVENT` | chamberScene | The tour has arrived; the FAQ panel may unseal. |
+
+Two per-frame **stores** sit alongside these, for values too hot for an event: `lib/hologramPose.ts`
+(where the FAQ panel is on screen) and `lib/screenPose.ts` (where the chamber's display is, so the sun
+can follow it). Both are written every frame by `chamberScene` and read in the consumer's own rAF — a
+CustomEvent or React state per frame would be a re-render per frame.
 
 ## Navbar & the per-section meters
 
@@ -324,6 +334,12 @@ Authoring tools, `robots: noindex`, separate routes — nothing reaches the home
   (flash, shard implosion, gravitational redshift, spin-up + tremor, screen-space lensing, a
   120k-particle accretion spiral). See `docs/sun-lab-remaining-work.md`.
 - **`/letters`** — extruded-glyph testbed.
+- **`/letters/transition/[strategy]`** — the mark→mark transition rig. One route per candidate, sharing
+  `markLabRig` (same camera, lights, probe and bloom as the works field) so the comparison is honest,
+  plus instruments read from `renderer.info`. **`accretion` is the one that shipped** — the homepage
+  passes `{}` for tuning and inherits this lab's authored defaults wholesale, so *this route is the
+  works section's tuning surface*. `shards` remains for comparison; `one-skin` and `field` are listed
+  but unbuilt. See `docs/mark-transition-comparison.md`.
 
 ---
 
@@ -426,7 +442,7 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | **Contact** | No section, no CSS, no copy. Nav item 04 (`#contact`) points at nothing and the `nav-cta` "Start Project" button has **no handler**. |
 | **Process content** | The `process` meter key is wired to the Chamber, whose content is an FAQ hologram. **Decided:** process steps will be revealed on the chamber's walls as the camera tours. |
 | **The collapse finale** | Built and tuned in `/sun-lab`, never ported to the site. **Decided:** the star dies on the table's screen after the chamber, and the black hole carries into the Contact/footer section. |
-| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. |
+| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Credit is legally required wherever it ships and is currently nowhere.** |
 
 **Current plan of record: `docs/site-completion-plan.md`.** Section state docs:

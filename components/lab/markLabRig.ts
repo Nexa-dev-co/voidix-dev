@@ -36,7 +36,9 @@ const FILL_LIGHT_INTENSITY = 0.6;
 const AMBIENT_INTENSITY = 0.18;
 const TONE_MAPPING_EXPOSURE = 1.15;
 
-const BLOOM_STRENGTH = 0.9;
+// Matched to the works field, which lowered this from 0.9 — the geode was blooming into a haze. The
+// emissive side is untouched on both sides, so the mark glows as hot and bleeds less.
+const BLOOM_STRENGTH = 0.48;
 const BLOOM_RADIUS = 0.55;
 const BLOOM_THRESHOLD = 0.6;
 const BLOOM_MSAA_SAMPLES = 4;

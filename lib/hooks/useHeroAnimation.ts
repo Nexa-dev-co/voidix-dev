@@ -5,6 +5,9 @@ import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import { isTuneScrollLocked } from "@/lib/tuneScrollLock";
 import { measureUntransformedRect } from "@/lib/measureUntransformedRect";
+// Shared, because the works field has to draw a copy of the sun in exactly this place inside the space
+// render — see lib/sunPlacement.ts and WorksField/sunBackdrop.ts.
+import { SUN_SCROLL_SCALE, SUN_SCROLL_RISE } from "@/lib/sunPlacement";
 import {
   computeCarouselLayout,
   type CarouselSectionGeometry,
@@ -54,8 +57,6 @@ ScrollTrigger.config({ ignoreMobileResize: true });
 const SCROLL_SCRUB = 1.8;
 const FILL_SCROLL_VH = 120; // viewport-heights of scroll the square takes to fill
 const STAGE_SCROLL_VH = 100; // ...and per carousel stop after it (a craft, or a project meteor)
-const SUN_SCROLL_SCALE = 1.1; // the sun grows to 1.1× as the square fills
-const SUN_SCROLL_RISE = 200; // px the sun lifts above the square's centre and holds
 
 // Overlay reveal / hide, keyed to which stop the carousel is on.
 const DECK_REVEAL_DURATION = 0.6;
@@ -85,11 +86,18 @@ const TOUCH_STEP_THRESHOLD_PX = 42; // vertical swipe travel (px) that counts as
 // another step can interrupt it. Keep this roughly in step with the scene durations in
 // useServicesDeck (the PORTAL_* beats) and useWorksField (TRAVEL_DURATION).
 //
-// Sized to the LONGER of the two, which is the deck's portal swap: the gates form, the craft turns
-// onto one and flies through it, its replacement comes out of the other and settles, and the gates
-// collapse — ~2.77s end to end. At the old 1400 a second gesture landed while the gates were still
-// standing and cut the cinematic in half.
+// Sized to the deck's portal swap: the gates form, the craft turns onto one and flies through it, its
+// replacement comes out of the other and settles, and the gates collapse — ~2.77s end to end. At the
+// old 1400 a second gesture landed while the gates were still standing and cut the cinematic in half.
+//
+// This is the DEFAULT. It used to be the only value, which was fine while both sections happened to
+// take about the same time — and stopped being fine the moment the works change stretched to 6s, at
+// which point a section holding for 2.9s would let a second gesture land while the mark was still
+// half-built. A section that needs longer states so itself (see `stepHoldMs`).
 const STAGE_STEP_HOLD_MS = 2900;
+// The works change is `MARK_CHANGE_SECONDS` (6s) plus grace, so one gesture always buys the whole
+// build: the stones let go, the two streams cross, the next mark grows and the geode finishes.
+const WORKS_STEP_HOLD_MS = 6300;
 // Entering the carousel out of the free-scrolling fill: glide onto craft 01 and hold, so a hard flick
 // through the fill can never dump the user on craft 02 (see the arrival branch in onUpdate).
 const CAROUSEL_ARRIVAL_DURATION = 0.5;
@@ -120,18 +128,39 @@ const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the fligh
 
 // ── The works → chamber reveal ──
 // The camera backs out of the space and it turns out to have been a display in a room all along. The
-// camera move itself lives in the WebGL scene (fed this same 0..1); the DOM this crossing owns is the
-// works UI dropping out — and the SUN.
+// camera move itself lives in the WebGL scene (fed this same 0..1); the DOM this crossing owns is now
+// only the works UI dropping out.
 //
-// The sun has to go, and this is the only place that can do it. It's a fixed DOM billboard sitting
-// BEHIND the canvas (which is why it shows through the empty space between the meteors). The moment
-// the display starts shrinking, a full-size sun would still be pinned to the middle of the viewport,
-// hanging in front of the room. So it fades out over the same fast window in which the display's dark
-// turns opaque (see OPAQUE_WINDOW in chamberScene) — early, while the display still fills the frame,
-// so all you can actually perceive is a light dimming rather than the site's anchor vanishing.
+// ── The sun, and why it is faded rather than carried into the room ──
+// It is a fixed DOM billboard sitting BEHIND the canvas (which is why it shows through the empty space
+// around the mark). The moment the display starts shrinking, a full-size sun is still pinned to the
+// middle of the viewport, hanging in front of the room — so it fades out over the same fast window in
+// which the display's dark turns opaque (see OPAQUE_WINDOW in chamberScene), early, while the display
+// still fills the frame. What you perceive is a light dimming, not the site's anchor vanishing.
+//
+// ⚠ This is a COMPROMISE, and it is worth knowing which one. The star should really shrink into the
+// screen along with everything else in the picture — that is what the reveal claims is happening, and
+// it is what the planned collapse finale needs (the star is supposed to die ON the table's screen, and
+// right now there is no star on that screen to die).
+//
+// A DOM element cannot do that. It was tried: the chamber published where the display landed and the
+// sun was transformed onto it. Two things defeat it. The room sets an opaque `scene.background` and the
+// display's own alpha closes over OPAQUE_WINDOW, so a layer BEHIND the canvas cannot be seen at all
+// past ~0.12; and raising it in FRONT leaves a flat circle sitting on a screen that the tour views at
+// an angle, which a 2D transform cannot skew to match.
+//
+// The real fix is to stop compositing and put the sun INSIDE the space render — a `CanvasTexture` of
+// the sun's canvas (which already runs `preserveDrawingBuffer: true`) drawn as a camera-attached
+// backdrop in the works scene. Then it lands on the table exactly as the mark does, with correct
+// perspective and occlusion and no special cases. The open question is cost: a per-frame canvas upload
+// on the heaviest scene on the site, plus deciding whether it should re-bloom through the field's pass.
 const REVEAL_SCROLL_VH = 140;
 const REVEAL_WORKS_UI_FADE: [number, number] = [0.02, 0.16];
-const REVEAL_SUN_FADE: [number, number] = [0.0, 0.12]; // keep in step with chamberScene's OPAQUE_WINDOW
+// ⚠ The sun is NOT faded here any more, and must not be. It hands over to an in-render copy of itself
+// (WorksField/sunBackdrop.ts), and the other half of that swap is driven by the works field's own EASED
+// copy of this progress. Fading it from the raw value here meant the two halves ran on different clocks
+// and disagreed by ~10 frames — which showed up as two suns on screen at once when scrolling back out
+// of the room. Both halves now live together in useWorksField, computed from one number.
 // The reveal glide now scrubs the WHOLE chamber cinematic on one gesture — the pull-back out of the screen
 // AND the tour across the room to the podium — as a single reversible span (the TOUR_START split lives in
 // chamberScene; see docs/chamber-tour-smoothing-plan.md). So the glide is long enough to contain both:
@@ -145,7 +174,6 @@ const REVEAL_SETTLE_MS = 1900;
 // stepper almost immediately instead of holding the forward settle — this is what fixes the "can't step
 // back to the previous project for a few seconds after leaving the room" lock-out.
 const REVEAL_REVERSE_SETTLE_MS = 150;
-const SUN_FLIGHT_SELECTOR = ".hero-sun-flight";
 // The chamber is ONE stop, and everything in it plays off the single scroll that lands the reveal: the
 // camera backs out of the display, the showcase walks you across the room to the podium, and the FAQ
 // hologram unseals above the plinth as you arrive. One gesture, one continuous shot.
@@ -213,6 +241,15 @@ interface CrossingSpec {
 interface CarouselSectionSpec extends CarouselSectionGeometry {
   /** Doubles as the stage name and the navbar meter key (--nav-progress-<key>). */
   key: Stage;
+  /**
+   * How long input stays locked after stepping WITHIN this section, in ms.
+   *
+   * A step's scroll glide is invisible (the deck and the works field are fixed overlays) — what you
+   * actually see is the scene transition it kicks off, so the lock has to outlast that transition
+   * rather than the scroll. Sections differ: the deck's portal swap is ~2.8s, the works mark change is
+   * 6s. Defaults to STAGE_STEP_HOLD_MS.
+   */
+  stepHoldMs?: number;
   /**
    * Commit a stop within this section — the index is section-local.
    *
@@ -329,19 +366,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
     // ── The works → chamber reveal ──
     // The camera move is in the WebGL scene; here we drop the works UI and retire the sun.
-    const sunFlight = document.querySelector<HTMLElement>(SUN_FLIGHT_SELECTOR);
     const applyWorksToChamberReveal = (progress: number) => {
       if (worksOverlay) {
         gsap.set(worksOverlay, {
           autoAlpha: 1 - fadeWindow(REVEAL_WORKS_UI_FADE, progress),
-        });
-      }
-      // Driven on the INNER sun element on purpose: HeroSun owns the outer layer's opacity for its
-      // resize hide/settle, and two owners of one property is how you get a sun that flickers back on
-      // when the window is nudged.
-      if (sunFlight) {
-        gsap.set(sunFlight, {
-          opacity: 1 - fadeWindow(REVEAL_SUN_FADE, progress),
         });
       }
 
@@ -371,6 +399,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       {
         key: "work",
         stopCount: projectCount,
+        stepHoldMs: WORKS_STEP_HOLD_MS,
         setActiveStop: (index) => setActiveProjectRef.current(index),
         crossingAfter: {
           scrollVh: REVEAL_SCROLL_VH,
@@ -918,11 +947,14 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         crossing && direction < 0
           ? crossing.reverseSettleMs ?? crossing.settleMs
           : crossing?.settleMs ?? 0;
+      // A stage step's hold belongs to the section the step happens INSIDE — read off the target, so
+      // stepping forward into works already holds for the works change rather than for the deck's.
+      const targetSection = carouselSections[layout.sectionIndexOfStop(target)];
       const holdMs = reduceMotion
         ? 0
         : crossing
           ? durationSeconds * 1000 + crossingSettleMs
-          : STAGE_STEP_HOLD_MS;
+          : targetSection?.stepHoldMs ?? STAGE_STEP_HOLD_MS;
       goToStop(target, durationSeconds);
       lockStepping(holdMs);
     };

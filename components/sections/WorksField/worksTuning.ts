@@ -1,9 +1,9 @@
 /**
- * The works field's numbers — the camera's path around the one meteor, and the rock itself.
+ * The works field's numbers — the camera's path around the one body, and the mark itself.
  *
  * ── The shape of this, and why ───────────────────────────────────────────────────────────────────
  * There used to be four meteors and the camera flew between them; a project was a PLACE. Now there is
- * one rock and the camera moves around it, so a project is a POSE. That turns the whole section into
+ * one body and the camera moves around it, so a project is a POSE. That turns the whole section into
  * a recorded camera path — the same model the chamber's showcase already uses, for the same reason:
  * a path like this can only be judged by eye, so it's authored against the live scene in the `?tune`
  * panel and baked back in here.
@@ -31,7 +31,7 @@
 
 import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
 
-/** One pose on the path around the rock. */
+/** One pose on the path around the mark. */
 export interface ProjectViewKey {
   /** Where the camera is. */
   x: number;
@@ -67,18 +67,49 @@ export const FLIGHT_LANDING_KEY: Omit<ProjectViewKey, 'stop'> = {
 /**
  * The path, in order.
  *
- * ⚠ PLACEHOLDER — these are a plain orbit at the flight's radius, enough for the section to run and for
- * the tuner to have something to fly from. They are not authored. Replace this array wholesale with the
- * keys recorded in the `?tune` panel.
+ * ── Why this is no longer a full turntable ───────────────────────────────────────────────────────
+ * It used to orbit the whole way round — stops at 0, 90, 180 and 270 degrees — which was fine for a
+ * carved rock, because a rock looks like a rock from every side. The body is now a MARK: an extruded
+ * slab (see `markTargetSize`) only 0.7 thick. Seen from 90 degrees a logo is a bar, so two of those stops
+ * would have parked on a project whose mark was unreadable. The old array said of itself that it was
+ * a placeholder to be replaced wholesale; this is that replacement.
+ *
+ * ── The shape it has instead ─────────────────────────────────────────────────────────────────────
+ * Every STOP sits within about 35 degrees of face-on, so the mark always reads. The sense of moving
+ * around it comes from two things instead of from yaw alone: each stop alternates high/low and
+ * left/right with its own field of view, so no two projects are the same composition; and each
+ * TRANSIT arcs OUT to roughly 8.6 units with a wider lens before coming back in to 7, so a hop feels
+ * like being pulled back and swung across rather than sliding sideways.
+ *
+ *            transit bulges out to ~8.6           (seen from above, +Z toward the viewer)
+ *                  ,--- 1 ---.        ,--- 5 ---.
+ *                 /           \      /           \
+ *        stop 1  2             \    4  stop 2     6  stop 3
+ *        +28deg   \             \  /  -25deg         -35deg
+ *                  0  stop 0      3
+ *                  0deg (FIXED)   transit, pulled back and low
+ *
+ * ── Deliberately NOT going edge-on mid-transit ───────────────────────────────────────────────────
+ * Swinging to 90 degrees while the mark is in pieces was tempting — it would hide the one moment the
+ * body is not legible. But that moment is the two stone streams crossing, which is the whole point of
+ * the change: hiding it would mean building it and then looking away. So the camera keeps the mark in
+ * view throughout and pulls back instead, which gives the streams more room in frame rather than less.
+ *
+ * ⚠ Stop 0 is NOT free. It must stay equal to `FLIGHT_LANDING_KEY`, which is derived from where the
+ * services -> works flight actually leaves the camera. Move it and the handoff ends with a jump.
+ *
+ * ⚠ Consecutive keys are kept close in angle on purpose. The spline interpolates CARTESIAN position,
+ * not polar angle, so a wide gap cuts a chord through the circle and the camera dives at the mark
+ * mid-hop. Every neighbouring pair here stays inside ~35 degrees, which keeps the chord sag small.
  */
 export const PROJECT_VIEW_KEYS: ProjectViewKey[] = [
   { ...FLIGHT_LANDING_KEY, stop: 0 },
-  { x: 5.0, y: 1.6, z: 5.0, tx: 0, ty: 0, tz: 0, fov: 38, stop: null },
-  { x: 7.0, y: 1.0, z: 0.0, tx: 0, ty: 0, tz: 0, fov: 38, stop: 1 },
-  { x: 5.0, y: -0.6, z: -5.0, tx: 0, ty: 0, tz: 0, fov: 38, stop: null },
-  { x: 0.0, y: 1.2, z: -7.0, tx: 0, ty: 0, tz: 0, fov: 42, stop: 2 },
-  { x: -5.0, y: 1.8, z: -5.0, tx: 0, ty: 0, tz: 0, fov: 38, stop: null },
-  { x: -7.0, y: 0.8, z: 0.0, tx: 0, ty: 0, tz: 0, fov: 36, stop: 3 },
+  { x: 4.6, y: 2.4, z: 7.6, tx: 0, ty: 0, tz: 0, fov: 44, stop: null },
+  { x: 3.3, y: -0.9, z: 6.2, tx: 0, ty: 0, tz: 0, fov: 40, stop: 1 },
+  { x: 0.4, y: -3.0, z: 8.6, tx: 0, ty: 0, tz: 0, fov: 46, stop: null },
+  { x: -3.0, y: 1.6, z: 6.4, tx: 0, ty: 0, tz: 0, fov: 36, stop: 2 },
+  { x: -5.6, y: 2.8, z: 6.4, tx: 0, ty: 0, tz: 0, fov: 44, stop: null },
+  { x: -4.0, y: -0.8, z: 5.8, tx: 0, ty: 0, tz: 0, fov: 42, stop: 3 },
 ];
 
 export interface WorksTuning {
@@ -89,41 +120,34 @@ export interface WorksTuning {
    */
   keys: ProjectViewKey[];
 
-  // ── The rock ──
-  // One big irregular body, built the same way as the debris that surrounds it (a subdivided icosphere
-  // carved by layered directional lobes) — so it reads as the largest member of the same family rather
-  // than as a different kind of object. There is no model any more, and no fire shader.
-  /** Radius before the lobes carve it. The debris runs 0.05–0.28, so this is what makes it monumental. */
-  meteorRadius: number;
-  meteorX: number;
-  meteorY: number;
-  meteorZ: number;
-  /** Icosphere subdivisions. Higher = the carving reads as surface rather than as facets. */
-  meteorDetail: number;
-  /** Which random rock you get. Any integer; nudge it until you like the silhouette. */
-  meteorSeed: number;
-  /** Per-axis squash, so it's never a sphere. */
-  meteorStretchX: number;
-  meteorStretchY: number;
-  meteorStretchZ: number;
-  /** Degrees per second it turns on its own axis. */
-  meteorSpin: number;
-  /** Facets crisp (true) or smoothed (false). Crisp is what makes it read as rock rather than as putty. */
-  meteorFlatShading: boolean;
+  // ── The mark ──
+  // The section's one body: a project's logo, cut into interlocking stones and grown out of a core,
+  // finished with geode on its rim. Everything about how it LOOKS is authored in the lab at
+  // /letters/transition/accretion and inherited from there — see `buildMark`. What lives here is only
+  // what the SECTION owns: how big the mark is in this scene, and where it sits.
+  /**
+   * Largest dimension of the mark, in world units.
+   *
+   * The lab frames at 2.6 with its camera 6.2 out; this scene's orbit sits at radius 7, so the same
+   * number reads slightly smaller here. Paired with `markY` it also decides how much of the lower frame
+   * the body occupies — the two are authored together, and the frame is the limit on both (see markY).
+   */
+  markTargetSize: number;
+  /**
+   * Slab thickness, in WORLD units — never in the source outline's units.
+   *
+   * ⚠ The mark is a slab, not a ball, and that has a consequence the old rock did not have: seen from
+   * 90 degrees it is a bar rather than a logo. The camera keys are authored to keep every STOP within
+   * a readable angle and to swing wide only in transit — see PROJECT_VIEW_KEYS.
+   */
+  markDepth: number;
+  markX: number;
+  markY: number;
+  markZ: number;
 
-  // ── Its surface ──
-  // ONE texture does both jobs: as the albedo it's dark basalt, and as the EMISSIVE map the same image
-  // lights only where it's bright — the lava veins. The rock stays unlit-dark and the cracks glow, which
-  // is what replaced the fire shader. The veins then catch the bloom pass the field already runs.
-  meteorTextureRepeat: number;
-  /** How hard the veins burn. This is the knob that used to be the fire's intensity. */
-  meteorEmissive: number;
-  /** Tint over the albedo. White keeps the texture exactly as painted. */
-  meteorColor: string;
-  /** Tint on the glow. Warm keeps it lava; cool makes it something else entirely. */
-  meteorEmissiveColor: string;
-  meteorRoughness: number;
-  meteorMetalness: number;
+  // ── The debris ──
+  /** How many times the shared rock texture wraps the ambient shards. */
+  shardTextureRepeat: number;
 
   // ── Travel between stops ──
   /** Seconds one hop takes, however far apart the two stops are. */
@@ -138,24 +162,20 @@ export interface WorksTuning {
 const WORKS_TUNING: WorksTuning = {
   keys: PROJECT_VIEW_KEYS,
 
-  meteorRadius: 1.7,
-  meteorX: 0,
-  meteorY: 0,
-  meteorZ: 0,
-  meteorDetail: 6,
-  meteorSeed: 149,
-  meteorStretchX: 1.04,
-  meteorStretchY: 0.86,
-  meteorStretchZ: 0.94,
-  meteorSpin: 2.5,
-  meteorFlatShading: true,
+  markTargetSize: 2.6,
+  markDepth: 0.7,
+  markX: 0,
+  // Sat low in frame rather than dead centre. The camera still aims at the origin, so dropping the
+  // mark below it puts the body in the lower third and leaves the upper frame to the starfield and
+  // the section's header copy.
+  //
+  // ⚠ Bounded by the frame, not by taste: at the orbit's ~7 units and a 38° lens the visible half-
+  // height at the mark is ~2.4, so a 2.6-tall mark centred at −0.6 reaches y ≈ −1.9. Push it much
+  // lower, or much larger, and the bottom of the mark leaves the frame.
+  markY: -0.6,
+  markZ: 0,
 
-  meteorTextureRepeat: 4.5,
-  meteorEmissive: 0.2,
-  meteorColor: '#b69090',
-  meteorEmissiveColor: '#ffffff',
-  meteorRoughness: 1,
-  meteorMetalness: 1,
+  shardTextureRepeat: 4.5,
 
   travelSeconds: 2.05,
   evenPacing: true,

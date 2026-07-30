@@ -3,7 +3,7 @@ import * as THREE from 'three';
 /**
  * The geode opening — a real vertex morph plus a two-treatment surface, injected into standard PBR.
  *
- * ── Why this is a sibling of `meteorMorph` and not a reuse of it ─────────────────────────────────
+ * ── Why this is its own injection and not a shared one ───────────────────────────────────────────
  * `enableMeteorMorph` does exactly the right thing for the field's rocks, and it CANNOT be used here.
  * Its swell term is
  *
@@ -13,7 +13,7 @@ import * as THREE from 'three';
  * so none sits at the origin". A geode is a prism: its cap centre and its collapsed hole tubes sit AT
  * the origin. normalize(vec3(0)) is NaN, and setting uSwell to 0 does not save you, because 0 * NaN is
  * still NaN — those vertices would fly to infinity and drag their triangles with them. So the geode
- * gets its own injection, with no swell, and `meteorMorph.ts` is left untouched for the shipped Works
+ * gets its own injection, with no swell, rather than being folded into a shared one alongside the
  * section.
  *
  * ── What it adds that the field's morph doesn't need ─────────────────────────────────────────────
@@ -29,7 +29,9 @@ import * as THREE from 'three';
  * ── UVs are deliberately not morphed ─────────────────────────────────────────────────────────────
  * They come from the body's parametric coordinates, which are identical at both ends of the morph, so
  * there is nothing to interpolate and the texture stays pinned to the surface throughout. Same
- * conclusion `meteorMorph.ts` reaches, for the same underlying reason.
+ * conclusion every morph in this project reaches, for the same underlying reason: a face normal on
+ * non-indexed geometry is shared by a triangle's three vertices, so displacing along it tears the
+ * surface apart, while a direction derived from POSITION moves coincident vertices together.
  */
 
 const TARGET_POSITION_ATTRIBUTE = 'aTargetPosition';

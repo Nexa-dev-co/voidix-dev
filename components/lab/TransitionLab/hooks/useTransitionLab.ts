@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import * as THREE from 'three';
-import { FontLoader, type Font } from 'three/examples/jsm/loaders/FontLoader.js';
 import { createMarkLabRig, MARK_LAB_TARGET_SIZE } from '@/components/lab/markLabRig';
-import { letterToShapes, svgToShapes } from '@/components/sections/WorksField/markBody';
-import { MARKS } from '@/components/sections/WorksField/marks';
+import { prepareMarks } from '@/components/sections/WorksField/prepareMarks';
 import { MARK_TRANSITION_FACTORIES } from '@/components/sections/WorksField/transitions/registry';
 import type {
   MarkTransitionStrategy,
-  PreparedMark,
   TransitionBuildMetrics,
   TransitionTuning,
 } from '@/components/sections/WorksField/transitions/markTransition';
@@ -28,8 +25,6 @@ import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
  * so no candidate can win by being lit more kindly. And the strategies themselves own no scene state
  * at all — they hand back an `Object3D` and take `(from, to, progress)`.
  */
-
-const FONT_PATH = '/fonts/helvetiker_bold.typeface.json';
 
 const MARK_DEPTH = 0.7;
 
@@ -137,53 +132,6 @@ class FrameSamples {
   ninetyFifth(): number {
     return percentile(this.samples, 0.95);
   }
-}
-
-/** Resolve every registry mark to the outlines each strategy builds from. */
-async function prepareMarks(): Promise<PreparedMark[]> {
-  const needsFont = MARKS.some((mark) => mark.kind === 'letter');
-  const font: Font | null = needsFont
-    ? await new Promise<Font | null>((resolve) => {
-        new FontLoader().load(
-          FONT_PATH,
-          resolve,
-          undefined,
-          () => resolve(null),
-        );
-      })
-    : null;
-
-  const prepared = await Promise.all(
-    MARKS.map(async (mark): Promise<PreparedMark | null> => {
-      try {
-        if (mark.kind === 'svg') {
-          const response = await fetch(mark.source);
-          if (!response.ok) return null;
-          // SVG's Y axis points down; the flag travels with the mark so each strategy can correct it
-          // wherever suits its own construction. See `markTransition`'s note on `flipY`.
-          return {
-            id: mark.id,
-            label: mark.label,
-            shapes: svgToShapes(await response.text()),
-            flipY: true,
-          };
-        }
-        if (!font) return null;
-        return {
-          id: mark.id,
-          label: mark.label,
-          shapes: letterToShapes(mark.source, font),
-          flipY: false,
-        };
-      } catch {
-        // A mark that fails to load is simply absent, exactly as `loadMarks` treats it — one bad file
-        // should not cost the whole comparison.
-        return null;
-      }
-    }),
-  );
-
-  return prepared.filter((mark): mark is PreparedMark => mark !== null);
 }
 
 export function useTransitionLab(

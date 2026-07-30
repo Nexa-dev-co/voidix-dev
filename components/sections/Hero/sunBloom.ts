@@ -33,9 +33,10 @@ import * as THREE from 'three';
 // NOTE ON `THRESHOLD`: UnrealBloom thresholds the composer's buffer, which sits at a different
 // point in the tone-mapping chain than this pass does. The number is therefore a close analogue,
 // not a guaranteed pixel match — expect to nudge it by eye.
-const BLOOM_STRENGTH = 1.26;
-const BLOOM_RADIUS = 0.92;
-const BLOOM_THRESHOLD = 0.59;
+/** The resting grade — Peaceful. The works section eases past these into Collapse; see `setGrade`. */
+export const BLOOM_STRENGTH = 1.26;
+export const BLOOM_RADIUS = 0.92;
+export const BLOOM_THRESHOLD = 0.59;
 
 /** How soft the cutoff at the threshold is, so bright edges don't alias into the glow. */
 const THRESHOLD_KNEE = 0.22;
@@ -144,6 +145,18 @@ export interface SunBloom {
   /** Draw one frame: the scene to the canvas, then its glow on top. Replaces `renderer.render`. */
   render(scene: THREE.Scene, camera: THREE.Camera): void;
   setSize(width: number, height: number): void;
+  /**
+   * Re-grade the glow.
+   *
+   * Exposed because the star is not one look for the whole site: the works section eases it into the
+   * sun-lab's Collapse pose, which is graded far hotter (2.5 / 1 / 0.42 against the resting
+   * 1.26 / 0.92 / 0.59). Those three live in this module's uniforms, so without a setter the collapse
+   * could change the star's shape and its light but not how that light blooms — which is most of what
+   * makes a collapse read as a collapse.
+   *
+   * Cheap to call every frame: three uniform writes, no reallocation.
+   */
+  setGrade(strength: number, radius: number, threshold: number): void;
   dispose(): void;
 }
 
@@ -316,5 +329,11 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
     compositeMaterial.dispose();
   };
 
-  return { render, setSize, dispose };
+  const setGrade = (strength: number, radius: number, threshold: number) => {
+    compositeMaterial.uniforms.uStrength.value = strength;
+    compositeMaterial.uniforms.uRadius.value = radius;
+    brightMaterial.uniforms.uThreshold.value = threshold;
+  };
+
+  return { render, setSize, setGrade, dispose };
 }

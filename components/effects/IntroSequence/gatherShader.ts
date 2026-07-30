@@ -59,7 +59,16 @@ export const GATHER_COUNT = 60000;
  * headroom for light to fall off in. `HeroSun` grows the layer; `SunModelCanvas` pulls the camera.
  * Both read this one number, and it must stay that way or the sun changes size.
  */
-export const SUN_CANVAS_HEADROOM = 1.6;
+// Raised from 1.6 when the works section put the star into its COLLAPSE pose. That grade runs bloom
+// at strength 2.5 / radius 1 against Peaceful's 1.26 / 0.92, so the glow reaches roughly twice as far
+// — and at 1.6 it hit the canvas edge and got cut off square, drawing a visible rectangle around the
+// sun. This is also what buys `sunParticles` room for more than one ring: the frame edge sits at
+// 1 / SUN_BODY_FILL body radii, so raising this pushes it from ~2.2 out to ~3.6.
+//
+// ⚠ Cost scales with the SQUARE of this: 1.6 → 2.6 is ~2.6x the pixels for the sun's own render and
+// its bloom pass both. If that bites on the low tier, drop the sun canvas's pixel ratio rather than
+// shrinking this back — the star would start clipping again.
+export const SUN_CANVAS_HEADROOM = 2.6;
 
 // fitDistance / bodyRadius = (2.224 / sin(22.5 deg)) * 0.575 / 1.0, then × SUN_CANVAS_HEADROOM for
 // the padding above. Was 3.34 when the canvas hugged the square.
