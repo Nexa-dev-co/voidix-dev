@@ -54,7 +54,7 @@ export const MARK_TRANSITIONS: MarkTransitionEntry[] = [
     identity: 'Pieces — N cells that tile the mark exactly; cell i becomes cell i.',
     decidingQuestion:
       'Do the seams show at rest, and does the cell matching read as rearrangement rather than as noise?',
-    isBuilt: false,
+    isBuilt: true,
   },
   {
     id: 'field',

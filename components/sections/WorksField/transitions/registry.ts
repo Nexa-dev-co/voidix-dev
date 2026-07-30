@@ -1,6 +1,7 @@
 import type { MarkTransitionFactory } from './markTransition';
 import type { MarkTransitionId } from './transitionCatalog';
 import { accretionTransitionFactory } from './accretionTransition';
+import { shardsTransitionFactory } from './shardsTransition';
 
 /**
  * The built strategies, by id.
@@ -19,4 +20,5 @@ export const MARK_TRANSITION_FACTORIES: Partial<
   Record<MarkTransitionId, MarkTransitionFactory>
 > = {
   accretion: accretionTransitionFactory,
+  shards: shardsTransitionFactory,
 };

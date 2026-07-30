@@ -44,7 +44,19 @@ export default function TransitionPage({ params }: TransitionPageProps) {
 
   return (
     <main>
-      <TransitionLab strategyId={entry.id} />
+      {/* ── The `key` is load-bearing, not a lint appeasement ──
+          The note above says a strategy change is a navigation and the component is rebuilt from
+          scratch. That is true of a full page load and NOT true of a client-side one: `LabNav` uses
+          `next/link`, and moving between two values of the same `[strategy]` segment renders this same
+          component at the same position in the tree, so React reuses the instance and keeps the canvas.
+
+          The harness then tears its renderer down and builds a new one on a canvas that still owns a
+          WebGL context — and `getContext` hands back the existing, just-disposed one rather than a
+          fresh context. The new renderer wraps a dead context and the canvas goes on showing whatever
+          was last drawn on it, which reads as the previous strategy still playing.
+
+          Keying on the id forces the remount the design already assumed. */}
+      <TransitionLab key={entry.id} strategyId={entry.id} />
     </main>
   );
 }
