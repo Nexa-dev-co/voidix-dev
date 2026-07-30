@@ -123,6 +123,18 @@ const ACCRETION_CONTROLS: TuningControl[] = [
   { key: 'growDelay', label: 'Stone grows from', min: 0.05, max: 0.8, step: 0.01, value: 0.26, rebuilds: false },
   { key: 'crystalStart', label: 'Geode grows from', min: 0.5, max: 0.98, step: 0.01, value: 0.84, rebuilds: false },
   { key: 'crystalRetractBy', label: 'Geode gone by', min: 0.05, max: 0.5, step: 0.01, value: 0.18, rebuilds: false },
+  {
+    key: 'arrival',
+    label: 'How a stone arrives',
+    min: 0,
+    max: 3,
+    step: 1,
+    value: 2,
+    decimals: 0,
+    kind: 'choice',
+    options: ['Travel', 'In place', 'Extend', 'Creep'],
+    rebuilds: false,
+  },
   { key: 'growthSteps', label: 'Growth waves', min: 1, max: 12, step: 1, value: 5, decimals: 0, rebuilds: false },
   { key: 'growStagger', label: 'Grow procession', min: 0, max: 0.95, step: 0.05, value: 0.72, rebuilds: false },
   { key: 'shrinkStagger', label: 'Retract procession', min: 0, max: 0.95, step: 0.05, value: 0.62, rebuilds: false },
@@ -436,6 +448,7 @@ class AccretionTransition implements MarkTransitionStrategy {
   private applyChoreography(layer: MarkLayer, mode: number): void {
     const stone = layer.stoneUniforms;
     stone.uMode.value = mode;
+    stone.uArrival.value = this.tuning.arrival;
     stone.uGrowDelay.value = this.tuning.growDelay;
     stone.uGrowStagger.value = this.tuning.growStagger;
     stone.uShrinkWindow.value = this.tuning.shrinkWindow;

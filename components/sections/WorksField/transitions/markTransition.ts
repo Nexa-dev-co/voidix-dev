@@ -108,11 +108,18 @@ export interface TuningControl {
   /** Digits in the read-out. 0 for counts and layer numbers. */
   decimals?: number;
   /**
-   * A slider unless stated. `toggle` renders as an on/off button and stores 0 or 1 — some knobs are
-   * genuinely binary ("is this the first formation?") and dragging a slider between two values is a
-   * worse control than a button.
+   * A slider unless stated.
+   *
+   * `toggle` renders as an on/off button and stores 0 or 1 — some knobs are genuinely binary ("is this
+   * the first formation?") and dragging a slider between two values is a worse control than a button.
+   *
+   * `choice` renders `options` as a pill row and stores the chosen index. For knobs where the values are
+   * not a spectrum at all: four ways for a stone to arrive are four different ideas, not four points on
+   * a dial, and being able to flip between them side by side is the whole point of a rig.
    */
-  kind?: 'slider' | 'toggle';
+  kind?: 'slider' | 'toggle' | 'choice';
+  /** Labels for `choice`, one per integer value starting at 0. */
+  options?: string[];
   /**
    * True when changing it re-does work heavy enough to stutter a drag — a re-pack, a re-carve, a
    * reallocation. The harness debounces these and pushes everything else live, so a look knob stays

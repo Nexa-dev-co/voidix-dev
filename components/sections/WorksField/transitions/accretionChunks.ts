@@ -342,6 +342,10 @@ export function buildAccretionChunks(
   const indices: number[] = [];
   const chunkCentroid: number[] = [];
   const seedPoint: number[] = [];
+  /** The already-placed neighbour a stone creeps out of. */
+  const parentPoint: number[] = [];
+  /** How far the stone reaches from its centre, so a scale can be anchored on its inner face. */
+  const chunkRadius: number[] = [];
   const startDistance: number[] = [];
   const spinAxis: number[] = [];
   const spinTurns: number[] = [];
@@ -350,7 +354,13 @@ export function buildAccretionChunks(
 
   const uvScale = 1 / Math.max(options.targetSize, 1e-4);
   const centroidAccumulator = new THREE.Vector3();
-  const chunkRecords: { centroid: THREE.Vector3; vertexStart: number; vertexEnd: number }[] = [];
+  const chunkRecords: {
+    centroid: THREE.Vector3;
+    radius: number;
+    vertexStart: number;
+    vertexEnd: number;
+    triangles: number[];
+  }[] = [];
 
   stones.forEach((member) => {
     const vertexStart = positions.length / 3;
@@ -452,11 +462,24 @@ export function buildAccretionChunks(
       centroidAccumulator.z += positions[vertex * 3 + 2];
     }
     const vertexTotal = Math.max(1, vertexEnd - vertexStart);
-    chunkRecords.push({
-      centroid: centroidAccumulator.clone().divideScalar(vertexTotal),
-      vertexStart,
-      vertexEnd,
-    });
+    const centroid = centroidAccumulator.clone().divideScalar(vertexTotal);
+
+    // How far the stone reaches from its own centre. The `extend` arrival anchors a scale at
+    // `centroid − direction × radius`, i.e. a point on the stone's inner face, so it grows outward from
+    // there without its centroid moving at all.
+    let radius = 0;
+    for (let vertex = vertexStart; vertex < vertexEnd; vertex += 1) {
+      radius = Math.max(
+        radius,
+        Math.hypot(
+          positions[vertex * 3] - centroid.x,
+          positions[vertex * 3 + 1] - centroid.y,
+          positions[vertex * 3 + 2] - centroid.z,
+        ),
+      );
+    }
+
+    chunkRecords.push({ centroid, radius, vertexStart, vertexEnd, triangles: member });
   });
 
   // ── 6 · Where each stone grows FROM ──
@@ -477,11 +500,43 @@ export function buildAccretionChunks(
   });
   const growthScale = longestGrowth > 1e-6 ? 1 / longestGrowth : 0;
 
+  // ── 6.5 · Which already-placed stone each one grows out of ──
+  // For the `creep` arrival: the mark spreads across ITSELF, each stone emerging from the neighbour that
+  // arrived before it, rather than every stone flying in from the centre. So a stone's parent is the
+  // adjacent stone nearest the core — and the first stone of all has no parent and falls back to the
+  // core's skin.
+  const stoneOfTriangle = new Int32Array(triangleCount).fill(-1);
+  chunkRecords.forEach((record, stoneIndex) => {
+    record.triangles.forEach((triangle) => {
+      stoneOfTriangle[triangle] = stoneIndex;
+    });
+  });
+
+  const startOf = chunkRecords.map(
+    (record, stoneIndex) => record.centroid.distanceTo(seeds[stoneIndex]) * growthScale,
+  );
+
+  const parents = chunkRecords.map((record, stoneIndex) => {
+    let best = -1;
+    let bestStart = startOf[stoneIndex];
+    record.triangles.forEach((triangle) => {
+      neighboursOf(triangle).forEach((other) => {
+        const otherStone = stoneOfTriangle[other];
+        if (otherStone < 0 || otherStone === stoneIndex) return;
+        if (startOf[otherStone] >= bestStart) return;
+        bestStart = startOf[otherStone];
+        best = otherStone;
+      });
+    });
+    return best >= 0 ? chunkRecords[best].centroid : seeds[stoneIndex];
+  });
+
   // ── 7 · Bake the per-stone animation data onto every one of its vertices ──
   const axis = new THREE.Vector3();
   chunkRecords.forEach((record, chunkIndex) => {
     const seed = seeds[chunkIndex];
-    const start = record.centroid.distanceTo(seed) * growthScale;
+    const parent = parents[chunkIndex];
+    const start = startOf[chunkIndex];
     // A seeded axis per stone; normalised so the spin rate does not depend on how the numbers fell.
     axis
       .set(random() * 2 - 1, random() * 2 - 1, random() * 2 - 1)
@@ -493,6 +548,8 @@ export function buildAccretionChunks(
     for (let vertex = record.vertexStart; vertex < record.vertexEnd; vertex += 1) {
       chunkCentroid.push(record.centroid.x, record.centroid.y, record.centroid.z);
       seedPoint.push(seed.x, seed.y, seed.z);
+      parentPoint.push(parent.x, parent.y, parent.z);
+      chunkRadius.push(record.radius);
       startDistance.push(start);
       spinAxis.push(axis.x, axis.y, axis.z);
       spinTurns.push(turns);
@@ -527,6 +584,8 @@ export function buildAccretionChunks(
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setAttribute('aChunkCentroid', new THREE.Float32BufferAttribute(chunkCentroid, 3));
   geometry.setAttribute('aSeedPoint', new THREE.Float32BufferAttribute(seedPoint, 3));
+  geometry.setAttribute('aParentPoint', new THREE.Float32BufferAttribute(parentPoint, 3));
+  geometry.setAttribute('aRadius', new THREE.Float32BufferAttribute(chunkRadius, 1));
   geometry.setAttribute('aStart', new THREE.Float32BufferAttribute(startDistance, 1));
   geometry.setAttribute('aSpinAxis', new THREE.Float32BufferAttribute(spinAxis, 3));
   geometry.setAttribute('aSpinTurns', new THREE.Float32BufferAttribute(spinTurns, 1));

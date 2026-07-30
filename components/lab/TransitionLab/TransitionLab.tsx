@@ -145,6 +145,34 @@ export default function TransitionLab({ strategyId }: TransitionLabProps) {
             {controls.map((control) => {
               const value = tuning[control.key] ?? control.value;
 
+              if (control.kind === 'choice' && control.options) {
+                return (
+                  <div key={control.key} className="flex flex-col gap-1">
+                    <span className="text-[0.6rem] uppercase tracking-eyebrow text-muted">
+                      {control.label}
+                    </span>
+                    <div className="flex flex-wrap gap-1">
+                      {control.options.map((option, index) => (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() =>
+                            setTuning((current) => ({ ...current, [control.key]: index }))
+                          }
+                          className={`rounded-full border px-2 py-0.5 text-[0.55rem] uppercase tracking-eyebrow transition-colors ${
+                            Math.round(value) === index
+                              ? 'border-accent bg-accent text-black'
+                              : 'border-border text-muted hover:text-fg'
+                          }`}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+
               if (control.kind === 'toggle') {
                 const isOn = value > 0.5;
                 return (

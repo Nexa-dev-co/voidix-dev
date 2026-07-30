@@ -40,6 +40,18 @@ export const ACCRETION_MODE = {
 export interface StoneGrowthUniforms {
   uProgress: { value: number };
   uMode: { value: number };
+  /**
+   * HOW a stone gets from absent to placed. Four different ideas, not four points on a dial:
+   *
+   *   0 travel    it flies from the core's skin to its place — the most motion, and the most like a
+   *               swarm, which is the read that was rejected.
+   *   1 in place  it swells at its final position and snaps. No translation whatsoever.
+   *   2 extend    a scale anchored on the stone's INNER face, so material extends outward while the
+   *               centroid never moves. Closest to how a mineral actually grows.
+   *   3 creep     it emerges from the neighbour that arrived before it, so the mark spreads across
+   *               itself like frost instead of being assembled from outside. Travel of one stone's width.
+   */
+  uArrival: { value: number };
   /** Where the core sits, so the spiral has an axis to swing about. */
   uCoreCentre: { value: THREE.Vector3 };
 
@@ -139,6 +151,8 @@ export function enableStoneGrowth(
   const uniforms: StoneGrowthUniforms = {
     uProgress: { value: 1 },
     uMode: { value: ACCRETION_MODE.settled },
+    // `extend` by default: it is the only one of the four that is genuinely growth rather than delivery.
+    uArrival: { value: 2 },
     uCoreCentre: { value: new THREE.Vector3() },
     uGrowDelay: { value: 0.4 },
     uGrowStagger: { value: 0.68 },
@@ -179,6 +193,8 @@ export function enableStoneGrowth(
         /* glsl */ `#include <common>
         attribute vec3 aChunkCentroid;
         attribute vec3 aSeedPoint;
+        attribute vec3 aParentPoint;
+        attribute float aRadius;
         attribute float aStart;
         attribute vec3 aSpinAxis;
         attribute float aSpinTurns;
@@ -187,6 +203,7 @@ export function enableStoneGrowth(
 
         uniform float uProgress;
         uniform float uMode;
+        uniform float uArrival;
         uniform vec3 uCoreCentre;
         uniform float uGrowDelay;
         uniform float uGrowStagger;
@@ -261,17 +278,39 @@ export function enableStoneGrowth(
           * ACCRETION_TAU * ( 1.0 - accretionAlign );
 
         vec3 accretionLocal = accretionSpin( transformed - aChunkCentroid, aSpinAxis, accretionAngle );
-        accretionLocal *= accretionScale;
 
-        vec3 accretionCentre = mix( aSeedPoint, aChunkCentroid, accretionTravel );
-
-        // Judder as it seats. Zero at growth 1 by construction, so a landed stone is perfectly still.
+        // Outward through this stone — the direction growth happens along.
         vec3 accretionRun = aChunkCentroid - aSeedPoint;
         float accretionRunLength = length( accretionRun );
-        if ( accretionRunLength > 1e-5 ) {
-          float accretionRing = sin( ACCRETION_TAU * uTremorCycles * accretionGrowth )
-            * pow( 1.0 - accretionGrowth, 2.0 );
-          accretionCentre += ( accretionRun / accretionRunLength ) * accretionRing * uTremorAmplitude;
+        vec3 accretionDir = accretionRunLength > 1e-5
+          ? accretionRun / accretionRunLength
+          : vec3( 0.0, 0.0, 1.0 );
+
+        // Judder as it seats. Zero at growth 1 by construction, so a landed stone is perfectly still.
+        float accretionRing = sin( ACCRETION_TAU * uTremorCycles * accretionGrowth )
+          * pow( 1.0 - accretionGrowth, 2.0 );
+        vec3 accretionShake = accretionDir * accretionRing * uTremorAmplitude;
+
+        vec3 accretionCentre;
+
+        if ( uArrival > 1.5 && uArrival < 2.5 ) {
+          // EXTEND. No translation at all: a uniform scale anchored on a point on the stone's inner
+          // face, so its near side stays put and its material extends outward. The centroid does not
+          // move, which is what separates growth from delivery.
+          vec3 accretionAnchor = aChunkCentroid - accretionDir * aRadius + accretionShake;
+          vec3 accretionRestPoint = aChunkCentroid + accretionLocal;
+          accretionLocal = ( accretionRestPoint - accretionAnchor ) * accretionTravel;
+          accretionCentre = accretionAnchor;
+        } else {
+          // TRAVEL, IN PLACE and CREEP are one path with three origins. In place uses the stone's own
+          // centroid, so the mix collapses and it becomes a pure swell — with the overshoot landing on
+          // the SCALE rather than on a journey, which is what gives it a snap instead of a fade.
+          vec3 accretionOrigin = uArrival < 0.5
+            ? aSeedPoint
+            : ( uArrival < 1.5 ? aChunkCentroid : aParentPoint );
+          float accretionFill = uArrival < 1.5 && uArrival > 0.5 ? accretionTravel : accretionScale;
+          accretionLocal *= accretionFill;
+          accretionCentre = mix( accretionOrigin, aChunkCentroid, accretionTravel ) + accretionShake;
         }
 
         // The whole stone swung about the core's axis, decaying to nothing as it lands. Opposite
