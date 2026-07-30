@@ -16,7 +16,7 @@ import {
   type GeodePhaseTiming,
 } from '@/components/sections/WorksField/markGeodePhases';
 import { useLetterLab, type LetterLabSettings } from './hooks/useLetterLab';
-import { useDebounced } from './hooks/useDebounced';
+import { useDebounced } from '@/components/lab/useDebounced';
 import type { MarkMaterialVariant } from '@/components/sections/WorksField/markBody';
 import { MARKS } from '@/components/sections/WorksField/marks';
 import {

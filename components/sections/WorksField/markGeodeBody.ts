@@ -459,48 +459,30 @@ export function buildGeodeBody(options: GeodeBodyOptions): GeodeBody {
   });
 
   // ── 5 · The rock: where every vertex comes from ──
+  // The ε-ring a collapsed hole used to need is gone: the disc map already sits each hole's rim on a
+  // small circle, so it arrives here as a small ring on the skin. All that is left is the tube.
   const direction = new THREE.Vector3();
   const skin = new THREE.Vector3();
-  const tangentU = new THREE.Vector3();
-  const tangentV = new THREE.Vector3();
-  const forward = new THREE.Vector3(0, 0, 1);
-  const sideways = new THREE.Vector3(1, 0, 0);
-
   const chordEnd = new THREE.Vector3();
-  const axis = new THREE.Vector3();
 
   for (let vertex = 0; vertex < vertexCount; vertex += 1) {
     const coordinate = coordinates[vertex];
 
-    if (coordinate.holeLoop && coordinate.holeThrough !== null) {
+    if (coordinate.holeThrough !== null) {
       // Straight through the rock, rim to rim. The interior is opaque, so the tunnel is invisible
       // until it opens — which is the entire trick that lets a holed mark morph at all.
+      //
+      // A CHORD, not a path over the skin: walking the surface parameter from the front rim round to
+      // the back one traces a line over the equator, which is a thin tube lying exactly on the skin
+      // and z-fighting it the whole way round.
       sphereDirection(coordinate.holeAnchorParam * Math.PI, coordinate.azimuth, direction);
       rockSkinPoint(options.rock, direction, skin);
       sphereDirection((1 - coordinate.holeAnchorParam) * Math.PI, coordinate.azimuth, direction);
       rockSkinPoint(options.rock, direction, chordEnd);
-      axis.copy(chordEnd).sub(skin);
       skin.lerp(chordEnd, coordinate.holeThrough);
-      if (axis.lengthSq() < 1e-12) axis.copy(forward);
-      axis.normalize();
     } else {
       sphereDirection(coordinate.surfaceParam * Math.PI, coordinate.azimuth, direction);
       rockSkinPoint(options.rock, direction, skin);
-      // A rim ring lies in the plane tangent to the skin, so the mouth of the tunnel sits flush.
-      axis.copy(direction);
-    }
-
-    if (coordinate.holeLoop) {
-      // A hole is a real tunnel at p = 0, just an ε-thin one. Ringing it about the local axis keeps it
-      // a tube rather than a crease, and keeps each rim vertex at the same angle around the tunnel as
-      // it sits around the open hole — so it cannot twist as it grows.
-      tangentU.copy(axis).cross(forward);
-      if (tangentU.lengthSq() < 1e-8) tangentU.copy(axis).cross(sideways);
-      tangentU.normalize();
-      tangentV.copy(axis).cross(tangentU).normalize();
-      skin
-        .addScaledVector(tangentU, Math.cos(coordinate.holeRingAngle) * holeSeedRadius)
-        .addScaledVector(tangentV, Math.sin(coordinate.holeRingAngle) * holeSeedRadius);
     }
 
     const offset = vertex * 3;
@@ -657,12 +639,3 @@ export function buildGeodeBody(options: GeodeBodyOptions): GeodeBody {
   };
 }
 
-/**
- * Where a point sits around a hole's centre.
- *
- * This is what keeps the collapsed tube a tube: a vertex on the hole's rim ends up at the same angle
- * around the ε-ring as it sits around the real hole, so the tunnel doesn't twist as it opens.
- */
-function angleAround(point: THREE.Vector2, centre: THREE.Vector2): number {
-  return Math.atan2(point.y - centre.y, point.x - centre.x);
-}

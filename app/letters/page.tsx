@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import LabNav from '@/components/lab/LabNav';
 import LetterLab from '@/components/lab/LetterLab/LetterLab';
 
 /**
@@ -20,6 +21,9 @@ export default function LettersPage() {
   return (
     <main>
       <LetterLab />
+      {/* Fixed overlay rather than a header above the lab: `LetterLab` fills the viewport, and anything
+          in the flow would push it off screen. */}
+      <LabNav />
     </main>
   );
 }
