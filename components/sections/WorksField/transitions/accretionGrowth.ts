@@ -114,9 +114,49 @@ export interface StoneGrowthUniforms {
   uTremorCycles: { value: number };
   uTremorAmplitude: { value: number };
 
-  /** The spark as a stone seats. The field runs a bloom pass, so hundreds of these make it crackle. */
+  /**
+   * The spark as a stone seats — hundreds of them under a bloom pass were meant to make the mark crackle.
+   *
+   * Off by default now. It is the one glow in this file that exists ONLY while `accretionGrowth` is
+   * between 0.72 and 1.0, so unlike the cavities it never shows at rest — which made it read as the
+   * change glowing rather than as the stone doing anything. See the control's note in `accretionTransition`.
+   */
   uFlashColor: { value: THREE.Color };
   uFlashStrength: { value: number };
+
+  /**
+   * ── The break face, molten ──
+   *
+   * Rock that is about to come apart heats at the seam first, stays molten while it travels, and cools
+   * once it has landed. Unlike the flash above this one has a PLACE — it is confined to a band around
+   * the faces the partition cut, which is why it can carry real brightness without becoming the wash
+   * that the flash became. Full reasoning in `docs/molten-fracture-plan.md`.
+   *
+   * The two colours are uniforms rather than controls, matching `uFlashColor`: the panel owns how hot
+   * it burns, the file owns what colour hot is.
+   */
+  uMoltenSeamColor: { value: THREE.Color };
+  uMoltenDeepColor: { value: THREE.Color };
+  uMoltenStrength: { value: number };
+  /**
+   * How far the heat reaches in from a break face, as a FRACTION of the stone — 0.1 is a tenth.
+   *
+   * Not world units, and it was once. `aFractureDistance` is normalised per stone precisely so this can
+   * be a percentage: the size hierarchy runs 30× from rim stones to core masses, and one world number
+   * that reads as a lip on a core mass swallows a rim stone whole.
+   */
+  uMoltenDepth: { value: number };
+  /**
+   * How long a landed stone takes to cool, as a span of PROGRESS.
+   *
+   * Not seconds, and it cannot be: `setTransition` is contractually pure in `(from, to, progress)`, so a
+   * wall-clock timer here would be a second clock — it would desync the moment the scrub is dragged and
+   * would not survive being driven by scroll. The conversion is just the round trip: at the lab's
+   * six-second default, one second is 0.17 of progress.
+   */
+  uMoltenCool: { value: number };
+  /** How far ahead of the break the seam lights up. The "neon, then crack" order. */
+  uMoltenLead: { value: number };
 
   /** Exposed geode pockets on the stone — the reference's open cavities. */
   uCavityMap: { value: THREE.Texture | null };
@@ -223,13 +263,29 @@ export function enableStoneGrowth(
     // stone into a light source instead of rock catching a key light — the reference's stone is DARK,
     // and only the crystal and the hairline veins carry any light at all.
     uFlashColor: { value: new THREE.Color('#ffb066') },
-    uFlashStrength: { value: 0.4 },
+    // 0, matching the panel's declared default. It matters that BOTH are zero: the lab pushes
+    // `flashStrength` every frame so this fallback is invisible there, but a future caller that drives
+    // the uniforms directly and never sends tuning would otherwise get the orange back for free.
+    uFlashStrength: { value: 0 },
     uCavityMap: { value: cavityMap },
     uCavityWidth: { value: 0.16 },
     uCavityCoverage: { value: 0.34 },
     uCavityGlow: { value: 0.5 },
     uCavityTint: { value: 0.35 },
     uCavityUvScale: { value: 1 },
+    // Every default from here down MATCHES the declared control in `accretionTransition`. That is the
+    // rule the flash got wrong: the lab pushes tuning every frame so a disagreeing fallback is invisible
+    // there, and then the first caller that drives these uniforms directly gets a look nobody authored.
+    // Both pulled DOWN the hue, and the strength pushed up to compensate — see the control's note.
+    // A near-white seam was washing the colour out of the effect; the white-hot now comes from the tone
+    // mapper compressing a saturated orange at the very peak, which is where it belongs.
+    uMoltenSeamColor: { value: new THREE.Color('#ff9a2e') },
+    uMoltenDeepColor: { value: new THREE.Color('#a82600') },
+    uMoltenStrength: { value: 1.2 },
+    // A FRACTION of the stone's depth from its own break faces, not world units — see `aFractureDistance`.
+    uMoltenDepth: { value: 0.1 },
+    uMoltenCool: { value: 0.17 },
+    uMoltenLead: { value: 0.08 },
   };
 
   material.onBeforeCompile = (shader) => {
@@ -248,6 +304,7 @@ export function enableStoneGrowth(
         attribute float aSpinTurns;
         attribute float aJitter;
         attribute float aRim;
+        attribute float aFractureDistance;
 
         uniform float uProgress;
         uniform float uMode;
@@ -271,16 +328,22 @@ export function enableStoneGrowth(
         uniform float uTremorAmplitude;
         uniform float uCavityWidth;
         uniform float uCavityCoverage;
+        uniform float uMoltenCool;
+        uniform float uMoltenLead;
 
         varying float vFlash;
         varying float vCavity;
+        varying float vMoltenHeat;
+        varying float vFractureDistance;
 
         ${GROWTH_HELPERS}
 
-        // How settled this stone is: 1 at its resting place, 0 collapsed onto its seed on the core.
-        float accretionSettled() {
-          if ( uMode < 0.5 ) return 1.0;
-
+        // This stone's place in the queue, 0..1 — near the core first.
+        //
+        // Extracted so the growth window and the molten window read the SAME number. Recomputing it in
+        // two places would work right up until one of them was retuned, and then the heat would drift
+        // off the motion it is supposed to be describing.
+        float accretionOrder() {
           float order = clamp( aStart + ( aJitter - 0.5 ) * uOrderJitter, 0.0, 1.0 );
 
           // Rounded into waves, so the mark builds in layers you can count. The jitter is applied
@@ -291,6 +354,14 @@ export function enableStoneGrowth(
             float waves = floor( uGrowthSteps );
             order = min( floor( order * waves ), waves - 1.0 ) / ( waves - 1.0 );
           }
+          return order;
+        }
+
+        // How settled this stone is: 1 at its resting place, 0 collapsed onto its seed on the core.
+        float accretionSettled() {
+          if ( uMode < 0.5 ) return 1.0;
+
+          float order = accretionOrder();
 
           if ( uMode < 1.5 ) {
             // Growing: near the core first, so the front travels outward.
@@ -305,6 +376,51 @@ export function enableStoneGrowth(
           float start = ( 1.0 - order ) * uShrinkStagger * span;
           float width = max( ( 1.0 - uShrinkStagger ) * span, 1e-4 );
           return 1.0 - clamp( ( uProgress - start ) / width, 0.0, 1.0 );
+        }
+
+        // How molten this stone's break faces are, 0..1. Same windows as the growth above, read for
+        // temperature instead of for placement.
+        float accretionHeat() {
+          // A mark that is not changing has no break faces. An early return rather than a curve that
+          // happens to reach zero: this is the one failure here that would sit on screen indefinitely
+          // — a settled mark with glowing seams — so it is worth making structurally impossible.
+          if ( uMode < 0.5 ) return 0.0;
+
+          float order = accretionOrder();
+
+          if ( uMode < 1.5 ) {
+            // Growing: hot from the moment it leaves the core, cooling once it has seated.
+            float span = max( 1.0 - uGrowDelay, 1e-4 );
+            float start = uGrowDelay + order * uGrowStagger * span;
+            float landed = start + max( ( 1.0 - uGrowStagger ) * span, 1e-4 );
+
+            // ⚠ The cool-off ENDS at 1.0 at the latest, and the window is dragged backwards rather than
+            // forwards to make that true. At the authored stagger of 0.72 the last stones land at very
+            // nearly 1.0, and a window running forwards from the landing would still be burning with the
+            // mark sitting at rest. So late arrivals cool faster than early ones — a deliberate trade,
+            // and much the lesser one. The 1e-3 floor keeps the two edges apart, because a smoothstep
+            // whose edges coincide divides by zero and hands back a NaN.
+            float coolEnd = min( landed + uMoltenCool, 1.0 );
+            float coolStart = min( landed, coolEnd - 1e-3 );
+            return min(
+              smoothstep( start - 1e-3, start, uProgress ),
+              1.0 - smoothstep( coolStart, coolEnd, uProgress )
+            );
+          }
+
+          // Retracting: the seam lights BEFORE the stone lets go, and stays lit while it recedes. There
+          // is no cool-off on this side because there is nothing left to cool — every departure path
+          // collapses the stone to a point at growth 0, so it rasterises nothing.
+          float span = max( uShrinkWindow, 1e-4 );
+          float start = ( 1.0 - order ) * uShrinkStagger * span;
+          float lead = max( uMoltenLead, 1e-3 );
+          // ⚠ The outermost stone has start = 0, so its ignition wants to begin at NEGATIVE progress and
+          // would read as fully hot with the mark standing still at p=0. The second factor is what makes
+          // "cold at rest" hold unconditionally: those first few stones ignite as they go rather than
+          // before, which costs a little of the "neon, then crack" order on a handful of stones and buys
+          // an invariant that cannot be scrubbed around.
+          return smoothstep( max( start - lead, 0.0 ), start + 1e-3, uProgress )
+            * smoothstep( 0.0, lead, uProgress );
         }`,
       )
       .replace(
@@ -389,7 +505,14 @@ export function enableStoneGrowth(
 
         // Whole stones near the outline open into geode, rather than every stone speckling.
         float accretionOpen = step( accretionHash( aChunkCentroid * 7.0 ), uCavityCoverage );
-        vCavity = accretionOpen * ( 1.0 - smoothstep( 0.0, max( uCavityWidth, 1e-4 ), aRim ) );`,
+        vCavity = accretionOpen * ( 1.0 - smoothstep( 0.0, max( uCavityWidth, 1e-4 ), aRim ) );
+
+        // Heat is per stone and the band is per vertex, so they travel separately and are combined in
+        // the fragment. Handing the raw distance over rather than the falloff keeps the depth knob live
+        // AND lets the curve be evaluated per pixel — interpolating a smoothstep between two vertices a
+        // centimetre apart on a core mass is exactly how a soft gradient turns into a visible crease.
+        vMoltenHeat = accretionHeat();
+        vFractureDistance = aFractureDistance;`,
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -402,8 +525,14 @@ export function enableStoneGrowth(
         uniform float uCavityUvScale;
         uniform vec3 uFlashColor;
         uniform float uFlashStrength;
+        uniform vec3 uMoltenSeamColor;
+        uniform vec3 uMoltenDeepColor;
+        uniform float uMoltenStrength;
+        uniform float uMoltenDepth;
         varying float vFlash;
-        varying float vCavity;`,
+        varying float vCavity;
+        varying float vMoltenHeat;
+        varying float vFractureDistance;`,
       )
       .replace(
         '#include <color_fragment>',
@@ -423,7 +552,20 @@ export function enableStoneGrowth(
         // The veins already burn through the material's own emissive map; an open cavity burns harder,
         // and a seating stone throws a spark.
         totalEmissiveRadiance *= 1.0 + vCavity * uCavityGlow;
-        totalEmissiveRadiance += uFlashColor * uFlashStrength * vFlash;`,
+        totalEmissiveRadiance += uFlashColor * uFlashStrength * vFlash;
+
+        // The break face, still molten — near-white right at the seam and deepening to a dull orange as
+        // the heat reaches into the stone. The gradient is most of what sells this: a flat colour over
+        // the same band reads as orange paint on the edge rather than as something that is actually hot.
+        //
+        // Multiplied by the band TWICE over, once through the colour mix and once as intensity, so the
+        // hot core stays narrow while the falloff still carries some light. That is what keeps it from
+        // becoming a uniform glowing rim.
+        float accretionMoltenBand =
+          1.0 - smoothstep( 0.0, max( uMoltenDepth, 1e-4 ), vFractureDistance );
+        totalEmissiveRadiance +=
+          mix( uMoltenDeepColor, uMoltenSeamColor, accretionMoltenBand )
+          * uMoltenStrength * vMoltenHeat * accretionMoltenBand;`,
       );
   };
 

@@ -39,6 +39,18 @@ const MIN_CLUSTER_TRIANGLES = 2;
 const IN_PLANE_SEED_X = 11.3;
 const IN_PLANE_SEED_Y = 23.7;
 
+/**
+ * Ceiling on a measured fracture distance, in world units, BEFORE the per-stone normalisation.
+ *
+ * It exists for the stone that has no break face at all: every one of its points measures this, so the
+ * normalisation divides it by itself and the whole stone bakes out at 1 — fully cold, whatever the reach
+ * knob is set to. Without it the answer would be an Infinity in a vertex buffer, which is a debugging
+ * afternoon nobody needs.
+ *
+ * For any stone that DOES have a break face, this is never reached: no stone spans a world unit.
+ */
+const MAX_FRACTURE_DISTANCE = 1;
+
 export interface AccretionChunkOptions {
   targetSize: number;
   depth: number;
@@ -119,6 +131,41 @@ function distanceToSegment(
   let along = ((point.x - from.x) * edgeX + (point.y - from.y) * edgeY) / lengthSquared;
   along = along < 0 ? 0 : along > 1 ? 1 : along;
   return Math.hypot(point.x - (from.x + edgeX * along), point.y - (from.y + edgeY * along));
+}
+
+/**
+ * The same measurement, squared, on loose numbers — for the fracture pass only.
+ *
+ * A separate function rather than a tweak to the one above, for two reasons, and the second is the
+ * important one:
+ *
+ * ⚠ `distanceToSegment` feeds `pointRimDistance`, which feeds `wantedSpacing`, which decides where the
+ * Poisson seeds land — so it decides HOW THE MARK IS CUT. Editing it, even to make it faster, would
+ * re-partition every mark and change a silhouette that is already authored. It is load-bearing for the
+ * shape. Leave it exactly as it is.
+ *
+ * The other reason is cost: this runs on the order of a million times per mark, and `Math.hypot` guards
+ * against an overflow unreachable at this scale by doing considerably more work than a multiply. Staying
+ * squared until the very end skips that and the square root both.
+ */
+function distanceSquaredToSegment(
+  pointX: number,
+  pointY: number,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): number {
+  const edgeX = toX - fromX;
+  const edgeY = toY - fromY;
+  const lengthSquared = edgeX * edgeX + edgeY * edgeY;
+  let along = lengthSquared < 1e-12
+    ? 0
+    : ((pointX - fromX) * edgeX + (pointY - fromY) * edgeY) / lengthSquared;
+  along = along < 0 ? 0 : along > 1 ? 1 : along;
+  const offsetX = pointX - (fromX + edgeX * along);
+  const offsetY = pointY - (fromY + edgeY * along);
+  return offsetX * offsetX + offsetY * offsetY;
 }
 
 export function buildAccretionChunks(
@@ -351,6 +398,11 @@ export function buildAccretionChunks(
   const spinTurns: number[] = [];
   const jitter: number[] = [];
   const rim: number[] = [];
+  /**
+   * How deep into its own stone a vertex sits, 0..1 — 0 on a face the stone was BROKEN along, 1 at the
+   * point farthest from every one of them. Normalised per stone; see the fracture pass below.
+   */
+  const fractureDistance: number[] = [];
 
   const uvScale = 1 / Math.max(options.targetSize, 1e-4);
   const centroidAccumulator = new THREE.Vector3();
@@ -377,6 +429,106 @@ export function buildAccretionChunks(
       }
     });
 
+    // ── Which edges bound this stone ──
+    // Hoisted above the vertex pushes on purpose: the wall quads below still consume it exactly as they
+    // did, but the fracture pass has to have run before ANY vertex is written, because every vertex
+    // carries its distance to a fracture. Nothing here pushes to a buffer, so moving it changes no
+    // vertex order and no index.
+    const edgeUse = new Map<number, { first: number; second: number; count: number }>();
+    member.forEach((triangle) => {
+      const corners = [
+        capMesh.triangles[triangle * 3],
+        capMesh.triangles[triangle * 3 + 1],
+        capMesh.triangles[triangle * 3 + 2],
+      ];
+      for (let corner = 0; corner < 3; corner += 1) {
+        const first = corners[corner];
+        const second = corners[(corner + 1) % 3];
+        const key = edgeKey(first, second);
+        const existing = edgeUse.get(key);
+        if (existing) existing.count += 1;
+        // Stored in the triangle's own winding order, which is what makes the wall face outward.
+        else edgeUse.set(key, { first, second, count: 1 });
+      }
+    });
+
+    // ── Which of those are FRACTURES, and how far every vertex sits from one ──
+    //
+    // A stone's boundary is two different things and the geometry has never distinguished them:
+    //
+    //   count 2 in `trianglesOfEdge`  the mark's solid continues on the other side, so this wall exists
+    //                                 only because the PARTITION cut here — a face that was welded shut
+    //                                 at rest and is exposed by the break.
+    //   count 1                       the letterform's own outline. It was never broken; it has always
+    //                                 been the edge of the mark, and it has to stay cold.
+    //
+    // One distance covers every case, which is why there is no companion "is fracture" flag. A wall
+    // vertex on a fracture is an ENDPOINT of that segment, so it measures exactly 0 and goes fully
+    // molten; a cap vertex fades out over the band; a silhouette vertex is cold unless a break actually
+    // reaches the outline there, where it should be hot.
+    const fractureEdges: number[] = [];
+    edgeUse.forEach((edge, key) => {
+      if (edge.count !== 1) return;
+      if ((trianglesOfEdge.get(key)?.length ?? 1) < 2) return;
+      const from = points[edge.first];
+      const to = points[edge.second];
+      fractureEdges.push(from.x, from.y, to.x, to.y);
+    });
+
+    // Measured on the UNdisplaced outline, matching how `aRim` is baked a few lines down. The in-plane
+    // displacement tops out at 0.05 against a band authored around 0.09, so carrying it would move the
+    // band by less than the noise already in the surface.
+    const fractureDistanceOfPoint = new Map<number, number>();
+    let deepestFromFracture = 0;
+    uniquePoints.forEach((pointIndex) => {
+      // A stone whose whole boundary is the mark's outline has no break face at all. Nothing to
+      // measure, and nothing that should ever light up.
+      if (fractureEdges.length === 0) {
+        fractureDistanceOfPoint.set(pointIndex, MAX_FRACTURE_DISTANCE);
+        return;
+      }
+      const point = points[pointIndex];
+      let nearestSquared = MAX_FRACTURE_DISTANCE * MAX_FRACTURE_DISTANCE;
+      for (let edge = 0; edge < fractureEdges.length; edge += 4) {
+        const candidate = distanceSquaredToSegment(
+          point.x,
+          point.y,
+          fractureEdges[edge],
+          fractureEdges[edge + 1],
+          fractureEdges[edge + 2],
+          fractureEdges[edge + 3],
+        );
+        if (candidate < nearestSquared) nearestSquared = candidate;
+        // Sitting on a seam already; no other edge can beat zero. Most of a stone's boundary points hit
+        // this on their first or second edge, which is what stops the pass reading as quadratic.
+        if (nearestSquared <= 1e-12) break;
+      }
+      const distance = Math.sqrt(nearestSquared);
+      if (distance > deepestFromFracture) deepestFromFracture = distance;
+      fractureDistanceOfPoint.set(pointIndex, distance);
+    });
+
+    // ── Normalised PER STONE, and this is the whole reason the band behaves ──
+    //
+    // Baked in world units the reach could not mean one thing. The size hierarchy is authored at 30× —
+    // rim stones cut at 0.04, core masses at 1.2 — so a band wide enough to be a lip on a core mass
+    // swallowed a rim stone entirely, and the mark's outline is ALL rim stones. What was asked for as a
+    // tenth of the edge arrived as the whole fracture.
+    //
+    // Dividing by the stone's own deepest point turns the attribute into "how far through this stone's
+    // interior am I, 0 at a break face and 1 at the point farthest from every one of them". The knob is
+    // then literally a percentage and every stone shows the same proportional lip.
+    //
+    // ⚠ `aRadius` is NOT a usable normaliser here and it is the obvious wrong turn: it is measured from
+    // the centroid in 3D, so the 0.7 slab depth floors it at 0.35 for every stone, and the smallest
+    // stones — the ones that were the problem — would be normalised by a number six times their own
+    // width.
+    const fractureSpan = Math.max(deepestFromFracture, 1e-6);
+    uniquePoints.forEach((pointIndex) => {
+      const distance = fractureDistanceOfPoint.get(pointIndex) as number;
+      fractureDistanceOfPoint.set(pointIndex, Math.min(distance / fractureSpan, 1));
+    });
+
     centroidAccumulator.set(0, 0, 0);
 
     /** Push one vertex and return its buffer index. */
@@ -391,6 +543,9 @@ export function buildAccretionChunks(
       positions.push(rest.x, rest.y, rest.z);
       uvs.push(u, v);
       rim.push(pointRimDistance[pointIndex]);
+      // Keyed by POINT, so a wall vertex and the cap vertex it is coincident with agree — which is what
+      // makes the molten band continuous around the lip of a break instead of stopping at the corner.
+      fractureDistance.push(fractureDistanceOfPoint.get(pointIndex) ?? MAX_FRACTURE_DISTANCE);
       return positions.length / 3 - 1;
     };
 
@@ -416,25 +571,8 @@ export function buildAccretionChunks(
       indices.push(backBase + c, backBase + b, backBase + a);
     });
 
-    // The wall: one quad per edge that only one of this stone's triangles owns.
-    const edgeUse = new Map<number, { first: number; second: number; count: number }>();
-    member.forEach((triangle) => {
-      const corners = [
-        capMesh.triangles[triangle * 3],
-        capMesh.triangles[triangle * 3 + 1],
-        capMesh.triangles[triangle * 3 + 2],
-      ];
-      for (let corner = 0; corner < 3; corner += 1) {
-        const first = corners[corner];
-        const second = corners[(corner + 1) % 3];
-        const key = edgeKey(first, second);
-        const existing = edgeUse.get(key);
-        if (existing) existing.count += 1;
-        // Stored in the triangle's own winding order, which is what makes the wall face outward.
-        else edgeUse.set(key, { first, second, count: 1 });
-      }
-    });
-
+    // The wall: one quad per edge that only one of this stone's triangles owns. `edgeUse` was built at
+    // the top of this loop so the fracture pass could classify it.
     const wallScratch = new THREE.Vector2();
     edgeUse.forEach((edge) => {
       if (edge.count !== 1) return;
@@ -607,6 +745,13 @@ export function buildAccretionChunks(
   geometry.setAttribute('aSpinTurns', new THREE.Float32BufferAttribute(spinTurns, 1));
   geometry.setAttribute('aJitter', new THREE.Float32BufferAttribute(jitter, 1));
   geometry.setAttribute('aRim', new THREE.Float32BufferAttribute(rim, 1));
+  // ⚠ Thirteenth attribute on this geometry, counting three's own position/normal/uv. Every one of them
+  // is referenced by the injected shader, so every one occupies a slot, and WebGL2 only guarantees 16.
+  // There is room for two more before a device at the minimum starts refusing to link the program.
+  geometry.setAttribute(
+    'aFractureDistance',
+    new THREE.Float32BufferAttribute(fractureDistance, 1),
+  );
   // After the displacement, so the relief actually shades. Coincident vertices are separate indices, so
   // this leaves the hard edges hard.
   geometry.computeVertexNormals();

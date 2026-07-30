@@ -267,7 +267,49 @@ const ACCRETION_CONTROLS: TuningControl[] = [
   // Roughness, not gloss — LOW is shiny. Raised from 0.16, because a near-mirror crystal against the
   // room probe was throwing specular highlights straight through the bloom threshold.
   { key: 'crystalRoughness', label: 'Crystal roughness', min: 0, max: 1, step: 0.02, value: 0.32, rebuilds: false },
-  { key: 'flashStrength', label: 'Lock spark', min: 0, max: 3, step: 0.05, value: 0.4, rebuilds: false },
+  // OFF. It was the only warm thing in the frame that appeared ONLY while the mark was changing, which
+  // is precisely why it had to go: it read as the transition itself glowing rather than as stone seating.
+  // `#ffb066` is also the most saturated orange here and it lands on top of the bloom pass, so hundreds
+  // of stones crossing the seat band across five staggered waves stopped being sparks and became one
+  // orange wash sweeping the mark.
+  //
+  // Kept as a knob rather than deleted, like `spinTurns` and `shrinkOvershoot` — the gesture is sound at
+  // a far lower strength if the growth ever reads as too quiet.
+  //
+  // ⚠ If you do raise it: `vFlash` does not check `uMode`, so a retracting stone runs growth 1 → 0 and
+  // crosses the same band on the way down. The OUTGOING mark sparks as it comes apart, which is an
+  // arrival gesture landing on a departure — the same mistake `shrinkOvershoot` was split out to fix.
+  { key: 'flashStrength', label: 'Lock spark', min: 0, max: 3, step: 0.05, value: 0, rebuilds: false },
+  // ── The break face, molten. Live. See `docs/molten-fracture-plan.md`. ──
+  //
+  // This is the flash's replacement and it is the same warm colour, so it is worth being explicit about
+  // why one was a wash and this is not: `vFlash` was a PER-STONE value applied across the whole stone,
+  // so every square millimetre of a seating mark lit at once. This is gated on `aFractureDistance`, so
+  // the lit area is a thin band around cut faces — a fraction of the surface, and one whose shape tells
+  // you something. Brightness is not what made the flash fail; having nowhere to be was.
+  //
+  // ⚠ Brightness and hue move TOGETHER here, and pushing one without the other is why this took two
+  // passes. `markLabRig` thresholds bloom at 0.6 luminance. A near-white seam clears that easily but has
+  // no colour left in it; a saturated orange is what was actually wanted and carries only about 0.45
+  // luminance per unit of strength — so darkening the hue COSTS bloom, and the strength has to come up
+  // to buy it back. 1.2 against `#ff9a2e` lands just over the threshold with the hue intact.
+  //
+  // That it is double the previous value and still safe is entirely down to the reach below: a tenth of
+  // each stone is roughly a tenth of the area that was lit before, so this is more light per pixel over
+  // far fewer pixels. Total light in frame went DOWN.
+  { key: 'moltenStrength', label: 'Molten heat', min: 0, max: 3, step: 0.02, value: 1.2, rebuilds: false },
+  // A FRACTION of each stone, not world units — 0.1 is a tenth of the way in from its break faces.
+  //
+  // It was world units and that was the bug: at 0.09 a core mass 1.2 across got the intended thin lip
+  // while a rim stone 0.04 across went molten end to end, and since the mark's outline is entirely rim
+  // stones, the whole edge lit up. `aFractureDistance` is now normalised per stone, so this reads the
+  // same on every one of them regardless of how big it was cut.
+  { key: 'moltenDepth', label: 'Molten reach', min: 0, max: 0.6, step: 0.005, value: 0.1, rebuilds: false },
+  // A span of PROGRESS, not seconds — `setTransition` is pure and a timer here would be a second clock.
+  // 0.17 is one second at the lab's six-second round trip; at the field's `MORPH_SECONDS` of 1.0s the
+  // whole transition is a second, so read this as "most of the way" there rather than re-tuning it.
+  { key: 'moltenCool', label: 'Cools over', min: 0.02, max: 0.6, step: 0.01, value: 0.17, rebuilds: false },
+  { key: 'moltenLead', label: 'Pre-glow', min: 0, max: 0.3, step: 0.01, value: 0.08, rebuilds: false },
   // ── The choreography. Live. ──
   // Retimed so the stone actually has room: it used to grow across 0.38 → 0.80, which is 42% of the
   // timeline for the whole assembly. Retraction now clears earlier and the geode starts later, giving
@@ -650,6 +692,10 @@ class AccretionTransition implements MarkTransitionStrategy {
     stone.uTremorCycles.value = this.tuning.tremorCycles;
     stone.uTremorAmplitude.value = this.tuning.tremorAmplitude;
     stone.uFlashStrength.value = this.tuning.flashStrength;
+    stone.uMoltenStrength.value = this.tuning.moltenStrength;
+    stone.uMoltenDepth.value = this.tuning.moltenDepth;
+    stone.uMoltenCool.value = this.tuning.moltenCool;
+    stone.uMoltenLead.value = this.tuning.moltenLead;
     stone.uCavityWidth.value = this.tuning.cavityWidth;
     stone.uCavityCoverage.value = this.tuning.cavityCoverage;
     stone.uCavityGlow.value = this.tuning.cavityGlow;
