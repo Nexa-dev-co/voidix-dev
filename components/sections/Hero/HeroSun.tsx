@@ -8,7 +8,6 @@ import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { SUN_CANVAS_HEADROOM } from '@/components/effects/IntroSequence/gatherShader';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
-import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 
 // The single sun for the whole page. It lives here (not in the hero card and not in the loader) so
 // exactly one WebGL sun exists: the intro flies it from the loader "o" into the hero square, then

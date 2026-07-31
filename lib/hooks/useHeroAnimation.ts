@@ -5,9 +5,6 @@ import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import { isTuneScrollLocked } from "@/lib/tuneScrollLock";
 import { measureUntransformedRect } from "@/lib/measureUntransformedRect";
-// Shared, because the works field has to draw a copy of the sun in exactly this place inside the space
-// render — see lib/sunPlacement.ts and WorksField/sunBackdrop.ts.
-import { SUN_SCROLL_SCALE, SUN_SCROLL_RISE } from "@/lib/sunPlacement";
 import {
   computeCarouselLayout,
   type CarouselSectionGeometry,
@@ -57,6 +54,8 @@ ScrollTrigger.config({ ignoreMobileResize: true });
 const SCROLL_SCRUB = 1.8;
 const FILL_SCROLL_VH = 120; // viewport-heights of scroll the square takes to fill
 const STAGE_SCROLL_VH = 100; // ...and per carousel stop after it (a craft, or a project meteor)
+const SUN_SCROLL_SCALE = 1.1; // the sun grows to 1.1× as the square fills
+const SUN_SCROLL_RISE = 200; // px the sun lifts above the square's centre and holds
 
 // Overlay reveal / hide, keyed to which stop the carousel is on.
 const DECK_REVEAL_DURATION = 0.6;
@@ -128,39 +127,28 @@ const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the fligh
 
 // ── The works → chamber reveal ──
 // The camera backs out of the space and it turns out to have been a display in a room all along. The
-// camera move itself lives in the WebGL scene (fed this same 0..1); the DOM this crossing owns is now
-// only the works UI dropping out.
+// camera move itself lives in the WebGL scene (fed this same 0..1); the DOM this crossing owns is the
+// works UI dropping out — and the SUN.
 //
-// ── The sun, and why it is faded rather than carried into the room ──
-// It is a fixed DOM billboard sitting BEHIND the canvas (which is why it shows through the empty space
-// around the mark). The moment the display starts shrinking, a full-size sun is still pinned to the
-// middle of the viewport, hanging in front of the room — so it fades out over the same fast window in
-// which the display's dark turns opaque (see OPAQUE_WINDOW in chamberScene), early, while the display
-// still fills the frame. What you perceive is a light dimming, not the site's anchor vanishing.
+// The sun has to go, and this is the only place that can do it. It's a fixed DOM billboard sitting
+// BEHIND the canvas (which is why it shows through the empty space between the meteors). The moment
+// the display starts shrinking, a full-size sun would still be pinned to the middle of the viewport,
+// hanging in front of the room. So it fades out over the same fast window in which the display's dark
+// turns opaque (see OPAQUE_WINDOW in chamberScene) — early, while the display still fills the frame,
+// so all you can actually perceive is a light dimming rather than the site's anchor vanishing.
 //
-// ⚠ This is a COMPROMISE, and it is worth knowing which one. The star should really shrink into the
-// screen along with everything else in the picture — that is what the reveal claims is happening, and
-// it is what the planned collapse finale needs (the star is supposed to die ON the table's screen, and
-// right now there is no star on that screen to die).
+// ⚠ Know what this costs before you change it. The star never reaches the table, so the planned
+// collapse finale has no star on that screen to die. Carrying it into the room was built once — a
+// CanvasTexture of the sun's canvas drawn as a quad inside the space render — and reverted, because
+// the site then had two sun images whose handoff had to be timed, and both ended up on screen at
+// once. The quad itself was also written in clip space, so the works camera could not move it; drag
+// -to-look swung the whole field around a star that stayed nailed to the glass.
 //
-// A DOM element cannot do that. It was tried: the chamber published where the display landed and the
-// sun was transformed onto it. Two things defeat it. The room sets an opaque `scene.background` and the
-// display's own alpha closes over OPAQUE_WINDOW, so a layer BEHIND the canvas cannot be seen at all
-// past ~0.12; and raising it in FRONT leaves a flat circle sitting on a screen that the tour views at
-// an angle, which a 2D transform cannot skew to match.
-//
-// The real fix is to stop compositing and put the sun INSIDE the space render — a `CanvasTexture` of
-// the sun's canvas (which already runs `preserveDrawingBuffer: true`) drawn as a camera-attached
-// backdrop in the works scene. Then it lands on the table exactly as the mark does, with correct
-// perspective and occlusion and no special cases. The open question is cost: a per-frame canvas upload
-// on the heaviest scene on the site, plus deciding whether it should re-bloom through the field's pass.
+// Neither of those is an argument against the idea, only against that build of it. If it is tried
+// again, the two images must be mutually exclusive by construction rather than by timing.
 const REVEAL_SCROLL_VH = 140;
 const REVEAL_WORKS_UI_FADE: [number, number] = [0.02, 0.16];
-// ⚠ The sun is NOT faded here any more, and must not be. It hands over to an in-render copy of itself
-// (WorksField/sunBackdrop.ts), and the other half of that swap is driven by the works field's own EASED
-// copy of this progress. Fading it from the raw value here meant the two halves ran on different clocks
-// and disagreed by ~10 frames — which showed up as two suns on screen at once when scrolling back out
-// of the room. Both halves now live together in useWorksField, computed from one number.
+const REVEAL_SUN_FADE: [number, number] = [0.0, 0.12]; // keep in step with chamberScene's OPAQUE_WINDOW
 // The reveal glide now scrubs the WHOLE chamber cinematic on one gesture — the pull-back out of the screen
 // AND the tour across the room to the podium — as a single reversible span (the TOUR_START split lives in
 // chamberScene; see docs/chamber-tour-smoothing-plan.md). So the glide is long enough to contain both:
@@ -174,6 +162,7 @@ const REVEAL_SETTLE_MS = 1900;
 // stepper almost immediately instead of holding the forward settle — this is what fixes the "can't step
 // back to the previous project for a few seconds after leaving the room" lock-out.
 const REVEAL_REVERSE_SETTLE_MS = 150;
+const SUN_FLIGHT_SELECTOR = ".hero-sun-flight";
 // The chamber is ONE stop, and everything in it plays off the single scroll that lands the reveal: the
 // camera backs out of the display, the showcase walks you across the room to the podium, and the FAQ
 // hologram unseals above the plinth as you arrive. One gesture, one continuous shot.
@@ -366,10 +355,19 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
     // ── The works → chamber reveal ──
     // The camera move is in the WebGL scene; here we drop the works UI and retire the sun.
+    const sunFlight = document.querySelector<HTMLElement>(SUN_FLIGHT_SELECTOR);
     const applyWorksToChamberReveal = (progress: number) => {
       if (worksOverlay) {
         gsap.set(worksOverlay, {
           autoAlpha: 1 - fadeWindow(REVEAL_WORKS_UI_FADE, progress),
+        });
+      }
+      // Driven on the INNER sun element on purpose: HeroSun owns the outer layer's opacity for its
+      // resize hide/settle, and two owners of one property is how you get a sun that flickers back on
+      // when the window is nudged.
+      if (sunFlight) {
+        gsap.set(sunFlight, {
+          opacity: 1 - fadeWindow(REVEAL_SUN_FADE, progress),
         });
       }
 

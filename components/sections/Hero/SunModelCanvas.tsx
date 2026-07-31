@@ -285,25 +285,20 @@ const COLLAPSE_MAGMA_EMISSIVE = 5;
  * Past this much of the works→chamber reveal the star stops animating and the demand-render gate takes
  * over.
  *
- * ── What "covered" means now, and what it does NOT mean ──
- * It used to mean "off screen, so stop paying for it". That is no longer true anywhere: the sun is
- * sampled into the works render and painted on the chamber's display, so it is visible for the whole
- * reveal AND the whole room. This is therefore a FREEZE, not a hide — the last drawn frame stays on the
- * tablet, and nothing may change the look on the way into it.
- *
  * ⚠ It used to key off the services→works HANDOFF, on the stated grounds that "the works field's opaque
  * backdrop has fully covered the sun". That premise was false, and globals.css says so:
  * `.hero-section.is-services .works-backdrop` is forced to `opacity: 0` precisely so the sun stays
  * visible through works. The star was freezing on one frame for the whole section and nobody noticed,
  * because a motionless star still looks like a star — which stopped being acceptable when works became
- * where it COLLAPSES.
+ * where it COLLAPSES. So it keys off the REVEAL instead, and the star is alive for all of works.
  *
- * Set past `TOUR_START` (0.55 in chamberScene): the pull-back owns [0, 0.55] and is the half where the
- * display still fills much of the frame, so the star stays alive for all of it. It freezes only once
- * the tour has turned away and the screen is a small rectangle across the room, where a still frame and
- * a live one are indistinguishable.
+ * Set just past the end of `REVEAL_SUN_FADE` (0.12 in useHeroAnimation), which is where the sun's own
+ * opacity reaches 0 — the earliest point at which nothing it does can be seen. Keep the two in step: a
+ * value BELOW the fade's end freezes the star while it is still on screen, and a value far above it
+ * pays for a bloom pass on something fully transparent, during the reveal, which is the most expensive
+ * moment on the site.
  */
-const SUN_COVERED_CHAMBER_PROGRESS = 0.62;
+const SUN_COVERED_CHAMBER_PROGRESS = 0.15;
 
 const TWO_PI = Math.PI * 2;
 
@@ -957,13 +952,11 @@ export default function SunModelCanvas() {
       // The rings, on their OWN windows of the scroll rather than the cracks ramp — they have to
       // assemble on black (see RING_WINDOW / RING_WORKS_WINDOW).
       //
-      // ⚠ These are NOT zeroed when the star freezes, and that is load-bearing. They used to be, back
-      // when freezing meant the sun was off screen and the rings were pure cost. The sun is now sampled
-      // into the works render and shown on the chamber's display (WorksField/sunBackdrop.ts), so the
-      // frozen frame is the picture on the tablet. Zeroing here hard-cut `uForm` to 0, which returns
-      // every grain to the launch knot inside the star and hides the layer — so the star visibly lost
-      // its rings the moment the reveal passed the freeze point, and scrubbing across it flickered them
-      // on and off. Whatever the freeze does, it must not CHANGE the frame it freezes on.
+      // ⚠ These are NOT zeroed when the star freezes, and that is load-bearing. Zeroing here hard-cut
+      // `uForm` to 0, which returns every grain to the launch knot inside the star and hides the layer —
+      // so the star visibly lost its rings the moment the reveal passed the freeze point, and scrubbing
+      // across it flickered them on and off. The freeze is meant to stop paying for a frame nobody can
+      // see; it must never CHANGE the frame it freezes on, or scrubbing back across the threshold pops.
       sunParticles?.update(elapsed, ringForm, ringWorksForm);
 
       // Demand-render: only draw while the image is actually changing — while the state ramp eases,
@@ -971,9 +964,9 @@ export default function SunModelCanvas() {
       //
       // The sun used to freeze the moment services revealed, which made the whole
       // services → works → chamber span free. It cannot any more: the cracked star breathes, its dust
-      // falls, and it collapses across the handoff — all of which have to keep drawing to read as
-      // alive, and all of which are now also the picture on the chamber's display. `covered` buys back
-      // only the tail: once the tour has turned away from the screen, `moving` goes false and this
+      // falls, and it collapses across the handoff — all of which have to keep drawing to read as alive,
+      // and all of which are visible, because the works backdrop is transparent behind them. `covered`
+      // buys back only the tail: once the reveal has faded the sun out, `moving` goes false and this
       // holds one frozen frame for the rest of the room.
       // `wasAnimating` draws the one final settled frame; `forceRender` covers resize / tab-restore.
       const animating =

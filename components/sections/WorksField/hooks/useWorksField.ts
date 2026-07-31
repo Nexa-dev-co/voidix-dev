@@ -23,8 +23,6 @@ import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
 import { hideHologram } from '@/lib/hologramPose';
-import { measureSunScreenRect } from '@/lib/sunPlacement';
-import { createSunBackdrop, type SunBackdrop } from '../sunBackdrop';
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
@@ -101,24 +99,6 @@ const WORKS_RENDER_THRESHOLD = 0.28;
 // the swap is invisible — see components/sections/Chamber/chamberScene.ts.
 const CHAMBER_ENGAGE_EPSILON = 0.001;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
-// ── Which of the two sun images is the live one ──
-//
-// The sun exists twice: as a fixed DOM billboard behind this canvas, and as a copy of that same canvas
-// sampled into the space render (sunBackdrop.ts). Exactly one may ever be on screen.
-//
-// ⚠ This is a THRESHOLD, not a cross-fade, and that is the whole point. It was a fade, three times, and
-// every version put both suns on screen at once — because a fade needs the two halves to agree frame by
-// frame, and they were being driven from different copies of the progress with different easing. The
-// two images are the same canvas at the same screen rectangle, so there is nothing for a fade to hide:
-// a hard swap is invisible, and a single boolean makes the two states mutually exclusive by
-// construction rather than by timing.
-//
-// Placed past HANDOFF_FIELD_FADE's end (0.55 — where the works field's own DOM opacity finishes coming
-// in), so the render is definitely on screen before the billboard is taken away. Below it the billboard
-// owns the sun; above it the render does, for the whole of works AND the chamber.
-const SUN_TAKEOVER_PROGRESS = 0.6;
-/** The OUTER sun element — hidden wholesale, rather than fading something inside it. */
-const SUN_LAYER_SELECTOR = '.hero-sun-layer';
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
 // ── The body's arrival — it flies in from the far dark as the flight completes ──
@@ -713,11 +693,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // strategy holding GPU buffers with nothing to dispose it.
     let disposed = false;
     const markRigs: MarkRig[] = [];
-    // Null on a viewport that never mounted a sun (see useIsLowPowerViewport) — the field simply goes
-    // without one rather than failing to build.
-    let sunBackdrop: SunBackdrop | null = null;
-    let sunBackdropAttempts = 0;
-    let sunLayerElement: HTMLElement | null = null;
     let shardMeshes: THREE.InstancedMesh[] = [];
     const shardGeometries: THREE.BufferGeometry[] = [];
     const shardMaterials: THREE.MeshStandardMaterial[] = [];
@@ -872,41 +847,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       await buildMark();
     };
 
-    /**
-     * The sun, as part of the picture rather than as a billboard behind it. Added to the SPACE scene,
-     * so it travels with the render onto the chamber's display exactly as the mark does.
-     *
-     * ⚠ Retried rather than done once, because the element it samples may not exist yet. `SunCanvas` is
-     * dynamically imported with `ssr: false`, so its canvas mounts on its own schedule — and while it
-     * has always won that race in practice, losing it once would mean no sun on the table at all, with
-     * nothing on screen to explain why. Cheap to retry: one `querySelector` per frame, and only until
-     * it succeeds.
-     *
-     * Capped so a viewport that genuinely has no sun (see `useIsLowPowerViewport`) stops asking.
-     */
-    const SUN_BACKDROP_MAX_ATTEMPTS = 240;
-    const attachSunBackdrop = () => {
-      if (sunBackdrop || sunBackdropAttempts >= SUN_BACKDROP_MAX_ATTEMPTS) return;
-      sunBackdropAttempts += 1;
-      sunBackdrop = createSunBackdrop(
-        document.querySelector<HTMLCanvasElement>('.sun-canvas'),
-        BLOOM_THRESHOLD,
-        TONE_MAPPING_EXPOSURE,
-      );
-      if (!sunBackdrop) return;
-      scene.add(sunBackdrop.object);
-      // Placed here as well as in `applyRendererSize`, because that has already run by the time this
-      // resolves — without it the backdrop would sit at its default rect until the first resize, which
-      // on a desktop may never come.
-      const sunRect = measureSunScreenRect();
-      if (sunRect) sunBackdrop.setRect(sunRect, viewportWidth, viewportHeight);
-    };
-
     const buildField = async () => {
       await buildMark();
       if (disposed) return;
-
-      attachSunBackdrop();
 
       // Ambient shard debris — two irregular base shapes, each instanced across the field.
       const totalShards = lowPower ? SHARD_COUNT_LOW : SHARD_COUNT;
@@ -1189,8 +1132,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       appliedPixelRatio = ratio;
       viewportWidth = width;
       viewportHeight = height;
-      const sunRect = measureSunScreenRect();
-      if (sunBackdrop && sunRect) sunBackdrop.setRect(sunRect, width, height);
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
       // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
@@ -1363,30 +1304,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
       const handoffActive = flightState.current > 0.001 && flightState.current < 0.999;
       const revealScrubbing = revealing && revealProgress < CHAMBER_SCRUB_END;
-      // ── The one sun ──
-      // Both images are decided by this single value, so they cannot both be on screen: whichever one
-      // is not the live one is fully off in the same frame. See SUN_TAKEOVER_PROGRESS.
-      if (!sunBackdrop) attachSunBackdrop();
-      const renderOwnsSun = flightState.current >= SUN_TAKEOVER_PROGRESS;
-      if (sunBackdrop) {
-        sunBackdrop.setOpacity(renderOwnsSun ? 1 : 0);
-        sunBackdrop.refresh();
-      }
-      // Queried lazily: `SunCanvas` is dynamically imported, so the element may not exist on the first
-      // frames. Re-queried only while missing, then held.
-      if (!sunLayerElement) {
-        sunLayerElement = document.querySelector<HTMLElement>(SUN_LAYER_SELECTOR);
-      }
-      if (sunLayerElement) {
-        // `visibility` rather than `opacity`, and on the OUTER layer rather than the flight inside it:
-        // it is the most complete hide available, it takes the element's whole subtree with it, and it
-        // is a property nothing else on this element writes. The canvas keeps rendering while hidden —
-        // CSS visibility does not touch the drawing buffer — so the backdrop can still sample it.
-        const wanted = renderOwnsSun ? 'hidden' : '';
-        if (sunLayerElement.style.visibility !== wanted) {
-          sunLayerElement.style.visibility = wanted;
-        }
-      }
 
       const isDrawing = worksShouldRender && !document.hidden;
       if (isDrawing) {
@@ -1486,7 +1403,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // whole mark — including the two surfaces it loaded for itself.
       markRigs.forEach((rig) => rig.strategy.dispose());
       markRigs.length = 0;
-      sunBackdrop?.dispose();
       shardGeometries.forEach((geometry) => geometry.dispose());
       shardMaterials.forEach((material) => material.dispose());
       shardMeshes = [];
