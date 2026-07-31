@@ -1310,6 +1310,34 @@ body {
 
 /* Overlay — head (eyebrow + active detail) above, the arrow nav pinned to the bottom. Ignores the
    pointer so drag-to-look reaches the canvas; only the nav row re-enables it. */
+/* ─── Contact ───────────────────────────────────────────────────────
+   The last overlay in the hero's single pin. You get here by diving back INTO the chamber's display,
+   so the space behind this is the works canvas — same stars, same debris, same camera angle. Nothing
+   here draws a background of its own; the black hole showing through IS the background.
+
+   z 40 sits above the works field (z 30), which is what it overlays. Hidden until the return crossing
+   fades it in (RETURN_CONTACT_UI_FADE) — GSAP's autoAlpha owns the opacity, so the base state only has
+   to make sure it is not on screen before the pin has run. */
+.contact-section {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  opacity: 0;
+  visibility: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.5rem, 5vw, 5rem) clamp(1.75rem, 5vh, 3.25rem);
+  /* The panel takes its own pointer events back; the rest stays transparent to the drag-to-look
+     canvas underneath, exactly as the works overlay does. */
+  pointer-events: none;
+}
+
+.contact-panel {
+  pointer-events: auto;
+  width: min(26rem, 100%);
+}
+
 .works-overlay {
   position: relative;
   z-index: 2;

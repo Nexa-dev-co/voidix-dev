@@ -28,6 +28,14 @@ import {
   BLOOM_THRESHOLD,
 } from './sunBloom';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
+import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents';
+import {
+  evaluateSingularity,
+  tremorOffset,
+  SINGULARITY_EXPOSURE,
+  SINGULARITY_REDSHIFT_COLOR,
+} from './sunSingularity';
+import { createSunBlackHole, type SunBlackHole } from './sunBlackHole';
 import { createSunParticles } from './sunParticles';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
@@ -300,6 +308,22 @@ const COLLAPSE_MAGMA_EMISSIVE = 5;
  */
 const SUN_COVERED_CHAMBER_PROGRESS = 0.15;
 
+/**
+ * Where in the chamber→contact return the star's death runs.
+ *
+ * Deliberately the BACK of the span only. The front is spent diving out of the room (RETURN_DIVE_END,
+ * 0.5) and then bringing the star back (RETURN_SUN_RESTORE, [0.46, 0.6]) — and the finale only works if
+ * the visitor sees it alive and untouched first. The gap between 0.6 and the start below is that beat:
+ * the star simply sits there, exactly as works left it, long enough to be recognised.
+ *
+ * ⚠ Three constants in three files have to stay in order: the dive lands, the star returns, and only
+ * then does it die. Moving any one of them without the others either kills the star behind an opaque
+ * canvas or has it imploding as it fades up.
+ */
+const SINGULARITY_WINDOW: readonly [number, number] = [0.55, 1];
+/** Below this the finale contributes nothing, so skip it entirely rather than write identity values. */
+const SEQUENCE_EPSILON = 0.0005;
+
 const TWO_PI = Math.PI * 2;
 
 /** One fracture shard: where it belongs, and where it travels in from. */
@@ -418,6 +442,36 @@ export default function SunModelCanvas() {
     let cameraDistance = 1;
     /** The magma materials, so the assembly can run them hot while the pieces are still inbound. */
     const heatedMaterials: THREE.MeshStandardMaterial[] = [];
+    /** Each heated material's authored emissive, by name — the colour the finale's redshift departs from. */
+    const redshiftBaseEmissive = new Map<string, THREE.Color>();
+    /** Scratch for the redshift target, so a per-frame lerp allocates nothing. */
+    const singularityRedshift = new THREE.Color(SINGULARITY_REDSHIFT_COLOR);
+
+    // ── What the star leaves behind ──
+    // Fetched lazily, the first time the return is scrubbed at all. It is the last asset on the page and
+    // most visits never reach it, so it must not sit on the critical path for the intro, the hero or any
+    // section before this one.
+    let blackHole: SunBlackHole | null = null;
+    let blackHoleRequested = false;
+    const ensureBlackHole = () => {
+      // Gated on the sun's own model, because the hole is sized relative to it (`shardRadius` is only
+      // real once the shards have been measured). In practice the intro holds the whole site until the
+      // star has assembled, so this can only fail on a bypassed intro — but the sizing is silent when it
+      // is wrong, which is exactly the kind of bug worth a guard.
+      if (blackHoleRequested || !modelRoot) return;
+      blackHoleRequested = true;
+      createSunBlackHole(shardRadius)
+        .then((loaded) => {
+          if (disposed || !loaded) return;
+          blackHole = loaded;
+          spinner.add(loaded.object);
+          // The sequence may already have moved on while this decoded; draw the correct moment now.
+          forceRender = true;
+        })
+        .catch(() => {
+          /* the finale loses its subject, not the canvas */
+        });
+    };
     const flareSpins: FlareSpin[] = [];
     const scratchSpin = new THREE.Quaternion();
 
@@ -479,14 +533,47 @@ export default function SunModelCanvas() {
     // what lets the collapsing sun stay alive for the whole works section while still costing nothing
     // once the room has taken over.
     let covered = false;
-    const onChamberProgress = (event: Event) => {
+    // The two spans that decide it, kept apart because they say opposite things: the reveal hides the
+    // star, and the return brings it back to die.
+    let revealProgress = 0;
+    let returnProgress = 0;
+    // The finale's own 0..1, eased per frame exactly as `cracks` and `collapse` are — same contract,
+    // so it scrubs, reverses, and cannot be outrun.
+    let targetSequence = 0;
+    let sequence = 0;
+    const applyCovered = () => {
       const wasCovered = covered;
-      covered = readChamberProgress(event) >= SUN_COVERED_CHAMBER_PROGRESS;
+      // ⚠ The return VETOES the reveal, and this is not a tidy-up to fold into one comparison. The
+      // reveal's progress stays pinned at 1 for the whole of the chamber AND the return, so on its own
+      // it would keep the star frozen through the one beat it actually has to perform. Contact is where
+      // it dies; a frozen star cannot die.
+      covered = revealProgress >= SUN_COVERED_CHAMBER_PROGRESS && returnProgress <= 0;
       // Uncovering has to draw again: the sun stopped redrawing while it was hidden, so without this
       // scrolling back out of the room would reveal the stale frame it froze on.
       if (wasCovered && !covered) forceRender = true;
     };
+    const onChamberProgress = (event: Event) => {
+      revealProgress = readChamberProgress(event);
+      applyCovered();
+    };
+    const onContactProgress = (event: Event) => {
+      returnProgress = readContactProgress(event);
+      // ── The finale's sequence ──
+      // Mapped off the tail of the return, because the front of that span is spent bringing the star
+      // BACK: the camera swings off the room and RETURN_SUN_RESTORE fades it in, and it has to be seen
+      // alive and unchanged before anything happens to it. Starting the sequence at 0 would have the
+      // star already imploding as it faded up, which is the one thing this ending cannot do.
+      if (returnProgress > 0) ensureBlackHole();
+      targetSequence = THREE.MathUtils.clamp(
+        (returnProgress - SINGULARITY_WINDOW[0]) /
+          (SINGULARITY_WINDOW[1] - SINGULARITY_WINDOW[0]),
+        0,
+        1,
+      );
+      applyCovered();
+    };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+    window.addEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
 
     // ── Assembly ──
     // A one-shot flight, cued when the load reaches 100%. The dust carries the wait; this is the reward
@@ -645,6 +732,10 @@ export default function SunModelCanvas() {
             // a single global ramp rather than a per-shard one.
             if (material.emissiveMap && !heatedMaterials.includes(material)) {
               heatedMaterials.push(material);
+              // The authored emissive, kept so the finale's redshift can lerp FROM it and land back on
+              // it exactly at sequence 0. Captured here rather than assumed, because it is the model's
+              // own value and re-exporting the glTF is free to change it.
+              redshiftBaseEmissive.set(material.name, material.emissive.clone());
             }
           }
         });
@@ -853,6 +944,7 @@ export default function SunModelCanvas() {
       ringForm += (targetRingForm - ringForm) * stateEase;
       ringWorksForm += (targetRingWorks - ringWorksForm) * stateEase;
       collapse += (targetCollapse - collapse) * stateEase;
+      sequence += (targetSequence - sequence) * stateEase;
       const elapsed = clock.getElapsedTime();
       // The star always turns; it only stops once the works field has covered it completely.
     const moving = !covered;
@@ -936,6 +1028,57 @@ export default function SunModelCanvas() {
         THREE.MathUtils.lerp(BLOOM_THRESHOLD, COLLAPSE_BLOOM_THRESHOLD, collapse),
       );
       renderer.toneMappingExposure = THREE.MathUtils.lerp(EXPOSURE, COLLAPSE_EXPOSURE, collapse);
+
+      // ── The finale, layered ON TOP of the collapse pose ──
+      // Everything above has already posed the star as the works section leaves it — cracked shell
+      // crushed inward, white-hot core, hot grade. The Singularity stage in the lab is defined the same
+      // way (it spreads COLLAPSE_STATE and adds to it), so this applies over the top rather than
+      // replacing any of it, and at sequence 0 every line below resolves to what was just written.
+      if (sequence > SEQUENCE_EPSILON) {
+        const finale = evaluateSingularity(sequence, reduceMotion);
+
+        // The star falls in. Multiplied onto the collapse's own scale, not assigned over it.
+        if (modelRoot) modelRoot.scale.multiplyScalar(finale.modelScale);
+
+        // The shell is crushed further and shudders as it goes. Re-posed rather than nudged: applyCracks
+        // has already placed every shard this frame, so this is the same computation carried further.
+        if (assembly >= 1 && shardRadius > 0) {
+          shards.forEach(({ object, outward }, index) => {
+            const distance =
+              -(finale.shardCrush + tremorOffset(index, sequence, finale.tremor)) * shardRadius;
+            object.position.addScaledVector(outward, distance);
+          });
+        }
+
+        // Gravitational redshift — light losing energy climbing out of a deepening well.
+        if (assembly >= 1) {
+          heatedMaterials.forEach((material) => {
+            const base = redshiftBaseEmissive.get(material.name);
+            if (!base) return;
+            material.emissive.copy(base).lerp(singularityRedshift, finale.redshift);
+          });
+        }
+
+        // The glow leaves with the star: its emissive body is gone and its core light is drawn in too.
+        coreLight.intensity *= finale.coreLightScale;
+
+        // The grade. The flash is additive on top of whatever the collapse graded to, and the bloom
+        // settles toward the black hole's own value as the horizon opens.
+        bloom.setGrade(
+          finale.bloomStrength,
+          THREE.MathUtils.lerp(BLOOM_RADIUS, COLLAPSE_BLOOM_RADIUS, collapse),
+          THREE.MathUtils.lerp(BLOOM_THRESHOLD, COLLAPSE_BLOOM_THRESHOLD, collapse),
+        );
+        renderer.toneMappingExposure = SINGULARITY_EXPOSURE + finale.exposureBoost;
+
+        // The hole opens from the middle, then the disc gathers around it — each part scaled from zero
+        // on its own phase, never cross-faded. See sunBlackHole.ts for why the order matters.
+        blackHole?.setForm(finale.horizonForm, finale.ringFormEarly, finale.ringFormLate);
+      } else if (blackHole) {
+        // Scrubbed back off the finale entirely: close it completely rather than leaving whatever the
+        // last frame happened to be. This is what lets the whole ending reverse into a live star.
+        blackHole.setForm(0, 0, 0);
+      }
       // Guarded on the assembly, because the intro drives these same materials hot while the shards
       // are still inbound (see ASSEMBLY_HEAT). Writing here unconditionally would overwrite that heat
       // with the resting value on the very frames it exists for.
@@ -974,6 +1117,9 @@ export default function SunModelCanvas() {
         Math.abs(targetRingForm - ringForm) > STATE_SETTLE_EPSILON ||
         Math.abs(targetRingWorks - ringWorksForm) > STATE_SETTLE_EPSILON ||
         Math.abs(targetCollapse - collapse) > STATE_SETTLE_EPSILON ||
+        // Without this the demand-render gate sleeps through the entire finale: the star's death is not
+        // "movement" by any of the tests above, so the last frame before it would simply be held.
+        Math.abs(targetSequence - sequence) > STATE_SETTLE_EPSILON ||
         moving ||
         assembling;
       if (!document.hidden && (animating || wasAnimating || forceRender)) {
@@ -992,6 +1138,7 @@ export default function SunModelCanvas() {
       window.removeEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+      window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
       window.clearTimeout(cueFallbackTimer);
@@ -1002,6 +1149,7 @@ export default function SunModelCanvas() {
         materials.forEach((material) => material.dispose());
       });
       sunParticles?.dispose();
+      blackHole?.dispose();
       bloom.dispose();
       environmentTexture.dispose();
       pmrem.dispose();

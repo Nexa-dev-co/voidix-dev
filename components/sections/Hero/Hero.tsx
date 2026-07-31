@@ -9,6 +9,7 @@ import ConstellationFrame from '@/components/effects/ConstellationFrame/Constell
 import HeroInstruments from '@/components/sections/Hero/HeroInstruments/HeroInstruments';
 import ServicesDeck from '@/components/sections/ServicesDeck/ServicesDeck';
 import WorksField from '@/components/sections/WorksField/WorksField';
+import ContactSection from '@/components/sections/Contact/ContactSection';
 import { DECK_SERVICES } from '@/components/sections/ServicesDeck/deckServices';
 import { WORKS_PROJECTS } from '@/components/sections/WorksField/worksProjects';
 
@@ -105,6 +106,10 @@ export default function Hero() {
       {/* Works field — the next overlay in the SAME pin: after the last craft, the fleet fades out
           and the project-meteor field fades in on the same black, cycling as scroll continues. */}
       <WorksField activeIndex={activeProject} goTo={goToProject} />
+
+      {/* Contact — the last stop in the same pin. The camera dives back into the chamber's display and
+          lands in the space again, so this overlays the SAME works canvas; there is no new scene. */}
+      <ContactSection />
 
     </section>
   );

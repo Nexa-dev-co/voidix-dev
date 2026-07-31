@@ -27,6 +27,10 @@ import {
   type ChamberProgressDetail,
 } from "@/lib/chamberEvents";
 import {
+  CONTACT_PROGRESS_EVENT,
+  type ContactProgressDetail,
+} from "@/lib/contactEvents";
+import {
   HERO_SERVICES_PROGRESS_EVENT,
   type HeroServicesProgressDetail,
 } from "@/lib/heroServicesEvents";
@@ -148,12 +152,15 @@ const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the fligh
 // again, the two images must be mutually exclusive by construction rather than by timing.
 const REVEAL_SCROLL_VH = 140;
 const REVEAL_WORKS_UI_FADE: [number, number] = [0.02, 0.16];
-// Keep the END in step with chamberScene's OPAQUE_WINDOW — that is where the canvas seals and the star
-// stops being visible regardless. The START is deliberately late: the works camera now TURNS AWAY from
-// the star over the same window (REVEAL_PAN_* in useWorksField), and a fade beginning at 0 would dim it
-// out before the turn had carried it anywhere. The pan does the visible work; this only closes the door
-// behind it, and guarantees the star is gone on any viewport where the turn alone doesn't clear it.
-const REVEAL_SUN_FADE: [number, number] = [0.06, 0.12];
+// ⚠ Sits at the END of the reveal's look-down lead-in (REVEAL_LEADIN_END, 0.18 in useWorksField), NOT
+// at the start of the span. The works camera turns away from the star across that lead-in, and a fade
+// beginning at 0 would dim the star out before the turn had carried it anywhere — which is the whole
+// point of the turn. The pan does the visible work; this only closes the door behind it, and guarantees
+// the star is gone on any viewport where the turn alone doesn't clear the frame.
+//
+// It must still be CLOSED by the time the room starts, because that is when the canvas seals opaque
+// (OPAQUE_WINDOW) and a half-faded star would simply be cut off mid-fade. Keep the end on the lead-in.
+const REVEAL_SUN_FADE: [number, number] = [0.12, 0.18];
 // The reveal glide now scrubs the WHOLE chamber cinematic on one gesture — the pull-back out of the screen
 // AND the tour across the room to the podium — as a single reversible span (the TOUR_START split lives in
 // chamberScene; see docs/chamber-tour-smoothing-plan.md). So the glide is long enough to contain both:
@@ -175,6 +182,35 @@ const SUN_FLIGHT_SELECTOR = ".hero-sun-flight";
 // So the pin has nothing to commit here — the chamber's beats are moments in a timeline, not scroll
 // positions, and only the scene knows when the walk-up ends. It says so itself (CHAMBER_HOLOGRAM_EVENT).
 const CHAMBER_STOP_COUNT = 1;
+
+// ── The chamber → contact return ──
+// You go back INTO the display, and the space has changed while you were away: the mark is gone and the
+// star is a black hole. The camera move is the reveal's pull-back run backwards, so there is no new path
+// to author — the return simply unwinds the chamber's progress (see lib/contactEvents.ts for why it is
+// its own signal rather than a second writer of the chamber's).
+//
+// ⚠ Nearly twice the reveal's length, because it carries nearly twice as much: the dive back into the
+// display AND the star's death, back to back. Sized so the SECOND of those — the part the visitor is
+// actually here for — gets about as long as the whole works→chamber reveal does. At the reveal's own
+// 5.8s the finale was getting roughly a third of the span, so the star imploded in under two seconds
+// and read as a glitch rather than as an event.
+//
+// The settle is short — there is nothing to land on the way in, the same reasoning as the reveal's own
+// reverse settle.
+const RETURN_SCROLL_VH = 240;
+const RETURN_STEP_DURATION = 9.5;
+const RETURN_SETTLE_MS = 200;
+const RETURN_CONTACT_UI_FADE: [number, number] = [0.72, 0.94];
+// ⚠ Timed against RETURN_DIVE_END (0.5 in useWorksField), not against this span's own shape.
+//
+// The star is a DOM billboard behind the works canvas, and the room seals that canvas opaque until the
+// chamber has unwound past OPAQUE_WINDOW — which, with the dive landing at 0.5, happens at about 0.44.
+// Fading it up before then does nothing visible: it was already at full opacity behind an opaque canvas
+// and the visitor never saw it arrive. So it comes back JUST as the space does, and is then left alone
+// for a beat before the finale touches it. Move the dive and this has to move with it.
+const RETURN_SUN_RESTORE: [number, number] = [0.38, 0.48];
+const CONTACT_STOP_COUNT = 1;
+const CONTACT_SELECTOR = ".contact-section";
 
 // The far edge of a crossing IS the next section's first stop, and browsers round the settled scroll
 // to device pixels — so a glide "onto" that stop can leave the pin a hair inside the span and the
@@ -212,7 +248,7 @@ const WORKS_SELECTOR = ".works-field";
 const WORKS_OVERLAY_SELECTOR = ".works-overlay";
 
 /** The full-black scene currently on screen — "fill" plus one name per carousel section. */
-type Stage = "fill" | "services" | "work" | "process";
+type Stage = "fill" | "services" | "work" | "process" | "contact";
 
 /** What a crossing owns, beyond the scroll length the layout needs. */
 interface CrossingSpec {
@@ -310,6 +346,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     const worksOverlay = heroSection.querySelector<HTMLElement>(
       WORKS_OVERLAY_SELECTOR,
     );
+    const contact = heroSection.querySelector<HTMLElement>(CONTACT_SELECTOR);
 
     // 1. Hide everything the reveal/transition will bring in. The intro veil covers
     //    the hero while this runs, so there's no flash.
@@ -361,6 +398,28 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // ── The works → chamber reveal ──
     // The camera move is in the WebGL scene; here we drop the works UI and retire the sun.
     const sunFlight = document.querySelector<HTMLElement>(SUN_FLIGHT_SELECTOR);
+
+    // ── The star's opacity has ONE owner, and it has to ──
+    //
+    // Two spans move it in opposite directions: the reveal retires it into the room, the return brings
+    // it back to die. Letting each write the property directly does not work, and fails in the worst
+    // possible way — EVERY crossing's `apply` runs on EVERY pin update, including the very first one at
+    // scroll 0. So the return, sitting at its own progress 0, would write "not yet restored" = 0 over
+    // the reveal's "not yet hidden" = 1, and the sun would be switched off for the entire site before
+    // the visitor had scrolled a pixel. (It was. That is exactly what happened.)
+    //
+    // So both spans report their progress here and this resolves the single value. Order-independent by
+    // construction: whichever crossing dispatches last, the answer is the same.
+    let revealSunProgress = 0;
+    let returnSunProgress = 0;
+    const applySunOpacity = () => {
+      if (!sunFlight) return;
+      const retired = fadeWindow(REVEAL_SUN_FADE, revealSunProgress);
+      const restored = fadeWindow(RETURN_SUN_RESTORE, returnSunProgress);
+      gsap.set(sunFlight, {
+        opacity: gsap.utils.clamp(0, 1, 1 - retired + restored),
+      });
+    };
     const applyWorksToChamberReveal = (progress: number) => {
       if (worksOverlay) {
         gsap.set(worksOverlay, {
@@ -369,15 +428,38 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       }
       // Driven on the INNER sun element on purpose: HeroSun owns the outer layer's opacity for its
       // resize hide/settle, and two owners of one property is how you get a sun that flickers back on
-      // when the window is nudged.
-      if (sunFlight) {
-        gsap.set(sunFlight, {
-          opacity: 1 - fadeWindow(REVEAL_SUN_FADE, progress),
-        });
-      }
+      // when the window is nudged. Reported rather than written, for the same reason — see
+      // applySunOpacity, which is the only thing that touches it.
+      revealSunProgress = progress;
+      applySunOpacity();
 
       window.dispatchEvent(
         new CustomEvent<ChamberProgressDetail>(CHAMBER_PROGRESS_EVENT, {
+          detail: { progress },
+        }),
+      );
+    };
+
+    // ── The chamber → contact return ──
+    // The camera dives back into the display and the space has changed. The move itself lives in the
+    // WebGL scene (fed this same 0..1, and combined there with the reveal's — see lib/contactEvents.ts);
+    // the DOM this crossing owns is the contact panel coming in, late, once you are back inside.
+    const applyChamberToContactReturn = (progress: number) => {
+      if (contact) {
+        gsap.set(contact, {
+          autoAlpha: fadeWindow(RETURN_CONTACT_UI_FADE, progress),
+        });
+      }
+      // ── The star comes back ──
+      // It was retired on the way into the room (REVEAL_SUN_FADE) and this brings it back, early, as
+      // the camera swings off the room and onto where it was. It has to be there and it has to look
+      // untouched: the finale is the visitor watching it die, which only works if they first see it
+      // alive. Reported, never written — applySunOpacity owns the property.
+      returnSunProgress = progress;
+      applySunOpacity();
+
+      window.dispatchEvent(
+        new CustomEvent<ContactProgressDetail>(CONTACT_PROGRESS_EVENT, {
           detail: { progress },
         }),
       );
@@ -417,6 +499,18 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         stopCount: CHAMBER_STOP_COUNT,
         // Nothing to commit: the room, the tour and the hologram all run off the reveal landing, and the
         // input lock that covers the lot lives on the crossing (REVEAL_SETTLE_MS).
+        crossingAfter: {
+          scrollVh: RETURN_SCROLL_VH,
+          stepDurationSeconds: RETURN_STEP_DURATION,
+          settleMs: RETURN_SETTLE_MS,
+          apply: applyChamberToContactReturn,
+        },
+      },
+      {
+        key: "contact",
+        stopCount: CONTACT_STOP_COUNT,
+        // Also nothing to commit — the section is one held pose inside the space, and everything about
+        // getting there is scrubbed from the return crossing above.
       },
     ];
     // Crossings in the same order the layout resolves them (both walk the sections in order).
@@ -486,11 +580,19 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       fade(subline, 0, DECK_REVEAL_DURATION);
     };
 
+    // You are back inside the screen, and it is still the works canvas drawing it — so, exactly as with
+    // the chamber, the layering does not change and every visual of the return is scrubbed from its span.
+    const enterContact = () => {
+      heroSection.classList.add(SERVICES_CLASS);
+      fade(subline, 0, DECK_REVEAL_DURATION);
+    };
+
     const enterStage: Record<Stage, (fromStage: Stage) => void> = {
       fill: enterFill,
       services: enterServices,
       work: enterWorks,
       process: enterChamber,
+      contact: enterContact,
     };
     let currentStage: Stage = "fill";
     const setStage = (stage: Stage) => {

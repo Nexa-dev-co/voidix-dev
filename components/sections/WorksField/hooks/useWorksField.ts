@@ -19,11 +19,13 @@ import { accretionTransitionFactory } from '../transitions/accretionTransition';
 import type { MarkTransitionStrategy } from '../transitions/markTransition';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
+import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
 import { hideHologram } from '@/lib/hologramPose';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
+import { createWorksHud } from '../worksHud';
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
@@ -102,6 +104,64 @@ const CHAMBER_ENGAGE_EPSILON = 0.001;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
+// ── The camera feed's instrument frame (worksHud.ts) ──
+//
+// ⚠ It appears ONLY as the reveal starts — as the display's edges come into frame — and never during
+// works itself. This is the whole point and it is easy to get backwards (it was, first time).
+//
+// The room is a plot twist. Nobody is supposed to see it coming. A camera HUD standing over the works
+// section for its entire length ANNOUNCES the twist several minutes before it lands: the visitor reads
+// "FEED 02/04" and knows they are looking at a screen, so backing out of one is a confirmation rather
+// than a surprise. Held back until the edges show, the same readouts do the opposite job — they arrive
+// with the realisation and explain it retroactively, which is what makes the pull-back land.
+//
+// Keyed to the REVEAL's progress, not the field's. Starts a hair off zero, where the display still
+// exactly fills the frustum and there is nothing yet to give away.
+const HUD_FADE_WINDOW: readonly [number, number] = [0.02, 0.16];
+/**
+ * How far the feed stops down, as a bump rather than a ramp.
+ *
+ * A remote camera swinging near a star protects its sensor, then reopens once it is clear — so this
+ * rises with the turn away (over the window the star actually leaves in, OPAQUE_WINDOW /
+ * REVEAL_SUN_FADE) and RECOVERS to nominal across the tour.
+ *
+ * The recovery is the part that earns its place. The frame only fades up at 0.02–0.16, by which time
+ * the star has already gone, so a readout that merely sat pinned at its floor would explain nothing
+ * and never move. Arriving mid-recovery, it is caught in the act: the visitor sees −5.6 EV climbing
+ * back to 0.0 and understands, without being told, what happened to the light.
+ */
+const HUD_EXPOSURE_MAX_STOPS = 5.6;
+const HUD_EXPOSURE_STOP_DOWN: readonly [number, number] = [0.0, 0.12];
+const HUD_EXPOSURE_RECOVER: readonly [number, number] = [0.18, 0.42];
+
+/**
+ * How much of the return is spent diving back into the display.
+ *
+ * ⚠ NOT the whole span, and the reason is the single most confusing coupling in this section. The sun
+ * is a DOM billboard BEHIND this canvas, and the room seals the canvas opaque over `OPAQUE_WINDOW`
+ * (chamber progress 0.12). So the star cannot be seen until the chamber has unwound past that point —
+ * and if the unwind is spread across the whole return, that does not happen until contact ≈ 0.88,
+ * leaving no room at all for the finale. The star was restored, imploded and died entirely behind an
+ * opaque canvas, and the footer arrived empty.
+ *
+ * Landing the dive at the halfway mark frees the back half for what the section is actually FOR: the
+ * star comes back, is seen alive, and then dies.
+ */
+const RETURN_DIVE_END = 0.4;
+
+// ── Contact: the fall toward the black hole ──
+// Ramped across the back half of the return, so the tails open up as the display grows back to fill the
+// frame rather than while you are still watching a small rectangle across a room.
+const CONTACT_FALL_WINDOW: readonly [number, number] = [0.55, 1];
+/**
+ * How hard the fall streaks, against the travel warp's full punch.
+ *
+ * Well under 1 on purpose. The warp's maximum is a hop between two projects — a violent, half-second
+ * event. This is a steady fall that the visitor sits inside while reading a contact form, and at the
+ * warp's intensity the starfield turns into a tunnel of lines nobody can read over.
+ */
+const CONTACT_FALL_STREAK_SCALE = 0.42;
+
 // ── The reveal pan: the camera turns away from the star ──
 //
 // The star cannot be in the picture at the moment the picture becomes a screen — a full-brightness sun
@@ -110,26 +170,52 @@ const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as
 // remote camera would actually do, and the sun leaves the frame because the sun is now placed against
 // the shot rather than against the viewport (`publishSunParallax`). Nothing else has to know.
 //
-// TILT DOWN, so the content rises and the star exits the top. The angle needed is remarkably stable
-// across viewport heights — a taller frame pushes the top edge further away, but also makes the sun's
-// fixed 200px rise a smaller angular offset, and the two very nearly cancel:
-//   700px tall → 20.0°     1000px → 20.8°     1400px → 21.2°   (to clear the glow entirely)
-// So one authored angle works everywhere. Not bound by DRAG_PITCH_CLAMP — that clamps what the visitor
-// may do, and this is the reveal's own channel.
+// ⚠ The sign is the whole behaviour. Do not "tidy" it to a positive.
 //
-// ⚠ The mark rises with it. They sit ~200px apart on screen, so any tilt big enough to lose one
-// recomposes the other; at the full angle the mark leaves frame too. That is deliberate — the reveal's
-// subject stops being the mark the moment the pull-back starts, and the display is shrinking over the
-// same window, which compresses all of this. If it ever reads wrong, the fix is to pan less and let the
-// sun's fade finish the job (see docs/works-camera-feed-plan.md §2.3), not to add a second mechanism.
-const REVEAL_PAN_DEGREES = 21;
-// ⚠ This window is NOT a free choice, and the obvious wider value is wrong. The sun is a DOM billboard
-// BEHIND this canvas, and the room seals the canvas opaque over `OPAQUE_WINDOW` ([0, 0.12] in
-// chamberScene) — so past ~0.12 the star cannot be seen at all, whatever the camera is doing. A pan
-// spread over the pull-back's whole half would therefore be invisible for three quarters of its travel
-// and would only be moving the mark. Keep this in step with OPAQUE_WINDOW; if the room's seal is ever
-// retimed, this follows it.
-const REVEAL_PAN_WINDOW: readonly [number, number] = [0.0, 0.12];
+// This is the same channel drag-to-look uses, so it inherits that sign convention: dragging UP makes
+// `clientY − startY` negative, so a drag up is a NEGATIVE pitch. Negative therefore lifts the camera
+// and tilts it back down onto the mark, carrying a distant star UP and out through the top of frame —
+// the move you get by dragging the scene upward yourself. Positive is the mirror image: the camera
+// drops, looks up, and the star exits the bottom. Both lose the star. Only one is the shot.
+//
+// The MAGNITUDE is deliberately well past the minimum. Clearing the star's glow takes about 21°, and
+// that figure barely moves across viewport heights — a taller frame pushes the top edge further away,
+// but also makes the sun's fixed 200px rise a smaller angular offset, and the two nearly cancel:
+//   700px tall → 20.0°     1000px → 20.8°     1400px → 21.2°
+// At double that the star is long gone before the turn is finished, and the extra travel is not buying
+// coverage — it is buying the MOVE. A big deliberate swing off the subject reads as a decision; the
+// smallest angle that technically works reads as a flinch.
+// Not bound by DRAG_PITCH_CLAMP: that clamps what the visitor may do, and this is the reveal's own.
+//
+// ⚠ The mark goes with it, and at this angle leaves frame entirely. That is the intent — the reveal's
+// subject stops being the mark the moment the camera turns off it.
+/**
+ * The head of the reveal's span spent LOOKING DOWN, before the room begins at all.
+ *
+ * The turn away from the star and the pull-back out of the display used to run together, both starting
+ * at 0. That reads as one confused motion — the camera tilting while the picture it is tilting inside
+ * simultaneously shrinks — and it gave the turn about 0.7s, which is not enough for a deliberate move.
+ *
+ * Splitting them makes it a sequence: the camera looks down, and THEN the room arrives. Two beats, in
+ * the order they would actually happen — an operator turns the lens off the star first, and only then
+ * do you get to see where you have been standing.
+ *
+ * Implemented by remapping the progress the CHAMBER sees (see `roomProgressFrom`), not by delaying
+ * anything: through the lead-in the room is handed a flat 0, which is the pose where the display fills
+ * the frustum exactly and the canvas is indistinguishable from the live space. So the beat is free —
+ * the room is not drawn at all until the camera has finished turning.
+ */
+const REVEAL_LEADIN_END = 0.18;
+
+const REVEAL_PAN_DEGREES = -42;
+// The turn owns the lead-in exactly: it is the beat, and it is finished before the room starts.
+//
+// ⚠ The window is NOT a free choice. The sun is a DOM billboard BEHIND this canvas, and the room seals
+// the canvas opaque over `OPAQUE_WINDOW` — so once the room begins the star cannot be seen at all,
+// whatever the camera is doing. Before the lead-in existed this capped the turn at 0.12 of the whole
+// span; now the lead-in holds the room off, which is what buys the turn its own time. Keep the two
+// equal: a pan running past the lead-in would still be swinging the mark after the pull-back had begun.
+const REVEAL_PAN_WINDOW: readonly [number, number] = [0.0, REVEAL_LEADIN_END];
 
 // ── Placing the sun against the shot (see `publishSunParallax`) ──
 /** Floor on the projected depth, so a deviation approaching 90° slides off-frame instead of diverging. */
@@ -489,6 +575,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       BLOOM_THRESHOLD,
     );
     spaceComposer.addPass(bloomPass);
+    // The camera feed's instrument frame, composited AFTER the bloom so its hairlines and type are
+    // exactly the colours authored rather than smeared by a pass they'd all be over the threshold of.
+    // In the SPACE stage, not the screen one, because it has to ride onto the chamber's display with
+    // the picture it belongs to. See worksHud.ts.
+    const hud = createWorksHud();
+    spaceComposer.addPass(hud.pass);
     /** Whatever the space pipeline last produced. Re-read every frame rather than cached, so no
      *  assumption about which of the composer's two buffers it landed in can rot. */
     const spaceTexture = () => spaceComposer.readBuffer.texture;
@@ -590,17 +682,121 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // Declared up HERE, far above the chamber it belongs to, because `updateCamera` reads it for the
     // reveal pan and is itself called during setup — with this next to `ensureChamber` that call landed
     // in the temporal dead zone.
-    const chamberState = { target: 0, current: 0, engaged: false };
+    // `reveal` and `contact` are the two crossings' RAW scrubbed values; `target` is what the room
+    // actually chases, combined from both (see combineChamberTarget). Kept apart rather than collapsed
+    // on arrival because the things that must NOT unwind — the camera's turn, the sun's fade — read the
+    // reveal's own value, and folding them together would lose it.
+    const chamberState = {
+      /** The reveal crossing's raw scrubbed value. */
+      reveal: 0,
+      /** The return crossing's raw scrubbed value. */
+      contact: 0,
+      /**
+       * The reveal, eased on its own.
+       *
+       * Everything that must NOT unwind on the way back out reads this: the camera's turn away from the
+       * star, and the instrument frame. Eased rather than taken raw because they are camera-rate
+       * visuals — driving them from the scrubbed value directly makes them track the scrollbar while
+       * the room they belong to eases, which is precisely the desync this codebase keeps re-learning.
+       */
+      revealEased: 0,
+      /** The two combined — what the ROOM chases. See combineChamberTarget. */
+      target: 0,
+      current: 0,
+      engaged: false,
+    };
+
+    /**
+     * The room's target: the reveal's progress, undone by the return's.
+     *
+     *     effectiveChamber = reveal × (1 − contact)
+     *
+     * At the end of the reveal this is 1 (standing at the podium). As the return scrubs 0→1 it walks
+     * back down to 0, which is the pose where the display fills the frustum exactly — so diving back
+     * into the screen is the pull-back run backwards, with no second camera path to author.
+     *
+     * ⚠ Only the ROOM reads this. `revealPanRadians` and the sun's fade key off `chamberState.reveal`,
+     * which stays pinned at 1 for the whole return — so the camera holds the angle it was left at, and
+     * the star stays dead. The star dying is the one irreversible thing on this site.
+     */
+    const combineChamberTarget = () => {
+      chamberState.target =
+        chamberState.reveal *
+        (1 - Math.min(chamberState.contact / RETURN_DIVE_END, 1));
+    };
+
+    // ── The mark belongs to works, and to nothing else ──
+    //
+    // Contact lands you back in the same space, and the whole point of that ending is what is MISSING
+    // from it. So the mark does not get hidden here, it gets taken out: `scene.remove` on the group, so
+    // it is not in the graph at all, plus the per-frame work below is skipped.
+    //
+    // ⚠ Removing it from the scene is the smaller half of this, and on its own it would not have done
+    // the job. What the mark actually costs every frame is `strategy.setTransition` + `strategy.update`
+    // — the geode morph's shader driver — and that is called from a list, not from the scene graph, so
+    // it keeps running on an object nobody can see. `markPresent` gates both.
+    //
+    // NOT disposed, deliberately. The build is asynchronous (outlines, a typeface, two surfaces) and is
+    // the section's one real build cost, so tearing it down would mean rebuilding it — and scrolling
+    // back from contact to works would arrive at an empty space and pop the mark in whenever it
+    // finished. Removed is free to undo; disposed is not.
+    let markPresent = true;
+    const setMarkPresent = (present: boolean) => {
+      if (present === markPresent) return;
+      markPresent = present;
+      markRigs.forEach((rig) => {
+        if (present) scene.add(rig.group);
+        else scene.remove(rig.group);
+      });
+    };
+
+    /**
+     * How far into the return the mark is taken away.
+     *
+     * Early, and the reason is that its disappearance should never be WATCHED. At this point the
+     * display is still a small rectangle across the room and the camera is walking back from the
+     * podium, so a mark leaving it is barely perceptible — and by the time the display has grown back
+     * to fill the frame, it has been gone for a while. The ending is an absence you discover, not a
+     * vanishing you see happen.
+     */
+    const CONTACT_MARK_REMOVED_AT = 0.05;
+
+    // ⚠ The black hole is NOT here, and it was, briefly. It belongs to `SunModelCanvas`, because the
+    // finale is the sun BECOMING it — and a sun in one WebGL context turning into a black hole in
+    // another is a cross-context cross-fade, which is the exact thing that failed with the second sun.
+    // One scene, one continuous transition. See docs/contact-black-hole-plan.md.
+
+    /**
+     * The ROOM's own 0..1, with the look-down lead-in taken off the front.
+     *
+     * Everything that belongs to the room reads this rather than the raw progress — the pull-back, the
+     * tour, the display's seal, the instrument frame. The raw value is only for the things that happen
+     * BEFORE the room: the camera's turn away from the star, and the freeze on adaptive resolution that
+     * has to cover it.
+     *
+     * A plain linear remap on purpose. The chamber already eases its own pull-back internally
+     * (`easeReveal`), so curving it here as well would compound two eases into a shape neither end
+     * authored.
+     */
+    const roomProgressFrom = (revealProgress: number) =>
+      THREE.MathUtils.clamp(
+        (revealProgress - REVEAL_LEADIN_END) / (1 - REVEAL_LEADIN_END),
+        0,
+        1,
+      );
 
     /**
      * How far the reveal has turned the camera off the star, in radians.
      *
-     * Positive tilts the camera DOWN (content rises), which is the direction that carries the sun out
-     * of the top of the frame — see REVEAL_PAN_DEGREES. Smoothstepped so the turn eases in and out of
-     * its window instead of starting and stopping abruptly against the pull-back.
+     * Signed like the drag channel it rides on: NEGATIVE is the drag-up direction, which lifts the
+     * camera and carries the star up out of frame — see REVEAL_PAN_DEGREES. Smoothstepped so the turn
+     * eases in and out of its window instead of starting and stopping abruptly against the pull-back.
      */
     const revealPanRadians = () => {
       if (!chamberState.engaged) return 0;
+      // The COMBINED value, so the turn unwinds on the way back in. That is the finale's opening move:
+      // the camera swings back onto the star it looked away from, and finds it still there — which is
+      // what makes watching it die land, rather than arriving to a black hole that was always there.
       const panProgress = THREE.MathUtils.smoothstep(
         chamberState.current,
         REVEAL_PAN_WINDOW[0],
@@ -941,7 +1137,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const group = new THREE.Group();
       group.position.set(tuning.markX, tuning.markY, tuning.markZ);
       group.add(strategy.object);
-      scene.add(group);
+      // Only if the mark is supposed to be here at all. The build is asynchronous, so a visitor who
+      // jumps straight to the end of the page can have contact already remove a mark that has not
+      // finished building — and this line would then add it to the scene anyway, moments later.
+      if (markPresent) scene.add(group);
 
       markRigs.push({
         group,
@@ -1163,12 +1362,24 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       });
     };
     const onChamberProgress = (event: Event) => {
-      chamberState.target = readChamberProgress(event);
+      chamberState.reveal = readChamberProgress(event);
+      combineChamberTarget();
       chamberState.engaged = true;
       // A jump straight to the end of the page can land here before Works ever rendered.
       ensureChamber();
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+
+    // The return: the same room, walked back out of. It only ever UNDOES the reveal (see
+    // combineChamberTarget), so it never engages the chamber on its own — arriving here without the
+    // reveal having run would mean scrubbing a room that was never entered.
+    const onContactProgress = (event: Event) => {
+      chamberState.contact = readContactProgress(event);
+      combineChamberTarget();
+      // The mark leaves so the space is empty when the camera swings back onto the star.
+      setMarkPresent(chamberState.contact < CONTACT_MARK_REMOVED_AT);
+    };
+    window.addEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
 
     // Warm the meteor / fire / shard materials + bloom pipeline before the field is shown. Compiled
     // ASYNCHRONOUSLY (background threads, where the GPU supports it) so it doesn't block the main
@@ -1256,6 +1467,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       appliedPixelRatio = ratio;
       viewportWidth = width;
       viewportHeight = height;
+      hud.setSize(width, height, ratio);
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
       // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
@@ -1303,13 +1515,18 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // One call drives the entire change. Everything else — which stones are travelling, how far the
       // geode has grown, how hot a break face burns — is a pure function of these three numbers,
       // evaluated in the vertex shader.
-      markRigs.forEach((rig) => {
-        rig.strategy.setTransition(markState.from, markState.to, markState.progress);
-        rig.strategy.update(reduceMotion ? 0 : elapsed);
-        if (reduceMotion) return;
-        rig.group.position.y =
-          rig.basePosition.y + Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE;
-      });
+      // Skipped wholesale once the mark has left for contact. This is the half of "removed, not hidden"
+      // that actually costs something: the strategy is driven from this list rather than from the scene
+      // graph, so taking the group out of the scene would not have stopped a line of it.
+      if (markPresent) {
+        markRigs.forEach((rig) => {
+          rig.strategy.setTransition(markState.from, markState.to, markState.progress);
+          rig.strategy.update(reduceMotion ? 0 : elapsed);
+          if (reduceMotion) return;
+          rig.group.position.y =
+            rig.basePosition.y + Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE;
+        });
+      }
 
       if (surfaceMap.repeat.x !== tuning.shardTextureRepeat) {
         surfaceMap.repeat.setScalar(tuning.shardTextureRepeat);
@@ -1325,7 +1542,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       const arrival = THREE.MathUtils.smoothstep(flightState.current, METEOR_ARRIVE_PROGRESS_START, 1);
       meteorArrival.value = arrival;
       const markVisible = arrival > METEOR_VISIBLE_EPSILON;
-      if (arrival < 0.999) {
+      // Same gate as the block above, and it has to be here too: the arrival keeps writing positions and
+      // material opacities every frame, and on a mark that is out of the scene that is pure waste. It
+      // also stops this branch quietly re-showing a group contact has taken away.
+      if (!markPresent) {
+        // nothing to arrive — the mark left with the works section
+      } else if (arrival < 0.999) {
         const appear = THREE.MathUtils.smoothstep(arrival, 0, METEOR_APPEAR_FRACTION);
         markRigs.forEach((rig) => {
           rig.group.visible = markVisible;
@@ -1353,10 +1575,16 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // reveal pan reads this same number (see REVEAL_PAN_*), and easing it afterwards would pan on
       // last frame's value — a frame of lag between the star turning away and the room arriving.
       if (chamberState.engaged) {
-        chamberState.current +=
-          (chamberState.target - chamberState.current) * (reduceMotion ? 1 : CHAMBER_SMOOTHING);
+        const smoothing = reduceMotion ? 1 : CHAMBER_SMOOTHING;
+        chamberState.current += (chamberState.target - chamberState.current) * smoothing;
         if (Math.abs(chamberState.target - chamberState.current) < 0.001) {
           chamberState.current = chamberState.target;
+        }
+        // The reveal's own copy, eased at the same rate so the turn and the frame stay locked to the
+        // room they arrived with — they simply do not follow it back out.
+        chamberState.revealEased += (chamberState.reveal - chamberState.revealEased) * smoothing;
+        if (Math.abs(chamberState.reveal - chamberState.revealEased) < 0.001) {
+          chamberState.revealEased = chamberState.reveal;
         }
       }
 
@@ -1413,9 +1641,29 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       previousCameraPosition.copy(camera.position);
       hasPreviousCameraPosition = true;
 
-      // Drive the star-streaks off the warp (the fly-in naturally streaks the field as we punch in).
-      starSystem.streakUniforms.uStreakLength.value = warp * STREAK_MAX_LENGTH;
-      starSystem.streakUniforms.uOpacity.value = warp * STREAK_MAX_OPACITY;
+      // ── The fall toward the black hole ──
+      // Nothing actually moves in contact: the camera holds the angle it was left at and the hole sits
+      // on the point that angle already aims through. The sense of falling is entirely the STAR TAILS —
+      // the same streak uniforms the travel warp uses, held open at a constant instead of driven by
+      // measured camera speed. It is the cheapest possible way to sell the ending, and it is honest
+      // enough that nobody looks for the trick.
+      //
+      // Taken as a max against the warp rather than added: they are two expressions of one thing (how
+      // fast the field is going past you), and summing them would let a hop into contact briefly streak
+      // harder than either alone.
+      const fallStrength = THREE.MathUtils.smoothstep(
+        chamberState.contact,
+        CONTACT_FALL_WINDOW[0],
+        CONTACT_FALL_WINDOW[1],
+      );
+      if (fallStrength > warp) {
+        // Falling the way we are looking, which is through the hole. `getWorldDirection` writes into the
+        // scratch vector the warp already owns, so this allocates nothing.
+        camera.getWorldDirection(streakDirection);
+      }
+      const streakStrength = Math.max(warp, fallStrength * CONTACT_FALL_STREAK_SCALE);
+      starSystem.streakUniforms.uStreakLength.value = streakStrength * STREAK_MAX_LENGTH;
+      starSystem.streakUniforms.uOpacity.value = streakStrength * STREAK_MAX_OPACITY;
       starSystem.streakUniforms.uStreakDir.value.copy(streakDirection);
       // The warp kick rides ON TOP of whatever FOV the current key authored — updateCamera has already
       // set the authored value this frame, so this only ever adds the punch of the hop. During the
@@ -1429,19 +1677,64 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // this line would place the sun with one lens while the frame was drawn with another.
       publishSunParallax();
 
+      // ── The instrument frame ──
+      // Same placement reasoning as the sun above: everything it reports is read AFTER the camera is
+      // final for the frame, so the lens it names is the lens the frame was drawn with.
+      // The combined value: the frame arrives with the room AND leaves with it. It belongs to the
+      // moment of the twist — it explains the screen you have just discovered — and once you dive back
+      // in, that job is done. A camera frame standing over the finale would only compete with it.
+      //
+      // `roomProgressFrom` still applies, because the frame must not appear during the look-down: at
+      // that point the display still fills the frustum and there are no edges to have noticed.
+      const hudRevealProgress = roomProgressFrom(chamberState.current);
+      hud.setOpacity(
+        THREE.MathUtils.smoothstep(hudRevealProgress, HUD_FADE_WINDOW[0], HUD_FADE_WINDOW[1]),
+      );
+      hud.update({
+        feedIndex: activeIndexRef.current + 1,
+        feedTotal: WORKS_PROJECTS.length,
+        fovDegrees: camera.fov,
+        panRadians: viewYaw,
+        tiltRadians: viewPitch,
+        slewing: travelActive,
+        // Stop down, then reopen — see HUD_EXPOSURE_*. Both halves are smoothsteps on the same eased
+        // progress, so the bump reverses exactly like everything else in the crossing.
+        exposureStops:
+          HUD_EXPOSURE_MAX_STOPS *
+          THREE.MathUtils.smoothstep(
+            hudRevealProgress,
+            HUD_EXPOSURE_STOP_DOWN[0],
+            HUD_EXPOSURE_STOP_DOWN[1],
+          ) *
+          (1 -
+            THREE.MathUtils.smoothstep(
+              hudRevealProgress,
+              HUD_EXPOSURE_RECOVER[0],
+              HUD_EXPOSURE_RECOVER[1],
+            )),
+      });
+
       // Skip the bloom pipeline whenever the field isn't on screen (and when the tab is
       // backgrounded). The loop above still ran, so state is current and the first visible frame is
       // already right.
-      const revealProgress = chamberState.engaged ? chamberState.current : 0;
+      // The room reads the COMBINED value, so the return walks it back out again.
+      const roomRaw = chamberState.engaged ? chamberState.current : 0;
+      const revealProgress = roomProgressFrom(roomRaw);
 
       // Show the room only once it's actually in. Until then the screen pipeline keeps painting the
       // full-bleed quad — which is exactly what the chamber would be showing at progress 0 anyway, so
       // a slow model load degrades to "the reveal hasn't started yet" rather than to a black frame.
+      // This is also what makes the look-down beat free: through the lead-in the room is not drawn at
+      // all, because as far as the chamber is concerned the reveal has not started.
       const revealing =
         !!chamber && chamberReady && revealProgress > CHAMBER_ENGAGE_EPSILON;
 
       const handoffActive = flightState.current > 0.001 && flightState.current < 0.999;
-      const revealScrubbing = revealing && revealProgress < CHAMBER_SCRUB_END;
+      // Measured on the RAW progress, not the room's, so the adaptive controller stays frozen through
+      // the look-down too. It reads the lead-in as "the reveal hasn't begun" and would otherwise be
+      // free to reallocate the composer mid-camera-move, which is a visible resolution jump.
+      const revealScrubbing =
+        chamberState.engaged && roomRaw > CHAMBER_ENGAGE_EPSILON && roomRaw < CHAMBER_SCRUB_END;
 
       const isDrawing = worksShouldRender && !document.hidden;
       if (isDrawing) {
@@ -1534,8 +1827,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+      window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
       window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
       chamber?.dispose();
+      hud.dispose();
       // The sun outlives this field, so it must not be left holding the last offset we published.
       clearSunParallaxPose();
 
