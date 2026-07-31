@@ -148,7 +148,12 @@ const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the fligh
 // again, the two images must be mutually exclusive by construction rather than by timing.
 const REVEAL_SCROLL_VH = 140;
 const REVEAL_WORKS_UI_FADE: [number, number] = [0.02, 0.16];
-const REVEAL_SUN_FADE: [number, number] = [0.0, 0.12]; // keep in step with chamberScene's OPAQUE_WINDOW
+// Keep the END in step with chamberScene's OPAQUE_WINDOW — that is where the canvas seals and the star
+// stops being visible regardless. The START is deliberately late: the works camera now TURNS AWAY from
+// the star over the same window (REVEAL_PAN_* in useWorksField), and a fade beginning at 0 would dim it
+// out before the turn had carried it anywhere. The pan does the visible work; this only closes the door
+// behind it, and guarantees the star is gone on any viewport where the turn alone doesn't clear it.
+const REVEAL_SUN_FADE: [number, number] = [0.06, 0.12];
 // The reveal glide now scrubs the WHOLE chamber cinematic on one gesture — the pull-back out of the screen
 // AND the tour across the room to the podium — as a single reversible span (the TOUR_START split lives in
 // chamberScene; see docs/chamber-tour-smoothing-plan.md). So the glide is long enough to contain both:

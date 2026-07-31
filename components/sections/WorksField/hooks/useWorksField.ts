@@ -102,6 +102,35 @@ const CHAMBER_ENGAGE_EPSILON = 0.001;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
+// ── The reveal pan: the camera turns away from the star ──
+//
+// The star cannot be in the picture at the moment the picture becomes a screen — a full-brightness sun
+// pinned mid-frame while the display shrinks reads as a sticker stuck on the room. It used to simply be
+// faded out, which worked and was a cheat. This turns the camera away from it instead, which is what a
+// remote camera would actually do, and the sun leaves the frame because the sun is now placed against
+// the shot rather than against the viewport (`publishSunParallax`). Nothing else has to know.
+//
+// TILT DOWN, so the content rises and the star exits the top. The angle needed is remarkably stable
+// across viewport heights — a taller frame pushes the top edge further away, but also makes the sun's
+// fixed 200px rise a smaller angular offset, and the two very nearly cancel:
+//   700px tall → 20.0°     1000px → 20.8°     1400px → 21.2°   (to clear the glow entirely)
+// So one authored angle works everywhere. Not bound by DRAG_PITCH_CLAMP — that clamps what the visitor
+// may do, and this is the reveal's own channel.
+//
+// ⚠ The mark rises with it. They sit ~200px apart on screen, so any tilt big enough to lose one
+// recomposes the other; at the full angle the mark leaves frame too. That is deliberate — the reveal's
+// subject stops being the mark the moment the pull-back starts, and the display is shrinking over the
+// same window, which compresses all of this. If it ever reads wrong, the fix is to pan less and let the
+// sun's fade finish the job (see docs/works-camera-feed-plan.md §2.3), not to add a second mechanism.
+const REVEAL_PAN_DEGREES = 21;
+// ⚠ This window is NOT a free choice, and the obvious wider value is wrong. The sun is a DOM billboard
+// BEHIND this canvas, and the room seals the canvas opaque over `OPAQUE_WINDOW` ([0, 0.12] in
+// chamberScene) — so past ~0.12 the star cannot be seen at all, whatever the camera is doing. A pan
+// spread over the pull-back's whole half would therefore be invisible for three quarters of its travel
+// and would only be moving the mark. Keep this in step with OPAQUE_WINDOW; if the room's seal is ever
+// retimed, this follows it.
+const REVEAL_PAN_WINDOW: readonly [number, number] = [0.0, 0.12];
+
 // ── Placing the sun against the shot (see `publishSunParallax`) ──
 /** Floor on the projected depth, so a deviation approaching 90° slides off-frame instead of diverging. */
 const SUN_PARALLAX_MIN_DEPTH = 0.05;
@@ -552,6 +581,33 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // deviate from and the sun must simply stay where the pin put it.
     const restForward = new THREE.Vector3();
     let restPoseValid = false;
+
+    // ── How far into the works→chamber reveal we are ──
+    // The pin scrubs the raw target and the loop eases toward it, exactly as the handoff does. The room
+    // is only DRAWN once it has both models — until then the screen pipeline keeps painting the
+    // full-bleed quad, which is what it would be showing at progress 0 anyway.
+    //
+    // Declared up HERE, far above the chamber it belongs to, because `updateCamera` reads it for the
+    // reveal pan and is itself called during setup — with this next to `ensureChamber` that call landed
+    // in the temporal dead zone.
+    const chamberState = { target: 0, current: 0, engaged: false };
+
+    /**
+     * How far the reveal has turned the camera off the star, in radians.
+     *
+     * Positive tilts the camera DOWN (content rises), which is the direction that carries the sun out
+     * of the top of the frame — see REVEAL_PAN_DEGREES. Smoothstepped so the turn eases in and out of
+     * its window instead of starting and stopping abruptly against the pull-back.
+     */
+    const revealPanRadians = () => {
+      if (!chamberState.engaged) return 0;
+      const panProgress = THREE.MathUtils.smoothstep(
+        chamberState.current,
+        REVEAL_PAN_WINDOW[0],
+        REVEAL_PAN_WINDOW[1],
+      );
+      return THREE.MathUtils.degToRad(REVEAL_PAN_DEGREES) * panProgress;
+    };
     const samplePath = (u: number) => {
       pathPosition.set(splineAt(keyX, u), splineAt(keyY, u), splineAt(keyZ, u));
       pathTarget.set(splineAt(keyTx, u), splineAt(keyTy, u), splineAt(keyTz, u));
@@ -694,6 +750,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       restPoseValid = true;
       pathOffset.applyAxisAngle(ORBIT_UP, viewYaw);
       pathOffset.applyAxisAngle(ORBIT_RIGHT, viewPitch);
+      // The reveal's own turn away from the star, on top of whatever the visitor is doing. Read
+      // straight off the reveal's eased progress rather than tweened, so it is a pure function of the
+      // scroll: it can't be outrun, it reverses exactly, and a resize re-derives it.
+      pathOffset.applyAxisAngle(ORBIT_RIGHT, revealPanRadians());
       camera.position.copy(pathTarget).add(pathOffset);
       camera.lookAt(pathTarget);
 
@@ -1091,10 +1151,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
     // ── The chamber (built lazily; see ensureChamber) ──
-    // The pin scrubs the raw target and the loop eases toward it, exactly as the handoff does. The
-    // room is only DRAWN once it has both models — until then the screen pipeline keeps painting the
-    // full-bleed quad, which is what it would be showing at progress 0 anyway.
-    const chamberState = { target: 0, current: 0, engaged: false };
     let chamber: ChamberScene | null = null;
     let chamberReady = false;
     const ensureChamber = () => {
@@ -1288,6 +1344,22 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           rig.group.position.z = rig.basePosition.z;
         });
       }
+      // ── The reveal: back out of the display until the room is around you ──
+      // Eased per frame off the scrubbed target, like every other crossing, so it stays cinematic
+      // whether the user creeps, flicks, or the snap glides across it. Pure function of progress: it
+      // can't be outrun, and it reverses.
+      //
+      // Eased HERE, above the camera, rather than beside the code that shows the room: the camera's
+      // reveal pan reads this same number (see REVEAL_PAN_*), and easing it afterwards would pan on
+      // last frame's value — a frame of lag between the star turning away and the room arriving.
+      if (chamberState.engaged) {
+        chamberState.current +=
+          (chamberState.target - chamberState.current) * (reduceMotion ? 1 : CHAMBER_SMOOTHING);
+        if (Math.abs(chamberState.target - chamberState.current) < 0.001) {
+          chamberState.current = chamberState.target;
+        }
+      }
+
       // ── Camera: fly the shared path during the handoff, else the normal focus-follow ──
       // Cleared here rather than in each branch that fails to set it: only the authored-path branch of
       // `updateCamera` has a rest pose to offer, and the flight and the `?tune` override both bypass it
@@ -1360,17 +1432,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Skip the bloom pipeline whenever the field isn't on screen (and when the tab is
       // backgrounded). The loop above still ran, so state is current and the first visible frame is
       // already right.
-      // ── The reveal: back out of the display until the room is around you ──
-      // Eased per frame off the scrubbed target, like every other crossing, so it stays cinematic
-      // whether the user creeps, flicks, or the snap glides across it. Pure function of progress: it
-      // can't be outrun, and it reverses.
-      if (chamberState.engaged) {
-        chamberState.current +=
-          (chamberState.target - chamberState.current) * (reduceMotion ? 1 : CHAMBER_SMOOTHING);
-        if (Math.abs(chamberState.target - chamberState.current) < 0.001) {
-          chamberState.current = chamberState.target;
-        }
-      }
       const revealProgress = chamberState.engaged ? chamberState.current : 0;
 
       // Show the room only once it's actually in. Until then the screen pipeline keeps painting the
