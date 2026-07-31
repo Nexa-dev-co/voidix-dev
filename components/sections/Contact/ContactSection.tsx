@@ -1,6 +1,7 @@
 'use client';
 
 import type { FormEvent } from 'react';
+import { LOOP_REQUEST_EVENT } from '@/lib/loopEvents';
 import {
   CONTACT_FOOTER_GROUPS,
   CONTACT_LEAD,
@@ -30,6 +31,11 @@ export default function ContactSection() {
     // No endpoint yet, and no backend in this project to give it one. Prevented rather than left to
     // navigate, so the page cannot be thrown out of the pin by a stray Enter key.
     event.preventDefault();
+  };
+
+  /** Ask the pin to fall into the black hole and come back out at the hero. See lib/loopEvents.ts. */
+  const requestLoop = () => {
+    window.dispatchEvent(new Event(LOOP_REQUEST_EVENT));
   };
 
   return (
@@ -96,6 +102,19 @@ export default function ContactSection() {
             </button>
           </form>
         </div>
+      </div>
+
+      {/*
+        The loop's discoverable path. The scroll gesture is the natural one — one more push past contact
+        falls into the hole — and this is for everybody who would never think to try. Both dispatch the
+        same request and the PIN owns the commit: a button that scrolled by itself would be a second path
+        through the same cinematic, and the two would drift the first time the dive's length changed.
+      */}
+      <div className="contact-loop">
+        <button type="button" className="contact-loop-button" onClick={requestLoop}>
+          <span className="contact-loop-ring" aria-hidden />
+          <span className="contact-loop-label">Travel in time</span>
+        </button>
       </div>
 
       <footer className="contact-footer">

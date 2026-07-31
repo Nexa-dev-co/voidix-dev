@@ -100,12 +100,21 @@ a colour.**
 --bg: #060606;                        /* near-black page background */
 --fg: #ebe8e0;                        /* warm off-white text        */
 --muted: rgba(235, 232, 224, 0.38);   /* secondary / metadata       */
---accent: #00e5ff;                    /* signature electric cyan    */
+--accent: var(--sun-accent);          /* the sun's amber, #ff8a1a   */
 --border: rgba(235, 232, 224, 0.08);  /* hairlines                  */
 --card: #0d0d0d;                      /* elevated surfaces          */
 ```
 
 Non-token colours that matter: the hero's cream `#e2dfd2` and `--hero-invert-text: #c0c0c0`.
+
+**The accent IS the sun.** `--accent` used to be an electric cyan held deliberately apart from the star;
+that split is gone and it now aliases `--sun-accent`. Retune the star and the navbar, the meters, the
+CTA, the contact form and the footer all follow.
+
+⚠ **Amber on a light background needs deepening, and two places already do it.** The raw `#ff8a1a`
+manages 1.77:1 on the hero's cream and 2.36:1 on the chamber's white room — nowhere near the 4.5:1 small
+text needs. `--hud-accent` (`#8f4400`) and `chamberTuning`'s `holoTint` (`#a85400`) are the deepened
+versions. Check any retune of those against their own background, not against black.
 
 **Type:** `--font-syne` (Syne, 700/800) for display via `.font-display`; `--font-dm-sans` (DM Sans,
 300/400/500) is the `<body>` default. `.eyebrow` is the uppercased kicker helper. A fluid scale
@@ -179,11 +188,24 @@ scroll progress. There is no stack of sections and no second pin.
   │dust │───►│square───►│4 craft│── craft flies ──►│4 marks│── camera ────►│ room │
   │→ sun│    │fills │   │+ gates│   off, then the  │grown  │   backs out   │ + FAQ│
   └─────┘    └─────┘    └──────┘   mark arrives    │from   │  of "screen"  │ holo │
-                                   from the dark   │stone  │               │      │
-                                                   └──────┘                └──────┘
-                                    ── the sun COLLAPSES across the handoff and holds ──
-   fillFraction ──┤├── carousel: stops separated by wide CROSSINGS ──────────────┤
+     ▲                             from the dark   │stone  │               │      │
+     │                                             └──────┘                └──────┘
+     │                              ── the sun COLLAPSES across the handoff and holds ──
+     │       fillFraction ──┤├── carousel: stops separated by wide CROSSINGS ─────────┤
+     │                                                                          │
+     │   ══LOOP══      CONTACT        ══RETURN══                                │
+     │   (120vh)       ┌──────┐        (140vh)                                  │
+     └───── fall ──────│ form │◄─── dive back INTO the screen ──────────────────┘
+        into the hole  │black │      mark gone, star restored,
+        → black        │ hole │      then it DIES (the finale)
+        → teleport     └──────┘
+        → cream, hero
 ```
+
+**The last span is not a scroll.** The pin has a fixed range and contact sits at progress 1, so the
+loop is a **teleport** — `scrollTo(0)` under cover of the hole's own shadow. That is why
+`LOOP_RESET_EVENT` exists: everything that *eases* toward a target has to be told to stop easing and be
+there now, or the site visibly un-plays behind the cream. See `docs/contact-loop-plan.md`.
 
 **The layout is data, not arithmetic spread through the file.** `useHeroAnimation` declares a list
 of sections; `lib/carouselLayout.ts` derives everything else from it:
@@ -192,9 +214,16 @@ of sections; `lib/carouselLayout.ts` derives everything else from it:
 const carouselSections = [
   { key: 'services', stopCount: craftCount,   setActiveStop: …, crossingAfter: { scrollVh: 180, apply: applyServicesToWorksHandoff } },
   { key: 'work',     stopCount: projectCount, setActiveStop: …, crossingAfter: { scrollVh: 140, apply: applyWorksToChamberReveal   } },
-  { key: 'process',  stopCount: 1 },   // the chamber — its beats run off the reveal landing
+  { key: 'process',  stopCount: 1, crossingAfter: { scrollVh: 140, apply: applyChamberToContactReturn } },
+  { key: 'contact',  stopCount: 1, crossingAfter: { scrollVh: 120, apply: applyContactToHeroLoop      } },
+  { key: 'loop',     stopCount: 1 },   // a landing pad, never rested on — arriving IS the teleport
 ];
 ```
+
+⚠ **The last entry is not optional.** `computeCarouselLayout` records every `crossingAfter` as
+`toStop: lastStop + 1`; on the final section that stop does not exist, so its `endProgress` is `NaN` —
+and because `applyCrossings` walks the whole list, **every** crossing on the site gets NaN, not just
+that one. A crossing always needs a section to cross into.
 
 `computeCarouselLayout()` returns the stop progress values, the crossing spans, the fill fraction
 and each section's navbar-meter span. **Adding a section is one entry in that list** — do not
@@ -322,11 +351,16 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:intro-ignite` | `IGNITE_EVENT` | IntroSequence | The gather field's final rush. |
 | `voidix:assets-warmup` | `ASSETS_WARMUP_EVENT` | IntroSequence | Asks each scene to compile shaders during a still beat, so the stall is invisible. |
 | `deck:reveal` / `deck:hide` | `DECK_REVEAL_EVENT` / `DECK_HIDE_EVENT` | useHeroAnimation | Fleet enters/leaves; drives `is-services`, the sun's z-index, the fluid cursor gate. |
-| `voidix:goto-services` | `GOTO_SERVICES_EVENT` | Navbar | Nav "Services" scrolls the pin to the revealed fleet. |
+| `voidix:goto-section` | `GOTO_SECTION_EVENT` | Navbar | **Every** nav item and the CTA. Carries a section key; the pin drives itself there on a distance-scaled glide. None of these sections is a place — they are overlays inside one pin, so an anchor would land on the hero whichever you clicked. |
 | `voidix:handoff-progress` | `HANDOFF_PROGRESS_EVENT` | useHeroAnimation | The services→works crossing, `0..1`. |
 | `voidix:chamber-progress` | `CHAMBER_PROGRESS_EVENT` | useHeroAnimation | The works→chamber reveal, `0..1`. |
 | `voidix:chamber-hologram` | `CHAMBER_HOLOGRAM_EVENT` | chamberScene | The tour has arrived; the FAQ panel may unseal. |
 | `voidix:hero-services` | `HERO_SERVICES_PROGRESS_EVENT` | useHeroAnimation | The hero→services span. Carries **two** fractions: `progress` (to the fleet landing) and `fill` (to the square covering the viewport). The pin owns the layout; the sun owns what to do with it. |
+| `voidix:contact-progress` | `CONTACT_PROGRESS_EVENT` | useHeroAnimation | The chamber→contact return, `0..1`. Its own signal rather than the chamber's, so one number never has two writers. |
+| `voidix:loop-progress` | `LOOP_PROGRESS_EVENT` | useHeroAnimation | The dive into the hole, `0..1`. Reversible; its job is to be opaque by 1. |
+| `voidix:loop-reset` | `LOOP_RESET_EVENT` | useHeroAnimation | **The scrollbar has just jumped to the top — snap, do not ease.** Every owner of an eased value listens. |
+| `voidix:loop-request` | `LOOP_REQUEST_EVENT` | ContactSection | The "Travel in time" button. Routed through the pin so button and scroll commit one cinematic. |
+| `voidix:sun-regather` | `SUN_REGATHER_EVENT` | useHeroAnimation | Replay the shard assembly at the top. **Not** `SUN_ASSEMBLE_EVENT` — the intro is still mounted and still listening to that one. |
 
 One per-frame **store** sits alongside these, for values too hot for an event: `lib/hologramPose.ts`
 (where the FAQ panel is on screen). It is written every frame by `chamberScene` and read in the
@@ -335,8 +369,8 @@ consumer's own rAF — a CustomEvent or React state per frame would be a re-rend
 ## Navbar & the per-section meters
 
 Two stacked fixed layers: `.nav-root` uses `mix-blend-mode: difference` (auto-inverts against
-whatever scrolls under it); `.nav-accent` sits behind holding everything that must stay brand-cyan
-(top line, orbital mark, the meters), so the blend never turns it red.
+whatever scrolls under it); `.nav-accent` sits behind holding everything that must stay brand-amber
+(top line, orbital mark, the meters), so the blend never turns it blue.
 
 Each nav item has a cyan meter. **A section feeds its meter by setting `--nav-progress-<key>` on
 `document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`.
@@ -485,11 +519,11 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 
 | | |
 |---|---|
-| **Contact** | No section, no CSS, no copy. Nav item 04 (`#contact`) points at nothing and the `nav-cta` "Start Project" button has **no handler**. |
+| **Contact** | **BUILT** — the star dies here, then the page loops back to the hero. Form + footer are front-end only: `handleSubmit` prevents default and posts nowhere, and every address, social handle and legal route in `contactContent.ts` is an invented placeholder. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
 | **Process content** | The `process` meter key is wired to the Chamber, whose content is an FAQ hologram. **Decided:** process steps will be revealed on the chamber's walls as the camera tours. |
-| **The collapse finale** | Built and tuned in `/sun-lab`, never ported to the site. **Decided:** the star dies on the table's screen after the chamber, and the black hole carries into the Contact/footer section. |
+| **The collapse finale** | **BUILT** — ported into `components/sections/Contact/singularityScene.ts`, a SECOND star living inside the works renderer (the hero sun's canvas has no compositor and nothing behind it for lensing to bend). Collapse, flash, black hole, accretion and lensing all ship. See `docs/contact-singularity-plan.md`. |
 | **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
-| **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Credit is legally required wherever it ships and is currently nowhere.** |
+| **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
 
 **Current plan of record: `docs/site-completion-plan.md`.** Section state docs:
 `services-deck-state.md`, `works-to-chamber-reveal.md`, `sun-lab-remaining-work.md`,

@@ -22,10 +22,10 @@ import { getChamberTuning, type ChamberTuning } from '@/lib/chamberTuning';
 /** Never wider than this much of the screen. On a phone the projected size alone is unreadable. */
 const VIEWPORT_WIDTH_FRACTION = 0.92;
 
-/** `#00e5ff` → `0, 229, 255`, so the CSS can build any alpha it likes off one variable. */
+/** `#ff8a1a` → `255, 138, 26`, so the CSS can build any alpha it likes off one variable. */
 function toRgbTriplet(hex: string): string {
   const value = Number.parseInt(hex.replace('#', ''), 16);
-  if (Number.isNaN(value)) return '0, 229, 255';
+  if (Number.isNaN(value)) return '255, 138, 26';
   return `${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}`;
 }
 

@@ -16,8 +16,11 @@ import {
 import {
   DECK_REVEAL_EVENT,
   DECK_HIDE_EVENT,
-  GOTO_SERVICES_EVENT,
 } from "@/components/sections/ServicesDeck/deckEvents";
+import {
+  GOTO_SECTION_EVENT,
+  readGotoSectionKey,
+} from "@/lib/sectionNavigation";
 import {
   HANDOFF_PROGRESS_EVENT,
   type HandoffProgressDetail,
@@ -34,6 +37,14 @@ import {
   HERO_SERVICES_PROGRESS_EVENT,
   type HeroServicesProgressDetail,
 } from "@/lib/heroServicesEvents";
+import {
+  LOOP_COVERED_EVENT,
+  LOOP_PROGRESS_EVENT,
+  LOOP_REQUEST_EVENT,
+  LOOP_RESET_EVENT,
+  SUN_REGATHER_EVENT,
+  type LoopProgressDetail,
+} from "@/lib/loopEvents";
 
 // Marks the hero while a full-black scene (fleet or works) is on screen. Scopes the layering (sun
 // drops behind, intervening hero layers go transparent) so it never touches the fill phase.
@@ -66,6 +77,11 @@ const DECK_REVEAL_DURATION = 0.6;
 const DECK_HIDE_DURATION = 0.4;
 const WORKS_HIDE_DURATION = 0.4;
 const GOTO_DURATION = 0.6; // programmatic scroll when a label/arrow jumps to a stop
+// A navbar jump can cross the whole site. Its glide scales with the distance travelled, between the
+// plain GOTO_DURATION for a neighbour and this for hero → contact, so a long jump reads as travel
+// rather than as the entire page being scrubbed past in half a second.
+const NAV_JUMP_MAX_DURATION = 3.2;
+const NAV_JUMP_DURATION_PER_PROGRESS = 3.4;
 // Snap is only a SAFETY NET now (the discrete stepper below owns all carousel movement) — it just
 // tidies up after a native scroll, so these are short, distance-scaled settles.
 const SNAP_DURATION = 0.5; // how quickly the carousel settles onto the nearest stop
@@ -203,6 +219,31 @@ const RETURN_CONTACT_UI_FADE: [number, number] = [0.72, 0.94];
 const CONTACT_STOP_COUNT = 1;
 const CONTACT_SELECTOR = ".contact-section";
 
+// ── The contact → hero loop ──
+// You fall into the black hole and come back out at the top of the page. The dive is a normal scrubbed
+// crossing; what is NOT normal is what happens at its far end, because a loop here is a TELEPORT — the
+// pin has a fixed range and contact sits at progress 1, so returning to the hero means throwing the
+// scrollbar back to 0. See lib/loopEvents.ts and docs/contact-loop-plan.md.
+// Long, because the fall is the point. This is not a transition between two things you want to look at
+// — it is the one stretch of the site with no content in it at all, so its whole job is the ride.
+const LOOP_SCROLL_VH = 200;
+const LOOP_STEP_DURATION = 6.5;
+/** Long enough to cover the jump AND the hero arrival that plays under it, so nothing can interrupt. */
+const LOOP_SETTLE_MS = 2400;
+/** The contact panel and footer drop out early — you are falling, not reading. */
+const LOOP_CONTACT_UI_FADE: [number, number] = [0.0, 0.2];
+/**
+ * ⚠ A crossing on the LAST section breaks the layout, silently and globally.
+ *
+ * `computeCarouselLayout` records every `crossingAfter` as `toStop: lastStop + 1`. On the final section
+ * that stop does not exist, so its `endProgress` is `undefined` → the crossing's progress is `NaN` →
+ * and because `applyCrossings` walks the whole list, EVERY crossing on the site gets NaN, not just this
+ * one. The dive therefore needs a section to cross INTO; this is it.
+ *
+ * It is a landing pad and nothing else — one stop, no content, no navbar item reads its meter.
+ */
+const LOOP_STOP_COUNT = 1;
+
 // The far edge of a crossing IS the next section's first stop, and browsers round the settled scroll
 // to device pixels — so a glide "onto" that stop can leave the pin a hair inside the span and the
 // clamp below yields 0.999… instead of 1. The WebGL scenes hand their camera back to normal browsing
@@ -239,7 +280,7 @@ const WORKS_SELECTOR = ".works-field";
 const WORKS_OVERLAY_SELECTOR = ".works-overlay";
 
 /** The full-black scene currently on screen — "fill" plus one name per carousel section. */
-type Stage = "fill" | "services" | "work" | "process" | "contact";
+type Stage = "fill" | "services" | "work" | "process" | "contact" | "loop";
 
 /** What a crossing owns, beyond the scroll length the layout needs. */
 interface CrossingSpec {
@@ -432,12 +473,29 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // The camera dives back into the display and the space has changed. The move itself lives in the
     // WebGL scene (fed this same 0..1, and combined there with the reveal's — see lib/contactEvents.ts);
     // the DOM this crossing owns is the contact panel coming in, late, once you are back inside.
+    // ── The contact panel's opacity has ONE owner, for exactly the reason the star's does ──
+    //
+    // Two spans move it in opposite directions: the return brings it in, the loop's dive takes it away.
+    // Letting each write `autoAlpha` directly does not work, and fails in the loudest possible way —
+    // EVERY crossing's `apply` runs on EVERY pin update, including the first one at scroll 0. So the
+    // loop, sitting at its own progress 0, writes "not yet taken away" = 1 over the return's "not yet
+    // brought in" = 0, and the contact form and footer are painted over the hero, the fleet and the
+    // works field for the whole site. (They were. That is exactly what happened.)
+    //
+    // So both spans report here and this resolves the single value. Order-independent by construction:
+    // whichever crossing dispatches last, the answer is the same.
+    let contactShownProgress = 0;
+    let contactTakenProgress = 0;
+    const applyContactOpacity = () => {
+      if (!contact) return;
+      const shown = fadeWindow(RETURN_CONTACT_UI_FADE, contactShownProgress);
+      const taken = fadeWindow(LOOP_CONTACT_UI_FADE, contactTakenProgress);
+      gsap.set(contact, { autoAlpha: gsap.utils.clamp(0, 1, shown - taken) });
+    };
+
     const applyChamberToContactReturn = (progress: number) => {
-      if (contact) {
-        gsap.set(contact, {
-          autoAlpha: fadeWindow(RETURN_CONTACT_UI_FADE, progress),
-        });
-      }
+      contactShownProgress = progress;
+      applyContactOpacity();
       // ⚠ The hero star is NOT brought back here, and must not be. The star you watch die is a separate
       // object inside the works scene, faded in by `CONTACT_STAR_PRESENCE` over this same span — see
       // useWorksField's onContactProgress. Restoring this one too would put two stars on screen.
@@ -447,6 +505,38 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           detail: { progress },
         }),
       );
+    };
+
+    // ── The contact → hero loop ──
+    // The dive is an ordinary scrubbed crossing right up until its final value. At exactly 1 the screen
+    // is black (the hole's own shadow, plus the veil's guarantee) and the teleport fires underneath it.
+    //
+    // Declared here but assigned after `playHeroEntrance` exists — the two are mutually recursive in
+    // spirit: the crossing lands the jump, the jump plays the entrance.
+    let commitTeleport = () => {};
+    // Latched so the jump fires ONCE per arrival at the far edge. `apply` runs on every update whose
+    // progress moved, and after the teleport the pin immediately reports 0 through this same crossing.
+    let teleported = false;
+    const applyContactToHeroLoop = (progress: number) => {
+      // Reported, never written — applyContactOpacity owns the property. See its note for what writing
+      // it directly from here did.
+      contactTakenProgress = progress;
+      applyContactOpacity();
+
+      window.dispatchEvent(
+        new CustomEvent<LoopProgressDetail>(LOOP_PROGRESS_EVENT, {
+          detail: { progress },
+        }),
+      );
+      // ⚠ Exactly 1, never a threshold. This is the one irreversible action on the site apart from the
+      // intro — once the scrollbar is at 0 there is no scrolling back — so it must never fire because a
+      // value drifted to 0.9997. CROSSING_SNAP_EPSILON guarantees the boundary is exact.
+      if (progress >= 1 && !teleported) {
+        teleported = true;
+        commitTeleport();
+      } else if (progress < 1) {
+        teleported = false;
+      }
     };
 
     // ── The carousel, as data ──
@@ -495,6 +585,18 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         stopCount: CONTACT_STOP_COUNT,
         // Also nothing to commit — the section is one held pose inside the space, and everything about
         // getting there is scrubbed from the return crossing above.
+        crossingAfter: {
+          scrollVh: LOOP_SCROLL_VH,
+          stepDurationSeconds: LOOP_STEP_DURATION,
+          settleMs: LOOP_SETTLE_MS,
+          apply: applyContactToHeroLoop,
+        },
+      },
+      {
+        key: "loop",
+        stopCount: LOOP_STOP_COUNT,
+        // The landing pad the dive crosses into, and nothing else — see LOOP_STOP_COUNT for why it has
+        // to exist at all. Nobody ever rests here: arriving IS the teleport.
       },
     ];
     // Crossings in the same order the layout resolves them (both walk the sections in order).
@@ -529,7 +631,12 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       fade(works, 0, WORKS_HIDE_DURATION);
       // The tagline belongs to the hero only — bring it back when we return to the fill. (It carries
       // an inline opacity from the reveal that beats the .is-services CSS, so it must be driven here.)
-      fade(subline, 1, SUB_FADE_DURATION);
+      //
+      // ⚠ Skipped while the hero's entrance is playing. The loop lands at progress 0, so this runs a
+      // frame or two AFTER `playHeroEntrance` has already staged the tagline at 0 and started animating
+      // it — and `fade` overwrites, so it would kill the entrance's own tween and replace "settles last"
+      // with a plain 0.6s fade. Two owners of one property, and the entrance is the one that should win.
+      if (!heroEntrancePlaying) fade(subline, 1, SUB_FADE_DURATION);
       // Return the sun to its calm hero look + front position.
       window.dispatchEvent(new Event(DECK_HIDE_EVENT));
     };
@@ -571,12 +678,17 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       fade(subline, 0, DECK_REVEAL_DURATION);
     };
 
+    // Nothing to do: the loop stop exists only to be the far edge of the dive, and arriving at it
+    // teleports. By the time this could run the screen is already black and the scrollbar is moving.
+    const enterLoop = () => {};
+
     const enterStage: Record<Stage, (fromStage: Stage) => void> = {
       fill: enterFill,
       services: enterServices,
       work: enterWorks,
       process: enterChamber,
       contact: enterContact,
+      loop: enterLoop,
     };
     let currentStage: Stage = "fill";
     const setStage = (stage: Stage) => {
@@ -649,6 +761,8 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     let currentStop = 0;
     let committedGlide = false;
     let wasInFill = true;
+    /** Set by the loop's teleport, cleared on the next update — see the arrival branch in onUpdate. */
+    let justTeleported = false;
     let stepLocked = false;
     let wheelAccum = 0;
     let touchStartY = 0;
@@ -855,11 +969,17 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             // here is still delivering momentum — absorb it: lock the stepper (the wheel/touch handlers
             // then preventDefault the rest of that gesture, killing the momentum) and glide onto craft
             // 01. Without this, one hard scroll from the hero overshoots and dumps you on craft 02.
-            if (wasInFill) {
+            // ⚠ Suppressed for one update after a teleport. The scrub tween is flushed in
+            // `commitTeleport` so this should be unreachable — but if a browser lets a single stale
+            // update through at the old progress, this branch would glide the visitor onto craft 01 and
+            // the loop would land in SERVICES instead of the hero. The failure is silent and confusing
+            // enough to be worth one boolean.
+            if (wasInFill && !justTeleported) {
               wasInFill = false;
               lockStepping(CAROUSEL_ARRIVAL_DURATION * 1000);
               goToStop(0, CAROUSEL_ARRIVAL_DURATION);
             }
+            justTeleported = false;
 
             // A committed glide's target is authoritative. Only without one (native scroll, a resize)
             // do we resolve the nearest stop across the non-uniform layout and commit that.
@@ -921,23 +1041,45 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       scrollTimeline.to({}, { duration: 1 - fillFraction });
     };
 
-    // 3. Reveal — fired once, when the intro lands the sun in the square. This is also
-    //    the moment the pin is allowed to come online (Contract 2).
-    let hasRevealed = false;
-    const runReveal = () => {
-      if (hasRevealed) return;
-      hasRevealed = true;
+    // ── The hero's entrance ──
+    // Pulled out of `runReveal` so the LOOP can replay it. Only the timeline may be replayed: the pin
+    // is built once and once only (`createTransition`), because a second ScrollTrigger on this element
+    // is the exact thing the single-pin architecture exists to prevent.
+    // True from the moment the hero is staged until its entrance finishes — so `enterFill`, which runs
+    // somewhere in the middle of all this, knows not to grab the tagline off it.
+    let heroEntrancePlaying = false;
 
-      createTransition();
+    /**
+     * Put the hero back to its pre-entrance pose: headline under its masks, square empty, tagline out.
+     *
+     * Split from `playHeroEntrance` for the LOOP. On the loop these elements are wherever the last
+     * playthrough left them, and the arrival cannot start until the cream has closed over the screen —
+     * so there is a window of a second or so where the hero must be staged but must NOT be moving. Play
+     * it at the teleport instead and the whole entrance happens under the cover, handing the visitor a
+     * fully-built hero the instant it clears.
+     */
+    const stageHeroEntrance = () => {
+      heroEntrancePlaying = true;
+      gsap.set(textInners, { yPercent: 115 });
+      if (subline) gsap.set(subline, { autoAlpha: 0, y: 12 });
+      if (squareFill) gsap.set(squareFill, { clipPath: EMPTY_CLIP });
+    };
 
+    const playHeroEntrance = () => {
       if (prefersReducedMotion()) {
         gsap.set(textInners, { yPercent: 0 });
         if (subline) gsap.set(subline, { autoAlpha: 1, y: 0 });
         if (squareFill) gsap.set(squareFill, { clipPath: FULL_CLIP });
+        heroEntrancePlaying = false;
         return;
       }
 
-      const revealTimeline = gsap.timeline();
+      stageHeroEntrance();
+      const revealTimeline = gsap.timeline({
+        onComplete: () => {
+          heroEntrancePlaying = false;
+        },
+      });
       // a. headline rises out of its masks
       revealTimeline.to(
         textInners,
@@ -974,6 +1116,80 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         );
     };
 
+    // 3. Reveal — fired once, when the intro lands the sun in the square. This is also the moment the
+    //    pin is allowed to come online (Contract 2).
+    let hasRevealed = false;
+    const runReveal = () => {
+      if (hasRevealed) return;
+      hasRevealed = true;
+      createTransition();
+      playHeroEntrance();
+    };
+
+    // ── The teleport ──
+    // Runs with the screen already black, so the order below is about what must be TRUE by the next
+    // frame rather than about what is seen.
+    commitTeleport = () => {
+      const trigger = scrollTimeline?.scrollTrigger;
+      if (!trigger) return;
+      // The gesture that committed the dive is still delivering momentum, and a live scrollTo tween
+      // would fight the jump. Kill both before moving.
+      gsap.killTweensOf(window);
+      committedGlide = false;
+      // Straight to the top. No duration: there is nothing to watch, and a tween here would scrub the
+      // whole site backwards through every crossing it passes.
+      window.scrollTo(0, 0);
+      trigger.scroll(0);
+      // ⚠ Moving the scrollbar is NOT enough, because this pin is scrubbed (SCROLL_SCRUB = 1.8). Scrub
+      // means progress does not follow the scrollbar, it EASES toward it — so after the jump the pin
+      // spends nearly two seconds animating from 1 back down to 0, playing the entire site backwards
+      // through every crossing on the way.
+      //
+      // Two things go wrong with that, and the second is worse. The site un-plays where the cream cannot
+      // cover it; and the very next update still reports progress ≈ 1, which is `>= fillFraction`, so the
+      // arrival branch below fires `goToStop(0)` and glides the visitor onto craft 01 — you land in
+      // SERVICES instead of the hero.
+      //
+      // Flushing the scrub tween to its end makes progress actually be 0 on the next frame.
+      trigger.update();
+      trigger.getTween()?.progress(1);
+      // Everything that EASES toward a target has to stop easing and be there now — otherwise the
+      // chamber re-assembles and the star un-dies behind the cover. See LOOP_RESET_EVENT.
+      window.dispatchEvent(new Event(LOOP_RESET_EVENT));
+      // Re-arm the carousel: the pin is back in the fill, and the next scroll down must glide onto
+      // craft 01 rather than resuming from wherever the stepper thought it was.
+      currentStop = 0;
+      wasInFill = true;
+      justTeleported = true;
+      lastCommittedIndex.fill(-1);
+      lastCrossingProgress.fill(-1);
+      // Staged, NOT played. The screen is black and the cream has not closed yet — the hero holds this
+      // pose until the veil says it has the screen (LOOP_COVERED_EVENT below), so the entrance is
+      // actually watched rather than spent under the cover.
+      stageHeroEntrance();
+    };
+
+    // ── The cream has the screen; build the hero underneath it ──
+    // The entrance and the star's re-gather both start here, so they play THROUGH the cream clearing
+    // rather than behind it: the headline rises and the shards close as the colour drains away, which is
+    // the arrival reading as the page assembling itself out of the flood.
+    const onLoopCovered = () => {
+      window.dispatchEvent(new Event(SUN_REGATHER_EVENT));
+      playHeroEntrance();
+    };
+    window.addEventListener(LOOP_COVERED_EVENT, onLoopCovered);
+
+    // The Travel in time button. Routed through the pin rather than scrolling by itself, so the button
+    // and the scroll gesture commit the SAME cinematic and cannot drift apart when its length changes.
+    const onLoopRequest = () => {
+      if (!hasRevealed || teleported) return;
+      const loopStop = totalStops - 1;
+      if (currentStop >= loopStop) return;
+      goToStop(loopStop, reduceMotion ? 0 : LOOP_STEP_DURATION);
+      lockStepping(reduceMotion ? 0 : LOOP_STEP_DURATION * 1000 + LOOP_SETTLE_MS);
+    };
+    window.addEventListener(LOOP_REQUEST_EVENT, onLoopRequest);
+
     window.addEventListener(REVEAL_EVENT, runReveal);
     // Start with the short net; if the intro announces itself, swap to the long one (it will drive the
     // real reveal itself). Reassigned, so the cleanup clears whichever timer is live.
@@ -990,9 +1206,38 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
     window.addEventListener(INTRO_ACTIVE_EVENT, onIntroActive);
 
-    // The navbar "Services" link asks the pin to scroll to the revealed fleet (craft 0).
-    const onGotoServices = () => goToCraftImplRef.current(0);
-    window.addEventListener(GOTO_SERVICES_EVENT, onGotoServices);
+    // ── The navbar ──
+    // Every item and the CTA route through here. The pin owns the scroll, so a link cannot simply jump:
+    // the sections are overlays inside this one pin, and an anchor would land on the hero whatever it
+    // pointed at.
+    //
+    // The glide is DISTANCE-SCALED. Hero → contact crosses four sections and three long cinematics, and
+    // taking the default 0.6s would scrub the whole site past the visitor in a blur. Scaling it means a
+    // near jump stays snappy while a far one reads as travel.
+    const onGotoSection = (event: Event) => {
+      const key = readGotoSectionKey(event);
+      if (key === null) return;
+      const sectionIndex = carouselSections.findIndex(
+        (section) => section.key === key,
+      );
+      if (sectionIndex < 0) return;
+      const targetStop = layout.sections[sectionIndex].firstStop;
+      const trigger = scrollTimeline?.scrollTrigger;
+      const distance = Math.abs(
+        stopProgressValues[targetStop] - (trigger?.progress ?? 0),
+      );
+      const durationSeconds = reduceMotion
+        ? 0
+        : gsap.utils.clamp(
+            GOTO_DURATION,
+            NAV_JUMP_MAX_DURATION,
+            GOTO_DURATION + distance * NAV_JUMP_DURATION_PER_PROGRESS,
+          );
+      goToStop(targetStop, durationSeconds);
+      // Held past the glide so the scene transition it lands on gets to play out, exactly as a step does.
+      lockStepping(durationSeconds * 1000 + STAGE_STEP_HOLD_MS);
+    };
+    window.addEventListener(GOTO_SECTION_EVENT, onGotoSection);
 
     goToCraftImplRef.current = (index) =>
       goToStopInSection(SERVICES_SECTION_INDEX, index);
@@ -1133,7 +1378,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     return () => {
       window.removeEventListener(REVEAL_EVENT, runReveal);
       window.removeEventListener(INTRO_ACTIVE_EVENT, onIntroActive);
-      window.removeEventListener(GOTO_SERVICES_EVENT, onGotoServices);
+      window.removeEventListener(GOTO_SECTION_EVENT, onGotoSection);
+      window.removeEventListener(LOOP_REQUEST_EVENT, onLoopRequest);
+      window.removeEventListener(LOOP_COVERED_EVENT, onLoopCovered);
       window.removeEventListener("wheel", handleWheel);
       window.removeEventListener("touchstart", handleTouchStart);
       window.removeEventListener("touchmove", handleTouchMove);

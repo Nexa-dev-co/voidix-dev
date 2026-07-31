@@ -12,8 +12,15 @@
   --fg: #ebe8e0;
   --fg-rgb: 235 232 224;
   --muted: rgba(235, 232, 224, 0.38);
-  --accent: #00e5ff;
-  --accent-rgb: 0 229 255;
+  /* ── The brand accent IS the sun's light ──
+     It used to be an electric cyan held deliberately APART from the star, so the navbar, the fleet and
+     the deck read as the studio while the loader and the hero's instruments read as the thing being
+     built. That split is gone: one accent, and it is the colour the star throws.
+
+     Aliased rather than copied so `--sun-accent` stays the single place to retune it — change the star
+     and the navbar, the meters, the CTA, the contact form and the footer all follow. */
+  --accent: var(--sun-accent);
+  --accent-rgb: var(--sun-accent-rgb);
   --border: rgba(235, 232, 224, 0.08);
   --card: #0d0d0d;
 
@@ -663,11 +670,15 @@ body {
   align-items: flex-start;
   text-align: left;
 
-  /* The Core OS panel's orb blue — the sun's electric cyan deepened so small text holds ≥4.5:1
-     on the cream; the bright triplet is the raw orb cyan, reserved for the ONLINE glow. Scoped
-     here so the neon frame and the right column keep the amber --hero-accent untouched. */
-  --hud-accent: #00687a;
-  --hud-accent-glow-rgb: 0 229 255;
+  /* The Core OS panel's instrument colour — the sun's amber DEEPENED, because the raw
+     --sun-accent (#ff8a1a) manages only 1.77:1 on the cream and this is small text. #8f4400 holds
+     5.25:1, comfortably past the 4.5 bar and past the 4.82 of the cyan it replaced. The glow triplet
+     is the raw amber, reserved for the ONLINE pulse where contrast is not the constraint.
+
+     ⚠ If this is ever retuned, check it against the cream (#e2dfd2) first — amber is a far worse
+     starting point for legibility on a warm background than the cyan ever was. */
+  --hud-accent: #8f4400;
+  --hud-accent-glow-rgb: var(--sun-accent-rgb);
   /* Muted label glyph — through the difference blend this reads mid-gray on the cream, a clear
      step quieter than the near-black values (which use --hero-invert-text, like the headline). */
   --hud-label-muted: #6f6f6f;
@@ -679,10 +690,10 @@ body {
   align-items: flex-end;
   text-align: right;
 
-  /* Same scoped orb-blue / muted / track tokens as the left panel, so the two telemetry columns
-     read as one system while the neon frame keeps its amber --hero-accent. */
-  --hud-accent: #00687a;
-  --hud-accent-glow-rgb: 0 229 255;
+  /* Same deepened-amber / muted / track tokens as the left panel, so the two telemetry columns read
+     as one system. See the contrast note there before changing either. */
+  --hud-accent: #8f4400;
+  --hud-accent-glow-rgb: var(--sun-accent-rgb);
   --hud-label-muted: #6f6f6f;
   --hud-track: rgb(0 0 0 / 0.14);
 }
@@ -1316,6 +1327,56 @@ body {
 
 /* Overlay — head (eyebrow + active detail) above, the arrow nav pinned to the bottom. Ignores the
    pointer so drag-to-look reaches the canvas; only the nav row re-enables it. */
+/* ─── The loop's veil ───────────────────────────────────────────────
+   The cover the teleport happens behind, and the cream it comes back out of. See LoopVeil.tsx for why
+   this exists when the black hole's own shadow already darkens the frame (short version: the shader
+   gets NEARLY black, and the frame underneath the jump needs a guarantee).
+
+   z 10000 is ABOVE EVERYTHING, navbar included — the same rank the intro's own veil uses, and for the
+   same reason. The arrival is supposed to be a clean slate: a navbar sitting over the flood (inverting
+   against it, because .nav-root blends with difference) would announce that the page never really went
+   away. It comes back when the cream clears, with the rest of the hero. */
+.loop-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+  opacity: 0;
+  /* Hidden, not merely transparent. The cream layer carries a full-screen SVG displacement filter, and a
+     transparent element still owns one — `visibility: hidden` is what actually takes it out of the
+     compositor for the 99.9% of the session it is not in use. GSAP's `autoAlpha` drives both. */
+  visibility: hidden;
+}
+
+.loop-veil-black {
+  background: #000;
+}
+
+/* The hero's own background colour, so when this clears there is nothing to cross-fade INTO — the page
+   underneath is already exactly this. `filter` displaces the clip-path's edge with the turbulence map,
+   which is what makes the flood crawl outward like liquid instead of sweeping like a wipe. */
+.loop-veil-cream {
+  background: #e2dfd2;
+  clip-path: circle(0% at 50% 50%);
+  filter: url(#loop-veil-liquid);
+}
+
+/* The filter lives in an SVG that must be in the document but must never take space or catch a click. */
+.loop-veil-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* A crawling, displaced edge is exactly the kind of involuntary motion this setting asks us to drop.
+     The flood still happens (it is the transition, not decoration) — it just has a clean edge. */
+  .loop-veil-cream {
+    filter: none;
+  }
+}
+
 /* ─── Contact ───────────────────────────────────────────────────────
    The last overlay in the hero's single pin. You get here by diving back INTO the chamber's display,
    so the space behind this is the works canvas — same stars, same debris, same camera angle. Nothing
@@ -1474,6 +1535,99 @@ body {
   color: var(--accent);
   background: transparent;
   outline: none;
+}
+
+/* ── Travel in time ──
+   The loop's discoverable path, sat just above the footer. A slowly turning arc rather than a static
+   pill: the same orbital language as the navbar's mark, and it is the one control on the page that does
+   something irreversible, so it should read as a mechanism rather than as a link. */
+.contact-loop {
+  pointer-events: auto;
+  display: flex;
+  justify-content: center;
+  padding-bottom: clamp(0.85rem, 2vh, 1.35rem);
+}
+
+.contact-loop-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.65rem 1.5rem 0.65rem 1.15rem;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-small);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: rgb(var(--accent-rgb) / 0.85);
+  background: transparent;
+  border: 1px solid rgb(var(--accent-rgb) / 0.25);
+  border-radius: 999px;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    color 0.35s ease,
+    border-color 0.35s ease;
+}
+
+/* The sweep. Sits behind the label and wipes across on hover — the pull of the thing you are about to
+   fall into, rather than a colour change. */
+.contact-loop-button::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at 0% 50%,
+    rgb(var(--accent-rgb) / 0.28),
+    transparent 70%
+  );
+  transform: translateX(-100%);
+  transition: transform 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.contact-loop-button:hover,
+.contact-loop-button:focus-visible {
+  color: var(--accent);
+  border-color: rgb(var(--accent-rgb) / 0.6);
+  outline: none;
+}
+
+.contact-loop-button:hover::before,
+.contact-loop-button:focus-visible::before {
+  transform: translateX(0);
+}
+
+/* An open arc, turning. Two transparent sides make it read as an orbit rather than as a spinner. */
+.contact-loop-ring {
+  position: relative;
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 1px solid currentColor;
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 50%;
+  animation: contact-loop-orbit 3.6s linear infinite;
+}
+
+.contact-loop-label {
+  position: relative;
+}
+
+@keyframes contact-loop-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Ambient rotation with no end is exactly what this setting asks us to stop. The arc stays — it is
+     the button's shape, not its animation. */
+  .contact-loop-ring {
+    animation: none;
+  }
+
+  .contact-loop-button::before {
+    transition: none;
+  }
 }
 
 /* ── The footer ──

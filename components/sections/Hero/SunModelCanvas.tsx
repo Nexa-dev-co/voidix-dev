@@ -28,6 +28,7 @@ import {
   BLOOM_THRESHOLD,
 } from './sunBloom';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
+import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
@@ -497,6 +498,46 @@ export default function SunModelCanvas() {
       applyCovered();
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+
+    // ── The loop landed at the top ──
+    // The pin has jumped to progress 0, so every target below is already home while our own eased copies
+    // are still wherever the bottom of the page left them. They chase at STATE_EASE_RATE, which is a
+    // sixth of a second per e-fold — long enough to watch the shell re-crack and the collapse un-wind
+    // behind the cream. Snapped instead. See LOOP_RESET_EVENT.
+    const onLoopReset = () => {
+      revealProgress = 0;
+      applyCovered();
+      targetCracks = 0;
+      targetRingForm = 0;
+      targetRingWorks = 0;
+      targetCollapse = 0;
+      cracks = 0;
+      ringForm = 0;
+      ringWorksForm = 0;
+      collapse = 0;
+      forceRender = true;
+    };
+    window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
+
+    // ── Gather again ──
+    // The loader's own finale, replayed: the ten shards sweep back in from outside the frame and lock
+    // together, and the star lights inside the closing shell.
+    //
+    // ⚠ Deliberately its OWN event rather than re-firing SUN_ASSEMBLE_EVENT. `IntroSequence` returns null
+    // once it is done but STAYS MOUNTED (Contract 1 — it must never rely on effect cleanup to unlock
+    // scroll), so its `SUN_ASSEMBLED_EVENT` listener is still live and re-cueing the shared event would
+    // poke the loader's handoff long after the loader is gone.
+    const onRegather = () => {
+      if (reduceMotion || !modelReady) return;
+      assembly = 0;
+      // Not the reveal's hurried version: nothing is waiting on this one, so it plays at its authored
+      // pace and is actually watched.
+      forceAssembled = false;
+      assemblyCued = true;
+      positionShards(0, clock.getElapsedTime());
+      forceRender = true;
+    };
+    window.addEventListener(SUN_REGATHER_EVENT, onRegather);
 
     // ── Assembly ──
     // A one-shot flight, cued when the load reaches 100%. The dust carries the wait; this is the reward
@@ -1002,6 +1043,8 @@ export default function SunModelCanvas() {
       window.removeEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+      window.removeEventListener(LOOP_RESET_EVENT, onLoopReset);
+      window.removeEventListener(SUN_REGATHER_EVENT, onRegather);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
       window.clearTimeout(cueFallbackTimer);

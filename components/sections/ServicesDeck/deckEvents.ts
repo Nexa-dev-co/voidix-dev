@@ -15,9 +15,9 @@ export const DECK_REVEAL_EVENT = 'deck:reveal';
  */
 export const DECK_HIDE_EVENT = 'deck:hide';
 
-/**
- * Fired by the navbar's "Services" link on the homepage. The hero pin owns the scroll, so it
- * listens for this and scrolls to the revealed fleet (craft 0) — a plain `#services` anchor would
- * just jump to the top of the hero without driving the fill → reveal transition.
+/*
+ * ⚠ `GOTO_SERVICES_EVENT` used to live here — a bespoke signal for the one navbar link that happened to
+ * be wired. It is gone: every item and the CTA now route through the general `GOTO_SECTION_EVENT` in
+ * `lib/sectionNavigation.ts`, which takes a section key. Three more per-section constants was the
+ * alternative, and "the navbar is only half connected" is the state that replaced it.
  */
-export const GOTO_SERVICES_EVENT = 'voidix:goto-services';

@@ -18,7 +18,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
  * stay stuck on the glass while the feed shrank away into the room, which is exactly backwards.
  *
  * ── Why a pass, and why AFTER the bloom ──────────────────────────────────────────────────────────
- * Drawn as a mesh in the scene it would go through `UnrealBloomPass`, and the accent (#00e5ff, linear
+ * Drawn as a mesh in the scene it would go through `UnrealBloomPass`, and the accent (#ff8a1a, linear
  * max 1.0) is far over the pass's 0.6 threshold, so every hairline and every glyph would smear. The
  * alternative is grading the whole HUD to sit under the threshold — the dance that made
  * `sunBackdrop`'s shader complicated, and it would cap the accent's brightness forever. Composited
@@ -71,11 +71,11 @@ const MAX_RENDER_SCALE = 2.5;
 // The tokens from globals.css. Duplicated as literals because a canvas cannot read a CSS variable;
 // keep them in step with :root.
 //
-// ⚠ The accent is the SUN's amber, NOT the brand cyan. globals.css:14-19 sets that split out: the
-// star's palette belongs to anything reading as lit by it, and cyan stays with the navbar, the fleet
-// and the deck. This frame is the last thing the visitor sees before the star's own section, it sits
-// on a display in a room lit by that star, and the mark it is framing already burns amber — a cyan
-// instrument here would be the one cold thing in a warm picture.
+// The accent is the SUN's amber. That used to be a deliberate DIVERGENCE from a cyan brand accent —
+// this frame sits on a display in a room lit by the star, and a cyan instrument would have been the one
+// cold thing in a warm picture. The site has since moved its whole accent onto the star's colour, so
+// these now simply agree with `--accent`; they are still spelled out because a 2D canvas cannot read a
+// CSS variable.
 const COLOR_VALUE = 'rgba(235, 232, 224, 0.92)'; // --fg
 const COLOR_LABEL = 'rgba(235, 232, 224, 0.42)'; // --muted, lifted slightly for the smaller on-screen size
 const COLOR_ACCENT = '#ff8a1a'; // --sun-accent

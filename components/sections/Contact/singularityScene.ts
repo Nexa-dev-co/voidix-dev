@@ -342,6 +342,23 @@ const LENSING_RADIUS_SCALE = 1;
  */
 const FINALE_LIQUID_IN_FRACTION = 0.7;
 
+// ── The dive (the loop's crossing) ──
+// By the time the visitor falls in, the finale's own liquid envelope has drained to zero and the pass is
+// disabled. The dive turns it back on and pushes it well past where the birth used it: you are inside
+// the distortion now rather than watching it from outside.
+/** Lensing strength at full fall. Above the finale's 0.9 — the whole frame should be bending. */
+const DIVE_LENSING_STRENGTH = 1.6;
+/** Ripple amplitude at full fall. This is what makes the last second read as liquid rather than as zoom. */
+const DIVE_LENSING_LIQUID = 1.35;
+/**
+ * How far into the dive the shadow has taken the whole screen.
+ *
+ * This is the MASK: the teleport fires at dive 1 and must be invisible, so the frame has to be black
+ * before it. Reaching full black at 0.82 rather than 1.0 leaves a deliberate beat of pure darkness at
+ * the end of the fall — the jump lands inside that beat, with margin either side of it.
+ */
+const DIVE_BLACKOUT: readonly [number, number] = [0.68, 0.93];
+
 /** One fracture shard: where it sits when the shell is whole, and the axis it moves along. */
 interface Shard {
   object: THREE.Object3D;
@@ -433,6 +450,21 @@ export interface SingularityScene {
   exposureBoost(): number;
   /** What to set the field's lensing pass to this frame. `strength` 0 means disable it. */
   lensing(): Readonly<SingularityLensing>;
+  /**
+   * The dive into the hole, 0..1 — the loop's crossing.
+   *
+   * Takes the lensing back over from the finale's own envelope, which by then has drained to nothing:
+   * the liquid comes back hard and the shadow grows until it owns the frame. That shadow IS the mask the
+   * teleport happens behind, which is why it is worth having the fall drive it rather than a veil alone.
+   */
+  setDive(progress: number): void;
+  /**
+   * The scrollbar has jumped to the top. Be at sequence 0 NOW, not eased toward it.
+   *
+   * Without this the star spends `FINALE_REWIND_SECONDS` visibly un-dying behind the cover — see
+   * LOOP_RESET_EVENT.
+   */
+  reset(): void;
   dispose(): void;
 }
 
@@ -501,6 +533,8 @@ export function createSingularityScene({
   let collapseAmount = 0;
   /** The lensing envelope, 0..1 — see the note where it is computed. Off outside the flash's window. */
   let liquidRamp = 0;
+  /** The loop's dive, 0..1. Drives the lensing back on and the shadow up to full — see setDive. */
+  let dive = 0;
   /** The flash's screen-wide stage this frame, already damped. Read by the field's grade. */
   let screenPulse = 0;
   const reduceMotion = prefersReducedMotion();
@@ -849,7 +883,20 @@ export function createSingularityScene({
    * visitor's drag-to-look rather than assuming the hole sits at the centre of the frame.
    */
   const updateLensing = (camera: THREE.Camera, elapsedSeconds: number) => {
-    const strength = LENSING_STRENGTH * liquidRamp * presence;
+    // The dive OVERRIDES the finale's envelope rather than adding to it. By the time anyone falls in,
+    // `liquidRamp` has drained to zero and the pass is off; taking the max is what turns it back on
+    // without the two fighting over one number.
+    const diveEase = dive * dive * (3 - 2 * dive);
+    const strength = Math.max(
+      LENSING_STRENGTH * liquidRamp,
+      DIVE_LENSING_STRENGTH * diveEase,
+    ) * presence;
+    lensingState.liquid = Math.max(LENSING_LIQUID, DIVE_LENSING_LIQUID * diveEase);
+    // The shadow grows until it owns the frame. This is the cover the teleport happens behind.
+    lensingState.shadow = Math.max(
+      LENSING_SHADOW,
+      THREE.MathUtils.smoothstep(dive, DIVE_BLACKOUT[0], DIVE_BLACKOUT[1]),
+    );
     // Fold in how far the horizon has opened: an unopened horizon is nothing to bend light around.
     const worldScale =
       blackHoleGroup.getWorldScale(scratchWorldScale).x * horizonForm;
@@ -1225,6 +1272,20 @@ export function createSingularityScene({
     // Already scaled by the pulse and the reduced-motion damping, so the field only has to add it.
     exposureBoost: () => screenPulse * FLASH_EXPOSURE_BOOST,
     lensing: () => lensingState,
+    setDive: (progress) => {
+      dive = THREE.MathUtils.clamp(progress, 0, 1);
+    },
+    reset: () => {
+      // Snap, do not ease. The rewind exists for a visitor scrolling back OUT of contact, where the
+      // star un-dying is the point; here the page has already jumped and nobody may see it happen.
+      dive = 0;
+      armed = false;
+      armDelayRemaining = 0;
+      sequence = 0;
+      presence = 0;
+      applyFinale();
+      lensingState.strength = 0;
+    },
     dispose,
   };
 }

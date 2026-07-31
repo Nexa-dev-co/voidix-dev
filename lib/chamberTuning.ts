@@ -220,10 +220,11 @@ export interface ChamberTuning {
    */
   holoInk: string;
   /**
-   * The accent: indices, arrows, rules, hover washes. This is where the cyan survives.
+   * The accent: indices, arrows, rules, hover washes.
    *
-   * Deliberately NOT the brand's electric `--accent` (#00e5ff) — that's a colour for glowing on black
-   * and it's illegible on white. This is the same hue taken down far enough to hold its own.
+   * Deliberately NOT the raw `--accent` (#ff8a1a) — that is a colour for glowing on black and manages
+   * only 2.36:1 on this white room. This is the same hue taken down far enough to hold its own: 5.34:1,
+   * past the 4.72 of the teal it replaced. Check any retune against white before shipping it.
    */
   holoTint: string;
   /** The panel's own background wash. Zero = fully transparent, which is what a white room wants. */
@@ -405,7 +406,7 @@ const CHAMBER_TUNING: ChamberTuning = {
 
   holoInk: '#0b0f12',
   // The brand cyan, deepened until it reads as ink rather than as light.
-  holoTint: '#0d7f8f',
+  holoTint: '#a85400',
   // The three below are all a hologram's "projected light" vocabulary, and every one of them reads as
   // dirt once the backdrop is white: a glow has nothing to glow against, scanlines become a grey haze
   // over the type, and the chromatic fringe turns dark text muddy — it stops looking like projection and

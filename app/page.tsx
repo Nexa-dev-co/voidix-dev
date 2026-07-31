@@ -1,6 +1,7 @@
 import Hero from '@/components/sections/Hero/Hero';
 import HeroSun from '@/components/sections/Hero/HeroSun';
 import IntroSequence from '@/components/effects/IntroSequence/IntroSequence';
+import LoopVeil from '@/components/effects/LoopVeil/LoopVeil';
 import FaqHologram from '@/components/sections/Chamber/FaqHologram/FaqHologram';
 
 export default function HomePage() {
@@ -18,6 +19,10 @@ export default function HomePage() {
           transformed ancestor stops `position: fixed` being fixed, and the panel would drift with the
           page. It anchors itself to the room by projection instead (see lib/hologramPose.ts). */}
       <FaqHologram />
+      {/* The loop's cover. Out here for the same reason the hologram is: it must be `position: fixed`
+          against the VIEWPORT, and the pin's spacer is transformed — a transformed ancestor stops fixed
+          being fixed, which for a full-screen cover would mean it scrolls off exactly when needed. */}
+      <LoopVeil />
     </main>
   );
 }

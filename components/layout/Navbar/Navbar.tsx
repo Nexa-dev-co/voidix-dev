@@ -2,15 +2,15 @@
 
 import { useRef, type CSSProperties } from 'react';
 import { useNavbarAnimation } from '@/lib/hooks/useNavbarAnimation';
-import { GOTO_SERVICES_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
+import { requestSection } from '@/lib/sectionNavigation';
 
 // `enter` drives the directional entrance (see useNavbarAnimation); `key` maps the item
 // to its scroll-progress meter and the CSS var its section feeds (--nav-progress-<key>).
 const NAV_ITEMS = [
   { key: 'services', number: '01', label: 'Services', href: '/#services', enter: 'top'    },
-  { key: 'work',     number: '02', label: 'Work',     href: '#work',     enter: 'left'   },
-  { key: 'process',  number: '03', label: 'Process',  href: '#process',  enter: 'right'  },
-  { key: 'contact',  number: '04', label: 'Contact',  href: '#contact',  enter: 'bottom' },
+  { key: 'work',     number: '02', label: 'Work',     href: '/#work',     enter: 'left'   },
+  { key: 'process',  number: '03', label: 'Process',  href: '/#process',  enter: 'right'  },
+  { key: 'contact',  number: '04', label: 'Contact',  href: '/#contact',  enter: 'bottom' },
 ] as const;
 
 // The logo's meter tracks the hero ("home") section.
@@ -37,7 +37,7 @@ function OrbitalMark() {
   return (
     <div className="orbital-mark" aria-hidden="true">
       <svg className="orbital-static" width="26" height="26" viewBox="0 0 26 26" fill="none">
-        <circle cx="13" cy="13" r="9" stroke="rgba(0,229,255,0.18)" strokeWidth="0.75" strokeDasharray="2 2.5" />
+        <circle cx="13" cy="13" r="9" stroke="rgb(var(--accent-rgb) / 0.18)" strokeWidth="0.75" strokeDasharray="2 2.5" />
         <circle cx="13" cy="13" r="2" fill="var(--accent)" />
       </svg>
       <svg className="orbital-spinning" width="26" height="26" viewBox="0 0 26 26" fill="none">
@@ -54,19 +54,31 @@ export default function Navbar() {
 
   useNavbarAnimation({ navRef, accentRef, metersRef });
 
-  // On the homepage, "Services" drives the hero pin to the revealed fleet instead of jumping to
-  // the top of the (overlay) section. Off the homepage, the href ("/#services") navigates normally.
+  // On the homepage EVERY item drives the pin, because none of these sections is a place you can jump
+  // to: they are overlays inside one pinned ScrollTrigger, so the href would land on the hero whichever
+  // one you clicked. Off the homepage (the labs render this navbar too) the "/#key" href navigates
+  // normally and the pin picks it up on arrival.
+  const isHomepage = () => window.location.pathname === '/';
+
   const handleNavClick = (event: React.MouseEvent, key: string) => {
-    if (key === 'services' && window.location.pathname === '/') {
-      event.preventDefault();
-      window.dispatchEvent(new Event(GOTO_SERVICES_EVENT));
+    if (!isHomepage()) return;
+    event.preventDefault();
+    requestSection(key);
+  };
+
+  // "Start Project" goes where a start-a-project button should: the contact form at the end.
+  const handleCtaClick = () => {
+    if (!isHomepage()) {
+      window.location.href = '/#contact';
+      return;
     }
+    requestSection('contact');
   };
 
   return (
     <>
-      {/* Cyan accent layer — sits behind the blended bar and renders normally, so the
-          brand cyan (top line, logo mark, the per-section meters) never gets inverted by
+      {/* Accent layer — sits behind the blended bar and renders normally, so the brand amber
+          (top line, logo mark, the per-section meters) never gets inverted by
           the difference blend on .nav-root. The meters are positioned over each item by
           measurement (see useNavbarAnimation), and each fill reads the CSS var its
           section feeds. */}
@@ -76,11 +88,11 @@ export default function Navbar() {
         <div className="nav-accent-logo">
           <OrbitalMark />
           {/* Invisible wordmark — reserves the same width so the visible (blended)
-              wordmark in .nav-root aligns with this cyan mark. */}
+              wordmark in .nav-root aligns with this accent mark. */}
           <span className="nav-wordmark nav-ghost">VOIDIX</span>
         </div>
 
-        {/* One cyan meter per section + one for the logo (home). JS sets each meter's
+        {/* One meter per section + one for the logo (home). JS sets each meter's
             left/width to sit under its item; the fill scales to --nav-progress-<key>. */}
         <div ref={metersRef} className="nav-meters">
           {METER_KEYS.map((meterKey) => (
@@ -99,7 +111,7 @@ export default function Navbar() {
       <header ref={navRef} className="nav-root">
 
         <a href="/" className="nav-logo">
-          {/* Transparent placeholder where the cyan mark sits in the accent layer. */}
+          {/* Transparent placeholder where the accent mark sits in the accent layer. */}
           <span className="nav-mark-spacer" aria-hidden="true" />
           <span className="nav-wordmark">VOIDIX</span>
         </a>
@@ -125,7 +137,7 @@ export default function Navbar() {
           </ul>
         </nav>
 
-        <button className="nav-cta" type="button">
+        <button className="nav-cta" type="button" onClick={handleCtaClick}>
           <span>Start Project</span>
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
             <path

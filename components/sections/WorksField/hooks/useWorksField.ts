@@ -22,6 +22,7 @@ import type { MarkTransitionStrategy } from '../transitions/markTransition';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents';
+import { LOOP_PROGRESS_EVENT, LOOP_RESET_EVENT, readLoopProgress } from '@/lib/loopEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
@@ -167,6 +168,41 @@ const CONTACT_FALL_STREAK_SCALE = 0.42;
  * HERO sun's opacity. They moved here with the star; the two must never both exist.
  */
 const CONTACT_STAR_PRESENCE: readonly [number, number] = [0.18, 0.42];
+
+// ── Contact → hero: the dive ──
+/**
+ * How close the camera gets to the hole, as a fraction of its authored distance.
+ *
+ * Not zero, and it cannot be: at distance 0 the perspective projection degenerates and `lookAt` has no
+ * direction left to resolve from. 0.06 puts the lens inside the disc with the horizon filling the frame,
+ * which is as far as anyone needs to see — by then the shadow has taken the screen anyway.
+ */
+const DIVE_MIN_DISTANCE = 0.06;
+/**
+ * The starfield's tails at full fall.
+ *
+ * Past the contact section's own steady `CONTACT_FALL_STREAK_SCALE`, because this is the one moment the
+ * warp's full violence is the correct read — you are not drifting toward the hole any more, you are
+ * going in.
+ */
+const DIVE_STREAK_SCALE = 1;
+/**
+ * How far the camera ROLLS on the way in, in degrees.
+ *
+ * The single cheapest thing that turns a dolly into a fall. Moving toward a stationary object is
+ * geometrically a fall but reads as a zoom, because nothing in the frame tells you the camera has an
+ * orientation — rolling it does, and a spiral is what infalling matter actually does. Applied after
+ * `lookAt`, which resets the quaternion every frame, so it can never accumulate.
+ */
+const DIVE_ROLL_DEGREES = 240;
+/**
+ * Extra field of view at full dive, on top of whatever the key authored.
+ *
+ * Widening the lens as you accelerate is the warp cue the travel between projects already uses
+ * (`FOV_KICK`); this is the same trick held open for the whole fall. It also drags the starfield past
+ * the edges faster than the camera is really moving, which is most of the "crossing a galaxy" read.
+ */
+const DIVE_FOV_PUNCH = 26;
 
 // ── The reveal pan: the camera turns away from the star ──
 //
@@ -826,6 +862,15 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      * camera and carries the star up out of frame — see REVEAL_PAN_DEGREES. Smoothstepped so the turn
      * eases in and out of its window instead of starting and stopping abruptly against the pull-back.
      */
+    /**
+     * The FOV the current key authors, widened by the dive.
+     *
+     * Shared because TWO places set `camera.fov` — here and the warp kick in the render loop — and a
+     * dive punch applied in only one of them would be cancelled the moment the other ran.
+     */
+    const authoredFov = () =>
+      splineAt(keyFov, pathU) + DIVE_FOV_PUNCH * diveProgress * diveProgress;
+
     const revealPanRadians = () => {
       if (!chamberState.engaged) return 0;
       // The COMBINED value, so the turn unwinds on the way back in. That is the finale's opening move:
@@ -973,7 +1018,21 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       samplePath(pathU);
       // Drag-to-look ORBITS the authored pose about whatever it aims at, rather than replacing it — so a
       // peek around the rock always springs back onto the shot the key describes.
-      pathOffset.copy(pathPosition).sub(pathTarget).multiplyScalar(distanceScale);
+      // The dive collapses the camera's distance from its aim point, and the aim point is the origin —
+      // which is where the black hole is. So falling in needs no new path: the authored pose simply
+      // closes on the thing it was already looking at. Eased on a cubed curve so the last of the fall
+      // accelerates, the same gravity read the star's own collapse uses.
+      //
+      // Floored rather than taken to zero: at distance 0 the projection degenerates and `lookAt` has no
+      // direction left to resolve.
+      // Squared rather than cubed: the star's own collapse is cubed because it should barely move and
+      // then vanish, but a fall the visitor is INSIDE has to be visibly under way early or the first
+      // half of the span is dead air. Still accelerating, just legible sooner.
+      const dive = diveProgress * diveProgress;
+      pathOffset
+        .copy(pathPosition)
+        .sub(pathTarget)
+        .multiplyScalar(distanceScale * THREE.MathUtils.lerp(1, DIVE_MIN_DISTANCE, dive));
       // Read the un-orbited aim BEFORE the drag is applied — this is the shot the key describes, and the
       // sun is composed against it rather than against the viewport (see `publishSunParallax`).
       restForward.copy(pathOffset).negate().normalize();
@@ -986,10 +1045,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       pathOffset.applyAxisAngle(ORBIT_RIGHT, revealPanRadians());
       camera.position.copy(pathTarget).add(pathOffset);
       camera.lookAt(pathTarget);
+      // The spiral. Rolls about the view axis on the same accelerating curve as the fall, so the frame
+      // starts to turn only once you are genuinely going in. Safe to apply unconditionally: `lookAt`
+      // above rewrites the quaternion every frame, so this cannot accumulate.
+      if (dive > 0) camera.rotateZ(THREE.MathUtils.degToRad(DIVE_ROLL_DEGREES) * dive);
 
       // FOV is authored per key, so a stop can be a tight portrait or a wide establishing shot. The
       // warp kick in the render loop rides on top of whatever this resolves to.
-      const fov = splineAt(keyFov, pathU);
+      const fov = authoredFov();
       if (Math.abs(camera.fov - fov) > 0.01) {
         camera.fov = fov;
         camera.updateProjectionMatrix();
@@ -1460,6 +1523,42 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
 
+    // ── The dive into the hole ──
+    // The camera falls toward the origin. There is no path to author: the hole sits at (0,0,0) and every
+    // works key already aims there, so the fall is simply the authored pose's distance collapsing.
+    let diveProgress = 0;
+    const onLoopProgress = (event: Event) => {
+      diveProgress = readLoopProgress(event);
+      singularity?.setDive(diveProgress);
+    };
+    window.addEventListener(LOOP_PROGRESS_EVENT, onLoopProgress);
+
+    // ── The teleport landed; stop easing ──
+    // Every value below CHASES its target rather than reading it, which is what makes the crossings
+    // cinematic and is exactly wrong here: the pin has just jumped to 0, so their targets are already
+    // home while they are still half a second behind. Behind the cover that reads as the chamber
+    // re-assembling and the space flying back together. See LOOP_RESET_EVENT.
+    const onLoopReset = () => {
+      diveProgress = 0;
+      chamberState.reveal = 0;
+      chamberState.contact = 0;
+      combineChamberTarget();
+      chamberState.current = chamberState.target;
+      chamberState.revealEased = chamberState.reveal;
+      chamberState.engaged = false;
+      flightState.target = 0;
+      flightState.current = 0;
+      flightState.engaged = false;
+      worksShouldRender = false;
+      setMarkPresent(true);
+      singularity?.reset();
+      // The warp is measured from frame-to-frame camera movement, and the jump moves it further than
+      // any hop ever could. Without this the hero would open with the starfield streaking at full tilt.
+      hasPreviousCameraPosition = false;
+      warp = 0;
+    };
+    window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
+
     // Warm the meteor / fire / shard materials + bloom pipeline before the field is shown. Compiled
     // ASYNCHRONOUSLY (background threads, where the GPU supports it) so it doesn't block the main
     // thread — a synchronous compile at the intro's warm-up beat froze ~0.2s right before the reveal.
@@ -1740,7 +1839,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // scratch vector the warp already owns, so this allocates nothing.
         camera.getWorldDirection(streakDirection);
       }
-      const streakStrength = Math.max(warp, fallStrength * CONTACT_FALL_STREAK_SCALE);
+      // The dive takes the tails past the contact section's steady fall and up to the warp's full
+      // violence — taken as another `max` for the same reason the fall is: they are three expressions of
+      // one thing (how fast the field is going past you), and summing them would stack.
+      const streakStrength = Math.max(
+        warp,
+        fallStrength * CONTACT_FALL_STREAK_SCALE,
+        diveProgress * DIVE_STREAK_SCALE,
+      );
       starSystem.streakUniforms.uStreakLength.value = streakStrength * STREAK_MAX_LENGTH;
       starSystem.streakUniforms.uOpacity.value = streakStrength * STREAK_MAX_OPACITY;
       starSystem.streakUniforms.uStreakDir.value.copy(streakDirection);
@@ -1748,7 +1854,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // set the authored value this frame, so this only ever adds the punch of the hop. During the
       // flight the shared path owns the fov outright and neither applies.
       if (!flightState.engaged && warp > 0.001) {
-        camera.fov = splineAt(keyFov, pathU) + warp * FOV_KICK;
+        camera.fov = authoredFov() + warp * FOV_KICK;
         camera.updateProjectionMatrix();
       }
 
