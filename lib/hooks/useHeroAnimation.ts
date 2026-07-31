@@ -189,26 +189,18 @@ const CHAMBER_STOP_COUNT = 1;
 // to author — the return simply unwinds the chamber's progress (see lib/contactEvents.ts for why it is
 // its own signal rather than a second writer of the chamber's).
 //
-// ⚠ Nearly twice the reveal's length, because it carries nearly twice as much: the dive back into the
-// display AND the star's death, back to back. Sized so the SECOND of those — the part the visitor is
-// actually here for — gets about as long as the whole works→chamber reveal does. At the reveal's own
-// 5.8s the finale was getting roughly a third of the span, so the star imploded in under two seconds
-// and read as a glitch rather than as an event.
-//
-// The settle is short — there is nothing to land on the way in, the same reasoning as the reveal's own
-// reverse settle.
-const RETURN_SCROLL_VH = 240;
-const RETURN_STEP_DURATION = 9.5;
+// Sized to match the reveal it undoes: the same glide length, so leaving the room takes as long as
+// arriving did. The settle is short — there is nothing to land on the way in, the same reasoning as the
+// reveal's own reverse settle.
+const RETURN_SCROLL_VH = 140;
+const RETURN_STEP_DURATION = 5.8;
 const RETURN_SETTLE_MS = 200;
 const RETURN_CONTACT_UI_FADE: [number, number] = [0.72, 0.94];
-// ⚠ Timed against RETURN_DIVE_END (0.5 in useWorksField), not against this span's own shape.
-//
-// The star is a DOM billboard behind the works canvas, and the room seals that canvas opaque until the
-// chamber has unwound past OPAQUE_WINDOW — which, with the dive landing at 0.5, happens at about 0.44.
-// Fading it up before then does nothing visible: it was already at full opacity behind an opaque canvas
-// and the visitor never saw it arrive. So it comes back JUST as the space does, and is then left alone
-// for a beat before the finale touches it. Move the dive and this has to move with it.
-const RETURN_SUN_RESTORE: [number, number] = [0.38, 0.48];
+// The star is brought back EARLY in the return — well before the contact panel — because the finale's
+// whole premise is that you watch it die, and that needs a beat of seeing it alive and unchanged first.
+// It comes back as the camera is still swinging off the room, so it is already there when the frame
+// arrives on it rather than fading up under the visitor's eye.
+const RETURN_SUN_RESTORE: [number, number] = [0.18, 0.42];
 const CONTACT_STOP_COUNT = 1;
 const CONTACT_SELECTOR = ".contact-section";
 

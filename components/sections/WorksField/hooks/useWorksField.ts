@@ -134,25 +134,10 @@ const HUD_EXPOSURE_MAX_STOPS = 5.6;
 const HUD_EXPOSURE_STOP_DOWN: readonly [number, number] = [0.0, 0.12];
 const HUD_EXPOSURE_RECOVER: readonly [number, number] = [0.18, 0.42];
 
-/**
- * How much of the return is spent diving back into the display.
- *
- * ⚠ NOT the whole span, and the reason is the single most confusing coupling in this section. The sun
- * is a DOM billboard BEHIND this canvas, and the room seals the canvas opaque over `OPAQUE_WINDOW`
- * (chamber progress 0.12). So the star cannot be seen until the chamber has unwound past that point —
- * and if the unwind is spread across the whole return, that does not happen until contact ≈ 0.88,
- * leaving no room at all for the finale. The star was restored, imploded and died entirely behind an
- * opaque canvas, and the footer arrived empty.
- *
- * Landing the dive at the halfway mark frees the back half for what the section is actually FOR: the
- * star comes back, is seen alive, and then dies.
- */
-const RETURN_DIVE_END = 0.4;
-
 // ── Contact: the fall toward the black hole ──
 // Ramped across the back half of the return, so the tails open up as the display grows back to fill the
 // frame rather than while you are still watching a small rectangle across a room.
-const CONTACT_FALL_WINDOW: readonly [number, number] = [0.55, 1];
+const CONTACT_FALL_WINDOW: readonly [number, number] = [0.35, 1];
 /**
  * How hard the fall streaks, against the travel warp's full punch.
  *
@@ -720,9 +705,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      * the star stays dead. The star dying is the one irreversible thing on this site.
      */
     const combineChamberTarget = () => {
-      chamberState.target =
-        chamberState.reveal *
-        (1 - Math.min(chamberState.contact / RETURN_DIVE_END, 1));
+      chamberState.target = chamberState.reveal * (1 - chamberState.contact);
     };
 
     // ── The mark belongs to works, and to nothing else ──
