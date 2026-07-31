@@ -1,6 +1,17 @@
 # Works — the accretion mark, the star's colour, and the collapsing sun
 
-> **Round 4 — the sun is now IN the render, and the text was decoupled.**
+> ## ⚠ STATUS, 2026-07-31 — the sun half of this doc is REVERTED
+>
+> Everything below about the mark, the palette and the collapse rig still stands. **The sun work does
+> not.** `WorksField/sunBackdrop.ts` and `lib/sunPlacement.ts` were deleted, and the DOM sun's
+> `REVEAL_SUN_FADE` restored, because the site ended up with two sun images on screen at once and the
+> in-render one could not be moved by the works camera.
+>
+> The rounds below are kept as a **record of what was tried and why**, not as a description of the
+> code. For the current state — and the two conditions any third attempt has to meet — see the
+> "shared sun" section of `CLAUDE.md`.
+
+> **Round 4 (REVERTED) — the sun is now IN the render, and the text was decoupled.**
 >
 > The DOM approach was abandoned (see the reverted round below for why it cannot work) and replaced with
 > `WorksField/sunBackdrop.ts`: a `THREE.CanvasTexture` of the sun's canvas, drawn as a clip-space quad

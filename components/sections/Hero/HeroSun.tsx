@@ -8,6 +8,7 @@ import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { SUN_CANVAS_HEADROOM } from '@/components/effects/IntroSequence/gatherShader';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
+import { useSunParallax } from './hooks/useSunParallax';
 
 // The single sun for the whole page. It lives here (not in the hero card and not in the loader) so
 // exactly one WebGL sun exists: the intro flies it from the loader "o" into the hero square, then
@@ -38,6 +39,10 @@ const RESIZE_FADE_SECONDS = 0.35;
 export default function HeroSun() {
   const layerRef = useRef<HTMLDivElement>(null);
   const flightRef = useRef<HTMLDivElement>(null);
+  const parallaxRef = useRef<HTMLDivElement>(null);
+
+  // The works camera's drag-to-look, applied to the star (see hooks/useSunParallax).
+  useSunParallax(parallaxRef, layerRef);
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -188,12 +193,22 @@ export default function HeroSun() {
         transformOrigin: 'center center',
       }}
     >
+      {/* Between the pin's transform (outer) and the intro's (inner), because both of those are
+          already owned. Carries only the works camera's drag-to-look — see hooks/useSunParallax.
+          No `will-change` on purpose: the flight inside it is already promoted, so this only ever
+          moves an existing compositor layer, and a second permanent hint would cost more than it saves. */}
       <div
-        ref={flightRef}
-        className="hero-sun-flight"
-        style={{ width: '100%', height: '100%', transformOrigin: 'center center', willChange: 'transform' }}
+        ref={parallaxRef}
+        className="hero-sun-parallax"
+        style={{ width: '100%', height: '100%', transformOrigin: 'center center' }}
       >
-        <SunCanvas />
+        <div
+          ref={flightRef}
+          className="hero-sun-flight"
+          style={{ width: '100%', height: '100%', transformOrigin: 'center center', willChange: 'transform' }}
+        >
+          <SunCanvas />
+        </div>
       </div>
     </div>
   );

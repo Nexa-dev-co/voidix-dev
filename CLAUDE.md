@@ -256,12 +256,58 @@ way, or a restored scroll position moves things while the loader is still up.
 model authored in `/sun-lab`, and its constants **are** the lab's "Peaceful" preset — keep them in
 step with `sunLabPresets.ts` rather than drifting a second copy.
 
-The intro only *drives* it via `.hero-sun-layer` (outer: opacity + scroll transform) and
-`.hero-sun-flight` (inner: the o → square flight). A third element, `.hero-sun-screen`, sits between
-them and is owned solely by `HeroSun`: it **follows the chamber's display into the room** so the star
-shrinks onto the table's screen instead of hanging in front of it (`lib/screenPose.ts`). Three nested
-transforms, one owner each — sharing one element between two of them is how you get a sun that jumps. Its z-index walks `10001` (during intro, above
-the veil) → `9500` (after) → `-1` (services, so the fleet and its labels paint in front).
+It is driven through exactly **three nested elements, one owner each** — sharing one between two
+owners is how you get a sun that jumps:
+
+| element | owner | drives |
+|---|---|---|
+| `.hero-sun-layer` (outer) | `HeroSun` (base box, z-index, resize fade) + the pin (scroll transform) | where the sun sits and how big it is |
+| `.hero-sun-parallax` (middle) | `useSunParallax`, and nothing else | the works camera's drag-to-look |
+| `.hero-sun-flight` (inner) | `IntroSequence` (the o → square flight), then the services scale, then the reveal's fade-out | the intro handoff and the sun's opacity |
+
+**The middle one is why drag-to-look doesn't leave the star stuck to the glass.** Everything in the
+works scene belongs to a camera the visitor can drag; the sun is a separate WebGL context and cannot
+be in that scene, so instead `useWorksField` publishes how far the camera has been dragged off the
+pose the current stop authored (`lib/sunParallaxPose.ts`, a per-frame store) and the sun follows.
+
+It is a **deviation**, not a world position, and that is the design: at rest the identity is exact, so
+the star sits precisely where the pin put it at every stop and through every travel, and only a drag
+moves it. Full world anchoring was rejected — the path orbits ±35° at a ~40° lens, so a world-fixed
+sun would swing about two screen widths across the four stops and be off-frame at projects 02 and 03,
+which are compositions authored with the star in them.
+
+Its z-index walks `10001` (during intro, above the veil) → `9500` (after) → `-1` (services, so the
+fleet and its labels paint in front).
+
+### ⚠ The sun does not enter the chamber, and this is deliberate
+
+At the works→chamber reveal the sun **fades out** over `REVEAL_SUN_FADE` `[0, 0.12]`, matched to
+`OPAQUE_WINDOW` in `chamberScene` — early, while the display still fills the frame, so what you
+perceive is a light dimming rather than the site's anchor vanishing. The star never reaches the
+table.
+
+Two ways of changing that have been built and reverted. **Read this before building a third.**
+
+1. *Transform the DOM sun onto the display.* Cannot work. The room sets an opaque
+   `scene.background` and the display's alpha closes over `OPAQUE_WINDOW`, so a layer **behind** the
+   canvas is invisible past ~0.12; putting it **in front** leaves a flat rectangle over a screen the
+   tour views at an angle. (A stale revision of this file described this as shipped, via a
+   `.hero-sun-screen` element and a `lib/screenPose.ts` store. **Neither ever existed.**)
+2. *Sample the sun's canvas into the space render* (`sunBackdrop.ts`, deleted 2026-07-31). The idea
+   is sound — once the pixels are inside the space texture the display's own perspective carries
+   them onto the table correctly — but that build had two defects: the quad was written in **clip
+   space**, so the works camera could not move it, and the handoff with the DOM sun was arbitrated by
+   a **threshold on eased progress**, which did not hold. Both suns ended up on screen at once.
+
+If it is tried again: the two images must be mutually exclusive *by construction*, not by timing,
+and anything living in the space scene must be positioned through the camera rather than in clip
+space. The open cost is a per-frame `CanvasTexture` upload on the heaviest scene on the site.
+
+This matters beyond the reveal: **the planned collapse finale needs a star on that screen to die.**
+
+`SUN_COVERED_CHAMBER_PROGRESS` (`SunModelCanvas`) freezes the star just past that fade's end. Keep
+the two in step — below the fade's end it freezes something still on screen; far above it, it pays
+for a bloom pass on something fully transparent.
 
 `AUTO_ROTATE_DEGREES_PER_SECOND` is **imported** from `HeroInstruments/heroReadouts.ts`, not
 copied — the HUD displays that exact rate, so one source of truth stops the telemetry lying.
@@ -280,11 +326,11 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:handoff-progress` | `HANDOFF_PROGRESS_EVENT` | useHeroAnimation | The services→works crossing, `0..1`. |
 | `voidix:chamber-progress` | `CHAMBER_PROGRESS_EVENT` | useHeroAnimation | The works→chamber reveal, `0..1`. |
 | `voidix:chamber-hologram` | `CHAMBER_HOLOGRAM_EVENT` | chamberScene | The tour has arrived; the FAQ panel may unseal. |
+| `voidix:hero-services` | `HERO_SERVICES_PROGRESS_EVENT` | useHeroAnimation | The hero→services span. Carries **two** fractions: `progress` (to the fleet landing) and `fill` (to the square covering the viewport). The pin owns the layout; the sun owns what to do with it. |
 
-Two per-frame **stores** sit alongside these, for values too hot for an event: `lib/hologramPose.ts`
-(where the FAQ panel is on screen) and `lib/screenPose.ts` (where the chamber's display is, so the sun
-can follow it). Both are written every frame by `chamberScene` and read in the consumer's own rAF — a
-CustomEvent or React state per frame would be a re-render per frame.
+One per-frame **store** sits alongside these, for values too hot for an event: `lib/hologramPose.ts`
+(where the FAQ panel is on screen). It is written every frame by `chamberScene` and read in the
+consumer's own rAF — a CustomEvent or React state per frame would be a re-render per frame.
 
 ## Navbar & the per-section meters
 

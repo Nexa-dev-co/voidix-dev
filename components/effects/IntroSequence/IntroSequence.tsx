@@ -21,9 +21,9 @@ import GatherCanvas from "./GatherCanvas";
 import LoaderTelemetry from "./LoaderTelemetry/LoaderTelemetry";
 
 // The shared sun lives in HeroSun, as three nested elements so no two things ever own one transform:
-//   .hero-sun-layer  — the outer layer (we fade its opacity in; the hero pin owns its transform)
-//   .hero-sun-screen — follows the chamber's display into the room (HeroSun; nothing here touches it)
-//   .hero-sun-flight — the inner element we fly from the "o" to the square
+//   .hero-sun-layer    — the outer layer (we fade its opacity in; the hero pin owns its transform)
+//   .hero-sun-parallax — the works camera's drag-to-look (HeroSun; nothing here touches it)
+//   .hero-sun-flight   — the inner element we fly from the "o" to the square
 // Both selectors below are plain class lookups, so the intervening layer is invisible to them.
 const SUN_LAYER_SELECTOR = ".hero-sun-layer";
 const SUN_FLIGHT_SELECTOR = ".hero-sun-flight";

@@ -23,6 +23,7 @@ import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
 import { hideHologram } from '@/lib/hologramPose';
+import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 
@@ -100,6 +101,12 @@ const WORKS_RENDER_THRESHOLD = 0.28;
 const CHAMBER_ENGAGE_EPSILON = 0.001;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
+
+// ── Placing the sun against the shot (see `publishSunParallax`) ──
+/** Floor on the projected depth, so a deviation approaching 90° slides off-frame instead of diverging. */
+const SUN_PARALLAX_MIN_DEPTH = 0.05;
+/** Cap on the published offset, as a multiple of the viewport. Far past off-screen; purely a safety rail. */
+const SUN_PARALLAX_MAX_OFFSET_RATIO = 2;
 
 // ── The body's arrival — it flies in from the far dark as the flight completes ──
 // The field's meteors stay hidden through most of the flight (only debris + streaking stars show).
@@ -538,6 +545,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const pathOffset = new THREE.Vector3();
     const ORBIT_UP = new THREE.Vector3(0, 1, 0);
     const ORBIT_RIGHT = new THREE.Vector3(1, 0, 0);
+    // ── Where the camera would be looking if the visitor weren't dragging ──
+    // Captured by `updateCamera` before it applies the drag orbit, and used to place the sun (see
+    // `publishSunParallax`). `restPoseValid` is false whenever something OTHER than the authored path
+    // owns the camera — the handoff flight, the `?tune` override — because then there is no "rest" to
+    // deviate from and the sun must simply stay where the pin put it.
+    const restForward = new THREE.Vector3();
+    let restPoseValid = false;
     const samplePath = (u: number) => {
       pathPosition.set(splineAt(keyX, u), splineAt(keyY, u), splineAt(keyZ, u));
       pathTarget.set(splineAt(keyTx, u), splineAt(keyTy, u), splineAt(keyTz, u));
@@ -647,6 +661,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
     const updateCamera = (instant: boolean) => {
       if (cameraOverride) {
+        // A borrowed shot has no authored pose to deviate from, so the sun holds still under it.
+        restPoseValid = false;
         const now = performance.now();
         const overrideDelta = Math.min((now - lastOverrideFrame) / 1000, 0.1);
         lastOverrideFrame = now;
@@ -672,6 +688,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Drag-to-look ORBITS the authored pose about whatever it aims at, rather than replacing it — so a
       // peek around the rock always springs back onto the shot the key describes.
       pathOffset.copy(pathPosition).sub(pathTarget).multiplyScalar(distanceScale);
+      // Read the un-orbited aim BEFORE the drag is applied — this is the shot the key describes, and the
+      // sun is composed against it rather than against the viewport (see `publishSunParallax`).
+      restForward.copy(pathOffset).negate().normalize();
+      restPoseValid = true;
       pathOffset.applyAxisAngle(ORBIT_UP, viewYaw);
       pathOffset.applyAxisAngle(ORBIT_RIGHT, viewPitch);
       camera.position.copy(pathTarget).add(pathOffset);
@@ -684,6 +704,54 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         camera.fov = fov;
         camera.updateProjectionMatrix();
       }
+    };
+
+    // ── Tell the sun where a distant object would have gone ──
+    //
+    // The sun is DOM, behind this canvas, and cannot be in this scene (see lib/sunParallaxPose.ts). So
+    // rather than move it into the render, the render says where it belongs and the DOM follows.
+    //
+    // The trick is that the sun is composed against the SHOT, not against the viewport. Its resting
+    // place on screen is whatever the hero pin chose, and that stays true at every stop — what this
+    // publishes is only the DEVIATION: how far the visitor has dragged the camera away from the pose the
+    // key authored. So travelling between projects moves nothing (the camera is on its path, deviation
+    // zero) and the composition each stop was framed for is preserved, while a drag pushes the star
+    // across the screen exactly as it pushes the starfield.
+    //
+    // ⚠ Deliberately NOT full world anchoring. The path orbits ±35° at a ~40° lens, so a sun fixed in the
+    // world would swing about two screen widths across the four stops and be off-frame at projects 02
+    // and 03 — which are compositions that were authored with the star in them.
+    //
+    // The maths, per frame:
+    //   1. `restForward` is where the authored shot aims, in world space.
+    //   2. Rotate it into the ACTUAL camera's view space. With no drag the two are the same rotation, so
+    //      this returns (0, 0, -1) and every step below yields exactly zero — the identity is exact, not
+    //      approximate, which is what guarantees this can never disturb the resting sun.
+    //   3. Perspective-divide to NDC through the current lens, then scale to CSS pixels.
+    const restForwardView = new THREE.Vector3();
+    const inverseCameraRotation = new THREE.Quaternion();
+    const publishSunParallax = () => {
+      if (!worksShouldRender || !restPoseValid) {
+        clearSunParallaxPose();
+        return;
+      }
+      inverseCameraRotation.copy(camera.quaternion).invert();
+      restForwardView.copy(restForward).applyQuaternion(inverseCameraRotation);
+      // Depth toward the lens is -z. Clamped rather than bailed out on: past ~90° of deviation the
+      // projection diverges, and a clamp lets the star keep sliding off-frame instead of snapping back
+      // to centre. The drag clamps keep us far from this, but a future wider clamp shouldn't break it.
+      const depth = Math.max(-restForwardView.z, SUN_PARALLAX_MIN_DEPTH);
+      const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+      const ndcX = restForwardView.x / depth / (tanHalfFov * camera.aspect);
+      const ndcY = restForwardView.y / depth / tanHalfFov;
+      // Bounded so a degenerate projection can never hand the DOM a transform of millions of pixels,
+      // which browsers turn into an enormous compositor layer.
+      const limitX = viewportWidth * SUN_PARALLAX_MAX_OFFSET_RATIO;
+      const limitY = viewportHeight * SUN_PARALLAX_MAX_OFFSET_RATIO;
+      publishSunParallaxPose(
+        THREE.MathUtils.clamp((ndcX * viewportWidth) / 2, -limitX, limitX),
+        THREE.MathUtils.clamp((-ndcY * viewportHeight) / 2, -limitY, limitY),
+      );
     };
 
     // ── Load textures, then build the mark + shards ──
@@ -1221,6 +1289,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         });
       }
       // ── Camera: fly the shared path during the handoff, else the normal focus-follow ──
+      // Cleared here rather than in each branch that fails to set it: only the authored-path branch of
+      // `updateCamera` has a rest pose to offer, and the flight and the `?tune` override both bypass it
+      // entirely. Resetting once, up front, means a new way of driving the camera cannot accidentally
+      // inherit the last valid rest pose and drag the sun around with a stale one.
+      restPoseValid = false;
       if (flightState.engaged) {
         // Ease at the same rate as the deck ship so the two cameras stay locked together.
         flightState.current +=
@@ -1279,6 +1352,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         camera.fov = splineAt(keyFov, pathU) + warp * FOV_KICK;
         camera.updateProjectionMatrix();
       }
+
+      // Deliberately AFTER the warp kick: the projection below uses `camera.fov`, and reading it before
+      // this line would place the sun with one lens while the frame was drawn with another.
+      publishSunParallax();
 
       // Skip the bloom pipeline whenever the field isn't on screen (and when the tab is
       // backgrounded). The loop above still ran, so state is current and the first visible frame is
@@ -1398,6 +1475,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
       chamber?.dispose();
+      // The sun outlives this field, so it must not be left holding the last offset we published.
+      clearSunParallaxPose();
 
       // The strategy owns every geometry, material and texture it built, so this one call frees the
       // whole mark — including the two surfaces it loaded for itself.
