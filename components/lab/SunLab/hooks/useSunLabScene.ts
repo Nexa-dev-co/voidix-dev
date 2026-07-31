@@ -9,14 +9,19 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { LENSING_SHADER } from "../lensingShader";
+import { LENSING_SHADER } from "@/lib/lensingShader";
 import {
   ACCRETION_COUNT,
   ACCRETION_FRAGMENT_SHADER,
   ACCRETION_UNIFORMS,
   ACCRETION_VERTEX_SHADER,
-} from "../accretionShader";
-import { BURST_FRAGMENT_SHADER, BURST_UNIFORMS, BURST_VERTEX_SHADER } from "../burstShader";
+} from "@/lib/accretionShader";
+import {
+  BURST_FRAGMENT_SHADER,
+  BURST_UNIFORMS,
+  BURST_VERTEX_SHADER,
+  flashEnvelope,
+} from "@/lib/burstShader";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import {
   buildSunLabRegistry,
@@ -210,7 +215,7 @@ export interface BlackHoleStandaloneSettings {
   rotation: Vector3Values;
   spinAxis: number;
   spinSpeed: number;
-  /** The screen-space lensing settings this tab drives (see lensingShader.ts). */
+  /** The screen-space lensing settings this tab drives (see lib/lensingShader.ts). */
   lensing: GlobalParams["lensing"];
 }
 
@@ -237,23 +242,6 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
  *
  * Squared on the way up so it snaps in, squared down from full so it drops away and tails.
  */
-function flashEnvelope(
-  value: number,
-  peak: number,
-  attack: number,
-  hold: number,
-  decay: number,
-): number {
-  if (value <= peak - attack || value >= peak + hold + decay) return 0;
-  if (value < peak) {
-    const rise = (value - (peak - attack)) / attack;
-    return rise * rise;
-  }
-  if (value <= peak + hold) return 1;
-  const fall = (value - (peak + hold)) / decay;
-  return (1 - fall) * (1 - fall);
-}
-
 function setEulerFromDegrees(euler: THREE.Euler, degrees: Vector3Values): void {
   euler.set(
     THREE.MathUtils.degToRad(degrees.x),
@@ -1047,7 +1035,7 @@ export function useSunLabScene({
 
       // ── The flash ──
       // Stage 1: the core burst, an actual light source at the origin (there is nothing else bright left
-      // in frame by now — see burstShader.ts). Stage 2: the screen grade, lagging slightly and lasting
+      // in frame by now — see lib/burstShader.ts). Stage 2: the screen grade, lagging slightly and lasting
       // longer, so the eye is overwhelmed a beat after the light arrives.
       const flashStrength = finaleFlash.strength * flashDamping;
       // The detonation itself: holds only briefly, then clears so it isn't standing in front of what it

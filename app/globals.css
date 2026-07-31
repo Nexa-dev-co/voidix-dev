@@ -5,9 +5,15 @@
 /* ─── Design Tokens ─────────────────────────────────────────────── */
 :root {
   --bg: #060606;
+  /* The page background as channels, for the places that need it TRANSLUCENT — the contact form has to
+     sit legibly over a live black hole without blacking the scene out behind it. Keep in step with
+     --bg above; they are the same colour said two ways. */
+  --bg-rgb: 6 6 6;
   --fg: #ebe8e0;
+  --fg-rgb: 235 232 224;
   --muted: rgba(235, 232, 224, 0.38);
   --accent: #00e5ff;
+  --accent-rgb: 0 229 255;
   --border: rgba(235, 232, 224, 0.08);
   --card: #0d0d0d;
 
@@ -1325,17 +1331,263 @@ body {
   opacity: 0;
   visibility: hidden;
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
+  flex-direction: column;
   padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.5rem, 5vw, 5rem) clamp(1.75rem, 5vh, 3.25rem);
-  /* The panel takes its own pointer events back; the rest stays transparent to the drag-to-look
-     canvas underneath, exactly as the works overlay does. */
+  /* The panel and the footer take their own pointer events back; the rest stays transparent to the
+     drag-to-look canvas underneath, exactly as the works overlay does. */
   pointer-events: none;
 }
 
+/* Copy left, form right, and the MIDDLE DELIBERATELY EMPTY — the black hole sits at the world origin,
+   which is where every works camera key aims, so it lands dead centre of frame. Its ring span reaches
+   roughly the middle half of the width, which is why both columns are held near a third and pushed to
+   the edges: any wider and the text would sit on the disc.
+
+   `min-height: 0` so that on a short viewport the body yields to the footer instead of pushing it off
+   screen — this section is ONE pinned viewport and there is nothing below it to scroll to. */
+.contact-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(1.5rem, 6vw, 4rem);
+}
+
+/* No slab behind this one, unlike the form. It sits over near-empty starfield rather than over the
+   disc, and boxing it would make the section read as two cards floating on a render instead of as
+   type set into the space. */
+.contact-intro {
+  pointer-events: auto;
+  width: min(22rem, 32%);
+}
+
+/* A translucent slab rather than a solid card. The plan flagged legibility over a live black hole as a
+   real risk, and the honest answer is that a form must be readable — but blacking the scene out behind
+   it would throw away the shot the whole section is built on. Deliberately NO backdrop-filter: there is
+   none anywhere on this site, and a full-screen blur is the last thing this frame needs while the disc
+   and the lensing pass are running. */
 .contact-panel {
   pointer-events: auto;
-  width: min(26rem, 100%);
+  width: min(24rem, 36%);
+  padding: clamp(1.5rem, 3vw, 2.25rem);
+  background: rgb(var(--bg-rgb) / 0.62);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.contact-eyebrow {
+  color: rgb(var(--accent-rgb) / 0.8);
+}
+
+.contact-title {
+  margin-top: 0.85rem;
+  font-weight: 800;
+  font-size: clamp(1.5rem, 2.6vw, 2.1rem);
+  line-height: 1.06;
+  letter-spacing: -0.03em;
+  color: var(--fg);
+}
+
+.contact-lead {
+  margin-top: 0.9rem;
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* No top margin: the form is the panel's only content now that the copy has moved to the left column. */
+.contact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.contact-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.contact-label {
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Hairline-underlined rather than boxed — a stack of bordered boxes reads as a SaaS signup, which is
+   precisely the aesthetic the brief rejects. */
+.contact-input {
+  width: 100%;
+  padding: 0.5rem 0 0.55rem;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-body);
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgb(var(--fg-rgb) / 0.16);
+  border-radius: 0;
+  outline: none;
+  transition:
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.contact-input:focus-visible {
+  border-bottom-color: rgb(var(--accent-rgb) / 0.85);
+  box-shadow: 0 1px 0 0 rgb(var(--accent-rgb) / 0.5);
+}
+
+/* `:user-invalid` rather than `:invalid` — every required field is invalid the moment it renders, so
+   `:invalid` would paint the whole form red before anyone had typed a character. */
+.contact-input:user-invalid {
+  border-bottom-color: rgb(var(--sun-accent-rgb) / 0.7);
+}
+
+.contact-textarea {
+  resize: vertical;
+  min-height: 3.5rem;
+  line-height: 1.55;
+}
+
+.contact-send {
+  align-self: flex-start;
+  margin-top: 0.5rem;
+  padding: 0.6rem 1.4rem;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-small);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
+}
+
+.contact-send:hover,
+.contact-send:focus-visible {
+  color: var(--accent);
+  background: transparent;
+  outline: none;
+}
+
+/* ── The footer ──
+   Across the full width under the form, so it reads as the page ending rather than as part of the
+   panel. It is the only place on the site carrying the model's CC-BY credit. */
+.contact-footer {
+  pointer-events: auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem clamp(1rem, 3vw, 2.5rem);
+  padding-top: clamp(1rem, 2.5vh, 1.5rem);
+  border-top: 1px solid var(--border);
+}
+
+.contact-footer-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-right: auto;
+}
+
+.contact-footer-mark {
+  font-weight: 700;
+  font-size: var(--fs-mark);
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+
+.contact-footer-note {
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+}
+
+/* Three short columns rather than one long row: the footer shares a single pinned viewport with the
+   form, so grouping buys eight links for three lines of height instead of one very wide line. */
+.contact-footer-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem clamp(1.25rem, 3vw, 2.75rem);
+}
+
+.contact-footer-group-title {
+  margin-bottom: 0.4rem;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: rgb(var(--fg-rgb) / 0.28);
+}
+
+.contact-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem clamp(0.7rem, 1.6vw, 1.1rem);
+  list-style: none;
+}
+
+.contact-footer-link {
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition:
+    color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.contact-footer-link:hover,
+.contact-footer-link:focus-visible {
+  color: var(--fg);
+  border-bottom-color: rgb(var(--fg-rgb) / 0.3);
+  outline: none;
+}
+
+/* Full width on its own line: the credit is the longest string here and wrapping it mid-title would
+   make the attribution harder to read than the licence intends. Set at the smallest size on the scale —
+   it is fine print, and the licence asks for the credit to be present and legible, not prominent. */
+.contact-credit {
+  flex-basis: 100%;
+  font-size: var(--fs-micro);
+  color: rgb(var(--fg-rgb) / 0.26);
+}
+
+.contact-credit .contact-footer-link {
+  font-size: inherit;
+}
+
+/* `cite` italicises by default; the credit reads better upright against the rest of the footer. */
+.contact-credit-title {
+  font-style: normal;
+  color: rgb(var(--fg-rgb) / 0.6);
+}
+
+@media (max-width: 51.25em) {
+  /* Two columns cannot straddle a black hole on a phone — there is no room either side of it. They
+     stack instead, both full width, and the hole reads THROUGH them rather than beside them. Pushed to
+     the bottom of the body so the top of the frame stays open for it. */
+  .contact-body {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-end;
+    gap: clamp(1rem, 3vh, 1.5rem);
+  }
+
+  .contact-intro,
+  .contact-panel {
+    width: 100%;
+  }
+
+  .contact-footer-brand {
+    margin-right: 0;
+    width: 100%;
+  }
 }
 
 .works-overlay {

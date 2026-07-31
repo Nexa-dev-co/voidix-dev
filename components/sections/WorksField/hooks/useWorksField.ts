@@ -5,7 +5,9 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { LENSING_SHADER } from '@/lib/lensingShader';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
@@ -23,6 +25,14 @@ import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
+// Hosted here for the same reason the chamber is: it has to be drawn by THIS renderer. The chamber
+// because a GPU texture cannot cross a context; the star because lensing can only bend what is already
+// in this framebuffer. See docs/contact-singularity-plan.md §3.
+import {
+  createSingularityScene,
+  CONTACT_BLOOM_STRENGTH,
+  type SingularityScene,
+} from '@/components/sections/Contact/singularityScene';
 import { hideHologram } from '@/lib/hologramPose';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { createWorksHud } from '../worksHud';
@@ -146,6 +156,17 @@ const CONTACT_FALL_WINDOW: readonly [number, number] = [0.35, 1];
  * warp's intensity the starfield turns into a tunnel of lines nobody can read over.
  */
 const CONTACT_FALL_STREAK_SCALE = 0.42;
+/**
+ * When the star fades back into the space, across the return.
+ *
+ * Early, and well ahead of the fall above. The finale's premise is that you WATCH the star die, and that
+ * only lands if you have seen it alive first — so it arrives while the camera is still swinging off the
+ * room, and is simply already there when the frame comes round onto it.
+ *
+ * These are the numbers `RETURN_SUN_RESTORE` used to carry in `useHeroAnimation`, where they drove the
+ * HERO sun's opacity. They moved here with the star; the two must never both exist.
+ */
+const CONTACT_STAR_PRESENCE: readonly [number, number] = [0.18, 0.42];
 
 // ── The reveal pan: the camera turns away from the star ──
 //
@@ -560,6 +581,19 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       BLOOM_THRESHOLD,
     );
     spaceComposer.addPass(bloomPass);
+    // ── Gravitational lensing, for the contact finale ──
+    // Here rather than in the star's own scene because it is a SCREEN-SPACE pass: it bends whatever is
+    // already in the framebuffer, and what makes the effect worth having is that the starfield and the
+    // debris are in this one. It was the whole reason the star moved into this renderer.
+    //
+    // After the bloom (a bend belongs on the graded HDR image) but BEFORE the HUD, which composites last
+    // precisely so its hairlines and type are the colours it authored rather than smeared by a pass.
+    //
+    // Disabled by default and for almost the whole session: a pass-through ShaderPass still costs a
+    // full-screen blit, and this one is wanted for about a second at the very bottom of the page.
+    const lensingPass = new ShaderPass(LENSING_SHADER);
+    lensingPass.enabled = false;
+    spaceComposer.addPass(lensingPass);
     // The camera feed's instrument frame, composited AFTER the bloom so its hairlines and type are
     // exactly the colours authored rather than smeared by a pass they'd all be over the threshold of.
     // In the SPACE stage, not the screen one, because it has to ride onto the chamber's display with
@@ -700,9 +734,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      * back down to 0, which is the pose where the display fills the frustum exactly — so diving back
      * into the screen is the pull-back run backwards, with no second camera path to author.
      *
-     * ⚠ Only the ROOM reads this. `revealPanRadians` and the sun's fade key off `chamberState.reveal`,
-     * which stays pinned at 1 for the whole return — so the camera holds the angle it was left at, and
-     * the star stays dead. The star dying is the one irreversible thing on this site.
+     * ⚠ `chamberState.reveal` is kept as its own field beside this because the two say different things,
+     * and one consumer needs each. The ROOM reads the combined value, so the pull-back unwinds. The HERO
+     * sun's fade reads the raw one, which stays pinned at 1 for the whole return — so that star, once
+     * retired into the room, never comes back.
+     *
+     * (An earlier revision of this comment also claimed `revealPanRadians` keys off the raw value and
+     * that "the star stays dead". Both are wrong now: the pan reads the combined value and unwinds, and
+     * a star does come back — a different one, in this scene. See CONTACT_STAR_PRESENCE.)
      */
     const combineChamberTarget = () => {
       chamberState.target = chamberState.reveal * (1 - chamberState.contact);
@@ -744,10 +783,22 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      */
     const CONTACT_MARK_REMOVED_AT = 0.05;
 
-    // ⚠ The black hole is NOT here, and it was, briefly. It belongs to `SunModelCanvas`, because the
-    // finale is the sun BECOMING it — and a sun in one WebGL context turning into a black hole in
-    // another is a cross-context cross-fade, which is the exact thing that failed with the second sun.
-    // One scene, one continuous transition. See docs/contact-black-hole-plan.md.
+    // ── The finale IS here, and this is the reasoning that put it here ──
+    //
+    // This comment used to say the opposite: that the star and its black hole belonged to
+    // `SunModelCanvas`, because a sun in one WebGL context becoming a hole in another is a
+    // cross-context cross-fade — the exact thing that failed once already (`sunBackdrop.ts`, deleted).
+    //
+    // That objection was answered rather than ignored, and the answer is worth keeping. The finale needs
+    // LENSING, which bends whatever is already in the framebuffer; the starfield and debris are in THIS
+    // renderer, so a lensing pass over on the sun's own transparent canvas would have nothing behind it
+    // to bend. And the two stars are mutually exclusive BY CONSTRUCTION — the hero sun's opacity is a
+    // function of REVEAL progress and is 0 past 0.18, while this one's presence is a function of RETURN
+    // progress, which cannot leave 0 until reveal is pinned at 1. No timing arbitrates between them.
+    // That is precisely what the reverted attempt got wrong: it used a threshold on eased progress, and
+    // both suns ended up on screen at once.
+    //
+    // See `components/sections/Contact/singularityScene.ts` and docs/contact-singularity-plan.md §2.
 
     /**
      * The ROOM's own 0..1, with the look-down lead-in taken off the front.
@@ -1344,12 +1395,33 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         },
       });
     };
+
+    // ── The contact star (built lazily; see ensureSingularity) ──
+    // The star that dies at the end of the page. It lives in THIS scene rather than in the hero sun's
+    // own canvas because the finale needs lensing, and lensing bends what is already in the framebuffer
+    // — the starfield is here. See components/sections/Contact/singularityScene.ts.
+    // No onReady callback: this field renders continuously while it is on screen (unlike the hero sun's
+    // demand-rendered canvas), and the scene re-applies its own presence when the model lands.
+    let singularity: SingularityScene | null = null;
+    const ensureSingularity = () => {
+      if (singularity) return;
+      singularity = createSingularityScene({
+        pixelRatio: renderer.getPixelRatio(),
+        lowPower,
+      });
+      scene.add(singularity.group);
+    };
     const onChamberProgress = (event: Event) => {
       chamberState.reveal = readChamberProgress(event);
       combineChamberTarget();
       chamberState.engaged = true;
       // A jump straight to the end of the page can land here before Works ever rendered.
       ensureChamber();
+      // The reveal STARTING is the cue to fetch the contact star — never at page load. `fractured_sun`
+      // is not in assetLoadProgress's weights, so an early fetch adds invisible mass to a loader whose
+      // counter is honest, and competes with the copy the intro holds its handoff on. From here there is
+      // the room, a full stop and a 5.8s return glide before the first frame that needs it.
+      ensureSingularity();
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
 
@@ -1361,6 +1433,30 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       combineChamberTarget();
       // The mark leaves so the space is empty when the camera swings back onto the star.
       setMarkPresent(chamberState.contact < CONTACT_MARK_REMOVED_AT);
+      // ── The star comes back ──
+      // Early in the span, and deliberately: the finale's whole premise is that you watch it die, which
+      // only works if you first see it alive and unchanged. It fades up while the camera is still
+      // swinging off the room, so it is already there when the frame arrives on it rather than
+      // materialising under the visitor's eye.
+      //
+      // This window used to live in `useHeroAnimation` as RETURN_SUN_RESTORE, driving the HERO sun's
+      // opacity. It moved here with the star itself — see §8.1 of the plan. There must never be two.
+      singularity?.setPresence(
+        THREE.MathUtils.smoothstep(
+          chamberState.contact,
+          CONTACT_STAR_PRESENCE[0],
+          CONTACT_STAR_PRESENCE[1],
+        ),
+      );
+      // ── Arming the finale ──
+      // Only at a fully landed return: the visitor is standing in contact, not gliding toward it. The
+      // pin guarantees an EXACT 1 here (CROSSING_SNAP_EPSILON snaps a settle that rounds to just inside
+      // the span), which is what lets this be an equality rather than a threshold somebody has to tune.
+      //
+      // Scroll back and it disarms, and the star unwinds out of its death. That is deliberate, not a
+      // simplification — a latched black hole would still be sitting here when you scrolled up into
+      // works, where the collapsing sun belongs. See §7 of docs/contact-singularity-plan.md.
+      singularity?.setArmed(chamberState.contact >= 1);
     };
     window.addEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
 
@@ -1656,6 +1752,47 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         camera.updateProjectionMatrix();
       }
 
+      // The contact star's idle spin and its rings' orbits. It no-ops entirely while the star is absent,
+      // which is every frame outside the return and contact — so browsing projects pays one function
+      // call and a boolean.
+      singularity?.update(deltaSeconds, elapsed, camera);
+      // ── The star's glow, and the supernova on top of it ──
+      // This field blooms globally at a strength tuned for a starfield, which is nowhere near hot enough
+      // to make a collapsed sun read. It cannot be fixed on the star alone: exposure and bloom here grade
+      // the whole space. So the FIELD lifts its bloom while the star is present — and at contact the
+      // frame is a star, a starfield and nothing else, so that lift is simply the section's grade.
+      //
+      // The flash then rides on the same two dials. Being global is the POINT here rather than a
+      // compromise: a star detonating should wash out the whole frame, starfield included. In the hero's
+      // canvas the same boost could only ever have lit the star's own 175px box.
+      //
+      // Written every frame rather than on the progress event, because both have to survive whatever
+      // else touches the pass — and they are two float assignments.
+      const restingBloom = lowPower ? BLOOM_STRENGTH_LOW : BLOOM_STRENGTH;
+      bloomPass.strength = singularity?.bloomStrength(restingBloom) ?? restingBloom;
+      renderer.toneMappingExposure =
+        TONE_MAPPING_EXPOSURE + (singularity?.exposureBoost() ?? 0);
+
+      // ── The lens ──
+      // The scene decides what it should be (only it knows where the hole is and how far it has opened);
+      // this owns the pass. Strength 0 disables it outright rather than running a pass-through, so the
+      // full-screen cost exists only across the ~1s the hole is being born.
+      const lens = singularity?.lensing();
+      lensingPass.enabled = (lens?.strength ?? 0) > 0;
+      if (lens && lensingPass.enabled) {
+        const lensUniforms = lensingPass.uniforms;
+        lensUniforms.uStrength.value = lens.strength;
+        lensUniforms.uCenter.value.set(lens.centerX, lens.centerY);
+        lensUniforms.uRadius.value = lens.radius;
+        lensUniforms.uAberration.value = lens.aberration;
+        lensUniforms.uLiquid.value = lens.liquid;
+        lensUniforms.uRingStrength.value = lens.ring;
+        lensUniforms.uShadow.value = lens.shadow;
+        lensUniforms.uTime.value = lens.time;
+        // Keeps the distortion circular instead of following the viewport's shape.
+        lensUniforms.uAspect.value = viewportHeight > 0 ? viewportWidth / viewportHeight : 1;
+      }
+
       // Deliberately AFTER the warp kick: the projection below uses `camera.fov`, and reading it before
       // this line would place the sun with one lens while the frame was drawn with another.
       publishSunParallax();
@@ -1813,6 +1950,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
       window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
       chamber?.dispose();
+      singularity?.dispose();
       hud.dispose();
       // The sun outlives this field, so it must not be left holding the last offset we published.
       clearSunParallaxPose();
@@ -1836,6 +1974,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Each composer owns (and disposes) both of its read/write targets, so the buffers handed to
       // them — and the clones they made — are freed with them.
       bloomPass.dispose();
+      lensingPass.dispose();
       smaaPass.dispose();
       spaceComposer.dispose();
       screenComposer.dispose();

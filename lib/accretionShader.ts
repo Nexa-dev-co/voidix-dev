@@ -2,6 +2,10 @@ import * as THREE from "three";
 
 // The accretion spiral — the star's own matter becoming the disc.
 //
+// Lives in `lib/`, not in the lab that authors it: the contact finale runs this same code on the site
+// (docs/contact-singularity-plan.md). One copy on purpose — two would mean tuning one and shipping the
+// other.
+//
 // Every particle starts at a point sampled from the SUN'S OWN MESH and is carried inward. Nothing about
 // the spiral shape is authored: it emerges from one physical fact, on the `shear` line below.
 //

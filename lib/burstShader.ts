@@ -2,6 +2,10 @@ import * as THREE from "three";
 
 // The supernova burst — the flash that masks the sun→black-hole handoff.
 //
+// Lives in `lib/`, not in the lab that authors it: the contact finale runs this same code on the site
+// (docs/contact-singularity-plan.md). One copy on purpose — two would mean tuning one and shipping the
+// other.
+//
 // WHY THIS EXISTS AS ITS OWN OBJECT
 // The obvious implementation is "spike exposure and bloom at the handoff", and it does not work: by the
 // moment the sun's scale reaches zero, there is nothing bright left in frame to spike. The accretion
@@ -13,6 +17,32 @@ import * as THREE from "three";
 //
 // TWO-STAGE, deliberately: a tight hot core arrives first and reads as ignition, and a much wider soft
 // halo follows it out. A single falloff reads as a glowing ball; the two together read as a detonation.
+
+/**
+ * The pulse curve the burst is driven by: a quick squared attack into `peak`, a flat plateau for
+ * `hold`, then a squared decay. All four are in sequence units, not seconds.
+ *
+ * The plateau is the load-bearing part. Without it the flash reads as a camera pop; with it, it is a
+ * held brightness that something can happen INSIDE — which is the whole point of a flash that exists
+ * to mask a handoff. Both stages of the flash use this with different widths: a short hold for the
+ * detonation itself, a long one for the screen grade that stays lit over it.
+ */
+export function flashEnvelope(
+  value: number,
+  peak: number,
+  attack: number,
+  hold: number,
+  decay: number,
+): number {
+  if (value <= peak - attack || value >= peak + hold + decay) return 0;
+  if (value < peak) {
+    const rise = (value - (peak - attack)) / attack;
+    return rise * rise;
+  }
+  if (value <= peak + hold) return 1;
+  const fall = (value - (peak + hold)) / decay;
+  return (1 - fall) * (1 - fall);
+}
 
 export const BURST_UNIFORMS = {
   uColor: { value: new THREE.Color(1.0, 0.96, 0.88) },

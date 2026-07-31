@@ -196,11 +196,10 @@ const RETURN_SCROLL_VH = 140;
 const RETURN_STEP_DURATION = 5.8;
 const RETURN_SETTLE_MS = 200;
 const RETURN_CONTACT_UI_FADE: [number, number] = [0.72, 0.94];
-// The star is brought back EARLY in the return — well before the contact panel — because the finale's
-// whole premise is that you watch it die, and that needs a beat of seeing it alive and unchanged first.
-// It comes back as the camera is still swinging off the room, so it is already there when the frame
-// arrives on it rather than fading up under the visitor's eye.
-const RETURN_SUN_RESTORE: [number, number] = [0.18, 0.42];
+// ⚠ There is no sun-restore window here any more. The star that comes back is not this one — it is a
+// real object in the works scene, and the span that fades it up lives there (`CONTACT_STAR_PRESENCE` in
+// useWorksField). Re-adding one here would put two stars on screen; §2.1 of the plan explains why the
+// single-owner opacity below is load-bearing rather than tidy.
 const CONTACT_STOP_COUNT = 1;
 const CONTACT_SELECTOR = ".contact-section";
 
@@ -391,25 +390,22 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // The camera move is in the WebGL scene; here we drop the works UI and retire the sun.
     const sunFlight = document.querySelector<HTMLElement>(SUN_FLIGHT_SELECTOR);
 
-    // ── The star's opacity has ONE owner, and it has to ──
+    // ── The hero star's opacity is a function of the REVEAL, and of nothing else ──
     //
-    // Two spans move it in opposite directions: the reveal retires it into the room, the return brings
-    // it back to die. Letting each write the property directly does not work, and fails in the worst
-    // possible way — EVERY crossing's `apply` runs on EVERY pin update, including the very first one at
-    // scroll 0. So the return, sitting at its own progress 0, would write "not yet restored" = 0 over
-    // the reveal's "not yet hidden" = 1, and the sun would be switched off for the entire site before
-    // the visitor had scrolled a pixel. (It was. That is exactly what happened.)
+    // It used to have a second input: the return faded it back in so it could die at contact. That is
+    // gone, because the star that dies is no longer this one — it is a real object inside the works
+    // scene (`Contact/singularityScene.ts`), where the lensing pass has a starfield to bend.
     //
-    // So both spans report their progress here and this resolves the single value. Order-independent by
-    // construction: whichever crossing dispatches last, the answer is the same.
+    // ⚠ This single input is what makes the two stars mutually exclusive BY CONSTRUCTION rather than by
+    // timing, which is the condition CLAUDE.md sets for retrying a handoff that was reverted once
+    // already. This one is 0 for everything past reveal 0.18; the other cannot leave 0 until reveal is
+    // pinned at 1. Give this a second input again and that guarantee is gone — you get two stars on
+    // screen, which is exactly how the previous attempt failed. See docs/contact-singularity-plan.md §2.1.
     let revealSunProgress = 0;
-    let returnSunProgress = 0;
     const applySunOpacity = () => {
       if (!sunFlight) return;
-      const retired = fadeWindow(REVEAL_SUN_FADE, revealSunProgress);
-      const restored = fadeWindow(RETURN_SUN_RESTORE, returnSunProgress);
       gsap.set(sunFlight, {
-        opacity: gsap.utils.clamp(0, 1, 1 - retired + restored),
+        opacity: 1 - fadeWindow(REVEAL_SUN_FADE, revealSunProgress),
       });
     };
     const applyWorksToChamberReveal = (progress: number) => {
@@ -442,13 +438,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           autoAlpha: fadeWindow(RETURN_CONTACT_UI_FADE, progress),
         });
       }
-      // ── The star comes back ──
-      // It was retired on the way into the room (REVEAL_SUN_FADE) and this brings it back, early, as
-      // the camera swings off the room and onto where it was. It has to be there and it has to look
-      // untouched: the finale is the visitor watching it die, which only works if they first see it
-      // alive. Reported, never written — applySunOpacity owns the property.
-      returnSunProgress = progress;
-      applySunOpacity();
+      // ⚠ The hero star is NOT brought back here, and must not be. The star you watch die is a separate
+      // object inside the works scene, faded in by `CONTACT_STAR_PRESENCE` over this same span — see
+      // useWorksField's onContactProgress. Restoring this one too would put two stars on screen.
 
       window.dispatchEvent(
         new CustomEvent<ContactProgressDetail>(CONTACT_PROGRESS_EVENT, {

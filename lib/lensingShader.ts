@@ -2,6 +2,14 @@ import * as THREE from "three";
 
 // Screen-space gravitational lensing — the "space behaves like fluid" pass.
 //
+// Lives in `lib/`, not in the lab that authors it: the contact finale runs this same code on the site
+// (docs/contact-singularity-plan.md). One copy on purpose — two would mean tuning one and shipping the
+// other.
+//
+// ⚠ On the site this runs inside `useWorksField`'s `spaceComposer`, whose output alpha is load-bearing
+// (see createSpacePresentMaterial). The `alpha = 1.0` written below would seal the canvas and paint the
+// pinned sun out of the page — carry the sampled alpha through before enabling it there.
+//
 // WHAT THIS IS: a post-process that bends the already-rendered image radially around the black hole,
 // splits the sample per colour channel (chromatic aberration), undulates the bend with animated noise
 // (the liquid/glass read), and adds a photon ring at the shadow edge.
@@ -63,10 +71,17 @@ export const LENSING_SHADER = {
 
     // Sample with the bend applied. Undoing the aspect correction on the way out keeps the offset in UV
     // space, or the distortion would smear horizontally on a wide viewport.
-    vec3 sampleBent(vec2 uv, vec2 direction, float bend) {
+    //
+    // Returns the full RGBA rather than just the colour, because ALPHA IS LOAD-BEARING on the site: the
+    // works field's space stage renders to a transparent texture, and createSpacePresentMaterial is a
+    // raw shader specifically so that alpha survives to the canvas. Writing a constant 1.0 here would
+    // seal the canvas and paint the pinned hero sun out of the page. In /sun-lab the scene is opaque, so
+    // every alpha sampled is 1 and this is exactly equivalent to what it did before.
+    // (No backticks in here - they would terminate the template literal. See CLAUDE.md.)
+    vec4 sampleBent(vec2 uv, vec2 direction, float bend) {
       vec2 offset = direction * bend;
       offset.x /= uAspect;
-      return texture2D(tDiffuse, uv - offset).rgb;
+      return texture2D(tDiffuse, uv - offset);
     }
 
     void main() {
@@ -95,9 +110,11 @@ export const LENSING_SHADER = {
       // 3. Chromatic aberration — each channel bends by a slightly different amount, exactly as a real
       //    dispersive medium would separate them. Red bends least, blue most.
       float split = uAberration * bend;
+      // The unsplit sample carries the green channel AND the alpha the frame is composited with.
+      vec4 middle = sampleBent(vUv, direction, bend);
       vec3 color;
       color.r = sampleBent(vUv, direction, bend - split).r;
-      color.g = sampleBent(vUv, direction, bend).g;
+      color.g = middle.g;
       color.b = sampleBent(vUv, direction, bend + split).b;
 
       // 4. Photon ring — a thin bright band hugging the shadow edge, where grazing light piles up.
@@ -107,7 +124,7 @@ export const LENSING_SHADER = {
       // 5. Shadow — darken inside the edge so the silhouette stays hard even when the disc is blazing.
       color *= mix(1.0, smoothstep(0.72, 1.0, normalized), uShadow);
 
-      gl_FragColor = vec4(color, 1.0);
+      gl_FragColor = vec4(color, middle.a);
     }
   `,
 };

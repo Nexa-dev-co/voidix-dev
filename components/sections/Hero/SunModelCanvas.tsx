@@ -28,8 +28,7 @@ import {
   BLOOM_THRESHOLD,
 } from './sunBloom';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
-import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents';
-import { createSunParticles } from './sunParticles';
+import { createSunParticles } from '@/lib/sunParticles';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
 //
@@ -479,18 +478,16 @@ export default function SunModelCanvas() {
     // True once the chamber reveal has faded the sun out — see SUN_COVERED_CHAMBER_PROGRESS. This is
     // what lets the collapsing sun stay alive for the whole works section while still costing nothing
     // once the room has taken over.
+    //
+    // ⚠ The RETURN used to veto this, thawing the star for the whole of contact so it could die there.
+    // That is gone: the star that dies is a separate object in the works scene, so this one now stays
+    // frozen from the reveal to the bottom of the page — no bloom pass and no second scene render for
+    // the whole ending. Re-adding a contact input here would pay for a star nobody can see.
     let covered = false;
-    // The two spans that decide it, kept apart because they say opposite things: the reveal hides the
-    // star, and the return brings it back to die.
     let revealProgress = 0;
-    let returnProgress = 0;
     const applyCovered = () => {
       const wasCovered = covered;
-      // ⚠ The return VETOES the reveal, and this is not a tidy-up to fold into one comparison. The
-      // reveal's progress stays pinned at 1 for the whole of the chamber AND the return, so on its own
-      // it would keep the star frozen through the one beat it actually has to perform. Contact is where
-      // it dies; a frozen star cannot die.
-      covered = revealProgress >= SUN_COVERED_CHAMBER_PROGRESS && returnProgress <= 0;
+      covered = revealProgress >= SUN_COVERED_CHAMBER_PROGRESS;
       // Uncovering has to draw again: the sun stopped redrawing while it was hidden, so without this
       // scrolling back out of the room would reveal the stale frame it froze on.
       if (wasCovered && !covered) forceRender = true;
@@ -499,12 +496,7 @@ export default function SunModelCanvas() {
       revealProgress = readChamberProgress(event);
       applyCovered();
     };
-    const onContactProgress = (event: Event) => {
-      returnProgress = readContactProgress(event);
-      applyCovered();
-    };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
-    window.addEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
 
     // ── Assembly ──
     // A one-shot flight, cued when the load reaches 100%. The dust carries the wait; this is the reward
@@ -1010,7 +1002,6 @@ export default function SunModelCanvas() {
       window.removeEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
-      window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
       window.clearTimeout(cueFallbackTimer);

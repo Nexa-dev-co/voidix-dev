@@ -139,7 +139,7 @@ export interface GlobalParams {
   /** Seconds the finale's Play button takes to run the sequence 0→1. */
   finaleDuration: number;
   /**
-   * The supernova flash (see burstShader.ts) — the moment that masks the handoff. Without it the sun is
+   * The supernova flash (see lib/burstShader.ts) — the moment that masks the handoff. Without it the sun is
    * visibly seen shrinking to nothing, which reads as two models cross-fading.
    */
   finaleFlash: {
@@ -160,7 +160,7 @@ export interface GlobalParams {
     color: string;
   };
   /**
-   * Screen-space gravitational lensing (see lensingShader.ts) — the "space behaves like fluid" pass.
+   * Screen-space gravitational lensing (see lib/lensingShader.ts) — the "space behaves like fluid" pass.
    * `strength` 0 turns the whole pass into a pass-through, so it costs nothing when unused.
    */
   lensing: {
@@ -183,7 +183,7 @@ export interface GlobalParams {
     radiusScale: number;
   };
   /**
-   * The accretion spiral (see accretionShader.ts) — particles seeded from the sun's own mesh, wound into
+   * The accretion spiral (see lib/accretionShader.ts) — particles seeded from the sun's own mesh, wound into
    * arms by Keplerian shear. `strength` 0 hides it entirely.
    */
   accretion: {

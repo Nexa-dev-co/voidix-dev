@@ -4,6 +4,12 @@ import { GATHER_DEFAULTS, SUN_BODY_FILL } from '@/components/effects/IntroSequen
 /**
  * The dust orbiting the cracked sun on the services deck.
  *
+ * ── Two consumers, two very different cameras ────────────────────────────────────────────────────
+ * Lives in `lib/` because the contact star reuses it: the ending's whole premise is that you come back
+ * to the star you left, so it has to arrive wearing the same rings. But that star is a real object in
+ * the WORKS scene, whose camera sits ~7 world units out, where the hero's sits ~4 model radii out — so
+ * `pointSize` is an option rather than a constant. Everything else is shared unchanged.
+ *
  * Three crossing bands sweeping across the star, the way a planetary ring sits. So the sun reads as
  * the centre of an orbital system, which is the brand's whole metaphor, rather than as a ball in a
  * cloud. Grains split evenly across whatever is in `RINGS`, in one draw call.
@@ -305,6 +311,20 @@ const PARTICLE_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+export interface SunParticlesOptions {
+  /**
+   * Point size in pixels at one unit of camera distance, before DPR — the shader divides it by view
+   * depth. Defaults to the hero's value.
+   *
+   * ⚠ This is NOT convertible between the two consumers, which is why it is an option and not a shared
+   * constant. Apparent grain size is `pointSize / cameraDistance`, and the two scenes place their
+   * cameras in unrelated units: the hero's sits a few model radii from a sun fitted to a 175px canvas,
+   * the works camera sits 6–8 world units from a star fitted to the field. Tune each against its own
+   * scene; a value carried across will be wrong by roughly the ratio of those distances.
+   */
+  pointSize?: number;
+}
+
 export interface SunParticles {
   /** Add this to the sun's scene. */
   object: THREE.Points;
@@ -314,8 +334,18 @@ export interface SunParticles {
    * Two rather than one because the bands do not arrive together: the services ring erupts as the star
    * cracks open, and the works rings erupt on the flight into the project field. Each is a pure
    * function of its own scrubbed scroll, so both reverse independently.
+   *
+   * `masterFade` scales the whole field's brightness on top of that, and exists for a case the two
+   * ramps cannot express: the contact star arrives with its rings ALREADY formed (it wore them in
+   * works), so it needs them to fade up without re-erupting. Passing presence as the form ramps would
+   * throw them out of the star a second time, which is a different — and wrong — story.
    */
-  update(elapsedSeconds: number, servicesPresence: number, worksPresence: number): void;
+  update(
+    elapsedSeconds: number,
+    servicesPresence: number,
+    worksPresence: number,
+    masterFade?: number,
+  ): void;
   /**
    * The visible half-extent at the sun's distance. Every ring is a fraction of this, so calling it
    * on resize is what keeps the rings inside the canvas at any aspect.
@@ -340,7 +370,12 @@ function ringBasis(tiltDegrees: number, yawDegrees: number): { u: THREE.Vector3;
  * @param frameHalfExtent visible half-extent at the sun's distance — see `setFrameExtent`.
  * @param pixelRatio the renderer's DPR, so point sizes match what the canvas actually draws.
  */
-export function createSunParticles(frameHalfExtent: number, pixelRatio: number): SunParticles {
+export function createSunParticles(
+  frameHalfExtent: number,
+  pixelRatio: number,
+  options: SunParticlesOptions = {},
+): SunParticles {
+  const pointSize = options.pointSize ?? PARTICLE_SIZE;
   const geometry = new THREE.BufferGeometry();
   const ringU = new Float32Array(PARTICLE_COUNT * 3);
   const ringV = new Float32Array(PARTICLE_COUNT * 3);
@@ -408,7 +443,7 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
       uPresence: { value: 0 },
       uPresenceWorks: { value: 0 },
       uFrameExtent: { value: frameHalfExtent },
-      uSize: { value: PARTICLE_SIZE },
+      uSize: { value: pointSize },
       uMinSize: { value: MIN_PARTICLE_SIZE },
       uPixelRatio: { value: pixelRatio },
       uTwinkleAmount: { value: TWINKLE_AMOUNT },
@@ -441,13 +476,18 @@ export function createSunParticles(frameHalfExtent: number, pixelRatio: number):
     elapsedSeconds: number,
     servicesPresence: number,
     worksPresence: number,
+    masterFade = 1,
   ) => {
     // Fully skipped on the hero, where BOTH are 0 — no draw, no cost. It has to be both: the works
     // rings are still absent through the whole of services, and the services ring is still there
     // through the whole of works, so either one alone would hide grains that should be on screen.
-    object.visible = servicesPresence > 0.001 || worksPresence > 0.001;
+    // The master fade joins them for the same reason: fully-formed rings at zero brightness are still
+    // nothing to draw.
+    object.visible =
+      masterFade > 0.001 && (servicesPresence > 0.001 || worksPresence > 0.001);
     if (!object.visible) return;
     material.uniforms.uTime.value = elapsedSeconds;
+    material.uniforms.uBrightness.value = PARTICLE_BRIGHTNESS * masterFade;
     // The master fade snaps up almost at once (see PRESENCE_RAMP) — the per-grain `launched` term in
     // the shader is what actually staggers the field in, and the eruption's first frames are its
     // brightest, so a master fade tracking the form linearly would dim exactly those.
