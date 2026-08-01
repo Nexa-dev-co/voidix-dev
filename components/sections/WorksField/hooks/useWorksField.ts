@@ -1148,6 +1148,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // until the outlines have loaded; `buildMark` sets the real starting mark once it can.
     const markState = { from: 0, to: 0, progress: 0 };
     let markTween: gsap.core.Tween | null = null;
+    /**
+     * True while `markTween` is running the change BACKWARDS (see `runMarkTo`).
+     *
+     * `markState` alone cannot tell you this: `from`/`to` keep their meaning in both directions, so a
+     * reversing tween looks exactly like a forward one caught at the same progress. Which way it is
+     * headed is what decides whether a step onto `to` is a no-op or a second turnaround.
+     */
+    let markReversing = false;
 
     // ── What 'works' progress actually covers ──
     // The manager only knows about the debris texture. The MARK then fetches its outlines, a typeface
@@ -1263,6 +1271,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const rebuildMark = async () => {
       markTween?.kill();
       markTween = null;
+      markReversing = false;
       markRigs.forEach((rig) => {
         scene.remove(rig.group);
         rig.strategy.dispose();
@@ -1363,36 +1372,84 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // hard cut could happen inside a blur; the accretion strategy makes the change itself the thing
     // you watch, so a blur would only obscure it (see worksTransition.ts).
     //
-    // All this does is move `markState.progress` from 0 to 1. Every curve — when a stone lets go, how
-    // it travels, when the geode grows back — lives in the shader as a function of that one number,
-    // which is why the ease here is `none`: easing the driver as well would double-apply it.
-    const stageMark = (index: number) => {
-      const target = markIndexOfProject[index] ?? 0;
-      if (target === markState.to) return;
-
-      // ── Interrupting mid-change ──
-      // Whichever mark is currently dominant becomes the new starting point. There is a small visible
-      // jump when this fires at exactly the halfway crossover, and it is bounded and deliberate: the
-      // alternative is a three-way blend, which the strategy has no concept of because `setTransition`
-      // takes exactly two marks. In practice the pin locks input for longer than a change takes
-      // (STAGE_STEP_HOLD_MS), so only a programmatic jump — a works arrow, a nav link — can reach it.
+    // All this does is move `markState.progress` between 0 and 1. Every curve — when a stone lets go,
+    // how it travels, when the geode grows back — lives in the shader as a function of that one number,
+    // which is why the ease here is `none`: easing the driver as well would double-apply it. It is also
+    // why the change can simply be run BACKWARDS to undo it: a pure function of progress has no residue.
+    /**
+     * Run `markState.progress` to one of its endpoints at the authored rate — 1 builds `to`, 0
+     * un-builds it back to `from`.
+     *
+     * The duration is PROPORTIONAL to the distance left to cover, which is what lets a change be
+     * turned around mid-flight without changing pace: a build caught at 0.4 un-builds in 0.4 ×
+     * MARK_CHANGE_SECONDS, so the stones stream home at exactly the speed they streamed out. A flat
+     * duration would crawl the remainder over a full change and read as a different, slower shot.
+     */
+    const runMarkTo = (endpoint: 0 | 1) => {
       markTween?.kill();
-      markState.from = markState.progress >= 0.5 ? markState.to : markState.from;
-      markState.to = target;
-      markState.progress = 0;
-
+      markReversing = endpoint === 0;
       markTween = gsap.to(markState, {
-        progress: 1,
-        duration: MARK_CHANGE_SECONDS,
+        progress: endpoint,
+        duration: MARK_CHANGE_SECONDS * Math.abs(endpoint - markState.progress),
         ease: 'none',
         onComplete: () => {
           // Settled: `from === to` is the strategy's "sit still on this mark", so the resting frame is
           // the same code path as every other frame rather than a special case.
-          markState.from = target;
+          const settled = endpoint === 1 ? markState.to : markState.from;
+          markState.from = settled;
+          markState.to = settled;
           markState.progress = 0;
+          markReversing = false;
           markTween = null;
         },
       });
+    };
+
+    const stageMark = (index: number) => {
+      const target = markIndexOfProject[index] ?? 0;
+
+      // ── At rest ──
+      // `from === to` is the strategy's "sit still on this mark", so a change begins from a clean pair
+      // and the full four seconds.
+      if (!markTween) {
+        if (target === markState.to) return;
+        markState.to = target;
+        markState.progress = 0;
+        runMarkTo(1);
+        return;
+      }
+
+      // Already building toward it. A REVERSING tween is the one exception: it is travelling AWAY from
+      // `to`, so a step back onto that mark has to turn it around rather than stand by and watch the
+      // thing that was just asked for come apart.
+      if (target === markState.to && !markReversing) return;
+
+      // ── Turning the change around ──
+      // The step goes back to a mark this change is already between, so there is nothing to restage:
+      // the same tween runs the other way and the accretion plays in reverse — the stones stream home
+      // the way they came and the geode closes over them. Nothing restarts, so nothing can pop.
+      if (target === markState.from) return runMarkTo(0);
+      if (markReversing && target === markState.to) return runMarkTo(1);
+
+      // ── Stepping onto a THIRD mark, mid-change ──
+      // `setTransition` takes exactly two marks, so there is no blend that reaches a third. This used to
+      // resolve that by resetting to a settled pair — dominant mark becomes `from`, progress back to 0 —
+      // which is precisely what read as "it jumps back to a whole stone and replays the build". The
+      // strategy is a pure function of `(from, to, progress)`, so it does not need resetting: the change
+      // keeps its progress and simply RE-AIMS. `to` becomes the new mark and the stream carries on
+      // assembling that instead.
+      //
+      // Below the point where the incoming stones start to read — growth opens about a quarter of the
+      // way in, see the schedule in worksTransition.ts — there is nothing of `to` on screen yet, so the
+      // swap is literally invisible. Past it the shape being assembled changes mid-flight. That is a
+      // real edit and the deliberate trade: the stone is never cut and the picture never jumps back.
+      // WORKS_STEP_HOLD_MS lands a hand-driven interrupt inside the invisible part; an arrow or a nav
+      // link can reach past it.
+      markState.to = target;
+      // A reversing change is heading for `from`, and would now un-build a mark that was never built —
+      // turn it onto the new target. A forward one is already going the right way and its running tween
+      // needs nothing: the duration it was given is the authored rate, so the remainder still is.
+      if (markReversing) runMarkTo(1);
     };
     const applyFocus = (index: number, instant: boolean) => {
       stagedIndex = index;
@@ -1403,6 +1460,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // Reduced motion gets the destination, never the journey — land on the mark, fully formed.
         markTween?.kill();
         markTween = null;
+        markReversing = false;
         const target = markIndexOfProject[index] ?? 0;
         markState.from = target;
         markState.to = target;

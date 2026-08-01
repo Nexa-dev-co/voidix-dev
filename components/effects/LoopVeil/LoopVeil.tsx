@@ -56,13 +56,36 @@ export default function LoopVeil() {
     const reduceMotion = prefersReducedMotion();
     let creamTimeline: gsap.core.Timeline | null = null;
 
+    /**
+     * ⚠ The dive has completed and this veil owns the screen outright until it hands it back.
+     *
+     * Everything else on the site is a pure function of its crossing's progress, and un-plays when the
+     * teleport throws that progress back to 0. This is the one thing that must NOT — it is the cover
+     * the un-playing happens behind.
+     *
+     * And the teleport reports 0 through the dive BEFORE it fires LOOP_RESET (it has to: every scene
+     * snaps `current = target`, and the targets arrive with that report). So without this latch the
+     * black is dropped one statement before the cream is asked to start, and the flood grows from
+     * `circle(0%)` over a hero that is already fully on screen — which is exactly the "hero first,
+     * flood second" the loop was meant to hide. Latched here rather than fixed by reordering, because
+     * ordering is a timing fix and this needs to hold by construction.
+     */
+    let coveringLoop = false;
+
     // 0..1 inside a window, clamped flat outside it.
     const windowed = (range: [number, number], value: number) =>
       gsap.utils.clamp(0, 1, (value - range[0]) / (range[1] - range[0]));
 
     const onLoopProgress = (event: Event) => {
+      if (coveringLoop) return;
       const progress = readLoopProgress(event);
       gsap.set(black, { autoAlpha: windowed(VEIL_BLACK_IN, progress) });
+      // Reaching the end of the dive IS the teleport — `applyContactToHeroLoop` dispatches this and
+      // then jumps on the next statement — so from here the screen is ours until the cream has cleared.
+      if (progress >= 1) {
+        coveringLoop = true;
+        return;
+      }
       // Scrolling back OUT of the dive has to clear the cream as well as the black, or a half-played
       // arrival would be left painted over a contact section the visitor has returned to.
       if (progress <= 0) {
@@ -81,6 +104,9 @@ export default function LoopVeil() {
       creamTimeline = gsap.timeline({
         onComplete: () => {
           creamTimeline = null;
+          // The cream has cleared onto a hero that is already built. Hand the screen back — the next
+          // dive drives the black from its progress again, as an ordinary crossing.
+          coveringLoop = false;
         },
       });
       creamTimeline.to(cream, {

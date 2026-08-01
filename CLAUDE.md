@@ -194,7 +194,7 @@ scroll progress. There is no stack of sections and no second pin.
      │       fillFraction ──┤├── carousel: stops separated by wide CROSSINGS ─────────┤
      │                                                                          │
      │   ══LOOP══      CONTACT        ══RETURN══                                │
-     │   (120vh)       ┌──────┐        (140vh)                                  │
+     │   (200vh)       ┌──────┐        (140vh)                                  │
      └───── fall ──────│ form │◄─── dive back INTO the screen ──────────────────┘
         into the hole  │black │      mark gone, star restored,
         → black        │ hole │      then it DIES (the finale)

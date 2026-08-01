@@ -9,16 +9,16 @@
  *
  * ── The shape of it ──────────────────────────────────────────────────────────────────────────────
  *
- *   0s      1.1       1.6      2.5           3.7        5.0        6.0s
- *   ├────────┼─────────┼────────┼─────────────┼──────────┼─────────┤
- *   │text OUT│  text IN│        │             │          │         │
- *   │ ├──────┤ ├───────┤        │             │          │         │
- *   │ geode retracts   │        │             │          │         │
- *   │ ├────────────────┤        │             │          │         │
- *   │ stones let go ────────────┤             │          │         │
- *   │           stones grow ─────────────────────────────┤         │
- *   │                                                    │ geode ──┤
- *   │ camera hop ──────────────┤ (2.05s — deliberately NOT stretched)
+ *   0s      0.7      1.1      1.7          2.2        3.3       4.0s
+ *   ├────────┼────────┼────────┼────────────┼──────────┼─────────┤
+ *   │text OUT│        │ text IN│            │          │         │
+ *   │ ├──────┤        │ ├──────────────┤    │          │         │
+ *   │ geode retracts  │        │            │          │         │
+ *   │ ├───────────────┤        │            │          │         │
+ *   │ stones let go ───────────┤            │          │         │
+ *   │            stones grow ─────────────────────────┤          │
+ *   │                                                 │ geode ───┤
+ *   │ camera hop ─────────────────────────┤ (2.05s — deliberately NOT stretched)
  *
  * The COPY is quick and the MARK is slow, on purpose. The label belongs to the stop you picked, so it
  * comes straight back; the stone is the thing you stay and watch.
@@ -35,7 +35,7 @@
  *
  * The text no longer waits for the mark, though. It used to leave before the swap and return with the
  * new body, because the body changed on a single hidden frame and the two could arrive together. There
- * is no such instant now — the build takes six seconds — so holding the copy back for it left the
+ * is no such instant now — the build takes four seconds — so holding the copy back for it left the
  * section wordless for most of the change. See TEXT_IN_AT_SECONDS.
  *
  * ── Direction is the whole point ─────────────────────────────────────────────────────────────────
@@ -72,26 +72,29 @@ export const TEXT_SHEAR_DEGREES = -8;
  * with anything else, which is what the old spin/morph/re-carve schedule spent most of its comments on.
  *
  * The camera hop is DELIBERATELY not stretched to match. `travelSeconds` stays at 2.05, so the camera
- * arrives at the new stop about a third of the way in and you spend the rest of the change watching
- * the mark build from a settled viewpoint. Tying the two together would mean a six-second camera move,
- * which is a drift, not a shot — and the growth is the thing worth looking at, not the travel.
+ * arrives at the new stop about halfway in and you spend the rest of the change watching the mark
+ * build from a settled viewpoint. Tying the two together would mean a four-second camera move, which
+ * is a drift, not a shot — and the growth is the thing worth looking at, not the travel.
  *
  * ⚠ Several of the strategy's knobs are spans of PROGRESS, not seconds, so they all stretch with this.
- * At 6s: the geode is gone by ~1.1s, the stones have retracted by ~2.5s, growth runs ~1.6s → ~5.0s,
- * and the geode grows back over the last second. `moltenCool` at 0.17 is now ~1.0s, which is what it
- * was authored against at the lab's six-second round trip — so this duration and the lab's now agree.
+ * At 4s: the geode is gone by ~0.7s, the stones have retracted by ~1.7s, growth runs ~1.1s → ~3.3s,
+ * and the geode grows back over the last two thirds of a second. `moltenCool` at 0.17 lands at ~0.68s
+ * — it was authored against the lab's six-second round trip, where the same span reads ~1.0s, so the
+ * cooling is now brisker here than in `/letters/transition/accretion`. That is the one place this
+ * duration and the lab's deliberately disagree; retune `moltenCool` there, not here, if it reads hot.
  */
-export const MARK_CHANGE_SECONDS = 6;
+export const MARK_CHANGE_SECONDS = 4;
 
 /**
  * When the incoming text starts settling. ABSOLUTE seconds, and deliberately NOT a fraction of the
  * change.
  *
  * It was briefly a fraction, on the reasoning that the copy should keep its relationship to the mark.
- * That is wrong at this duration: 0.62 of a six-second build put the text back at 3.7s, so the section
- * spent more than three seconds with no copy on screen at all. The label belongs to the STOP you have
- * arrived at, not to how far the stone has got — you have chosen the project, so its name should be
- * back almost immediately.
+ * That is wrong at any of the durations this has had: 0.62 of the six-second build it was written
+ * against put the text back at 3.7s, leaving the section wordless for more than three seconds. The
+ * label belongs to the STOP you have arrived at, not to how far the stone has got — you have chosen
+ * the project, so its name should be back almost immediately. Being absolute is also what let
+ * MARK_CHANGE_SECONDS drop to 4 without the copy needing a second look.
  *
  * So the text swaps quickly and the mark keeps building underneath it. 1.4s leaves a short beat after
  * the outgoing copy has cleared (0.6s + stagger), which is enough for the change to register as a

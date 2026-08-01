@@ -109,14 +109,26 @@ const TOUCH_STEP_THRESHOLD_PX = 42; // vertical swipe travel (px) that counts as
 // replacement comes out of the other and settles, and the gates collapse — ~2.77s end to end. At the
 // old 1400 a second gesture landed while the gates were still standing and cut the cinematic in half.
 //
-// This is the DEFAULT. It used to be the only value, which was fine while both sections happened to
-// take about the same time — and stopped being fine the moment the works change stretched to 6s, at
-// which point a section holding for 2.9s would let a second gesture land while the mark was still
-// half-built. A section that needs longer states so itself (see `stepHoldMs`).
+// This is the DEFAULT, and it applies to a section whose transition must not be cut into. A section
+// that wants a different answer states so itself (see `stepHoldMs`) — works does, in the other
+// direction: its change is interruptible by design, so it holds for far less than it lasts.
 const STAGE_STEP_HOLD_MS = 2900;
-// The works change is `MARK_CHANGE_SECONDS` (6s) plus grace, so one gesture always buys the whole
-// build: the stones let go, the two streams cross, the next mark grows and the geode finishes.
-const WORKS_STEP_HOLD_MS = 6300;
+/**
+ * Works is the deliberate exception: its hold is SHORTER than the transition it kicks off.
+ *
+ * It used to be 6300 — `MARK_CHANGE_SECONDS` plus grace — on the reasoning that one gesture should
+ * buy the whole build. What that actually bought was six seconds in which the section ignored you,
+ * and a visitor who has decided to move on does not want to be told to sit still. The mark change
+ * now turns around under a step instead of being outrun by one (`runMarkTo` in useWorksField), so
+ * the build no longer needs protecting from input — scrolling back reverses it, scrolling on carries
+ * it into the next mark.
+ *
+ * What is left for this to do is only what STAGE_STEP_HOLD_MS does everywhere else: stop one flick's
+ * tail counting twice. Paired with STEP_REARM_IDLE_MS (the wheel must go quiet for 300ms, and every
+ * intercepted event pushes that out), this asks for a genuine second gesture without ever swallowing
+ * one.
+ */
+const WORKS_STEP_HOLD_MS = 800;
 // Entering the carousel out of the free-scrolling fill: glide onto craft 01 and hold, so a hard flick
 // through the fill can never dump the user on craft 02 (see the arrival branch in onUpdate).
 const CAROUSEL_ARRIVAL_DURATION = 0.5;
@@ -307,9 +319,11 @@ interface CarouselSectionSpec extends CarouselSectionGeometry {
    * How long input stays locked after stepping WITHIN this section, in ms.
    *
    * A step's scroll glide is invisible (the deck and the works field are fixed overlays) — what you
-   * actually see is the scene transition it kicks off, so the lock has to outlast that transition
-   * rather than the scroll. Sections differ: the deck's portal swap is ~2.8s, the works mark change is
-   * 6s. Defaults to STAGE_STEP_HOLD_MS.
+   * actually see is the scene transition it kicks off, so this is measured against that transition
+   * rather than against the scroll. Which way it is measured is the section's own call: the deck's
+   * portal swap must not be cut into, so it holds for the whole ~2.8s; the works mark change turns
+   * around under a step instead, so it holds for a fraction of its 4s. Defaults to
+   * STAGE_STEP_HOLD_MS.
    */
   stepHoldMs?: number;
   /**
@@ -761,7 +775,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     let currentStop = 0;
     let committedGlide = false;
     let wasInFill = true;
-    /** Set by the loop's teleport, cleared on the next update — see the arrival branch in onUpdate. */
+    /** Set by the loop's teleport, cleared by the next genuine update — see the arrival branch below. */
     let justTeleported = false;
     let stepLocked = false;
     let wheelAccum = 0;
@@ -946,15 +960,26 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
                 }
               : undefined,
           onUpdate: (self) => {
+            // Scrub every crossing in every stage, so even a jump from the top of the page to the
+            // last project passes through (and lands in) the right state.
+            applyCrossings(self.progress);
+            // ⚠ Read AFTER the crossings, never captured before them.
+            //
+            // `applyCrossings` can TELEPORT. The dive's far edge throws the scrollbar to the top from
+            // inside the loop crossing's `apply` (see commitTeleport), so by the time it returns the pin
+            // is at the TOP of the page while a value captured above would still say the bottom. Running
+            // the rest of this against that stale 1 re-applies the whole ending at the hero, three ways
+            // at once: `applyHeroServicesProgress` publishes `fill = 1` and the star is told to be fully
+            // cracked — you loop back onto the SERVICES sun; every section's navbar meter fills; and the
+            // carousel commits itself to the loop stop it just left.
+            //
+            // Everything below is idempotent, so re-reading is also all this needs — it is correct
+            // whether or not the teleport's own nested update has already run this pass.
             const progress = self.progress;
             // The "home" meter tracks the fill phase only.
             setNavMeter("home", Math.min(progress / fillFraction, 1));
-
-            // Scrub every crossing in every stage, so even a jump from the top of the page to the
-            // last project passes through (and lands in) the right state.
-            applyCrossings(progress);
-            // Same reasoning, and deliberately ABOVE the fill's early return — this span's whole job
-            // is inside the fill, and a jump past it still has to land the sun fully open.
+            // Deliberately ABOVE the fill's early return — this span's whole job is inside the fill, and
+            // a jump past it still has to land the sun fully open.
             applyHeroServicesProgress(progress);
 
             if (progress < fillFraction) {
@@ -969,15 +994,23 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             // here is still delivering momentum — absorb it: lock the stepper (the wheel/touch handlers
             // then preventDefault the rest of that gesture, killing the momentum) and glide onto craft
             // 01. Without this, one hard scroll from the hero overshoots and dumps you on craft 02.
-            // ⚠ Suppressed for one update after a teleport. The scrub tween is flushed in
-            // `commitTeleport` so this should be unreachable — but if a browser lets a single stale
-            // update through at the old progress, this branch would glide the visitor onto craft 01 and
-            // the loop would land in SERVICES instead of the hero. The failure is silent and confusing
-            // enough to be worth one boolean.
+            // ⚠ Suppressed for one update after a teleport. Belt-and-braces: the scrub tween is flushed
+            // in `commitTeleport` and the progress above is re-read, so this should be unreachable — but
+            // if a stale update ever did land here at the old progress it would glide the visitor onto
+            // craft 01 and the loop would end in SERVICES instead of the hero. The failure is silent and
+            // confusing enough to be worth one boolean. Costs nothing when it does fire: `wasInFill` is
+            // only cleared INSIDE the branch, so the arrival is deferred by one update, never lost.
             if (wasInFill && !justTeleported) {
               wasInFill = false;
-              lockStepping(CAROUSEL_ARRIVAL_DURATION * 1000);
-              goToStop(0, CAROUSEL_ARRIVAL_DURATION);
+              // ⚠ Only when nothing else already owns the scroll. There is no momentum to absorb during
+              // a committed glide — starting one kills the native scroll — and `goToStop` overwrites, so
+              // firing here HIJACKS whatever was under way. That is what made every navbar item clicked
+              // from the hero land on Services and need a second click: the jump to Work crossed this
+              // line on its way past the fill, and got overwritten with a glide to craft 01.
+              if (!committedGlide) {
+                lockStepping(CAROUSEL_ARRIVAL_DURATION * 1000);
+                goToStop(0, CAROUSEL_ARRIVAL_DURATION);
+              }
             }
             justTeleported = false;
 
@@ -1129,6 +1162,12 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // ── The teleport ──
     // Runs with the screen already black, so the order below is about what must be TRUE by the next
     // frame rather than about what is seen.
+    //
+    // ⚠ It runs RE-ENTRANTLY — from a crossing's `apply`, from `applyCrossings`, from the pin's own
+    // `onUpdate` — and moves the scroll under all three. Two things depend on knowing that: `onUpdate`
+    // re-reads `self.progress` afterwards rather than trusting a captured one, and `LoopVeil` latches
+    // its cover rather than following the progress this reports on the way past. Both are noted where
+    // they live.
     commitTeleport = () => {
       const trigger = scrollTimeline?.scrollTrigger;
       if (!trigger) return;
