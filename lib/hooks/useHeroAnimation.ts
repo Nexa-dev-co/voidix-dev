@@ -298,11 +298,19 @@ const WORKS_SECTION_INDEX = 1;
 const HERO_SECTION_INDEX = -1;
 
 // ── Covered nav jumps ────────────────────────────────────────────────────
-// A jump this many sections or more is hidden: a cover closes, the ordinary glide runs underneath
-// unwatched, the cover opens on the destination. Anything closer keeps its crossing in full view —
-// the services→works flight, the chamber reveal and the return dive are the best shots on the site
-// and skipping them would be throwing the work away. See lib/sectionJumpEvents.ts.
-const JUMP_SECTION_DISTANCE = 2;
+// Every jump to a different section is hidden: a cover closes, the ordinary glide runs underneath
+// unwatched, the cover opens on the destination. See lib/sectionJumpEvents.ts.
+//
+// This was briefly 2, on the reasoning that an ADJACENT jump should keep its crossing in full view —
+// those crossings are the best shots on the site and hiding them looked like throwing the work away.
+// Watching it decided otherwise: a neighbouring crossing is still played at several times the rate it
+// was authored for, so what you actually get is not the cinematic, it is the cinematic fast-forwarded.
+// The choice was never "see it or skip it" — it was "see it badly or be taken there properly", and
+// those crossings are still shown, in full, to anyone who scrolls.
+//
+// At 1 the only jump that stays uncovered is one to the section you are already in, which is a move
+// WITHIN a section (works project 03 → 01) and has never been a crossing at all.
+const JUMP_SECTION_DISTANCE = 1;
 /**
  * How close the pin's progress must get to the target stop to count as ARRIVED.
  *

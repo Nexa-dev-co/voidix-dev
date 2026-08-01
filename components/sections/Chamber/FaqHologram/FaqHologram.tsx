@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { CHAMBER_HOLOGRAM_EVENT, readHologramOpen } from '@/lib/chamberEvents';
+import { SECTION_ARRIVE_EVENT, readSectionArriveKey } from '@/lib/sectionJumpEvents';
 import { FAQ_ENTRIES } from '@/components/sections/Chamber/faqEntries';
 import { useHologramTracking } from './hooks/useHologramTracking';
 import { useHologramReveal } from './hooks/useHologramReveal';
@@ -24,6 +25,9 @@ import { useHologramScrollGuard } from './hooks/useHologramScrollGuard';
  *
  * The two black frames are flex siblings of the lit area, so the content parts them by simply existing.
  */
+/** The navbar/carousel key the chamber answers to — the room is what "Process" means on this site. */
+const CHAMBER_SECTION_KEY = 'process';
+
 export default function FaqHologram() {
   const panelRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
@@ -48,6 +52,22 @@ export default function FaqHologram() {
     if (!isOpen) setOpenEntry(null);
   }, [isOpen]);
 
+  // ── Arriving here by a covered nav jump ──
+  // The unseal above is cued by the TOUR landing, and on a jump the tour runs behind the cover — so the
+  // panel is already standing open by the time the hole lets you see it, its whole entrance spent where
+  // nobody was. Bumping this replays it, rather than dressing the panel in a second, generic gesture:
+  // the frames parting and the rows scanning up is the room's own language and there is no reason to
+  // speak another one. See lib/hooks/useSectionArrival.ts for the sections that DO need their own.
+  const [arrivalReplay, setArrivalReplay] = useState(0);
+  useEffect(() => {
+    const handleArrive = (event: Event) => {
+      if (readSectionArriveKey(event) !== CHAMBER_SECTION_KEY) return;
+      setArrivalReplay((previous) => previous + 1);
+    };
+    window.addEventListener(SECTION_ARRIVE_EVENT, handleArrive);
+    return () => window.removeEventListener(SECTION_ARRIVE_EVENT, handleArrive);
+  }, []);
+
   useHologramTracking(panelRef);
   useHologramScrollGuard(scrollRef);
   const { openQuestion, goBack } = useHologramReveal({
@@ -56,6 +76,7 @@ export default function FaqHologram() {
     isOpen,
     openEntry,
     setOpenEntry,
+    arrivalReplay,
   });
 
   const entry = openEntry === null ? null : FAQ_ENTRIES[openEntry];

@@ -4,11 +4,21 @@ import dynamic from 'next/dynamic';
 import { useRef } from 'react';
 import { WORKS_PROJECTS } from './worksProjects';
 import { useWorksTextTransition } from './hooks/useWorksTextTransition';
-import { useSectionArrival } from '@/lib/hooks/useSectionArrival';
+import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 
-// What rises into place when a covered nav jump lands here: both head blocks line by line, then the
+// What comes to rest when a covered nav jump lands here: both head blocks line by line, then the
 // arrows. The mark itself needs nothing — the glide settled it on the way in.
-const ARRIVAL_SELECTOR = '.works-head-intro > *, .works-detail > *, .works-nav';
+//
+// The display lines TIGHTEN as they land, their letter-spacing closing from wide, so the words lock
+// together the way the stones do. That is the section's own idea, borrowed for its copy.
+//
+// Hoisted out of the component: the hook holds this in a dependency array, and an array rebuilt every
+// render would tear its listener down and re-add it on each one.
+const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
+  { selector: '.works-head-intro > *', from: 'bottom', tighten: true },
+  { selector: '.works-detail > *', from: 'bottom' },
+  { selector: '.works-nav', from: 'bottom' },
+];
 
 // The field owns a WebGL context, so keep it out of the server graph.
 const FieldCanvas = dynamic(() => import('./FieldCanvas/FieldCanvas'), { ssr: false });
@@ -31,7 +41,8 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
   useSectionArrival({
     sectionKey: 'work',
     containerRef: overlayRef,
-    selector: ARRIVAL_SELECTOR,
+    profile: 'settle',
+    groups: ARRIVAL_GROUPS,
   });
 
   // The copy on screen trails the committed project: the old text has to shear away before the new

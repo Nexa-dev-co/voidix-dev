@@ -2,13 +2,22 @@
 
 import { useRef, type FormEvent } from 'react';
 import { LOOP_REQUEST_EVENT } from '@/lib/loopEvents';
-import { useSectionArrival } from '@/lib/hooks/useSectionArrival';
+import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import {
   CONTACT_FOOTER_GROUPS,
   CONTACT_LEAD,
   CONTACT_TITLE,
   MODEL_ATTRIBUTION,
 } from './contactContent';
+
+// Hoisted out of the component: the hook holds this in a dependency array, and an array rebuilt every
+// render would tear its listener down and re-add it on each one.
+const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
+  { selector: '.contact-intro > *', from: 'left' },
+  { selector: '.contact-panel', from: 'right' },
+  { selector: '.contact-loop', from: 'bottom' },
+  { selector: '.contact-footer > *', from: 'bottom' },
+];
 
 /**
  * Contact — the last overlay in the hero's single pin.
@@ -30,14 +39,20 @@ import {
 export default function ContactSection() {
   const sectionRef = useRef<HTMLElement>(null);
 
-  // What rises into place when a covered nav jump lands here. The form is ONE item rather than four:
-  // staggering its own fields would read as the page still loading, and the panel is a single object
-  // on the right of the hole either way.
+  // What is drawn into place when a covered nav jump lands here.
+  //
+  // Every direction points at the MIDDLE of the frame, because that is where the black hole is: the
+  // copy comes in from the left of it, the form from the right of it, the button and the footer up
+  // from below. The layout is pulled together rather than placed, which is the only thing this
+  // section's physics could reasonably say.
+  //
+  // The form is ONE item rather than four fields: staggering its own inputs would read as the page
+  // still loading, and it is a single object beside the hole either way.
   useSectionArrival({
     sectionKey: 'contact',
     containerRef: sectionRef,
-    selector:
-      '.contact-intro > *, .contact-panel, .contact-loop, .contact-footer > *',
+    profile: 'gravity',
+    groups: ARRIVAL_GROUPS,
   });
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {

@@ -1408,14 +1408,35 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: clamp(0.5rem, 1.4vw, 1rem);
+  /* No gap: with six children of very different weights, each one owns the space above it. A gap here
+     would compound with those margins and every adjustment would have to be made twice. */
+  gap: 0;
   opacity: 0; /* GSAP owns it */
   pointer-events: none;
   text-align: center;
   padding: 0 1.5rem;
 }
 
+/* The navbar's orbital mark at card scale. The node's rotation reuses `orbital-node-spin` so the site
+   turns at one rate wherever it turns; only the size is authored here. */
+.section-jump-orbit {
+  position: relative;
+  width: clamp(3.5rem, 9vw, 5.25rem);
+  height: clamp(3.5rem, 9vw, 5.25rem);
+  margin-bottom: clamp(1rem, 2.5vw, 1.75rem);
+  transform-origin: center;
+}
+
+.section-jump-orbit-track,
+.section-jump-orbit-node {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .section-jump-card-number {
+  margin-bottom: clamp(0.4rem, 1vw, 0.7rem);
   color: var(--accent);
 }
 
@@ -1428,6 +1449,85 @@ body {
   line-height: 0.95;
   letter-spacing: -0.02em;
   color: var(--fg);
+}
+
+/* The destination's own headline, so the card previews the section rather than describing it. */
+.section-jump-card-headline {
+  margin: clamp(0.6rem, 1.4vw, 1rem) 0 0;
+  font-weight: 700;
+  font-size: clamp(0.95rem, 1.7vw, 1.35rem);
+  line-height: 1.25;
+  color: var(--muted);
+  max-width: 24ch;
+}
+
+/* Readouts in the loader's own shape: label · dot · value. */
+.section-jump-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: clamp(1.4rem, 3vw, 2.25rem) 0 0;
+}
+
+.section-jump-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.section-jump-row-label {
+  color: var(--muted);
+}
+
+.section-jump-row-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.section-jump-row-value {
+  margin: 0;
+  color: var(--fg);
+}
+
+/* A sweep, not a progress bar — see the note in SectionJumpVeil.tsx for why it must not claim a
+   fraction. Pure CSS: it runs only while the veil is up, and nothing has to drive it per frame. */
+.section-jump-scan {
+  position: relative;
+  overflow: hidden;
+  width: min(18rem, 55vw);
+  height: 1px;
+  margin-top: clamp(1.4rem, 3vw, 2.25rem);
+  background: rgb(var(--accent-rgb) / 0.16);
+}
+
+.section-jump-scan::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  transform: translateX(-100%);
+  animation: section-jump-scan-sweep 1.5s ease-in-out infinite;
+}
+
+@keyframes section-jump-scan-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The sweep is ambient motion with nothing to report — exactly what this setting asks us to drop.
+     The track stays, so the card keeps its composition. */
+  .section-jump-scan::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 /* The filter lives in an SVG that must be in the document but must never take space or catch a click. */

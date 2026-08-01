@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { findNavItem } from '@/components/layout/Navbar/navItems';
+import { JUMP_DESTINATIONS, type JumpDestinationRow } from './jumpDestinations';
 import {
   JUMP_ARRIVED_EVENT,
   JUMP_BEGIN_EVENT,
@@ -54,6 +55,11 @@ const CARD_IN_LIFT_PX = 16;
 const CARD_OUT_SECONDS = 0.26;
 const CARD_OUT_LIFT_PX = -20;
 const CARD_LINE_STAGGER = 0.06;
+/** The ring contracts to this on the way out, and expands from it on the way in. */
+const ORBIT_IN_SCALE = 0.4;
+const ORBIT_IN_SECONDS = 0.5;
+/** How far ahead of the copy the ring arrives, so the card powers up rather than simply appearing. */
+const ORBIT_LEAD_SECONDS = 0.14;
 /** The hole opens at the same point, and the destination expands out of it. */
 const UNFOLD_SECONDS = 0.7;
 /**
@@ -96,14 +102,21 @@ export default function SectionJumpVeil() {
   const rootRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
-  // The destination's own name, so the hold says where you are going rather than merely waiting.
-  const [destination, setDestination] = useState<{ number: string; label: string } | null>(null);
+  const orbitRef = useRef<HTMLDivElement>(null);
+  // What the hold says. Not merely waiting: where you are going, in that place's own words.
+  const [destination, setDestination] = useState<{
+    number: string;
+    label: string;
+    headline: string;
+    rows: readonly JumpDestinationRow[];
+  } | null>(null);
 
   useEffect(() => {
     const root = rootRef.current;
     const fill = fillRef.current;
     const card = cardRef.current;
-    if (!root || !fill || !card) return;
+    const orbit = orbitRef.current;
+    if (!root || !fill || !card || !orbit) return;
 
     let timeline: gsap.core.Timeline | null = null;
     // Where the current jump is folding into. Held across both halves — the hole must open at the
@@ -136,7 +149,10 @@ export default function SectionJumpVeil() {
       fill.style.setProperty('-webkit-mask-image', image);
     };
 
-    const cardLines = () => Array.from(card.children) as HTMLElement[];
+    // Marked rather than "every child", so the orbit and the scan line — which have their own
+    // treatment — can sit inside the card without being swept into the stagger.
+    const cardParts = () =>
+      Array.from(card.querySelectorAll<HTMLElement>('.section-jump-stagger'));
 
     const onJumpBegin = (event: Event) => {
       const request = readJumpBegin(event);
@@ -145,7 +161,17 @@ export default function SectionJumpVeil() {
 
       destinationKey = request.key;
       const navItem = findNavItem(request.key);
-      setDestination(navItem ? { number: navItem.number, label: navItem.label } : null);
+      const content = JUMP_DESTINATIONS[request.key];
+      setDestination(
+        navItem
+          ? {
+              number: navItem.number,
+              label: navItem.label,
+              headline: content?.headline ?? '',
+              rows: content?.rows ?? [],
+            }
+          : null,
+      );
 
       // No origin means nothing was clicked (a programmatic request, or an item off-screen on a
       // narrow viewport). The middle of the frame is the honest answer — it belongs to no control, so
@@ -158,7 +184,8 @@ export default function SectionJumpVeil() {
       // when it starts, and this one starts a third of a second in — the lines would be sitting at
       // full opacity over the page you are still looking at until then.
       gsap.set(card, { autoAlpha: 1 });
-      gsap.set(cardLines(), { autoAlpha: 0, y: CARD_IN_LIFT_PX });
+      gsap.set(cardParts(), { autoAlpha: 0, y: CARD_IN_LIFT_PX });
+      gsap.set(orbit, { autoAlpha: 0, scale: ORBIT_IN_SCALE });
 
       if (prefersReducedMotion()) {
         maskRadius.value = radiusToCover(originX, originY);
@@ -167,7 +194,8 @@ export default function SectionJumpVeil() {
           onComplete: () => window.dispatchEvent(new Event(JUMP_COVERED_EVENT)),
         });
         timeline.to(fill, { autoAlpha: 1, duration: REDUCED_FADE_SECONDS, ease: 'none' }, 0);
-        timeline.set(cardLines(), { autoAlpha: 1, y: 0 }, 0);
+        timeline.set(cardParts(), { autoAlpha: 1, y: 0 }, 0);
+        timeline.set(orbit, { autoAlpha: 1, scale: 1 }, 0);
         return;
       }
 
@@ -190,8 +218,20 @@ export default function SectionJumpVeil() {
         },
         0,
       );
+      // The ring arrives first and alone, so the card reads as an instrument powering up rather than as
+      // a block of text fading in with an ornament attached.
       timeline.to(
-        cardLines(),
+        orbit,
+        {
+          autoAlpha: 1,
+          scale: 1,
+          duration: ORBIT_IN_SECONDS,
+          ease: 'power2.out',
+        },
+        CARD_IN_AT_SECONDS - ORBIT_LEAD_SECONDS,
+      );
+      timeline.to(
+        cardParts(),
         {
           autoAlpha: 1,
           y: 0,
@@ -212,7 +252,8 @@ export default function SectionJumpVeil() {
           onComplete: () => root.classList.remove('is-covering'),
         });
         timeline.to(fill, { autoAlpha: 0, duration: REDUCED_FADE_SECONDS, ease: 'none' }, 0);
-        timeline.set(cardLines(), { autoAlpha: 0 }, 0);
+        timeline.set(cardParts(), { autoAlpha: 0 }, 0);
+        timeline.set(orbit, { autoAlpha: 0 }, 0);
         timeline.call(announceArrival, undefined, 0);
         return;
       }
@@ -226,7 +267,7 @@ export default function SectionJumpVeil() {
         onComplete: () => root.classList.remove('is-covering'),
       });
       timeline.to(
-        cardLines(),
+        cardParts(),
         {
           autoAlpha: 0,
           y: CARD_OUT_LIFT_PX,
@@ -235,6 +276,18 @@ export default function SectionJumpVeil() {
           ease: 'power3.in',
         },
         0,
+      );
+      // The ring contracts back toward its own centre dot as the copy leaves — the instrument powering
+      // down, the reverse of how it came up.
+      timeline.to(
+        orbit,
+        {
+          autoAlpha: 0,
+          scale: ORBIT_IN_SCALE,
+          duration: CARD_OUT_SECONDS,
+          ease: 'power3.in',
+        },
+        CARD_LINE_STAGGER,
       );
       timeline.to(
         maskRadius,
@@ -265,8 +318,47 @@ export default function SectionJumpVeil() {
       {/* A SIBLING of the fill, never a child: the mask applies to the whole element it is set on, so
           a card inside it would be eaten by the same hole that reveals the page. */}
       <div ref={cardRef} className="section-jump-card">
-        <span className="eyebrow section-jump-card-number">{destination?.number ?? ''}</span>
-        <span className="font-display section-jump-card-label">{destination?.label ?? ''}</span>
+        {/* The navbar's orbital mark at card scale. Same idea, same `orbital-node-spin` keyframes —
+            one source for that rotation, so the site turns at one rate wherever it turns. */}
+        <div ref={orbitRef} className="section-jump-orbit" aria-hidden>
+          <svg className="section-jump-orbit-track" viewBox="0 0 64 64" fill="none">
+            <circle cx="32" cy="32" r="26" stroke="rgb(var(--accent-rgb) / 0.22)" strokeWidth="1" strokeDasharray="3 4" />
+            <circle cx="32" cy="32" r="3.5" fill="var(--accent)" />
+          </svg>
+          <svg className="section-jump-orbit-node orbital-spinning" viewBox="0 0 64 64" fill="none">
+            <circle cx="58" cy="32" r="3" fill="var(--accent)" opacity="0.9" />
+          </svg>
+        </div>
+
+        {/* Everything with this class staggers, in document order — the same arrangement the hologram
+            uses (`holo-stagger`), so the two read as one system. */}
+        <span className="eyebrow section-jump-card-number section-jump-stagger">
+          {destination?.number ?? ''}
+        </span>
+        <span className="font-display section-jump-card-label section-jump-stagger">
+          {destination?.label ?? ''}
+        </span>
+        <p className="font-display section-jump-card-headline section-jump-stagger">
+          {destination?.headline ?? ''}
+        </p>
+
+        <dl className="section-jump-rows">
+          {(destination?.rows ?? []).map((row) => (
+            <div className="section-jump-row section-jump-stagger" key={row.label}>
+              <dt className="section-jump-row-label">{row.label}</dt>
+              <span className="section-jump-row-dot" aria-hidden />
+              <dd className="section-jump-row-value">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+
+        {/*
+          A sweep, NOT a progress bar, and deliberately: this cannot know how long the pin will take.
+          The glide's length is known but the scrub's settle on top of it is not, so a bar filling to
+          95% and waiting would be exactly the lie `assetLoadProgress.ts` exists to keep off the loader.
+          A repeating sweep says "working" without claiming a fraction.
+        */}
+        <span className="section-jump-scan" aria-hidden />
       </div>
     </div>
   );

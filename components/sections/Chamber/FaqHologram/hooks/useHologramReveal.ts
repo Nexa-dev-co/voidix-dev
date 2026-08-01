@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useRef, type RefObject } from 'react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { toDesignPx } from '@/lib/hologramPose';
@@ -36,6 +36,14 @@ interface HologramRevealRefs {
   /** Which question is expanded, or null for the list. */
   openEntry: number | null;
   setOpenEntry: (index: number | null) => void;
+  /**
+   * Bumped when a covered nav jump lands on the chamber. Play the unseal AGAIN.
+   *
+   * A counter rather than a boolean, because the thing being asked for is an event ("do it now"), and a
+   * boolean has to be turned back off by whoever set it — which means two writers and a window in which
+   * the panel is told to replay something it has already replayed.
+   */
+  arrivalReplay: number;
 }
 
 export function useHologramReveal({
@@ -44,7 +52,10 @@ export function useHologramReveal({
   isOpen,
   openEntry,
   setOpenEntry,
+  arrivalReplay,
 }: HologramRevealRefs) {
+  /** So the effect below can tell an arrival's replay from an ordinary open / view change. */
+  const lastArrivalReplay = useRef(arrivalReplay);
   /**
    * Part the frames to fit whatever is in the panel right now.
    *
@@ -90,6 +101,20 @@ export function useHologramReveal({
     const content = contentRef.current;
     if (!content) return;
 
+    const isArrivalReplay = arrivalReplay !== lastArrivalReplay.current;
+    lastArrivalReplay.current = arrivalReplay;
+
+    // Put the frames back together first, so `applyHeight` below has somewhere to open FROM. Without
+    // this the panel is already at its full height and the tween is a no-op — the rows would scan up
+    // inside a screen that never parted, which is half the gesture.
+    //
+    // Snapped rather than tweened: the cover is still over this on the frame it happens, so a visible
+    // re-seal would only be a flicker of one. Skipped entirely when the panel is not open, because then
+    // the tour is still finishing behind the cover and its own unseal is about to play anyway.
+    if (isArrivalReplay && isOpen && !prefersReducedMotion() && screenRef.current) {
+      gsap.set(screenRef.current, { height: 0 });
+    }
+
     applyHeight(true);
     if (!isOpen) return;
 
@@ -116,7 +141,7 @@ export function useHologramReveal({
     return () => {
       scanIn.kill();
     };
-  }, [isOpen, openEntry, applyHeight, contentRef]);
+  }, [isOpen, openEntry, arrivalReplay, applyHeight, contentRef, screenRef]);
 
   /**
    * Fall into an answer.

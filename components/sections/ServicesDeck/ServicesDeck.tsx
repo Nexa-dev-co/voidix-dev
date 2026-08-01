@@ -1,10 +1,25 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { useRef } from 'react';
 import { DECK_SERVICES } from './deckServices';
+import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 
 // The viewer owns a WebGL context, so keep it out of the server graph.
 const DeckCanvas = dynamic(() => import('./DeckCanvas/DeckCanvas'), { ssr: false });
+
+// A covered nav jump lands you here with the craft already replaying its entrance (DECK_REVEAL_EVENT)
+// but the copy simply present, because the crossing that fades it in was scrubbed behind the cover.
+// So the overlay locks into formation around the craft: the two head blocks close in from their own
+// sides and the carousel comes up under them.
+//
+// Hoisted out of the component: the hook holds this in a dependency array, and an array rebuilt every
+// render would tear its listener down and re-add it on each one.
+const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
+  { selector: '.deck-head-intro > *', from: 'left', tighten: true },
+  { selector: '.deck-detail > *', from: 'right' },
+  { selector: '.deck-carousel', from: 'bottom' },
+];
 
 interface ServicesDeckProps {
   /** Craft currently on the pad — driven by the hero pin's carousel phase. */
@@ -17,6 +32,15 @@ interface ServicesDeckProps {
 // then revealed on the black. Scroll drives the active craft (the hero pin maps its carousel
 // phase to an index); flicks and label clicks jump by scrolling the page (see goTo).
 export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  useSectionArrival({
+    sectionKey: 'services',
+    containerRef: overlayRef,
+    profile: 'formation',
+    groups: ARRIVAL_GROUPS,
+  });
+
   // A horizontal flick on the craft moves one along; clamped inside goTo.
   const handleFlick = (direction: number) => goTo(activeIndex + direction);
 
@@ -30,7 +54,7 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
 
       <DeckCanvas activeIndex={activeIndex} onFlick={handleFlick} />
 
-      <div className="deck-overlay">
+      <div ref={overlayRef} className="deck-overlay">
         <header className="deck-head">
           <div className="deck-head-intro">
             <p className="eyebrow">The Fleet</p>
