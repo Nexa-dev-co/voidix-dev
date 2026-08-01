@@ -7,7 +7,7 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { SUN_CANVAS_HEADROOM } from '@/components/effects/IntroSequence/gatherShader';
-import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
+import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { useSunParallax } from './hooks/useSunParallax';
 
 // The single sun for the whole page. It lives here (not in the hero card and not in the loader) so
@@ -137,41 +137,32 @@ export default function HeroSun() {
     };
     window.addEventListener('resize', handleResize);
 
-    // Services-only: when the fleet reveals, drop the sun behind the hero (so ships + labels sit
-    // in front) and swell it into a big background; reverse it when the fleet hides. The faster
-    // churn / explosions live in SunCanvas, which listens to the same events.
-    const onServicesEnter = () => {
-      baseZIndex = Z_SERVICES;
+    // While a full-black scene is on screen the sun drops BEHIND the hero, so the fleet, the marks and
+    // their labels all sit in front of it (the intervening layers go transparent via .is-services). It
+    // comes back to the front when the page returns to the hero.
+    //
+    // ⚠ Driven by the BLACK STAGE, not by the deck's reveal. Those were interchangeable only while the
+    // fleet was guaranteed to be the first black scene reached — a navbar jump goes straight from the
+    // hero to works without entering it, and the star then stayed at its hero rank, painting in FRONT
+    // of the mark. See lib/blackStageEvent.ts.
+    const onBlackStage = (event: Event) => {
+      const active = readBlackStageActive(event);
+      baseZIndex = active ? Z_SERVICES : Z_AFTER_INTRO;
       applyZIndex();
-      if (flight) {
-        gsap.to(flight, {
-          scale: SERVICES_SUN_SCALE,
-          duration: SERVICES_SUN_RAMP_SECONDS,
-          ease: 'power2.inOut',
-          overwrite: true,
-        });
-      }
+      if (!flight) return;
+      gsap.to(flight, {
+        scale: active ? SERVICES_SUN_SCALE : 1,
+        duration: SERVICES_SUN_RAMP_SECONDS,
+        ease: 'power2.inOut',
+        overwrite: true,
+      });
     };
-    const onServicesLeave = () => {
-      baseZIndex = Z_AFTER_INTRO;
-      applyZIndex();
-      if (flight) {
-        gsap.to(flight, {
-          scale: 1,
-          duration: SERVICES_SUN_RAMP_SECONDS,
-          ease: 'power2.inOut',
-          overwrite: true,
-        });
-      }
-    };
-    window.addEventListener(DECK_REVEAL_EVENT, onServicesEnter);
-    window.addEventListener(DECK_HIDE_EVENT, onServicesLeave);
+    window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     return () => {
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener('resize', handleResize);
-      window.removeEventListener(DECK_REVEAL_EVENT, onServicesEnter);
-      window.removeEventListener(DECK_HIDE_EVENT, onServicesLeave);
+      window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       window.clearTimeout(settleTimer);
     };
   }, []);

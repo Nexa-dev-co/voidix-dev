@@ -11,7 +11,7 @@ import {
   type ConstellationConfig,
 } from '@/components/effects/ConstellationFrame/constellationConfig';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
-import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
+import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const REVEAL_FALLBACK_MS = 7000;
@@ -491,11 +491,12 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
 
     // Freeze while the fleet/works overlays are up (the hero stays pinned, so the observer still
     // reports visible). The CSS .is-services rule fades it too.
-    let inServices = false;
-    const onServicesEnter = () => { inServices = true; };
-    const onServicesLeave = () => { inServices = false; };
-    window.addEventListener(DECK_REVEAL_EVENT, onServicesEnter);
-    window.addEventListener(DECK_HIDE_EVENT, onServicesLeave);
+    // ⚠ The BLACK STAGE, not the deck's reveal — a navbar jump can reach works or contact without the
+    // fleet ever being entered, and this would then keep animating behind them. See
+    // lib/blackStageEvent.ts.
+    let inVoid = false;
+    const onBlackStage = (event: Event) => { inVoid = readBlackStageActive(event); };
+    window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     // The liquid fill is armed on reveal; nothing draws before then (screen stays empty).
     let revealTimeMs = 0;
@@ -514,7 +515,7 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
     const render = () => {
       animationFrame = requestAnimationFrame(render);
       // While frozen, keep the clock anchored so the next live frame gets a small dt (no teleport).
-      if (!isHeroVisible || inServices || !hasRevealed) {
+      if (!isHeroVisible || inVoid || !hasRevealed) {
         lastFrameTime = performance.now();
         return;
       }
@@ -540,8 +541,7 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
       visibilityObserver.disconnect();
       window.clearTimeout(fallbackTimeout);
       window.removeEventListener(REVEAL_EVENT, runReveal);
-      window.removeEventListener(DECK_REVEAL_EVENT, onServicesEnter);
-      window.removeEventListener(DECK_HIDE_EVENT, onServicesLeave);
+      window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
     };
   }, [canvasRef]);
 }

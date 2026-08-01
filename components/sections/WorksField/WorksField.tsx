@@ -4,6 +4,11 @@ import dynamic from 'next/dynamic';
 import { useRef } from 'react';
 import { WORKS_PROJECTS } from './worksProjects';
 import { useWorksTextTransition } from './hooks/useWorksTextTransition';
+import { useSectionArrival } from '@/lib/hooks/useSectionArrival';
+
+// What rises into place when a covered nav jump lands here: both head blocks line by line, then the
+// arrows. The mark itself needs nothing — the glide settled it on the way in.
+const ARRIVAL_SELECTOR = '.works-head-intro > *, .works-detail > *, .works-nav';
 
 // The field owns a WebGL context, so keep it out of the server graph.
 const FieldCanvas = dynamic(() => import('./FieldCanvas/FieldCanvas'), { ssr: false });
@@ -21,6 +26,13 @@ interface WorksFieldProps {
 export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
   const headIntroRef = useRef<HTMLDivElement>(null);
   const detailRef    = useRef<HTMLDivElement>(null);
+  const overlayRef   = useRef<HTMLDivElement>(null);
+
+  useSectionArrival({
+    sectionKey: 'work',
+    containerRef: overlayRef,
+    selector: ARRIVAL_SELECTOR,
+  });
 
   // The copy on screen trails the committed project: the old text has to shear away before the new
   // text can arrive, and the rock re-carves in the gap between them. See useWorksTextTransition.
@@ -43,7 +55,7 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
 
       <FieldCanvas activeIndex={activeIndex} />
 
-      <div className="works-overlay">
+      <div ref={overlayRef} className="works-overlay">
         <header className="works-head">
           {/* Both blocks shear away and back on every project change (their direct children are the
               lines that stagger). The copy here is static — it leaves and returns unchanged — because

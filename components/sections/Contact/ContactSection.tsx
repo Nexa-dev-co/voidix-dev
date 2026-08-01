@@ -1,7 +1,8 @@
 'use client';
 
-import type { FormEvent } from 'react';
+import { useRef, type FormEvent } from 'react';
 import { LOOP_REQUEST_EVENT } from '@/lib/loopEvents';
+import { useSectionArrival } from '@/lib/hooks/useSectionArrival';
 import {
   CONTACT_FOOTER_GROUPS,
   CONTACT_LEAD,
@@ -27,6 +28,18 @@ import {
  * faking a success state the visitor would believe.
  */
 export default function ContactSection() {
+  const sectionRef = useRef<HTMLElement>(null);
+
+  // What rises into place when a covered nav jump lands here. The form is ONE item rather than four:
+  // staggering its own fields would read as the page still loading, and the panel is a single object
+  // on the right of the hole either way.
+  useSectionArrival({
+    sectionKey: 'contact',
+    containerRef: sectionRef,
+    selector:
+      '.contact-intro > *, .contact-panel, .contact-loop, .contact-footer > *',
+  });
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     // No endpoint yet, and no backend in this project to give it one. Prevented rather than left to
     // navigate, so the page cannot be thrown out of the pin by a stray Enter key.
@@ -39,7 +52,12 @@ export default function ContactSection() {
   };
 
   return (
-    <section id="contact" className="contact-section" aria-label="Contact">
+    <section
+      ref={sectionRef}
+      id="contact"
+      className="contact-section"
+      aria-label="Contact"
+    >
       {/*
         Two columns with the middle left clear, because the middle is not empty — the black hole sits at
         the world origin, which every works camera key aims at, so it lands dead centre of frame. The

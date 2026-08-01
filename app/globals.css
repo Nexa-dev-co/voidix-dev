@@ -1361,6 +1361,75 @@ body {
   filter: url(#loop-veil-liquid);
 }
 
+/* ─── The nav jump's cover ──────────────────────────────────────────
+   Black grows out of the label you clicked, holds the destination's name while the site travels
+   unseen, then opens a hole at the same point that the new section expands out of. Both halves are
+   one radial-gradient mask on .section-jump-veil-fill, written per frame by GSAP — see the
+   component, and docs/nav-jump-plan.md §4.
+
+   Above the navbar (9999) as well as everything else: the bar's difference blend over a mid-jump
+   site reads as flicker, and the whole point is that none of the journey is watched.
+
+   `visibility` rather than opacity alone, for the same reason the loop's veil uses it — a
+   transparent full-screen element still owns a compositor layer for the 99% of the session it is
+   not in use. It also has to swallow clicks while up, or a second nav click lands on a control the
+   visitor cannot see. */
+.section-jump-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.section-jump-veil.is-covering {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* The masked layer. Plain black rather than --bg: this is a cover, not a surface, and it has to be
+   the same black whichever section it happens to be sitting over. */
+.section-jump-veil-fill {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0; /* GSAP owns it */
+  /* The mask IMAGE is written per frame by the component; only its tiling belongs here. Explicit
+     because a gradient mask that repeats can seam at the element's edge on fractional DPRs. */
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+/* The destination's name. A SIBLING of the fill, never a child — the mask would eat it. */
+.section-jump-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(0.5rem, 1.4vw, 1rem);
+  opacity: 0; /* GSAP owns it */
+  pointer-events: none;
+  text-align: center;
+  padding: 0 1.5rem;
+}
+
+.section-jump-card-number {
+  color: var(--accent);
+}
+
+/* Sized a step above .works-title: this is the only thing on the screen while it is up, and it has
+   to read as a title card rather than as a heading that lost its page. Fluid, so it never needs a
+   breakpoint — the --fs-* scale tops out at the wordmark and is no use here. */
+.section-jump-card-label {
+  font-weight: 800;
+  font-size: clamp(2.4rem, 7vw, 5.5rem);
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+
 /* The filter lives in an SVG that must be in the document but must never take space or catch a click. */
 .loop-veil-defs {
   position: absolute;

@@ -2,19 +2,9 @@
 
 import { useRef, type CSSProperties } from 'react';
 import { useNavbarAnimation } from '@/lib/hooks/useNavbarAnimation';
-import { requestSection } from '@/lib/sectionNavigation';
+import { originOfElement, requestSection } from '@/lib/sectionNavigation';
+import { HOME_METER_KEY, NAV_ITEMS } from './navItems';
 
-// `enter` drives the directional entrance (see useNavbarAnimation); `key` maps the item
-// to its scroll-progress meter and the CSS var its section feeds (--nav-progress-<key>).
-const NAV_ITEMS = [
-  { key: 'services', number: '01', label: 'Services', href: '/#services', enter: 'top'    },
-  { key: 'work',     number: '02', label: 'Work',     href: '/#work',     enter: 'left'   },
-  { key: 'process',  number: '03', label: 'Process',  href: '/#process',  enter: 'right'  },
-  { key: 'contact',  number: '04', label: 'Contact',  href: '/#contact',  enter: 'bottom' },
-] as const;
-
-// The logo's meter tracks the hero ("home") section.
-const HOME_METER_KEY = 'home';
 const METER_KEYS = [HOME_METER_KEY, ...NAV_ITEMS.map((item) => item.key)];
 
 function LinkArrow() {
@@ -60,19 +50,22 @@ export default function Navbar() {
   // normally and the pin picks it up on arrival.
   const isHomepage = () => window.location.pathname === '/';
 
+  // The clicked control's centre travels with the request: a jump far enough to be hidden collapses
+  // into the label you pressed and unfolds out of it again, which is what gives the cover a cause
+  // rather than making it a wipe. See lib/sectionJumpEvents.ts.
   const handleNavClick = (event: React.MouseEvent, key: string) => {
     if (!isHomepage()) return;
     event.preventDefault();
-    requestSection(key);
+    requestSection(key, originOfElement(event.currentTarget));
   };
 
   // "Start Project" goes where a start-a-project button should: the contact form at the end.
-  const handleCtaClick = () => {
+  const handleCtaClick = (event: React.MouseEvent) => {
     if (!isHomepage()) {
       window.location.href = '/#contact';
       return;
     }
-    requestSection('contact');
+    requestSection('contact', originOfElement(event.currentTarget));
   };
 
   return (

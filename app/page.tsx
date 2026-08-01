@@ -2,6 +2,7 @@ import Hero from '@/components/sections/Hero/Hero';
 import HeroSun from '@/components/sections/Hero/HeroSun';
 import IntroSequence from '@/components/effects/IntroSequence/IntroSequence';
 import LoopVeil from '@/components/effects/LoopVeil/LoopVeil';
+import SectionJumpVeil from '@/components/effects/SectionJumpVeil/SectionJumpVeil';
 import FaqHologram from '@/components/sections/Chamber/FaqHologram/FaqHologram';
 
 export default function HomePage() {
@@ -23,6 +24,9 @@ export default function HomePage() {
           against the VIEWPORT, and the pin's spacer is transformed — a transformed ancestor stops fixed
           being fixed, which for a full-screen cover would mean it scrolls off exactly when needed. */}
       <LoopVeil />
+      {/* The cover a long navbar jump travels behind. Out here for the same reason as the two above:
+          it must be `position: fixed` against the VIEWPORT, and the pin's spacer is transformed. */}
+      <SectionJumpVeil />
     </main>
   );
 }

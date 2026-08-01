@@ -19,8 +19,18 @@ import {
 } from "@/components/sections/ServicesDeck/deckEvents";
 import {
   GOTO_SECTION_EVENT,
-  readGotoSectionKey,
+  readGotoSection,
 } from "@/lib/sectionNavigation";
+import {
+  BLACK_STAGE_EVENT,
+  type BlackStageDetail,
+} from "@/lib/blackStageEvent";
+import {
+  JUMP_ARRIVED_EVENT,
+  JUMP_BEGIN_EVENT,
+  JUMP_COVERED_EVENT,
+  type JumpBeginDetail,
+} from "@/lib/sectionJumpEvents";
 import {
   HANDOFF_PROGRESS_EVENT,
   type HandoffProgressDetail,
@@ -284,6 +294,36 @@ const REVEAL_FALLBACK_WITH_INTRO_MS = 20000;
 // (the deck's labels, the works arrows, the navbar's Services link) targets.
 const SERVICES_SECTION_INDEX = 0;
 const WORKS_SECTION_INDEX = 1;
+/** The hero sits before every carousel section, so it is one short of the first. */
+const HERO_SECTION_INDEX = -1;
+
+// ── Covered nav jumps ────────────────────────────────────────────────────
+// A jump this many sections or more is hidden: a cover closes, the ordinary glide runs underneath
+// unwatched, the cover opens on the destination. Anything closer keeps its crossing in full view —
+// the services→works flight, the chamber reveal and the return dive are the best shots on the site
+// and skipping them would be throwing the work away. See lib/sectionJumpEvents.ts.
+const JUMP_SECTION_DISTANCE = 2;
+/**
+ * How close the pin's progress must get to the target stop to count as ARRIVED.
+ *
+ * The scrub tween has a real duration, so progress lands on the target exactly rather than
+ * asymptotically — this only has to clear device-pixel rounding on the settled scroll. ~0.0015 of the
+ * pin is a couple of viewport-heights of scroll, far above that noise and far below one stop's span.
+ */
+const JUMP_ARRIVE_EPSILON = 0.0015;
+/** If the cover never announces itself, glide anyway rather than sitting on a dead click. */
+const JUMP_COVER_TIMEOUT_MS = 2000;
+/**
+ * ...and if the pin never reports arrival, open anyway. A jump that silently fails must not leave the
+ * visitor staring at a full-screen cover. Measured from the glide's start, on top of its own length.
+ */
+const JUMP_ARRIVE_GRACE_MS = 2500;
+/**
+ * Input stays locked this long after a jump lands, covering the cover's opening and the section's
+ * entrance behind it. Generous on purpose: the cover owns those timings, and this only has to outlast
+ * them.
+ */
+const JUMP_ARRIVE_HOLD_MS = 1600;
 
 const SUN_LAYER_SELECTOR = ".hero-sun-layer";
 const DECK_SELECTOR = ".services-deck";
@@ -710,6 +750,23 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const fromStage = currentStage;
       currentStage = stage;
       enterStage[stage](fromStage);
+
+      // ⚠ Published from HERE — the boundary — and not from `enterServices`.
+      //
+      // The sun's rank, the fluid cursor's gate and the constellation's freeze all mean "a full-black
+      // scene is on screen", and all three used to read DECK_REVEAL_EVENT for it. That worked only
+      // while the fleet was guaranteed to be the first black scene you met. A navbar jump commits its
+      // target stop up front, so this can go straight from "fill" to "work" — services never entered,
+      // no deck event, and the ink kept splatting over the rest of the site with the star in front of
+      // the marks. Keyed off the fill boundary instead, it cannot depend on the route taken.
+      const wasBlack = fromStage !== "fill";
+      const isBlack = stage !== "fill";
+      if (wasBlack === isBlack) return;
+      window.dispatchEvent(
+        new CustomEvent<BlackStageDetail>(BLACK_STAGE_EVENT, {
+          detail: { active: isBlack },
+        }),
+      );
     };
 
     // ── The crossing scrubs ──
@@ -849,6 +906,66 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       );
     };
 
+    // ── A covered nav jump ──
+    // Three beats, each handed off by a signal rather than by a duration: we ask for a cover, the
+    // COVER says when it has the screen, we glide, and the PIN says when it has landed. Nothing here
+    // knows how long the cover takes to close and nothing over there knows how long the glide takes —
+    // which is the whole reason this is three events and not one timed sequence.
+    //
+    // The glide itself is the ordinary `goToStop`. Nothing is skipped and nothing is snapped: the
+    // journey plays in full underneath, so every lazy fetch it triggers on the way (the chamber room,
+    // the contact star) happens exactly as it does when you scroll there by hand.
+    let coveredJump: { targetStop: number; durationSeconds: number } | null =
+      null;
+    /** True once the cover has the screen and the glide is actually running under it. */
+    let coveredJumpGliding = false;
+    /** Whichever net is currently armed — one variable, because only one is ever pending. */
+    let coveredJumpNet = 0;
+    const armCoveredJumpNet = (delayMs: number, onLapse: () => void) => {
+      window.clearTimeout(coveredJumpNet);
+      coveredJumpNet = window.setTimeout(onLapse, delayMs);
+    };
+
+    const beginCoveredJump = (
+      key: string,
+      origin: JumpBeginDetail["origin"],
+      targetStop: number,
+      durationSeconds: number,
+    ) => {
+      coveredJump = { targetStop, durationSeconds };
+      coveredJumpGliding = false;
+      // The pin does not move yet — that waits on JUMP_COVERED_EVENT.
+      window.dispatchEvent(
+        new CustomEvent<JumpBeginDetail>(JUMP_BEGIN_EVENT, {
+          detail: { key, origin },
+        }),
+      );
+      armCoveredJumpNet(JUMP_COVER_TIMEOUT_MS, startCoveredGlide);
+    };
+
+    const startCoveredGlide = () => {
+      if (!coveredJump || coveredJumpGliding) return;
+      coveredJumpGliding = true;
+      goToStop(coveredJump.targetStop, coveredJump.durationSeconds);
+      armCoveredJumpNet(
+        coveredJump.durationSeconds * 1000 + JUMP_ARRIVE_GRACE_MS,
+        finishCoveredJump,
+      );
+    };
+    const onJumpCovered = () => startCoveredGlide();
+    window.addEventListener(JUMP_COVERED_EVENT, onJumpCovered);
+
+    const finishCoveredJump = () => {
+      if (!coveredJump) return;
+      window.clearTimeout(coveredJumpNet);
+      coveredJump = null;
+      coveredJumpGliding = false;
+      // Covers the cover's opening and whatever entrance plays behind it, so a wheel gesture cannot
+      // land on a section that is still arriving.
+      lockStepping(JUMP_ARRIVE_HOLD_MS);
+      window.dispatchEvent(new Event(JUMP_ARRIVED_EVENT));
+    };
+
     // Free scrub through the fill, then settle on the nearest stop.
     //
     // There is deliberately NO "chasm" rule here any more. It used to force any value inside a
@@ -981,6 +1098,20 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             // Deliberately ABOVE the fill's early return — this span's whole job is inside the fill, and
             // a jump past it still has to land the sun fully open.
             applyHeroServicesProgress(progress);
+
+            // ⚠ A covered jump opens on THIS, not on its scrollTo tween completing. The pin is scrubbed,
+            // so its progress trails the scrollbar by up to SCROLL_SCRUB seconds — opening when the tween
+            // ends would uncover onto a pin still sliding the last stretch of the journey, which is the
+            // very thing the cover is there to hide. Also above the fill's return, so the check cannot be
+            // missed by a destination the branch below would have skipped past.
+            if (
+              coveredJumpGliding &&
+              coveredJump &&
+              Math.abs(progress - stopProgressValues[coveredJump.targetStop]) <
+                JUMP_ARRIVE_EPSILON
+            ) {
+              finishCoveredJump();
+            }
 
             if (progress < fillFraction) {
               wasInFill = true;
@@ -1254,10 +1385,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // taking the default 0.6s would scrub the whole site past the visitor in a blur. Scaling it means a
     // near jump stays snappy while a far one reads as travel.
     const onGotoSection = (event: Event) => {
-      const key = readGotoSectionKey(event);
-      if (key === null) return;
+      const request = readGotoSection(event);
+      if (request === null) return;
+      // A jump already under way owns the screen. A second click during it would interleave two
+      // glides under one cover, and the cover would open on whichever finished last.
+      if (coveredJump) return;
       const sectionIndex = carouselSections.findIndex(
-        (section) => section.key === key,
+        (section) => section.key === request.key,
       );
       if (sectionIndex < 0) return;
       const targetStop = layout.sections[sectionIndex].firstStop;
@@ -1272,6 +1406,29 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             NAV_JUMP_MAX_DURATION,
             GOTO_DURATION + distance * NAV_JUMP_DURATION_PER_PROGRESS,
           );
+
+      // ── Far enough to hide? ──
+      // Measured in SECTIONS, not in progress: what makes a jump unwatchable is how many authored
+      // crossings it drags you through, and those are per section boundary rather than per unit of
+      // scroll. The hero counts as one before the first section (see HERO_SECTION_INDEX), so
+      // hero → Services is adjacent and keeps the fill + the sun cracking open in full view.
+      const inFill = !trigger || trigger.progress < fillFraction;
+      const currentSectionIndex = inFill
+        ? HERO_SECTION_INDEX
+        : layout.sectionIndexOfStop(currentStop);
+      // `trigger` is required, not incidental: with no pin yet (a click during the intro, before
+      // REVEAL_EVENT built it) `goToStop` no-ops, so no update would ever report arrival and the cover
+      // would sit on a black screen until its net lapsed. Fall through to the plain path, which
+      // degrades to setting the index and nothing else.
+      if (
+        !reduceMotion &&
+        trigger &&
+        Math.abs(sectionIndex - currentSectionIndex) >= JUMP_SECTION_DISTANCE
+      ) {
+        beginCoveredJump(request.key, request.origin, targetStop, durationSeconds);
+        return;
+      }
+
       goToStop(targetStop, durationSeconds);
       // Held past the glide so the scene transition it lands on gets to play out, exactly as a step does.
       lockStepping(durationSeconds * 1000 + STAGE_STEP_HOLD_MS);
@@ -1350,8 +1507,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
     // A committed glide owns the scroll outright, so swallow the gesture — including at the two ends,
     // where we'd otherwise hand back to native and let a native scroll fight the running tween.
+    //
+    // A covered jump owns it for LONGER than its glide — from the moment the cover starts closing to
+    // the moment the pin lands — and owns it regardless of where we are, because one can start from the
+    // hero, where `inCarouselRegion` is false and a gesture would otherwise fall through to native
+    // scroll and drag the page around underneath the cover.
     const swallowDuringGlide = (event: Event) => {
-      if (!committedGlide || !inCarouselRegion()) return false;
+      if (!coveredJump && !(committedGlide && inCarouselRegion())) return false;
       event.preventDefault();
       scheduleRearm();
       return true;
@@ -1418,6 +1580,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       window.removeEventListener(REVEAL_EVENT, runReveal);
       window.removeEventListener(INTRO_ACTIVE_EVENT, onIntroActive);
       window.removeEventListener(GOTO_SECTION_EVENT, onGotoSection);
+      window.removeEventListener(JUMP_COVERED_EVENT, onJumpCovered);
       window.removeEventListener(LOOP_REQUEST_EVENT, onLoopRequest);
       window.removeEventListener(LOOP_COVERED_EVENT, onLoopCovered);
       window.removeEventListener("wheel", handleWheel);
@@ -1426,6 +1589,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       window.removeEventListener("touchend", handleTouchEnd);
       window.clearTimeout(fallbackTimeout);
       window.clearTimeout(rearmTimer);
+      window.clearTimeout(coveredJumpNet);
       gsap.killTweensOf(window);
       scrollTimeline?.scrollTrigger?.kill();
       scrollTimeline?.kill();

@@ -6,7 +6,7 @@ import {
   SPEED_FOR_MAX_RADIUS,
 } from '@/components/effects/FluidCursor/fluidConfig';
 import { createFluidSimulation } from '@/components/effects/FluidCursor/fluidSimulation';
-import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '@/components/sections/ServicesDeck/deckEvents';
+import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const MAX_FRAME_SECONDS = 1 / 60;
@@ -69,11 +69,13 @@ export function useFluidCursor(
     // The trail is the hero's alone. While the fleet is up (the hero stays pinned, so the
     // IntersectionObserver still reports "visible") we stop splatting, so no new ink is laid and
     // the existing trail dissipates away — the cursor leaves no trail over the services section.
-    let inServices = false;
-    const onServicesEnter = () => { inServices = true; };
-    const onServicesLeave = () => { inServices = false; };
-    window.addEventListener(DECK_REVEAL_EVENT, onServicesEnter);
-    window.addEventListener(DECK_HIDE_EVENT, onServicesLeave);
+    // ⚠ The BLACK STAGE, not the deck's reveal. The deck's event only fires when the fleet itself is
+    // entered, and a navbar jump goes straight from the hero to works or contact without ever
+    // entering it — which left the ink splatting over the whole rest of the site. See
+    // lib/blackStageEvent.ts.
+    let inVoid = false;
+    const onBlackStage = (event: Event) => { inVoid = readBlackStageActive(event); };
+    window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     // ── Pointer tracking ──────────────────────────────────────────────
     let hasLastPointer = false;
@@ -85,7 +87,7 @@ export function useFluidCursor(
     let lastSplatTime = Number.NEGATIVE_INFINITY;
 
     const handlePointerMove = (clientX: number, clientY: number) => {
-      if (!isHeroVisible || inServices) return;
+      if (!isHeroVisible || inVoid) return;
       const now = performance.now();
       const uvX = clientX / window.innerWidth;
       const uvY = 1 - clientY / window.innerHeight;
@@ -176,8 +178,7 @@ export function useFluidCursor(
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('touchmove', onTouchMove);
       window.removeEventListener('resize', resizeCanvases);
-      window.removeEventListener(DECK_REVEAL_EVENT, onServicesEnter);
-      window.removeEventListener(DECK_HIDE_EVENT, onServicesLeave);
+      window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       simulation.dispose();
     };
   }, [inkCanvasRef, invertCanvasRef]);
