@@ -3,7 +3,7 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
-import { isTuneScrollLocked } from "@/lib/tuneScrollLock";
+import { isInsideTunerDock, isTuneScrollLocked } from "@/lib/tuneScrollLock";
 import { measureUntransformedRect } from "@/lib/measureUntransformedRect";
 import {
   computeCarouselLayout,
@@ -1528,6 +1528,11 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
 
     const handleWheel = (event: WheelEvent) => {
+      // ⚠ The tuner's own column scrolls itself, and this must not touch it. Ahead of the freeze on
+      // purpose: `preventDefault` cancels the DOCK's scroll as readily as the page's, so with this below
+      // the lock a panel taller than the viewport was unreachable in either state — frozen it was
+      // prevented deliberately, live it was prevented as part of stepping the carousel.
+      if (isInsideTunerDock(event.target)) return;
       // Authoring freeze (?tune only). SWALLOWED rather than ignored: letting it through would still
       // scroll the page, which moves the pin, which is the exact thing being frozen. Reads false on any
       // normal load — see lib/tuneScrollLock.
@@ -1556,6 +1561,8 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       touchActive = true;
     };
     const handleTouchMove = (event: TouchEvent) => {
+      // Same reasoning as the wheel: a drag that started on a panel belongs to the panel.
+      if (isInsideTunerDock(event.target)) return;
       if (isTuneScrollLocked()) {
         event.preventDefault();
         return;

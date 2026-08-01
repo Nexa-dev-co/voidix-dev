@@ -1,5 +1,4 @@
 import { DECK_SERVICES } from './deckServices';
-import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
 
 /**
  * The services deck's stage — where the camera stands, how the rig is lit, and how
@@ -129,25 +128,13 @@ const DECK_TUNING: DeckTuning = {
   ships: DECK_SERVICES.map(restingShip),
 };
 
-// The shipped values, captured before the ?tune panel can touch them.
-const DECK_DEFAULTS = snapshotDefaults(DECK_TUNING);
-
 /**
- * Put every value back the way it shipped.
+ * The deck's fixed numbers. Read by the scene; never mutated.
  *
- * Restored IN PLACE — the scene holds this object (and the arrays inside it) by reference, so handing
- * back a fresh one would leave it driving the old copy. See lib/tunerReset.
+ * The writable handle and the reset that used to sit beside this are gone with the fleet's `?tune`
+ * panel — they existed only so that panel could mutate this object in place. These values are now
+ * edited here, in the file, like any other constant.
  */
-export function resetDeckTuning(): void {
-  restoreInPlace(DECK_TUNING, DECK_DEFAULTS);
-}
-
-/** The deck's fixed numbers. Read by the scene; never mutated in the app path. */
 export function getDeckTuning(): Readonly<DeckTuning> {
-  return DECK_TUNING;
-}
-
-/** The same object, writable — for the `?tune` panel and nothing else. */
-export function getWritableDeckTuning(): DeckTuning {
   return DECK_TUNING;
 }

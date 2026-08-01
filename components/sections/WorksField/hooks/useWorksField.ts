@@ -962,13 +962,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       return ((low - 1 + withinSpan) / (PATH_ARC_SAMPLES - 1)) * lastKeyIndex;
     };
 
-    // Dev only (?tune): while set, this flies the camera instead of the authored path. Same contract as
-    // the chamber's — everything else still updates, only the shot is borrowed.
-    let cameraOverride:
-      | ((deltaSeconds: number, camera: THREE.PerspectiveCamera) => void)
-      | null = null;
-    let lastOverrideFrame = performance.now();
-
     // Where the camera is on the path, and the hop that moves it.
     let pathU = stopKeyIndex[activeIndexRef.current] ?? 0;
     const travel = { value: 1 }; // 1 = arrived / idle
@@ -990,17 +983,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       });
     };
 
+    // The free-fly override that used to head this function went with the `?tune` panel — it was the
+    // only thing that ever set it, so the branch narrowed to `never` the moment the panel was deleted.
     const updateCamera = (instant: boolean) => {
-      if (cameraOverride) {
-        // A borrowed shot has no authored pose to deviate from, so the sun holds still under it.
-        restPoseValid = false;
-        const now = performance.now();
-        const overrideDelta = Math.min((now - lastOverrideFrame) / 1000, 0.1);
-        lastOverrideFrame = now;
-        cameraOverride(overrideDelta, camera);
-        camera.updateProjectionMatrix();
-        return;
-      }
       if (instant || reduceMotion) {
         pathU = travelToU;
         travelActive = false;
@@ -1261,24 +1246,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       markState.progress = 0;
     };
 
-    /**
-     * Tear the mark down and cut it again.
-     *
-     * Only the `?tune` panel calls this, and only for the two knobs that are baked into geometry —
-     * size and slab depth. Everything else about the mark's look is inherited from the lab and never
-     * changes at runtime, so there is nothing else that could need a rebuild.
-     */
-    const rebuildMark = async () => {
-      markTween?.kill();
-      markTween = null;
-      markReversing = false;
-      markRigs.forEach((rig) => {
-        scene.remove(rig.group);
-        rig.strategy.dispose();
-      });
-      markRigs.length = 0;
-      await buildMark();
-    };
+    // `rebuildMark` used to live here — tear the mark down and cut it again, for the two knobs that are
+    // baked into geometry. The `?tune` panel was its only caller and went with it. Nothing else on this
+    // site changes the mark's geometry at runtime, so there is no longer anything that could need it.
 
     const buildField = async () => {
       await buildMark();
@@ -2074,38 +2044,17 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const resizeObserver = new ResizeObserver(applyRendererSize);
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
-    // ── Dev tuning panel (off by default; opened with ?tune) ──
-    // Dynamically imported so lil-gui and the whole authoring surface — including its free-fly camera —
-    // never enter the normal bundle.
-    const tunerCleanups: (() => void)[] = [];
-    if (new URLSearchParams(window.location.search).has('tune')) {
-      import('../worksTunerPanel')
-        .then(({ createWorksTunerPanel }) =>
-          // The scene may have been torn down while the chunk was in flight.
-          disposed
-            ? undefined
-            : createWorksTunerPanel({
-                camera,
-                bloomPass,
-                setCameraOverride: (drive) => {
-                  cameraOverride = drive;
-                  // Reset the clock, or the first frame after taking the camera gets the whole idle gap
-                  // as its delta and the fly lurches.
-                  lastOverrideFrame = performance.now();
-                },
-                rebuildMark: () => { void rebuildMark(); },
-                rebuildPath,
-                onDispose: (cleanup) => tunerCleanups.push(cleanup),
-              }),
-        )
-        .catch(() => {});
-    }
+    // ── No tuning panel ──
+    // The works field's `?tune` panel has been removed: its values are authored and baked into
+    // `worksTuning.ts`, and having three panels open at once made the dock's column taller than the
+    // viewport. `?tune` now opens the chamber's panel only. The deleted panel is in git if the field
+    // ever needs live authoring again — note that it owned the free-fly camera and `rebuildPath`, so
+    // restoring it means restoring `cameraOverride` and `rebuildMark` as its entry points.
 
     return () => {
       disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
-      tunerCleanups.forEach((cleanup) => cleanup());
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);

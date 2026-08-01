@@ -18,6 +18,32 @@
  * check per gesture.
  */
 
+/**
+ * The dock's element id, declared HERE rather than in `tunerDock.ts`.
+ *
+ * The pin has to be able to recognise the dock to leave its scrolling alone (see
+ * {@link isInsideTunerDock}), and it cannot import the dock module to ask: that module pulls lil-gui's
+ * whole authoring surface, and CLAUDE.md is explicit that none of it may reach the default bundle. So
+ * the one thing both ends need is the one thing that lives in this tiny, dependency-free file.
+ */
+export const TUNER_DOCK_ID = 'voidix-tuner-dock';
+
+/**
+ * Did this gesture start inside the tuner's own column?
+ *
+ * ⚠ This is what makes the dock scrollable at all. The dock is a fixed column with `overflow-y: auto`,
+ * so the browser would happily scroll it — except the pin binds `wheel` on `window` with
+ * `{ passive: false }` and calls `preventDefault()` for every gesture in the carousel region, which
+ * cancels the dock's scroll along with the page's. It did so in BOTH lock states, so freezing the pin
+ * did not help: locked it prevented deliberately, unlocked it prevented as part of stepping the
+ * carousel. Either way a panel taller than the viewport had no way to be reached.
+ *
+ * Reads false on any normal load — there is no such element.
+ */
+export function isInsideTunerDock(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(`#${TUNER_DOCK_ID}`) !== null;
+}
+
 let locked = false;
 const listeners = new Set<(locked: boolean) => void>();
 

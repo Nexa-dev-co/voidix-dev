@@ -1266,31 +1266,16 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const resizeObserver = new ResizeObserver(applyRendererSize);
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
-    // ── Dev tuning panel (off by default; opened with ?tune) ──
-    // Dynamically imported so lil-gui and the whole authoring surface never enter the normal bundle.
-    const tunerCleanups: (() => void)[] = [];
-    if (new URLSearchParams(window.location.search).has('tune')) {
-      import('../deckTunerPanel')
-        .then(({ createDeckTunerPanel }) =>
-          disposed
-            ? undefined
-            : createDeckTunerPanel({
-                bloomPass,
-                activeShipIndex: () => activeIndexRef.current,
-                shipParts: (shipIndex) => ships[shipIndex]?.parts ?? new Map(),
-                shipMaterials: (shipIndex) => ships[shipIndex]?.materials ?? [],
-                restageLighting: (shipIndex) => applyShipLighting(shipIndex, true),
-                onDispose: (cleanup) => tunerCleanups.push(cleanup),
-              }),
-        )
-        .catch(() => {});
-    }
+    // ── No tuning panel ──
+    // The fleet's `?tune` panel has been removed: its values are authored and baked into `deckTuning.ts`
+    // and the palettes in `deckServices.ts`, and having three panels open at once made the dock's column
+    // taller than the viewport. `?tune` now opens the chamber's panel only. The deleted panel is in git
+    // if the fleet ever needs live authoring again.
 
     return () => {
       disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
-      tunerCleanups.forEach((cleanup) => cleanup());
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);

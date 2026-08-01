@@ -154,7 +154,7 @@ components/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
     ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial + tuner
     WorksField/     # the project field + FieldCanvas + the mark systems + transitions/ + tuner
-    Chamber/        # the room, its walls/ground, FaqHologram/, tuner
+    Chamber/        # the room: walls/ground/plinth, FaqHologram/, tuner
   effects/
     IntroSequence/  # loader: GatherCanvas, gather.worker, LoaderTelemetry/
     FluidCursor/    # hero ink trail (hand-rolled WebGL fluid sim)
@@ -397,12 +397,23 @@ each other off, and both stop on tab-hidden. Preserve that.
 Costs, roughly: WorksField + Chamber ●●●●● > ServicesDeck ●●●●○ ≈ FluidCursor ●●●●○ > sun ●●●○○.
 `UnrealBloom` is the recurring expensive pass. Full breakdown in `docs/performance-ratings.md`.
 
-## The `?tune` authoring panels
+## The `?tune` authoring panel
 
-The deck, the works field and the chamber each ship a `lil-gui` tuning panel, **dynamically
-imported only when the URL has `?tune`** — nothing reaches the default bundle. Shared plumbing:
-`lib/tunerDock.ts` (the column), `tunerExport.ts` (prints a paste-ready constants block to the
-console), `tunerReset.ts`, `tuneScrollLock.ts`.
+**Only the chamber ships one now.** It is a `lil-gui` panel, **dynamically imported only when the URL
+has `?tune`** — nothing reaches the default bundle. Shared plumbing: `lib/tunerDock.ts` (the column),
+`tunerExport.ts` (prints a paste-ready constants block to the console), `tunerReset.ts`,
+`tuneScrollLock.ts`.
+
+The deck's and the works field's panels were deleted once their values were authored and baked into
+`deckTuning.ts` / `deckServices.ts` / `worksTuning.ts`. Three panels open at once made the dock's
+column taller than any viewport — which is also how it came out that the column could not be scrolled
+at all: the pin binds `wheel` on `window` with `{ passive: false }` and `preventDefault`s every gesture
+in the carousel region, cancelling the dock's scroll along with the page's. `isInsideTunerDock` in
+`tuneScrollLock.ts` is what exempts it, and any future panel gets that for free.
+
+Deleting those panels also took their exclusive support code: the works field's free-fly camera
+override and `rebuildMark`, and both files' `getWritable*Tuning` / `reset*Tuning` pairs. Restoring a
+panel means restoring those with it — they are one commit.
 
 **These are general editors, not one-shot wizards.** When extending a lab or panel, give full
 control over the thing being edited rather than wiring a path to one preconceived outcome.

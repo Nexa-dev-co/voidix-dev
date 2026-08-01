@@ -4,6 +4,7 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { createGroundGrid } from './groundGrid';
 import { createChamberWalls } from './chamberWalls';
+import { createChamberPlinth } from './chamberPlinth';
 import { applySurfaceLighting } from './chamberSurfaceLighting';
 import { hideHologram, publishHologramPose } from '@/lib/hologramPose';
 import {
@@ -249,6 +250,11 @@ export function createChamberScene({
   // no corner. Same depth reasoning as the floor, so it likewise can't intrude on the seam at progress 0.
   const chamberWalls = createChamberWalls();
   scene.add(chamberWalls.mesh);
+
+  // What the hologram is projected from. A real object rather than the wash of tint the floor used to
+  // paint under the panel — see chamberPlinth.ts.
+  const chamberPlinth = createChamberPlinth();
+  scene.add(chamberPlinth.group);
 
   const screenLight = new THREE.PointLight(
     SCREEN_LIGHT_COLOR,
@@ -886,7 +892,6 @@ export function createChamberScene({
       groundGrid.mesh.position.y = tuning.groundY;
       groundGrid.uniforms.uOpacity.value = tuning.groundOpacity;
       groundGrid.uniforms.uLineColor.value.set(tuning.groundLineColor);
-      groundGrid.uniforms.uGlowColor.value.set(tuning.groundGlowColor);
       // With walls up, the floor stops AT them; without, it dissolves into the void instead.
       groundGrid.uniforms.uClipRadius.value = tuning.showWalls
         ? tuning.wallRadius
@@ -894,9 +899,30 @@ export function createChamberScene({
       groundGrid.uniforms.uCell.value = tuning.groundCell;
       groundGrid.uniforms.uLineWidth.value = tuning.groundLineWidth;
       groundGrid.uniforms.uFade.value = tuning.groundFade;
-      groundGrid.uniforms.uGlowCenter.value.set(tuning.holoX, tuning.holoY, tuning.holoZ);
-      groundGrid.uniforms.uGlowRadius.value = tuning.groundGlowRadius;
-      groundGrid.uniforms.uGlowStrength.value = tuning.groundGlowStrength;
+
+      // The light fittings dropped into the tiling — the room's actual light source. Their contact
+      // darkening is measured against the clip radius above, so it always lands where the floor
+      // genuinely ends rather than at a distance kept in step with the wall's by hand.
+      groundGrid.uniforms.uLightOn.value = tuning.showFloorLights ? 1 : 0;
+      groundGrid.uniforms.uLightColor.value.set(tuning.floorLightColor);
+      groundGrid.uniforms.uLightCoreColor.value.set(tuning.floorLightCoreColor);
+      groundGrid.uniforms.uLightEvery.value = tuning.floorLightEvery;
+      groundGrid.uniforms.uPaverSize.value = tuning.floorPaverSize;
+      groundGrid.uniforms.uPaverBevel.value = tuning.floorPaverBevel;
+      groundGrid.uniforms.uCoreSigma.value = tuning.floorLightCoreSigma;
+      groundGrid.uniforms.uCoreIntensity.value = tuning.floorLightCoreIntensity;
+      groundGrid.uniforms.uBodyIntensity.value = tuning.floorLightBodyIntensity;
+      groundGrid.uniforms.uRimWidth.value = tuning.floorLightRimWidth;
+      groundGrid.uniforms.uRimDepth.value = tuning.floorLightRimDepth;
+      groundGrid.uniforms.uPoolSigma.value = tuning.floorLightPoolSigma;
+      groundGrid.uniforms.uPoolStrength.value = tuning.floorLightPoolStrength;
+      groundGrid.uniforms.uLightLead.value = tuning.floorLightLead;
+      // Only with walls up: without them the floor dissolves into a void and there is no corner to
+      // occlude — darkening the dissolve would just dim the horizon.
+      groundGrid.uniforms.uContactWidth.value = tuning.groundContactWidth;
+      groundGrid.uniforms.uContactStrength.value = tuning.showWalls
+        ? tuning.groundContactStrength
+        : 0;
 
       // The room's lights, coming up as you back out of the screen. The wavefront starts at the DISPLAY
       // — the thing you were just inside — so the light spreads from the table outward, and the room
@@ -912,7 +938,75 @@ export function createChamberScene({
       chamberWalls.uniforms.uOpacity.value = tuning.wallOpacity;
       chamberWalls.uniforms.uFadeStart.value = tuning.wallFadeStart;
       chamberWalls.uniforms.uWallColor.value.set(tuning.wallColor);
+      // Material and light direction — the wall's own surface, independent of the fittings.
+      chamberWalls.uniforms.uGrain.value = tuning.wallGrain;
+      chamberWalls.uniforms.uTexture.value = tuning.wallTexture;
+      chamberWalls.uniforms.uTextureScale.value = tuning.wallTextureScale;
+      chamberWalls.uniforms.uTextureFade.value = tuning.wallTextureFade;
+      chamberWalls.uniforms.uSkirtHeight.value = tuning.wallSkirtHeight;
+      chamberWalls.uniforms.uSkirtDepth.value = tuning.wallSkirtDepth;
+      chamberWalls.uniforms.uDirectional.value = tuning.wallDirectional;
+
+      // Panelling. `uRadius` is set by setShape above, so a seam authored in world units always
+      // converts through the circumference the wall actually has.
+      chamberWalls.uniforms.uPanelColumns.value = tuning.wallPanelColumns;
+      chamberWalls.uniforms.uPanelRowHeight.value = tuning.wallPanelRowHeight;
+      chamberWalls.uniforms.uPanelSeam.value = tuning.wallPanelSeam;
+      chamberWalls.uniforms.uPanelSeamDepth.value = tuning.wallPanelSeamDepth;
+      chamberWalls.uniforms.uPanelBevel.value = tuning.wallPanelBevel;
+
+      // The strip at eye height — the room's second light source, and the one the tour looks straight at.
+      chamberWalls.uniforms.uStripOn.value = tuning.showWallStrip ? 1 : 0;
+      chamberWalls.uniforms.uStripColor.value.set(tuning.wallStripColor);
+      chamberWalls.uniforms.uStripY.value = tuning.wallStripY;
+      chamberWalls.uniforms.uStripHalf.value = tuning.wallStripHalf;
+      chamberWalls.uniforms.uStripGlow.value = tuning.wallStripGlow;
+      chamberWalls.uniforms.uStripBloom.value = tuning.wallStripBloom;
+      chamberWalls.uniforms.uStripIntensity.value = tuning.wallStripIntensity;
+      chamberWalls.uniforms.uStripSegments.value = tuning.wallStripSegments;
+      chamberWalls.uniforms.uStripGap.value = tuning.wallStripGap;
+      chamberWalls.uniforms.uStripRecess.value = tuning.wallStripRecess;
+      chamberWalls.uniforms.uStripRecessDepth.value = tuning.wallStripRecessDepth;
       applySurfaceLighting(chamberWalls.uniforms, tuning, rigPosition, progress);
+    }
+
+    // ── The plinth ──
+    // Placed from the hologram's own anchor, so the source and the thing it projects can never drift
+    // apart — the same coupling the floor's pool of tint used to have, now on an object that earns it.
+    // It stands ON the floor, so only X and Z come from the panel; its own height decides the rest.
+    chamberPlinth.group.visible = tuning.showPlinth;
+    if (tuning.showPlinth) {
+      chamberPlinth.group.position.set(tuning.holoX, tuning.groundY, tuning.holoZ);
+      chamberPlinth.setShape(
+        tuning.plinthRadius,
+        tuning.plinthHeight,
+        tuning.plinthCoreRadius,
+        tuning.plinthCoreHeight,
+      );
+
+      const body = chamberPlinth.bodyUniforms;
+      body.uBodyColor.value.set(tuning.plinthColor);
+      body.uGlowColor.value.set(tuning.plinthGlowColor);
+      body.uVents.value = tuning.plinthVents;
+      body.uVentWidth.value = tuning.plinthVentWidth;
+      body.uVentBottom.value = tuning.plinthVentBottom;
+      body.uVentTop.value = tuning.plinthVentTop;
+      body.uVentGlow.value = tuning.plinthVentGlow;
+      body.uRingY.value = tuning.plinthRingY;
+      body.uRingWidth.value = tuning.plinthRingWidth;
+      body.uRingGlow.value = tuning.plinthRingGlow;
+      body.uRimGlow.value = tuning.plinthRimGlow;
+      body.uBevel.value = tuning.plinthBevel;
+
+      const core = chamberPlinth.coreUniforms;
+      core.uCoreColor.value.set(tuning.plinthCoreColor);
+      core.uCoreIntensity.value = tuning.plinthCoreIntensity;
+      core.uCoreFade.value = tuning.plinthCoreFade;
+
+      // The same wavefront the floor and the walls ride, so the plinth powers up as part of the room
+      // rather than on a clock of its own — and reverses with it for free.
+      applySurfaceLighting(body, tuning, rigPosition, progress);
+      applySurfaceLighting(core, tuning, rigPosition, progress);
     }
 
     // The environment is what turns dim metal into a chrome showroom, so it stays adjustable across
@@ -1076,6 +1170,7 @@ export function createChamberScene({
       displayMaterial.dispose();
       groundGrid.dispose();
       chamberWalls.dispose();
+      chamberPlinth.dispose();
       [tableGroup].forEach((group) =>
         group?.traverse((child) => {
           if (child instanceof THREE.Mesh) {

@@ -29,7 +29,6 @@
  * The tuner has a button that writes it exactly; don't hand-edit it to something else.
  */
 
-import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
 
 /** One pose on the path around the mark. */
 export interface ProjectViewKey {
@@ -181,25 +180,13 @@ const WORKS_TUNING: WorksTuning = {
   evenPacing: true,
 };
 
-// The shipped values, captured before the ?tune panel can touch them.
-const WORKS_DEFAULTS = snapshotDefaults(WORKS_TUNING);
-
 /**
- * Put every value back the way it shipped.
+ * The works field's fixed numbers. Read once by the scene; never mutated.
  *
- * Restored IN PLACE — the scene holds this object (and the arrays inside it) by reference, so handing
- * back a fresh one would leave it driving the old copy. See lib/tunerReset.
+ * The writable handle and the reset that used to sit beside this are gone with the field's `?tune`
+ * panel — they existed only so that panel could mutate this object in place. These values are now
+ * edited here, in the file, like any other constant.
  */
-export function resetWorksTuning(): void {
-  restoreInPlace(WORKS_TUNING, WORKS_DEFAULTS);
-}
-
-/** The works field's fixed numbers. Read once by the scene; never mutated in the app path. */
 export function getWorksTuning(): Readonly<WorksTuning> {
-  return WORKS_TUNING;
-}
-
-/** The same object, writable — for the `?tune` panel and nothing else. See getWritableChamberTuning. */
-export function getWritableWorksTuning(): WorksTuning {
   return WORKS_TUNING;
 }

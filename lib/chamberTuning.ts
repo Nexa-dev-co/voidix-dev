@@ -4,11 +4,15 @@ import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
  * The chamber reveal's numbers — fixed constants.
  *
  * Every value in the reveal (where the display hangs, where you end up standing, how the set is arranged,
- * the showcase path the camera walks) was authored against an on-screen tuning panel and then baked in
- * here. The panel is gone; these are the shipped numbers. The scene reads this once and the FAQ hologram
- * reads the `holo*` values for its look and size — both via {@link getChamberTuning}.
+ * the showcase path the camera walks) was authored against the on-screen tuning panel and baked in here.
+ * The scene reads this once and the FAQ hologram reads the `holo*` values for its look and size — both
+ * via {@link getChamberTuning}.
  *
- * To retune, edit the values below directly (there is no longer a live store or a panel writing to it).
+ * ⚠ The panel is NOT gone, whatever an earlier revision of this comment claimed: `chamberScene.ts`
+ * dynamically imports `chamberTunerPanel` whenever the URL carries `?tune`, and it writes to this object
+ * in place through {@link getWritableChamberTuning}. So a new value here also belongs in that panel —
+ * CLAUDE.md is explicit that these are general editors rather than one-shot wizards, and a knob that
+ * only exists in this file cannot be authored against the running room.
  */
 
 /**
@@ -133,12 +137,74 @@ export interface ChamberTuning {
   groundColorLit: string;
   /** The grid drawn ON the lit floor. Dark lines on a pale surface, not glowing lines in a void. */
   groundLineColor: string;
-  /** The tint pooled under the hologram — a colour wash, since a pale floor has no headroom to brighten. */
-  groundGlowColor: string;
   groundOpacity: number;
-  /** The floor lifts under the hologram, so the panel reads as hanging above a surface. */
-  groundGlowRadius: number;
-  groundGlowStrength: number;
+
+  // ── The floor's light fittings ──
+  // Whole TILES replaced by a lit paver — a frosted square set flush where a tile would be, a lamp
+  // behind it, a shadowed rim where it meets the tile it displaced, and a pool of light on the floor
+  // around it. They are the room's light SOURCE; everything else in here is a surface with no lamp on
+  // it, and until these existed nothing explained why the room was bright.
+  //
+  // Drawn in the floor's own shader rather than through a bloom pass: the chamber goes through
+  // `screenComposer` (RenderPass → OutputPass → SMAA) and the site's only UnrealBloomPass lives in the
+  // space render, so a glow here would mean a second bloom on the heaviest scene on the site — for
+  // something that is one `exp(-d²/σ²)` in a shader that is already running.
+  showFloorLights: boolean;
+  /**
+   * Tiles between one fitting and the next.
+   *
+   * Laid on a STAGGERED lattice — alternate rows offset by half a period. A plain lattice reads as
+   * graph paper the moment you can see more than a few; staggering is what makes a floor look laid.
+   */
+  floorLightEvery: number;
+  /**
+   * The paver's half-size as a fraction of the tile. 0.5 fills the tile exactly; below that it sits
+   * inside the tile's own footprint with the floor showing around it.
+   */
+  floorPaverSize: number;
+  /** How soft the paver's edge is. Small — this is a machined edge, not a fade. */
+  floorPaverBevel: number;
+  /**
+   * The lamp's size behind the diffuser, in tile fractions. **Keep it well under `floorPaverSize`.**
+   *
+   * This is the pairing that decides whether a fitting reads as a LIGHT or as a coloured tile: a small
+   * sigma at a high intensity is a lamp behind frosted glass; a large one at any intensity is a panel
+   * painted amber. An earlier build of this floor got that backwards (a 0.55 sigma against a 1-unit
+   * cell, where the falloff never drops below 0.44 anywhere on a tile) and rendered flat salmon
+   * rectangles. If this ever reads as coloured tiles again, this number is why.
+   */
+  floorLightCoreSigma: number;
+  /** How hard the lamp burns. Additive, so past ~1 the tone map rolls it toward white on its own. */
+  floorLightCoreIntensity: number;
+  /** How brightly the diffuser panel around the lamp glows. */
+  floorLightBodyIntensity: number;
+  /** The shadowed edge of the recess the fitting sits in — what puts it IN the floor, not on it. */
+  floorLightRimWidth: number;
+  floorLightRimDepth: number;
+  /** How far light falls onto the surrounding tiles, in world units, and how strongly. */
+  floorLightPoolSigma: number;
+  floorLightPoolStrength: number;
+  /** The diffuser's warm glow, and the hotter lamp behind it. */
+  floorLightColor: string;
+  floorLightCoreColor: string;
+  /**
+   * How far AHEAD of the floor around them the fittings strike, in the wavefront's own 0..1 units.
+   *
+   * Cause before effect: they are the light source, so the room cannot come up before them. Without
+   * this the room simply becomes lit and nothing in the shot explains why.
+   */
+  floorLightLead: number;
+
+  // ── Where the floor meets the wall ──
+  /**
+   * How many world units of the floor darken as they approach the wall.
+   *
+   * The two surfaces currently meet at a hard seam between two flat colours, which is the one edge that
+   * gives the room away as two shaders rather than one space. Ambient occlusion is what makes a corner
+   * look like a corner.
+   */
+  groundContactWidth: number;
+  groundContactStrength: number;
 
   // ── The lights coming on ──
   // A wavefront spreading out from the display, each floor cell striking on its own. Driven by the
@@ -173,6 +239,91 @@ export interface ChamberTuning {
    * as different surfaces — a wall and a floor at the same value collapse into one seamless tube.
    */
   wallColor: string;
+  /** ±fraction of low-frequency luminance wander, so the wall is a material rather than a fill. */
+  wallGrain: number;
+  /**
+   * The finish on top of that wander: finer, streaked vertically like a brushed plate.
+   *
+   * ⚠ `wallTextureFade` is not polish. Noise this fine on a surface this large is the same moire the
+   * floor's grid had to be rewritten around — past a certain depth one period falls below a pixel and
+   * the whole wall crawls with the camera. The floor's answer was to hold a line at one pixel; this one
+   * simply stops drawing before it gets there.
+   */
+  wallTexture: number;
+  wallTextureScale: number;
+  wallTextureFade: number;
+
+  // ── Panelling: the wall as plates, not a tube ──
+  // ⚠ The one place the documented "no grid on the walls" rule has been given up. That rule existed to
+  // keep the room unmeasurable — and a ship's corridor is meant to be measured. See chamberWalls.ts.
+  /** Vertical seams around the wall. **Rounded to an integer**, so the pattern closes at the atan wrap. */
+  wallPanelColumns: number;
+  /** World units between horizontal seams. */
+  wallPanelRowHeight: number;
+  /** A seam's half-width, in world units. */
+  wallPanelSeam: number;
+  wallPanelSeamDepth: number;
+  /** The lit lip just OUTSIDE a seam — a plate's edge turning toward the light. */
+  wallPanelBevel: number;
+
+  // ── The light strip running the wall at eye height ──
+  // Sited where the tour actually looks: every showcase key aims level or down, which is also why there
+  // is still no ceiling to put lights in — panels up there would cost a mesh and never be in frame.
+  showWallStrip: boolean;
+  /** The band's centre, measured up from the floor line. */
+  wallStripY: number;
+  /** Half-thickness of the lit core, in world units. */
+  wallStripHalf: number;
+  /** Sigma of its skirt. Wide × faint is a glow; wide × strong is a wash — see the floor's own note. */
+  wallStripGlow: number;
+  wallStripBloom: number;
+  wallStripIntensity: number;
+  /** Breaks around the circumference. **Rounded to an integer**, same reason as the columns. */
+  wallStripSegments: number;
+  /** How much of each segment is gap, 0 .. 0.5. */
+  wallStripGap: number;
+  /** The channel the strip is set into — what puts it IN the wall rather than on it. */
+  wallStripRecess: number;
+  wallStripRecessDepth: number;
+  wallStripColor: string;
+
+  // ── The plinth: what the hologram is actually projected FROM ──
+  // A black drum standing on the floor with a lit emitter in its throat, placed under the panel. It
+  // replaced a wash of tint painted on the floor — that wash was standing in for a source, and a
+  // projection with nothing projecting it is a sticker. See chamberPlinth.ts.
+  showPlinth: boolean;
+  plinthRadius: number;
+  plinthHeight: number;
+  /** The housing. Near-black: it is a machine, not a surface to look at. */
+  plinthColor: string;
+  /** Everything cut into it that glows — the vents, the ring and the top lip share one colour. */
+  plinthGlowColor: string;
+  /** Vertical slots around the drum, and how wide each is in turns of its circumference. */
+  plinthVents: number;
+  plinthVentWidth: number;
+  /** The height band the run of slots occupies, as fractions of the drum. */
+  plinthVentBottom: number;
+  plinthVentTop: number;
+  plinthVentGlow: number;
+  /** A continuous band of light near the top — the drum's own horizon. */
+  plinthRingY: number;
+  plinthRingWidth: number;
+  plinthRingGlow: number;
+  /** The lit lip where the housing turns over into the throat. */
+  plinthRimGlow: number;
+  plinthBevel: number;
+  /** The emitter standing in the throat: slim, additive, and fading as it rises toward the panel. */
+  plinthCoreRadius: number;
+  plinthCoreHeight: number;
+  plinthCoreColor: string;
+  plinthCoreIntensity: number;
+  /** How much of the emitter's height is left by the time its light has gone. */
+  plinthCoreFade: number;
+  /** The shadow gap at the floor line, in world units, and how deep it goes. */
+  wallSkirtHeight: number;
+  wallSkirtDepth: number;
+  /** How much darker the wall gets facing away from the display. Gives the room a light direction. */
+  wallDirectional: number;
 
   // ── Pivots — the point, in the MODEL's own coordinates, a prop scales and turns around ──
   tablePivotX: number;
@@ -227,7 +378,15 @@ export interface ChamberTuning {
    * past the 4.72 of the teal it replaced. Check any retune against white before shipping it.
    */
   holoTint: string;
-  /** The panel's own background wash. Zero = fully transparent, which is what a white room wants. */
+  /**
+   * The panel's own glass — its backing colour, kept apart from {@link holoTint}.
+   *
+   * The tint is what the indices, arrows and rules are drawn in. Backing the panel with it as well would
+   * put the type on its own accent and force one value to do two jobs, which is what the old
+   * `rgba(tint, opacity)` backing did before a body was wanted at all.
+   */
+  holoPanelColor: string;
+  /** How opaque that glass is. 0 is fully transparent — what the white room wanted, and nothing else. */
   holoOpacity: number;
   holoGlow: number;
   holoScanlines: number;
@@ -312,7 +471,15 @@ const CHAMBER_TUNING: ChamberTuning = {
     'table:1',
   ],
 
-  tableColor: '#3b3e43',
+  /**
+   * Still the one COOL object in a warm room — but taken right down for the dark one.
+   *
+   * At #3b3e43 it was mid-grey, which on a white floor read as equipment and on this one would be the
+   * palest thing in the frame: a bright slab in a dark room, pulling the eye off the display it is
+   * supposed to be holding. Same hue, four stops down, so it still separates from the floor's warmth
+   * without announcing itself.
+   */
+  tableColor: '#1c1f23',
 
   showcaseKeys: SHOWCASE_KEYS,
   // The handheld drift is coupled to the camera's SPEED, so it breathes through the tour and settles to
@@ -338,17 +505,65 @@ const CHAMBER_TUNING: ChamberTuning = {
   groundCell: 1,
   groundLineWidth: 1.5,
   groundFade: 26,
-  // A desaturated teal — the brand cyan cooled right down, so it reads as a dim light on a floor
-  // rather than as a neon grid. It is additive, so this colour IS its brightness.
-  // Near-black: before the lights reach it, a patch of room is simply not there yet.
-  groundColor: '#08090a',
-  // White. The room powering up to a bright studio is the reveal's last beat.
-  groundColorLit: '#f4f5f6',
-  groundLineColor: '#0a0a0a',
-  groundGlowColor: '#4fd8e8',
+  // ── THE ROOM IS DARK, and the fittings in the floor are the only thing lighting it ──
+  //
+  // It was a bright studio: a white floor and the hero's cream on the walls, so the room resolved to the
+  // colour the site opened on. That rhyme has been deliberately given up. The rest of the site — the
+  // fleet, the field, contact — is amber on `--bg` black, and a white room was the one place that stopped
+  // being true; it also gave the floor's lamps nothing to be bright against, which is the entire reason
+  // architectural floor lighting is photographed in the dark.
+  //
+  // ⚠ This is a PALETTE, not five independent colours. A dark room forces the hologram's ink to invert
+  // (near-black type has nothing to sit on) and its tint back to the raw accent, and it makes the table's
+  // cool grey the palest thing in the frame. Change any one of these back and check the others.
+
+  /** Exactly `--bg`. Before the lights reach it, a patch of room is not dark — it is the void. */
+  groundColor: '#060606',
+  /**
+   * The lit floor. Neutral graphite, barely cool — the deck of a ship rather than a warm interior.
+   *
+   * It was warm (#17140f) while the room's own colour was doing the work. It is not any more: the wall
+   * strip and the floor fittings are, and against amber a neutral surround reads far cleaner than a
+   * brown one, which merely agreed with the light and flattened it.
+   *
+   * The step up from unlit is deliberately small. The room's "lights on" beat is carried by the FITTINGS
+   * striking and by the surge flare, not by the floor changing value.
+   */
+  groundColorLit: '#17181a',
+  /**
+   * The seams, LIGHTER than the tiles they separate — grout catching light, which is what a joint does
+   * on a dark floor. On the old white floor this was the other way round.
+   */
+  groundLineColor: '#2c2e31',
   groundOpacity: 1,
-  groundGlowRadius: 4,
-  groundGlowStrength: 0.35,
+
+  showFloorLights: true,
+  // Authored in ?tune against the running room. One every four tiles, with a fitting that is larger,
+  // softer-edged and altogether more lit than the first pass: a bigger lamp behind a fuller diffuser,
+  // which on a DARK floor reads as a real fixture rather than as a pinpoint.
+  floorLightEvery: 4,
+  floorPaverSize: 0.4,
+  floorPaverBevel: 0.1,
+  floorLightCoreSigma: 0.3,
+  floorLightCoreIntensity: 2.7,
+  floorLightBodyIntensity: 1.34,
+  floorLightRimWidth: 0.045,
+  floorLightRimDepth: 0.75,
+  // A little over one tile of spill. Far enough to reach the neighbours, short enough that the floor
+  // between fittings is genuinely unlit.
+  floorLightPoolSigma: 0.5,
+  floorLightPoolStrength: 0.17,
+  // The accent — the sun's amber. The room is lit by the same colour the star is.
+  floorLightColor: '#ff7b00',
+  // The lamp itself, near-white with the warmth left in. A pure white core reads as a blown highlight;
+  // this keeps the fitting the same temperature all the way down.
+  floorLightCoreColor: '#ffa200',
+  // A little over a tenth of the wavefront ahead of the floor: enough to see them come on first,
+  // not so much that they hang lit in a dark room waiting for it.
+  floorLightLead: 0.12,
+
+  groundContactWidth: 2.4,
+  groundContactStrength: 0.42,
 
   // Starts once the pull-back has actually left the display (before that the floor is depth-hidden
   // behind it anyway) and completes as the tour gets going, so the room is lit by the time you walk.
@@ -365,12 +580,89 @@ const CHAMBER_TUNING: ChamberTuning = {
   wallHeight: 9,
   wallFadeStart: 0.15,
   wallOpacity: 1,
-  // The HERO's cream (#e2dfd2 — see `.hero-section` in globals.css). The room resolves to the colour the
-  // site opened on, so the last thing you see is the first thing you saw: you were never anywhere else.
-  //
-  // Keep the two in step BY HAND. The hero is CSS and this is a WebGL scene, so there is no shared token
-  // that could carry the value across — change one and the rhyme quietly dies.
-  wallColor: '#e2dfd2',
+  /**
+   * LIGHTER than the floor, so the table, the hologram and the strip all silhouette against it and the
+   * room gains a horizon. Neutral graphite — a machined plate, not a painted surface.
+   *
+   * This has now been three things. It was the HERO's cream (#e2dfd2), deliberately: the room resolved
+   * to the colour the site opened on. Then it went darker than the floor (#12100e) so it would recede
+   * and the eye would stay down. Both were answers for a room with no lights ON the wall; there is one
+   * now, and a strip needs a plate to be set into and something for its glow to fall across.
+   */
+  wallColor: '#2a2c2f',
+  /** ±fraction of low-frequency luminance wander. What makes a wall read as plaster, not a colour fill. */
+  wallGrain: 0.025,
+  wallTexture: 0.06,
+  wallTextureScale: 2.6,
+  // Just past the far side of the room at wallRadius 14, so the finish is gone before it can crawl.
+  wallTextureFade: 16,
+
+  // 24 plates around, and a horizontal break a little under every two metres — close enough that the
+  // wall has a readable scale, far enough that it does not become a mesh.
+  wallPanelColumns: 24,
+  wallPanelRowHeight: 2.2,
+  wallPanelSeam: 0.02,
+  wallPanelSeamDepth: 0.55,
+  wallPanelBevel: 0.22,
+
+  showWallStrip: true,
+  // Eye height for a camera standing at y ≈ 1.4–1.8 and looking level: the strip is in frame for the
+  // whole tour rather than under it.
+  wallStripY: 1.15,
+  wallStripHalf: 0.045,
+  wallStripGlow: 0.08,
+  wallStripBloom: 0.26,
+  wallStripIntensity: 3.95,
+  // One break per plate, so the strip reads as sitting in the panelling rather than crossing it.
+  wallStripSegments: 24,
+  wallStripGap: 0.12,
+  wallStripRecess: 0.08,
+  wallStripRecessDepth: 0.8,
+  wallStripColor: '#ff7b00',
+
+  // ── The plinth ──
+  // Sited under the panel by the scene, from holoX / holoZ — it IS the hologram's source, so the two
+  // can never drift apart. Its top sits below holoY (1.65) with the emitter rising into the gap.
+  showPlinth: true,
+  plinthRadius: 0.34,
+  // Authored against the running room. Squatter than it was first guessed at: a drum two thirds as tall
+  // as it is wide reads as a fitting bolted to the floor, where the taller version read as a pedestal
+  // holding something up — and the panel is projected, not displayed.
+  plinthHeight: 0.56,
+  plinthColor: '#0a0a0b',
+  plinthGlowColor: '#ff7b00',
+  // Enough slots that the drum reads as machined from any angle, narrow enough that it stays mostly
+  // housing — a drum that is more light than metal stops being an object.
+  plinthVents: 18,
+  plinthVentWidth: 0.16,
+  plinthVentBottom: 0.16,
+  plinthVentTop: 0.72,
+  plinthVentGlow: 0.5,
+  plinthRingY: 0.86,
+  plinthRingWidth: 0.018,
+  plinthRingGlow: 1.5,
+  plinthRimGlow: 0.9,
+  plinthBevel: 0.04,
+  // Slim and short: it has to read as the throat of the housing, not as a second column. It stops
+  // short of the panel and fades out well before it, so the light thins into air.
+  plinthCoreRadius: 0.1,
+  // Short: the emitter is the throat of the housing, not a beam reaching for the panel. It stops well
+  // under holoY (1.65) and its own fade takes the light out before it arrives, so what fills the gap is
+  // air rather than a column.
+  plinthCoreHeight: 0.23,
+  plinthCoreColor: '#ffa200',
+  plinthCoreIntensity: 1.8,
+  plinthCoreFade: 0.8,
+  /** A shadow gap where the wall meets the floor — the other half of the floor's own contact darkening. */
+  wallSkirtHeight: 0.35,
+  wallSkirtDepth: 0.55,
+  /**
+   * How much darker the wall gets facing AWAY from the display.
+   *
+   * The room has no light direction otherwise — every surface lights by distance alone, which is why a
+   * bare cylinder reads as a flat tube. Nearly free: the ignition origin is already a uniform.
+   */
+  wallDirectional: 0.4,
 
   tablePivotX: 0,
   tablePivotY: 0,
@@ -404,18 +696,29 @@ const CHAMBER_TUNING: ChamberTuning = {
   holoFrameInset: 0.06,
   holoFrameColor: '#000000',
 
-  holoInk: '#0b0f12',
-  // The brand cyan, deepened until it reads as ink rather than as light.
-  holoTint: '#a85400',
-  // The three below are all a hologram's "projected light" vocabulary, and every one of them reads as
-  // dirt once the backdrop is white: a glow has nothing to glow against, scanlines become a grey haze
-  // over the type, and the chromatic fringe turns dark text muddy — it stops looking like projection and
-  // starts looking like a printing misregistration. The panel earns its presence from the black frames
-  // and the type now. Left as live knobs rather than deleted, in case the room ever goes dark again.
-  holoOpacity: 0,
-  holoGlow: 0,
-  holoScanlines: 0,
-  holoFringe: 0,
+  // The site's own `--fg`. Near-black ink was a consequence of the white room and has nothing to sit on
+  // in this one.
+  holoInk: '#ebe8e0',
+  // The RAW accent, not the deepened #a85400. That value exists to hold 5.34:1 against white; against a
+  // dark panel it is mud. CLAUDE.md calls #ff8a1a "a colour for glowing on black", which is now the job.
+  holoTint: '#ff8a1a',
+  /**
+   * The panel's own glass — a translucent slab, exactly as `.contact-panel` is over the black hole.
+   *
+   * Kept apart from `holoTint` on purpose. The tint is the indices, arrows and rules; making it the
+   * backing as well would put the type on its own accent colour and force one value to do two jobs.
+   */
+  holoPanelColor: '#0b0a09',
+  // Was 0 — fully transparent, which is what the WHITE room wanted. A dark room wants a body: light type
+  // needs something to sit on, and 0.55 is close to the 0.62 the contact panel uses for the same reason.
+  holoOpacity: 0.55,
+  // ── The three below are a hologram's "projected light" vocabulary, and they are BACK ──
+  // They were zeroed for the white room, where a glow had nothing to glow against, scanlines became a
+  // grey haze over dark type, and the chromatic fringe read as printing misregistration rather than as
+  // projection. The note left with them said "in case the room ever goes dark again". It has.
+  holoGlow: 0.55,
+  holoScanlines: 0.3,
+  holoFringe: 0.6,
 
   holoOpenSeconds: 1.55,
   holoRowStagger: 0.06,

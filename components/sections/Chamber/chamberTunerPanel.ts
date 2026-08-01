@@ -278,12 +278,30 @@ export async function createChamberTunerPanel({
   groundFolder.add(tuning, 'groundLineWidth', 0.5, 6, 0.1);
   groundFolder.add(tuning, 'groundFade', 2, 120, 0.5);
   groundFolder.add(tuning, 'groundOpacity', 0, 3, 0.01);
-  groundFolder.add(tuning, 'groundGlowRadius', 0, 20, 0.1);
-  groundFolder.add(tuning, 'groundGlowStrength', 0, 3, 0.01);
   groundFolder.addColor(tuning, 'groundColor').name('unlit (dark)');
   groundFolder.addColor(tuning, 'groundColorLit').name('lit (white) — shared');
   groundFolder.addColor(tuning, 'groundLineColor').name('grid lines');
-  groundFolder.addColor(tuning, 'groundGlowColor').name('hologram pool tint');
+  groundFolder.add(tuning, 'groundContactWidth', 0, 10, 0.1).name('wall contact · width');
+  groundFolder.add(tuning, 'groundContactStrength', 0, 1, 0.01).name('wall contact · depth');
+
+  // The room's light SOURCE. Everything else in here is a surface with no lamp on it.
+  const lightFolder = guiFolder('Floor · light fittings');
+  lightFolder.add(tuning, 'showFloorLights');
+  lightFolder.add(tuning, 'floorLightEvery', 2, 14, 1).name('every N tiles');
+  lightFolder.add(tuning, 'floorPaverSize', 0.1, 0.5, 0.01).name('paver size (of tile)');
+  lightFolder.add(tuning, 'floorPaverBevel', 0.002, 0.1, 0.002).name('paver edge softness');
+  // ⚠ Capped well under the paver ON PURPOSE. A large sigma at any intensity is a panel painted amber
+  // rather than a lamp behind glass — see floorLightCoreSigma's note in chamberTuning.
+  lightFolder.add(tuning, 'floorLightCoreSigma', 0.02, 0.3, 0.005).name('lamp size (small!)');
+  lightFolder.add(tuning, 'floorLightCoreIntensity', 0, 6, 0.05).name('lamp intensity');
+  lightFolder.add(tuning, 'floorLightBodyIntensity', 0, 3, 0.02).name('diffuser glow');
+  lightFolder.add(tuning, 'floorLightRimWidth', 0.005, 0.3, 0.005).name('recess rim · width');
+  lightFolder.add(tuning, 'floorLightRimDepth', 0, 1, 0.01).name('recess rim · depth');
+  lightFolder.add(tuning, 'floorLightPoolSigma', 0.1, 5, 0.05).name('pool reach');
+  lightFolder.add(tuning, 'floorLightPoolStrength', 0, 1.5, 0.01).name('pool strength');
+  lightFolder.add(tuning, 'floorLightLead', 0, 0.6, 0.01).name('strikes ahead of floor');
+  lightFolder.addColor(tuning, 'floorLightColor').name('diffuser colour');
+  lightFolder.addColor(tuning, 'floorLightCoreColor').name('lamp colour');
 
   const wallsFolder = guiFolder('Walls');
   wallsFolder.add(tuning, 'showWalls');
@@ -292,6 +310,65 @@ export async function createChamberTunerPanel({
   wallsFolder.add(tuning, 'wallFadeStart', 0, 1, 0.01).name('holds full until');
   wallsFolder.addColor(tuning, 'wallColor').name('wall colour');
   wallsFolder.add(tuning, 'wallOpacity', 0, 1, 0.01);
+  // What the floor strips throw up it. Zeroed automatically when the strips are off.
+  wallsFolder.add(tuning, 'wallGrain', 0, 0.15, 0.002).name('material grain');
+  wallsFolder.add(tuning, 'wallTexture', 0, 0.3, 0.005).name('finish · strength');
+  wallsFolder.add(tuning, 'wallTextureScale', 0.2, 12, 0.1).name('finish · scale');
+  // ⚠ The finish stops drawing past this. Raising it far lets fine noise reach depths where one period
+  // is under a pixel, and the whole wall crawls with the camera.
+  wallsFolder.add(tuning, 'wallTextureFade', 2, 40, 0.5).name('finish · fades out by');
+  wallsFolder.add(tuning, 'wallSkirtHeight', 0, 2, 0.02).name('floor shadow gap · height');
+  wallsFolder.add(tuning, 'wallSkirtDepth', 0, 1, 0.01).name('floor shadow gap · depth');
+  wallsFolder.add(tuning, 'wallDirectional', 0, 1, 0.01).name('darker facing away');
+
+  // The wall as plates. Counts are rounded to integers in the shader so the pattern closes on itself
+  // at the atan wrap — a fractional count seams once, on the far side of the room.
+  const panelFolder = guiFolder('Walls · panelling');
+  panelFolder.add(tuning, 'wallPanelColumns', 3, 64, 1).name('plates around');
+  panelFolder.add(tuning, 'wallPanelRowHeight', 0.3, 8, 0.05).name('rows every (world)');
+  panelFolder.add(tuning, 'wallPanelSeam', 0.002, 0.15, 0.002).name('seam half-width');
+  panelFolder.add(tuning, 'wallPanelSeamDepth', 0, 1, 0.01).name('seam depth');
+  panelFolder.add(tuning, 'wallPanelBevel', 0, 1, 0.01).name('edge lip (lit)');
+
+  // The room's second light source, at eye height.
+  const wallStripFolder = guiFolder('Walls · light strip');
+  wallStripFolder.add(tuning, 'showWallStrip');
+  wallStripFolder.add(tuning, 'wallStripY', 0, 5, 0.02).name('height above floor');
+  wallStripFolder.add(tuning, 'wallStripHalf', 0.005, 0.4, 0.005).name('core half-thickness');
+  // ⚠ Capped small for the same reason the floor's was: a wide sigma at any strength stops being a glow
+  // and becomes a wash up the whole wall.
+  wallStripFolder.add(tuning, 'wallStripGlow', 0.02, 0.6, 0.01).name('bloom sigma (small!)');
+  wallStripFolder.add(tuning, 'wallStripBloom', 0, 1.5, 0.01).name('bloom strength');
+  wallStripFolder.add(tuning, 'wallStripIntensity', 0, 6, 0.05).name('intensity');
+  wallStripFolder.add(tuning, 'wallStripSegments', 1, 64, 1).name('segments around');
+  wallStripFolder.add(tuning, 'wallStripGap', 0, 0.48, 0.01).name('gap per segment');
+  wallStripFolder.add(tuning, 'wallStripRecess', 0.01, 0.5, 0.005).name('channel reach');
+  wallStripFolder.add(tuning, 'wallStripRecessDepth', 0, 1, 0.01).name('channel depth');
+  wallStripFolder.addColor(tuning, 'wallStripColor').name('strip colour');
+
+  // What the hologram is projected FROM. Placed from holoX / holoZ by the scene, so there is no
+  // position here — move the panel and the plinth follows it.
+  const plinthFolder = guiFolder('Plinth · hologram source');
+  plinthFolder.add(tuning, 'showPlinth');
+  plinthFolder.add(tuning, 'plinthRadius', 0.05, 2, 0.01).name('drum radius');
+  plinthFolder.add(tuning, 'plinthHeight', 0.1, 3, 0.01).name('drum height');
+  plinthFolder.addColor(tuning, 'plinthColor').name('housing');
+  plinthFolder.addColor(tuning, 'plinthGlowColor').name('cut lines glow');
+  plinthFolder.add(tuning, 'plinthVents', 1, 48, 1).name('vents around');
+  plinthFolder.add(tuning, 'plinthVentWidth', 0.01, 0.5, 0.01).name('vent width (turns)');
+  plinthFolder.add(tuning, 'plinthVentBottom', 0, 1, 0.01).name('vents start at');
+  plinthFolder.add(tuning, 'plinthVentTop', 0, 1, 0.01).name('vents end at');
+  plinthFolder.add(tuning, 'plinthVentGlow', 0, 4, 0.05).name('vent glow');
+  plinthFolder.add(tuning, 'plinthRingY', 0, 1, 0.01).name('ring height');
+  plinthFolder.add(tuning, 'plinthRingWidth', 0.002, 0.2, 0.002).name('ring width');
+  plinthFolder.add(tuning, 'plinthRingGlow', 0, 4, 0.05).name('ring glow');
+  plinthFolder.add(tuning, 'plinthRimGlow', 0, 4, 0.05).name('top lip glow');
+  plinthFolder.add(tuning, 'plinthBevel', 0.002, 0.3, 0.002).name('top lip depth');
+  plinthFolder.add(tuning, 'plinthCoreRadius', 0.01, 1, 0.01).name('emitter radius');
+  plinthFolder.add(tuning, 'plinthCoreHeight', 0.05, 3, 0.01).name('emitter height');
+  plinthFolder.addColor(tuning, 'plinthCoreColor').name('emitter colour');
+  plinthFolder.add(tuning, 'plinthCoreIntensity', 0, 6, 0.05).name('emitter intensity');
+  plinthFolder.add(tuning, 'plinthCoreFade', 0.05, 1, 0.01).name('emitter fades by');
 
   // Named for what it is: the room's lighting, which the floor and the walls share.
   const igniteFolder = guiFolder('Room · lights on');
@@ -311,8 +388,9 @@ export async function createChamberTunerPanel({
   hologramFolder.add(tuning, 'holoMaxHeight', 0.5, 8, 0.01);
   hologramFolder.add(tuning, 'holoSwayFollow', 0, 1, 0.01);
   hologramFolder.addColor(tuning, 'holoInk').name('text (ink)');
-  hologramFolder.addColor(tuning, 'holoTint').name('accent (cyan)');
-  hologramFolder.add(tuning, 'holoOpacity', 0, 0.6, 0.005).name('panel wash');
+  hologramFolder.addColor(tuning, 'holoTint').name('accent (indices, rules)');
+  hologramFolder.addColor(tuning, 'holoPanelColor').name('panel glass');
+  hologramFolder.add(tuning, 'holoOpacity', 0, 1, 0.005).name('panel opacity');
   hologramFolder.add(tuning, 'holoGlow', 0, 4, 0.05);
   hologramFolder.add(tuning, 'holoScanlines', 0, 1, 0.01);
   hologramFolder.add(tuning, 'holoFringe', 0, 4, 0.05);

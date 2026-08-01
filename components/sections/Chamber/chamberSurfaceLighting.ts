@@ -92,8 +92,12 @@ export interface SurfaceLightingUniforms {
 
 export function createSurfaceLightingUniforms(): SurfaceLightingUniforms {
   return {
-    uColor: { value: new THREE.Color('#12333b') },
-    uColorLit: { value: new THREE.Color('#4fd8e8') },
+    // ⚠ Placeholders only — `applySurfaceLighting` overwrites both on the first frame from the tuning.
+    // They used to be the old brand cyan, which was harmless but a trap: anyone rendering a new surface
+    // before wiring it up would have got a teal room and no clue where the colour came from. These are
+    // the shipped values, so an unwired surface at least looks like the room it belongs to.
+    uColor: { value: new THREE.Color('#0a0908') },
+    uColorLit: { value: new THREE.Color('#efece3') },
     uPower: { value: 0 },
     uIgniteOrigin: { value: new THREE.Vector3() },
     uIgniteRadius: { value: 18 },

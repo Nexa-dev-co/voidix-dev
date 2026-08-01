@@ -1,18 +1,23 @@
 /**
  * The left-hand column every `?tune` panel lives in.
  *
- * There are three authoring panels — the fleet, the works field, the chamber — and each is created by
- * its own scene, independently, whenever that scene comes up. lil-gui auto-places at the top RIGHT by
- * default, so left to themselves they stack in one corner and you only ever see the last one created.
+ * lil-gui auto-places at the top RIGHT, so a panel left to itself lands over the scene it is editing.
+ * Everything is appended to one fixed column on the left instead: stacking is then normal flow layout,
+ * the column scrolls when its contents outgrow the viewport, and each panel keeps its own
+ * collapse-by-clicking-the-title behaviour.
  *
- * So they all get appended to one fixed column on the left instead. Stacking is then just normal flow
- * layout, the column scrolls when the panels outgrow the viewport, and each panel keeps its own
- * collapse-by-clicking-the-title behaviour — so the one you're not using folds away.
+ * ── One panel, now ───────────────────────────────────────────────────────────────────────────────
+ * There were three — the fleet, the works field, the chamber — and together they were taller than any
+ * viewport, which is what made the column's scrolling matter and then exposed that it did not work (the
+ * pin was cancelling it; see `isInsideTunerDock`). The fleet's and the field's panels have been deleted
+ * now that their values are authored and baked into their tuning files. The dock stays general: it has
+ * never known what a panel is, and a second one appended tomorrow needs no change here.
  *
  * Created lazily and only ever by a tuner, so nothing about this exists on a normal page load.
  */
 
 import {
+  TUNER_DOCK_ID,
   isTuneScrollLocked,
   setTuneScrollLocked,
   onTuneScrollLockChange,
@@ -20,16 +25,15 @@ import {
 import { copyTuningExport } from '@/lib/tunerExport';
 import { resetAllTuning } from '@/lib/tunerReset';
 
-const DOCK_ID = 'voidix-tuner-dock';
 // Above the intro veil (10000) and the navbar, so the panel is reachable at any point in the scroll.
 const DOCK_Z_INDEX = 10002;
 
 export function getTunerDock(): HTMLElement {
-  const existing = document.getElementById(DOCK_ID);
+  const existing = document.getElementById(TUNER_DOCK_ID);
   if (existing) return existing;
 
   const dock = document.createElement('div');
-  dock.id = DOCK_ID;
+  dock.id = TUNER_DOCK_ID;
   Object.assign(dock.style, {
     position: 'fixed',
     top: '0',

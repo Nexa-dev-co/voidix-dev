@@ -2094,16 +2094,17 @@ body {
   --holo-ink-rgb: 11, 15, 18;
   --holo-tint-rgb: 13, 127, 143;
   --holo-frame-color: #04060a;
+  --holo-panel-rgb: 11, 10, 9;
   --holo-opacity: 0;
   --holo-glow: 0;
   --holo-scan: 0;
   --holo-fringe: 0;
-  /* A white halo behind the type. Invisible against the white room — it only does anything where the
-     panel drifts over something dark (the table, the grid), which with a fully transparent panel is the
-     one thing that could make an answer unreadable. Not a backing: it costs nothing where it isn't
-     needed. */
-  --holo-halo:
-    0 0 10px rgba(255, 255, 255, 0.9), 0 0 3px rgba(255, 255, 255, 0.95);
+  /* A DARK halo behind the type, and the direction matters. It used to be white, because the room was
+     white and the ink near-black — it protected dark type wherever the transparent panel drifted over
+     the table or the grid. Both have inverted: the type is light now, so a white halo would be a white
+     blur around white letters. This does the same job against the one bright thing left in a dark room,
+     which is the floor's own lamps. It costs nothing where it is not needed. */
+  --holo-halo: 0 0 10px rgba(0, 0, 0, 0.85), 0 0 3px rgba(0, 0, 0, 0.9);
   --holo-frame-height: 26px;
   --holo-frame-inset: 12px;
 }
@@ -2194,9 +2195,11 @@ body {
   position: relative;
   height: 0;
   overflow: hidden;
-  background: rgba(var(--holo-tint-rgb), var(--holo-opacity));
-  border-left: 1px solid rgba(var(--holo-ink-rgb), 0.1);
-  border-right: 1px solid rgba(var(--holo-ink-rgb), 0.1);
+  /* The panel's own glass, NOT the tint. The tint draws the indices, arrows and rules; backing the
+     panel with it too would put the type on its own accent colour. */
+  background: rgba(var(--holo-panel-rgb), var(--holo-opacity));
+  border-left: 1px solid rgba(var(--holo-tint-rgb), 0.18);
+  border-right: 1px solid rgba(var(--holo-tint-rgb), 0.18);
   box-shadow:
     0 0 calc(60px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.18 * var(--holo-glow))),
     inset 0 0 calc(70px * var(--holo-glow)) rgba(var(--holo-tint-rgb), calc(0.1 * var(--holo-glow)));
