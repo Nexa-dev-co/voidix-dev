@@ -1,51 +1,46 @@
-import type { Metadata } from "next";
-import { Syne, DM_Sans } from "next/font/google";
-import "./globals.css";
-import SmoothScroll from "@/components/effects/SmoothScroll";
-import CustomCursor from "@/components/effects/CustomCursor";
-import PageLoader from "@/components/effects/PageLoader";
-import Grain from "@/components/effects/Grain";
+import type { Metadata } from 'next';
+import { Syne, DM_Sans } from 'next/font/google';
+import NavbarGate from '@/components/layout/Navbar/NavbarGate';
+import './globals.css';
 
 const syne = Syne({
-  subsets: ["latin"],
-  weight: ["700", "800"],
-  variable: "--font-syne",
-  display: "swap",
+  subsets: ['latin'],
+  weight: ['700', '800'],
+  variable: '--font-syne',
+  display: 'swap',
 });
 
 const dmSans = DM_Sans({
-  subsets: ["latin"],
-  weight: ["300", "400", "500"],
-  variable: "--font-dm-sans",
-  display: "swap",
+  subsets: ['latin'],
+  weight: ['300', '400', '500'],
+  variable: '--font-dm-sans',
+  display: 'swap',
 });
 
 export const metadata: Metadata = {
-  title: "orbix — software with gravity",
+  title: 'voidix — software with gravity',
   description:
-    "A software company building products with their own gravity. Custom web applications, SaaS platforms, enterprise CRM, mobile apps and AI systems.",
-  metadataBase: new URL("https://orbix.studio"),
+    'A software studio building products with their own gravity. Custom web applications, SaaS platforms, enterprise CRM, mobile apps, and AI systems.',
+  // TODO: confirm the real domain — this was left on the pre-rebrand `orbix.studio` and is a guess at
+  // the voidix equivalent. It's the base every relative OG/canonical URL resolves against, so a wrong
+  // host here silently breaks link previews.
+  metadataBase: new URL('https://voidix.studio'),
   openGraph: {
-    title: "orbix — software with gravity",
+    title: 'voidix — software with gravity',
     description:
-      "Dive from the edge of the system to the core. Custom web applications, SaaS, CRM, mobile and AI — engineered to hold users in orbit.",
-    type: "website",
+      'Custom web applications, SaaS, CRM, mobile, and AI — engineered to hold users in orbit.',
+    type: 'website',
   },
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${syne.variable} ${dmSans.variable}`}>
       <body>
-        <PageLoader />
-        <CustomCursor />
-        <SmoothScroll>{children}</SmoothScroll>
-        {/* Film-grain overlay sits on top of everything */}
-        <Grain />
+        {/* Gated, not rendered directly: the bar is a fixed full-width click target at z-9999, and on
+            the authoring routes it is invisible and catches everything. See NavbarGate. */}
+        <NavbarGate />
+        {children}
       </body>
     </html>
   );

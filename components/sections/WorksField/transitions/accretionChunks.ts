@@ -1,0 +1,786 @@
+import * as THREE from 'three';
+import { buildCapMesh } from '../markCapMesh';
+import { layeredLobeNoise, rockSkinPoint, type RockField } from '../markRockField';
+
+/**
+ * The mark, cut into stones.
+ *
+ * ── A stone is a PIECE of the mark, never a pebble inside it ──────────────────────────────────────
+ * The first attempt packed carved spheres into the mark's area and it read as gravel with a scalloped
+ * outline (`docs/accretion-plan.md` §1). This partitions the mark's own solid instead, so the union of
+ * the stones IS the mark: the silhouette is exact by construction, holes are exact, the pieces
+ * interlock because they were cut from one stone, and every piece is angular because its outline
+ * follows the partition rather than a sphere.
+ *
+ * It is also what makes the growth animatable. A fragment has a correct final ORIENTATION, so it can
+ * travel and rotate into alignment and you can watch it lock in. A sphere has no orientation to align,
+ * which is exactly why the first attempt had nothing to animate but scale.
+ *
+ *      PACKING (rejected)            PARTITIONING (this)
+ *      ●●●●●●●●●●●                  ┌──┬───┬──┬────┐
+ *      ●○  ○  ○  ○●                 ├──┴─┬─┴──┼──┬─┤
+ *      ●●●●●●●●●●●                  └────┴────┴──┴─┘
+ *      scalloped, gravel            exact edge, interlocking
+ *
+ * ── Two layers of vertices, and that is the whole trick for watertightness ───────────────────────
+ * Every vertex sits at `z = ±halfDepth` — caps at both ends, one quad per boundary edge for the wall.
+ * That means the surface displacement can be a function of POSITION ALONE, never of a normal, so two
+ * abutting stones displace their shared corner identically and no crack can ever open. A
+ * normal-based displacement would separate them, because two neighbours' wall normals are opposed.
+ */
+
+/** Angular slack when deciding whether a vertex belongs to a cap or a wall. */
+const CAP_NORMAL_THRESHOLD = 0.5;
+
+/** A cluster this small is a sliver; it gets folded into a neighbour instead of becoming a stone. */
+const MIN_CLUSTER_TRIANGLES = 2;
+
+/** Seed offsets, so the three displacement fields are independent rather than correlated. */
+const IN_PLANE_SEED_X = 11.3;
+const IN_PLANE_SEED_Y = 23.7;
+
+/**
+ * Ceiling on a measured fracture distance, in world units, BEFORE the per-stone normalisation.
+ *
+ * It exists for the stone that has no break face at all: every one of its points measures this, so the
+ * normalisation divides it by itself and the whole stone bakes out at 1 — fully cold, whatever the reach
+ * knob is set to. Without it the answer would be an Infinity in a vertex buffer, which is a debugging
+ * afternoon nobody needs.
+ *
+ * For any stone that DOES have a break face, this is never reached: no stone spans a world unit.
+ */
+const MAX_FRACTURE_DISTANCE = 1;
+
+export interface AccretionChunkOptions {
+  targetSize: number;
+  depth: number;
+
+  /** Tessellation of the mark's face. See `markCapMesh` — edge length is a fraction of the mark. */
+  capEdgeFraction: number;
+  capSubdivisions: number;
+
+  /**
+   * Stone size near the outline and deep in the body, in world units.
+   *
+   * The split is the size hierarchy, and it does two jobs: fine stones on the rim so the outline is
+   * precise and the eye reads detail where it looks, big masses in the core so the body reads as a few
+   * large stones rather than as noise. One uniform size is what made the first attempt read as gravel.
+   */
+  rimSpacing: number;
+  coreSpacing: number;
+  /** How far in from the outline the rim size gives way to the core size. */
+  spacingFalloff: number;
+
+  /** Stones interpenetrate by this much, so floating-point error cannot open a hairline crack. */
+  chunkInflate: number;
+
+  /** Roughness of the front and back faces — displacement along Z. */
+  capAmplitude: number;
+  capFrequency: number;
+  /**
+   * Roughness of the outline itself — displacement across the mark's plane.
+   *
+   * This is what makes the silhouette hewn rather than typeset, and it is also the knob that eats a
+   * counter if pushed. `silhouetteProtection` damps it toward the rim.
+   */
+  inPlaneAmplitude: number;
+  /** 1 leaves the outline untouched; 0 roughens it as hard as the faces. */
+  silhouetteProtection: number;
+
+  /** The persistent core every stone grows out of. Its skin is where each one is seeded. */
+  baseRock: RockField;
+
+  seed: number;
+}
+
+export interface AccretionChunks {
+  /** One merged, indexed geometry holding every stone of one mark, with the growth attributes baked. */
+  geometry: THREE.BufferGeometry;
+  chunkCount: number;
+  triangleCount: number;
+  /** Outline sites the crystal layer grows from — see `accretionCrystals`. */
+  rimPoints: THREE.Vector2[];
+  rimNormals: THREE.Vector2[];
+}
+
+/** mulberry32 — deterministic, so a mark always cuts into the same stones. */
+function createRandom(seed: number): () => number {
+  let state = (Math.imul(Math.floor(seed) ^ 0x9e3779b9, 0x85ebca6b) >>> 0) || 1;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let mixed = state;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function edgeKey(first: number, second: number): number {
+  return first < second ? first * 2097152 + second : second * 2097152 + first;
+}
+
+function distanceToSegment(
+  point: THREE.Vector2,
+  from: THREE.Vector2,
+  to: THREE.Vector2,
+): number {
+  const edgeX = to.x - from.x;
+  const edgeY = to.y - from.y;
+  const lengthSquared = edgeX * edgeX + edgeY * edgeY;
+  if (lengthSquared < 1e-12) return point.distanceTo(from);
+  let along = ((point.x - from.x) * edgeX + (point.y - from.y) * edgeY) / lengthSquared;
+  along = along < 0 ? 0 : along > 1 ? 1 : along;
+  return Math.hypot(point.x - (from.x + edgeX * along), point.y - (from.y + edgeY * along));
+}
+
+/**
+ * The same measurement, squared, on loose numbers — for the fracture pass only.
+ *
+ * A separate function rather than a tweak to the one above, for two reasons, and the second is the
+ * important one:
+ *
+ * ⚠ `distanceToSegment` feeds `pointRimDistance`, which feeds `wantedSpacing`, which decides where the
+ * Poisson seeds land — so it decides HOW THE MARK IS CUT. Editing it, even to make it faster, would
+ * re-partition every mark and change a silhouette that is already authored. It is load-bearing for the
+ * shape. Leave it exactly as it is.
+ *
+ * The other reason is cost: this runs on the order of a million times per mark, and `Math.hypot` guards
+ * against an overflow unreachable at this scale by doing considerably more work than a multiply. Staying
+ * squared until the very end skips that and the square root both.
+ */
+function distanceSquaredToSegment(
+  pointX: number,
+  pointY: number,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): number {
+  const edgeX = toX - fromX;
+  const edgeY = toY - fromY;
+  const lengthSquared = edgeX * edgeX + edgeY * edgeY;
+  let along = lengthSquared < 1e-12
+    ? 0
+    : ((pointX - fromX) * edgeX + (pointY - fromY) * edgeY) / lengthSquared;
+  along = along < 0 ? 0 : along > 1 ? 1 : along;
+  const offsetX = pointX - (fromX + edgeX * along);
+  const offsetY = pointY - (fromY + edgeY * along);
+  return offsetX * offsetX + offsetY * offsetY;
+}
+
+export function buildAccretionChunks(
+  shapes: THREE.Shape[],
+  flipY: boolean,
+  options: AccretionChunkOptions,
+): AccretionChunks {
+  const capMesh = buildCapMesh(shapes, flipY, {
+    edgeFraction: options.capEdgeFraction,
+    subdivisions: options.capSubdivisions,
+  });
+
+  const empty: AccretionChunks = {
+    geometry: new THREE.BufferGeometry(),
+    chunkCount: 0,
+    triangleCount: 0,
+    rimPoints: [],
+    rimNormals: [],
+  };
+  if (capMesh.points.length === 0 || capMesh.triangles.length === 0) return empty;
+
+  // ── 1 · Normalise, so every mark is framed identically ──
+  // Only X and Y come from the outline; `depth` is authored in world units and must never be dragged
+  // through the source-to-world scale, or an SVG viewBox and a font glyph give the same slider two
+  // different thicknesses.
+  const bounds = new THREE.Box2();
+  capMesh.points.forEach((point) => bounds.expandByPoint(point));
+  const size = new THREE.Vector2();
+  bounds.getSize(size);
+  const largestDimension = Math.max(size.x, size.y, 1e-6);
+  const normaliseScale = options.targetSize / largestDimension;
+  const rawCentre = new THREE.Vector2();
+  bounds.getCenter(rawCentre);
+
+  const points = capMesh.points.map((point) =>
+    point.clone().sub(rawCentre).multiplyScalar(normaliseScale),
+  );
+  const halfDepth = options.depth / 2;
+
+  // ── 2 · Distance from every point to the outline ──
+  // Drives the size hierarchy, the silhouette protection, and where the crystal grows.
+  const boundaryLoops = capMesh.loops.map((capLoop) =>
+    capLoop.indices.map((index) => points[index]),
+  );
+  const distanceToOutline = (point: THREE.Vector2): number => {
+    let nearest = Infinity;
+    boundaryLoops.forEach((loop) => {
+      for (let index = 0; index < loop.length; index += 1) {
+        const distance = distanceToSegment(point, loop[index], loop[(index + 1) % loop.length]);
+        if (distance < nearest) nearest = distance;
+      }
+    });
+    return nearest === Infinity ? 0 : nearest;
+  };
+
+  const pointRimDistance = points.map((point) => distanceToOutline(point));
+
+  // ── 3 · Cluster the cap triangles into stones ──
+  const triangleCount = capMesh.triangles.length / 3;
+  const centroids: THREE.Vector2[] = [];
+  const centroidRim: number[] = [];
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = capMesh.triangles[triangle * 3];
+    const b = capMesh.triangles[triangle * 3 + 1];
+    const c = capMesh.triangles[triangle * 3 + 2];
+    centroids.push(
+      new THREE.Vector2(
+        (points[a].x + points[b].x + points[c].x) / 3,
+        (points[a].y + points[b].y + points[c].y) / 3,
+      ),
+    );
+    centroidRim.push((pointRimDistance[a] + pointRimDistance[b] + pointRimDistance[c]) / 3);
+  }
+
+  // Variable-radius Poisson seeding: walk the triangles in a seeded shuffle and accept a centroid when
+  // it is farther than the locally wanted spacing from every seed already taken. Fine on the rim,
+  // coarse in the core, and deterministic.
+  const random = createRandom(options.seed);
+  const order = centroids.map((_, index) => index);
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(random() * (index + 1));
+    [order[index], order[swap]] = [order[swap], order[index]];
+  }
+
+  const wantedSpacing = (rimDistance: number): number =>
+    THREE.MathUtils.lerp(
+      options.rimSpacing,
+      options.coreSpacing,
+      THREE.MathUtils.smoothstep(rimDistance, 0, Math.max(options.spacingFalloff, 1e-4)),
+    );
+
+  const seedTriangles: number[] = [];
+  order.forEach((triangle) => {
+    const spacing = wantedSpacing(centroidRim[triangle]);
+    const centroid = centroids[triangle];
+    const clashes = seedTriangles.some(
+      (seedTriangle) => centroid.distanceTo(centroids[seedTriangle]) < spacing,
+    );
+    if (!clashes) seedTriangles.push(triangle);
+  });
+  // A mark smaller than one spacing would otherwise become a single stone with no growth to watch.
+  if (seedTriangles.length === 0) seedTriangles.push(0);
+
+  // Nearest seed by centroid distance. Cheaper than a graph traversal, and the connectivity pass below
+  // repairs the one thing it gets wrong: a cell that reaches across a concavity — a "V"'s notch — and
+  // claims triangles in both arms.
+  const clusterOfTriangle = new Int32Array(triangleCount);
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    let best = 0;
+    let bestDistance = Infinity;
+    seedTriangles.forEach((seedTriangle, seedIndex) => {
+      const distance = centroids[triangle].distanceToSquared(centroids[seedTriangle]);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = seedIndex;
+      }
+    });
+    clusterOfTriangle[triangle] = best;
+  }
+
+  // Triangle adjacency over shared edges, for the connectivity split.
+  const trianglesOfEdge = new Map<number, number[]>();
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = capMesh.triangles[triangle * 3];
+    const b = capMesh.triangles[triangle * 3 + 1];
+    const c = capMesh.triangles[triangle * 3 + 2];
+    [edgeKey(a, b), edgeKey(b, c), edgeKey(c, a)].forEach((key) => {
+      const existing = trianglesOfEdge.get(key);
+      if (existing) existing.push(triangle);
+      else trianglesOfEdge.set(key, [triangle]);
+    });
+  }
+  const neighboursOf = (triangle: number): number[] => {
+    const a = capMesh.triangles[triangle * 3];
+    const b = capMesh.triangles[triangle * 3 + 1];
+    const c = capMesh.triangles[triangle * 3 + 2];
+    const found: number[] = [];
+    [edgeKey(a, b), edgeKey(b, c), edgeKey(c, a)].forEach((key) => {
+      trianglesOfEdge.get(key)?.forEach((other) => {
+        if (other !== triangle) found.push(other);
+      });
+    });
+    return found;
+  };
+
+  // Split every cluster into its connected components, so a stone is always one solid piece.
+  const componentOfTriangle = new Int32Array(triangleCount).fill(-1);
+  const components: number[][] = [];
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    if (componentOfTriangle[triangle] !== -1) continue;
+    const cluster = clusterOfTriangle[triangle];
+    const componentIndex = components.length;
+    const member: number[] = [];
+    const stack = [triangle];
+    componentOfTriangle[triangle] = componentIndex;
+    while (stack.length > 0) {
+      const current = stack.pop() as number;
+      member.push(current);
+      neighboursOf(current).forEach((other) => {
+        if (componentOfTriangle[other] !== -1) return;
+        if (clusterOfTriangle[other] !== cluster) return;
+        componentOfTriangle[other] = componentIndex;
+        stack.push(other);
+      });
+    }
+    components.push(member);
+  }
+
+  // Fold slivers into whichever neighbour they touch, so no stone is a single triangle.
+  components.forEach((member, componentIndex) => {
+    if (member.length >= MIN_CLUSTER_TRIANGLES) return;
+    const host = member
+      .flatMap((triangle) => neighboursOf(triangle))
+      .map((triangle) => componentOfTriangle[triangle])
+      .find((other) => other !== componentIndex && components[other]?.length > 0);
+    if (host === undefined) return;
+    member.forEach((triangle) => {
+      componentOfTriangle[triangle] = host;
+      components[host].push(triangle);
+    });
+    components[componentIndex] = [];
+  });
+
+  const stones = components.filter((member) => member.length > 0);
+
+  // ── 4 · The displacement fields, functions of position only ──
+  const displaced = new THREE.Vector3();
+  const noiseSample = new THREE.Vector3();
+
+  /** A vertex's final rest position: the flat prism, roughened. */
+  const restPositionOf = (point: THREE.Vector2, rimDistance: number, side: number): THREE.Vector3 => {
+    const z = halfDepth * side;
+
+    // Across the plane — what makes the outline hewn. Damped toward the rim so a counter survives.
+    const protection = THREE.MathUtils.clamp(options.silhouetteProtection, 0, 1);
+    const rimProximity =
+      1 - THREE.MathUtils.smoothstep(rimDistance, 0, Math.max(options.rimSpacing * 2, 1e-4));
+    const inPlaneScale = options.inPlaneAmplitude * (1 - protection * rimProximity);
+    noiseSample.set(point.x, point.y, 0);
+    const offsetX =
+      layeredLobeNoise(noiseSample, options.capFrequency, options.seed + IN_PLANE_SEED_X) *
+      inPlaneScale;
+    const offsetY =
+      layeredLobeNoise(noiseSample, options.capFrequency, options.seed + IN_PLANE_SEED_Y) *
+      inPlaneScale;
+
+    // Through the thickness — what makes the faces pitted. Sampled with z included, so the front and
+    // back faces get their own relief instead of mirroring each other.
+    noiseSample.set(point.x, point.y, z);
+    const offsetZ =
+      layeredLobeNoise(noiseSample, options.capFrequency, options.seed) *
+      options.capAmplitude *
+      side;
+
+    return displaced.set(point.x + offsetX, point.y + offsetY, z + offsetZ);
+  };
+
+  // ── 5 · Build every stone ──
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const chunkCentroid: number[] = [];
+  const seedPoint: number[] = [];
+  /** The already-placed neighbour a stone creeps out of. */
+  const parentPoint: number[] = [];
+  /** How far the stone reaches from its centre, so a scale can be anchored on its inner face. */
+  const chunkRadius: number[] = [];
+  const startDistance: number[] = [];
+  const spinAxis: number[] = [];
+  const spinTurns: number[] = [];
+  const jitter: number[] = [];
+  const rim: number[] = [];
+  /**
+   * How deep into its own stone a vertex sits, 0..1 — 0 on a face the stone was BROKEN along, 1 at the
+   * point farthest from every one of them. Normalised per stone; see the fracture pass below.
+   */
+  const fractureDistance: number[] = [];
+
+  const uvScale = 1 / Math.max(options.targetSize, 1e-4);
+  const centroidAccumulator = new THREE.Vector3();
+  const chunkRecords: {
+    centroid: THREE.Vector3;
+    radius: number;
+    vertexStart: number;
+    vertexEnd: number;
+    triangles: number[];
+  }[] = [];
+
+  stones.forEach((member) => {
+    const vertexStart = positions.length / 3;
+
+    // Unique cap points of this stone, and where each landed in the buffer.
+    const localOfPoint = new Map<number, number>();
+    const uniquePoints: number[] = [];
+    member.forEach((triangle) => {
+      for (let corner = 0; corner < 3; corner += 1) {
+        const pointIndex = capMesh.triangles[triangle * 3 + corner];
+        if (localOfPoint.has(pointIndex)) continue;
+        localOfPoint.set(pointIndex, uniquePoints.length);
+        uniquePoints.push(pointIndex);
+      }
+    });
+
+    // ── Which edges bound this stone ──
+    // Hoisted above the vertex pushes on purpose: the wall quads below still consume it exactly as they
+    // did, but the fracture pass has to have run before ANY vertex is written, because every vertex
+    // carries its distance to a fracture. Nothing here pushes to a buffer, so moving it changes no
+    // vertex order and no index.
+    const edgeUse = new Map<number, { first: number; second: number; count: number }>();
+    member.forEach((triangle) => {
+      const corners = [
+        capMesh.triangles[triangle * 3],
+        capMesh.triangles[triangle * 3 + 1],
+        capMesh.triangles[triangle * 3 + 2],
+      ];
+      for (let corner = 0; corner < 3; corner += 1) {
+        const first = corners[corner];
+        const second = corners[(corner + 1) % 3];
+        const key = edgeKey(first, second);
+        const existing = edgeUse.get(key);
+        if (existing) existing.count += 1;
+        // Stored in the triangle's own winding order, which is what makes the wall face outward.
+        else edgeUse.set(key, { first, second, count: 1 });
+      }
+    });
+
+    // ── Which of those are FRACTURES, and how far every vertex sits from one ──
+    //
+    // A stone's boundary is two different things and the geometry has never distinguished them:
+    //
+    //   count 2 in `trianglesOfEdge`  the mark's solid continues on the other side, so this wall exists
+    //                                 only because the PARTITION cut here — a face that was welded shut
+    //                                 at rest and is exposed by the break.
+    //   count 1                       the letterform's own outline. It was never broken; it has always
+    //                                 been the edge of the mark, and it has to stay cold.
+    //
+    // One distance covers every case, which is why there is no companion "is fracture" flag. A wall
+    // vertex on a fracture is an ENDPOINT of that segment, so it measures exactly 0 and goes fully
+    // molten; a cap vertex fades out over the band; a silhouette vertex is cold unless a break actually
+    // reaches the outline there, where it should be hot.
+    const fractureEdges: number[] = [];
+    edgeUse.forEach((edge, key) => {
+      if (edge.count !== 1) return;
+      if ((trianglesOfEdge.get(key)?.length ?? 1) < 2) return;
+      const from = points[edge.first];
+      const to = points[edge.second];
+      fractureEdges.push(from.x, from.y, to.x, to.y);
+    });
+
+    // Measured on the UNdisplaced outline, matching how `aRim` is baked a few lines down. The in-plane
+    // displacement tops out at 0.05 against a band authored around 0.09, so carrying it would move the
+    // band by less than the noise already in the surface.
+    const fractureDistanceOfPoint = new Map<number, number>();
+    let deepestFromFracture = 0;
+    uniquePoints.forEach((pointIndex) => {
+      // A stone whose whole boundary is the mark's outline has no break face at all. Nothing to
+      // measure, and nothing that should ever light up.
+      if (fractureEdges.length === 0) {
+        fractureDistanceOfPoint.set(pointIndex, MAX_FRACTURE_DISTANCE);
+        return;
+      }
+      const point = points[pointIndex];
+      let nearestSquared = MAX_FRACTURE_DISTANCE * MAX_FRACTURE_DISTANCE;
+      for (let edge = 0; edge < fractureEdges.length; edge += 4) {
+        const candidate = distanceSquaredToSegment(
+          point.x,
+          point.y,
+          fractureEdges[edge],
+          fractureEdges[edge + 1],
+          fractureEdges[edge + 2],
+          fractureEdges[edge + 3],
+        );
+        if (candidate < nearestSquared) nearestSquared = candidate;
+        // Sitting on a seam already; no other edge can beat zero. Most of a stone's boundary points hit
+        // this on their first or second edge, which is what stops the pass reading as quadratic.
+        if (nearestSquared <= 1e-12) break;
+      }
+      const distance = Math.sqrt(nearestSquared);
+      if (distance > deepestFromFracture) deepestFromFracture = distance;
+      fractureDistanceOfPoint.set(pointIndex, distance);
+    });
+
+    // ── Normalised PER STONE, and this is the whole reason the band behaves ──
+    //
+    // Baked in world units the reach could not mean one thing. The size hierarchy is authored at 30× —
+    // rim stones cut at 0.04, core masses at 1.2 — so a band wide enough to be a lip on a core mass
+    // swallowed a rim stone entirely, and the mark's outline is ALL rim stones. What was asked for as a
+    // tenth of the edge arrived as the whole fracture.
+    //
+    // Dividing by the stone's own deepest point turns the attribute into "how far through this stone's
+    // interior am I, 0 at a break face and 1 at the point farthest from every one of them". The knob is
+    // then literally a percentage and every stone shows the same proportional lip.
+    //
+    // ⚠ `aRadius` is NOT a usable normaliser here and it is the obvious wrong turn: it is measured from
+    // the centroid in 3D, so the 0.7 slab depth floors it at 0.35 for every stone, and the smallest
+    // stones — the ones that were the problem — would be normalised by a number six times their own
+    // width.
+    const fractureSpan = Math.max(deepestFromFracture, 1e-6);
+    uniquePoints.forEach((pointIndex) => {
+      const distance = fractureDistanceOfPoint.get(pointIndex) as number;
+      fractureDistanceOfPoint.set(pointIndex, Math.min(distance / fractureSpan, 1));
+    });
+
+    centroidAccumulator.set(0, 0, 0);
+
+    /** Push one vertex and return its buffer index. */
+    const pushVertex = (
+      pointIndex: number,
+      side: number,
+      u: number,
+      v: number,
+    ): number => {
+      const point = points[pointIndex];
+      const rest = restPositionOf(point, pointRimDistance[pointIndex], side);
+      positions.push(rest.x, rest.y, rest.z);
+      uvs.push(u, v);
+      rim.push(pointRimDistance[pointIndex]);
+      // Keyed by POINT, so a wall vertex and the cap vertex it is coincident with agree — which is what
+      // makes the molten band continuous around the lip of a break instead of stopping at the corner.
+      fractureDistance.push(fractureDistanceOfPoint.get(pointIndex) ?? MAX_FRACTURE_DISTANCE);
+      return positions.length / 3 - 1;
+    };
+
+    // Front and back caps share the stone's point set, so the pitted relief reads as one surface.
+    const frontBase = positions.length / 3;
+    uniquePoints.forEach((pointIndex) => {
+      const point = points[pointIndex];
+      pushVertex(pointIndex, 1, point.x * uvScale, point.y * uvScale);
+    });
+    const backBase = positions.length / 3;
+    uniquePoints.forEach((pointIndex) => {
+      const point = points[pointIndex];
+      pushVertex(pointIndex, -1, point.x * uvScale, point.y * uvScale);
+    });
+
+    member.forEach((triangle) => {
+      const a = localOfPoint.get(capMesh.triangles[triangle * 3]) as number;
+      const b = localOfPoint.get(capMesh.triangles[triangle * 3 + 1]) as number;
+      const c = localOfPoint.get(capMesh.triangles[triangle * 3 + 2]) as number;
+      // `buildCapMesh` forces every triangle counter-clockwise, so as-is the front faces +Z and the
+      // back is the same triangle reversed.
+      indices.push(frontBase + a, frontBase + b, frontBase + c);
+      indices.push(backBase + c, backBase + b, backBase + a);
+    });
+
+    // The wall: one quad per edge that only one of this stone's triangles owns. `edgeUse` was built at
+    // the top of this loop so the fracture pass could classify it.
+    const wallScratch = new THREE.Vector2();
+    edgeUse.forEach((edge) => {
+      if (edge.count !== 1) return;
+      const from = points[edge.first];
+      const to = points[edge.second];
+      const depthSpan = options.depth * uvScale;
+
+      // ── The wall's U is a POSITION, not a run starting at zero ──
+      // It used to be `0 → edgeLength`, restarted for every edge. Every wall in the mark therefore
+      // sampled the same sliver of texture — u never exceeded about 0.02 — stretched over the full
+      // depth. Hundreds of walls all showing one identical smeared column is what read as banding, and
+      // no amount of retuning the surface could fix it, because the surface was never the problem.
+      //
+      // Projecting each end onto the wall's own direction keeps the texel density EXACTLY as it was
+      // (uTo − uFrom is still the edge's length), while making the coordinate a function of where the
+      // wall actually sits. Two stones either side of a fracture now sample different texture, and a
+      // straight run across several edges stays continuous — the same property `restPositionOf` relies
+      // on, for the same reason: position-derived values agree wherever geometry agrees.
+      wallScratch.set(to.x - from.x, to.y - from.y);
+      const edgeLength = wallScratch.length();
+      // A zero-length edge has no direction to project onto. It is degenerate either way, so this only
+      // has to avoid a NaN reaching the buffer — a NaN UV takes the whole draw call with it.
+      if (edgeLength > 1e-9) wallScratch.divideScalar(edgeLength);
+      else wallScratch.set(1, 0);
+      const uFrom = (from.x * wallScratch.x + from.y * wallScratch.y) * uvScale;
+      const uTo = (to.x * wallScratch.x + to.y * wallScratch.y) * uvScale;
+
+      // Wall vertices are NOT shared with the caps, so cap and wall meet at a hard edge and the stone
+      // reads faceted rather than inflated.
+      const frontFrom = pushVertex(edge.first, 1, uFrom, 0);
+      const frontTo = pushVertex(edge.second, 1, uTo, 0);
+      const backTo = pushVertex(edge.second, -1, uTo, depthSpan);
+      const backFrom = pushVertex(edge.first, -1, uFrom, depthSpan);
+      indices.push(frontFrom, frontTo, backTo, frontFrom, backTo, backFrom);
+    });
+
+    const vertexEnd = positions.length / 3;
+    for (let vertex = vertexStart; vertex < vertexEnd; vertex += 1) {
+      centroidAccumulator.x += positions[vertex * 3];
+      centroidAccumulator.y += positions[vertex * 3 + 1];
+      centroidAccumulator.z += positions[vertex * 3 + 2];
+    }
+    const vertexTotal = Math.max(1, vertexEnd - vertexStart);
+    const centroid = centroidAccumulator.clone().divideScalar(vertexTotal);
+
+    // How far the stone reaches from its own centre. The `extend` arrival anchors a scale at
+    // `centroid − direction × radius`, i.e. a point on the stone's inner face, so it grows outward from
+    // there without its centroid moving at all.
+    let radius = 0;
+    for (let vertex = vertexStart; vertex < vertexEnd; vertex += 1) {
+      radius = Math.max(
+        radius,
+        Math.hypot(
+          positions[vertex * 3] - centroid.x,
+          positions[vertex * 3 + 1] - centroid.y,
+          positions[vertex * 3 + 2] - centroid.z,
+        ),
+      );
+    }
+
+    chunkRecords.push({ centroid, radius, vertexStart, vertexEnd, triangles: member });
+  });
+
+  // ── 6 · Where each stone grows FROM ──
+  // The ray from the core's centre through the stone, intersected with the core's carved skin. Closed
+  // form, because the base rock is a radial height field — so a stone visibly comes out of the rock
+  // rather than appearing where it already belonged.
+  const rayDirection = new THREE.Vector3();
+  const skin = new THREE.Vector3();
+  const seeds: THREE.Vector3[] = [];
+  let longestGrowth = 0;
+  chunkRecords.forEach((record) => {
+    rayDirection.copy(record.centroid).sub(options.baseRock.centre);
+    if (rayDirection.lengthSq() < 1e-10) rayDirection.set(0, 0, 1);
+    rayDirection.normalize();
+    rockSkinPoint(options.baseRock, rayDirection, skin);
+    seeds.push(skin.clone());
+    longestGrowth = Math.max(longestGrowth, record.centroid.distanceTo(skin));
+  });
+  const growthScale = longestGrowth > 1e-6 ? 1 / longestGrowth : 0;
+
+  // ── 6.5 · Which already-placed stone each one grows out of ──
+  // For the `creep` arrival: the mark spreads across ITSELF, each stone emerging from the neighbour that
+  // arrived before it, rather than every stone flying in from the centre. So a stone's parent is the
+  // adjacent stone nearest the core — and the first stone of all has no parent and falls back to the
+  // core's skin.
+  const stoneOfTriangle = new Int32Array(triangleCount).fill(-1);
+  chunkRecords.forEach((record, stoneIndex) => {
+    record.triangles.forEach((triangle) => {
+      stoneOfTriangle[triangle] = stoneIndex;
+    });
+  });
+
+  const startOf = chunkRecords.map(
+    (record, stoneIndex) => record.centroid.distanceTo(seeds[stoneIndex]) * growthScale,
+  );
+
+  const parents = chunkRecords.map((record, stoneIndex) => {
+    let best = -1;
+    let bestStart = startOf[stoneIndex];
+    record.triangles.forEach((triangle) => {
+      neighboursOf(triangle).forEach((other) => {
+        const otherStone = stoneOfTriangle[other];
+        if (otherStone < 0 || otherStone === stoneIndex) return;
+        if (startOf[otherStone] >= bestStart) return;
+        bestStart = startOf[otherStone];
+        best = otherStone;
+      });
+    });
+    return best >= 0 ? chunkRecords[best].centroid : seeds[stoneIndex];
+  });
+
+  // ── 7 · Bake the per-stone animation data onto every one of its vertices ──
+  const axis = new THREE.Vector3();
+  chunkRecords.forEach((record, chunkIndex) => {
+    const seed = seeds[chunkIndex];
+    const parent = parents[chunkIndex];
+    const start = startOf[chunkIndex];
+    // A seeded axis per stone; normalised so the spin rate does not depend on how the numbers fell.
+    axis
+      .set(random() * 2 - 1, random() * 2 - 1, random() * 2 - 1)
+      .normalize();
+    if (axis.lengthSq() < 0.5) axis.set(0, 1, 0);
+    const turns = random();
+    const chunkJitter = random();
+
+    for (let vertex = record.vertexStart; vertex < record.vertexEnd; vertex += 1) {
+      chunkCentroid.push(record.centroid.x, record.centroid.y, record.centroid.z);
+      seedPoint.push(seed.x, seed.y, seed.z);
+      parentPoint.push(parent.x, parent.y, parent.z);
+      chunkRadius.push(record.radius);
+      startDistance.push(start);
+      spinAxis.push(axis.x, axis.y, axis.z);
+      spinTurns.push(turns);
+      jitter.push(chunkJitter);
+    }
+  });
+
+  // ── 8 · Inflate, so no crack can open between neighbours ──
+  // Away from the stone's own centroid, which is a per-stone direction and therefore cannot be
+  // position-derived — but it only ever pushes neighbours INTO each other, so nothing separates.
+  if (options.chunkInflate > 0) {
+    const outward = new THREE.Vector3();
+    chunkRecords.forEach((record) => {
+      for (let vertex = record.vertexStart; vertex < record.vertexEnd; vertex += 1) {
+        outward
+          .set(
+            positions[vertex * 3] - record.centroid.x,
+            positions[vertex * 3 + 1] - record.centroid.y,
+            positions[vertex * 3 + 2] - record.centroid.z,
+          )
+          .normalize();
+        positions[vertex * 3] += outward.x * options.chunkInflate;
+        positions[vertex * 3 + 1] += outward.y * options.chunkInflate;
+        positions[vertex * 3 + 2] += outward.z * options.chunkInflate;
+      }
+    });
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setIndex(indices);
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute('aChunkCentroid', new THREE.Float32BufferAttribute(chunkCentroid, 3));
+  geometry.setAttribute('aSeedPoint', new THREE.Float32BufferAttribute(seedPoint, 3));
+  geometry.setAttribute('aParentPoint', new THREE.Float32BufferAttribute(parentPoint, 3));
+  geometry.setAttribute('aRadius', new THREE.Float32BufferAttribute(chunkRadius, 1));
+  geometry.setAttribute('aStart', new THREE.Float32BufferAttribute(startDistance, 1));
+  geometry.setAttribute('aSpinAxis', new THREE.Float32BufferAttribute(spinAxis, 3));
+  geometry.setAttribute('aSpinTurns', new THREE.Float32BufferAttribute(spinTurns, 1));
+  geometry.setAttribute('aJitter', new THREE.Float32BufferAttribute(jitter, 1));
+  geometry.setAttribute('aRim', new THREE.Float32BufferAttribute(rim, 1));
+  // ⚠ Thirteenth attribute on this geometry, counting three's own position/normal/uv. Every one of them
+  // is referenced by the injected shader, so every one occupies a slot, and WebGL2 only guarantees 16.
+  // There is room for two more before a device at the minimum starts refusing to link the program.
+  geometry.setAttribute(
+    'aFractureDistance',
+    new THREE.Float32BufferAttribute(fractureDistance, 1),
+  );
+  // After the displacement, so the relief actually shades. Coincident vertices are separate indices, so
+  // this leaves the hard edges hard.
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  // ── 9 · Outline sites for the crystal layer ──
+  const rimPoints: THREE.Vector2[] = [];
+  const rimNormals: THREE.Vector2[] = [];
+  const rimNormal = new THREE.Vector2();
+  capMesh.loops.forEach((capLoop) => {
+    const loop = capLoop.indices.map((index) => points[index]);
+    loop.forEach((point, index) => {
+      const previous = loop[(index - 1 + loop.length) % loop.length];
+      const next = loop[(index + 1) % loop.length];
+      // Outward is the RIGHT of travel: outer loops run counter-clockwise with material on the left,
+      // and holes run clockwise with material also on the left, so one formula serves both.
+      rimNormal.set(next.y - previous.y, -(next.x - previous.x));
+      if (rimNormal.lengthSq() < 1e-12) return;
+      rimNormal.normalize();
+      rimPoints.push(point.clone());
+      rimNormals.push(rimNormal.clone());
+    });
+  });
+
+  return {
+    geometry,
+    chunkCount: chunkRecords.length,
+    triangleCount: indices.length / 3,
+    rimPoints,
+    rimNormals,
+  };
+}

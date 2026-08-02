@@ -1,0 +1,702 @@
+import * as THREE from 'three';
+
+/**
+ * The growth, as a pure function of one progress value — all of it in the vertex shader.
+ *
+ * ── Why the three transforms finish at DIFFERENT times ───────────────────────────────────────────
+ * A stone scales, rotates and travels. Running those together and linearly is what made the first
+ * attempt read as a fade. Offsetting them is the whole difference:
+ *
+ *   g   0                                                       1
+ *       ├───────────────────────────────────────────────────────┤
+ * scale ████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  done at scaleLead  (~0.55)
+ *   rot ██████████████████████████████████████░░░░░░░░░░░░░░░░░  done at rotateLead (~0.70)
+ *   pos ███████████████████████████████████████████████████████  done at 1.0, with overshoot
+ *
+ * So a stone comes out of the core ALREADY solid and ALREADY aligned, and the last thing it does is
+ * slot into place and rebound. Read in order: material emerges → tumbles → aligns → slams home.
+ *
+ * ── The streams counter-rotate ───────────────────────────────────────────────────────────────────
+ * Travel is not a straight line: the whole stone is swung about the core's axis by an angle that decays
+ * to zero as it lands, one way growing and the other way retracting. Two counter-rotating flows crossing
+ * at the midpoint is the "mess". It is the same trick `worksTransition.ts` already relies on, where
+ * counter-spinning the debris field against the rock makes the two rates ADD into the apparent speed.
+ *
+ * ── Nothing is stateful ──────────────────────────────────────────────────────────────────────────
+ * Every curve below reads `uProgress` and per-vertex constants. No timers, no arrived flags, so it can
+ * be scrubbed backwards at any rate and a resize just re-derives it.
+ */
+
+/** Mode, as a uniform rather than a branch on the CPU: one mesh per mark, one role each. */
+export const ACCRETION_MODE = {
+  /** Fully formed and still — what a mark does when it is not part of the transition. */
+  settled: 0,
+  /** Growing out of the core. */
+  incoming: 1,
+  /** Retracting into it. */
+  outgoing: 2,
+} as const;
+
+export interface StoneGrowthUniforms {
+  uProgress: { value: number };
+  uMode: { value: number };
+  /**
+   * HOW a stone gets from absent to placed. Four different ideas, not four points on a dial:
+   *
+   *   0 travel    it flies from the core's skin to its place — the most motion, and the most like a
+   *               swarm, which is the read that was rejected.
+   *   1 in place  it swells at its final position and snaps. No translation whatsoever.
+   *   2 extend    a scale anchored on the stone's INNER face, so material extends outward while the
+   *               centroid never moves. Closest to how a mineral actually grows.
+   *   3 creep     it emerges from the neighbour that arrived before it, so the mark spreads across
+   *               itself like frost instead of being assembled from outside. Travel of one stone's width.
+   */
+  uArrival: { value: number };
+  /**
+   * …and HOW IT LEAVES, which is a separate question with the same four answers.
+   *
+   * It used to share `uArrival`, which forced the departure to be the arrival played backwards. That is
+   * the wrong default: material arriving wants to grow in place and lock (`extend`), but material
+   * leaving wants to go SOMEWHERE — and `extend` in reverse just collapses every stone onto a point on
+   * its own inner face, which reads as the mark blinking out rather than being reclaimed.
+   *
+   *   0 recede    back to the core's skin, the true reverse of the storyboard's two streams.
+   *   1 in place  shrinks at its own centroid.
+   *   2 collapse  the old shared behaviour — onto the inner face, no translation.
+   *   3 withdraw  retreats into the neighbour it grew from.
+   */
+  uDeparture: { value: number };
+  /** Where the core sits, so the spiral has an axis to swing about. */
+  uCoreCentre: { value: THREE.Vector3 };
+
+  /** The stone's window: it starts growing here and every stone has landed by 1. */
+  uGrowDelay: { value: number };
+  /** 0 = every stone moves together, →1 = a long procession. */
+  uGrowStagger: { value: number };
+  /** Retraction is finished by here, which is what leaves room for the overlap. */
+  uShrinkWindow: { value: number };
+  uShrinkStagger: { value: number };
+  /** Breaks the perfect shell — nothing in nature grows as one. */
+  uOrderJitter: { value: number };
+  /**
+   * Quantise the growth front into this many discrete waves. 0 or 1 leaves it continuous.
+   *
+   * A continuous front is one smooth event, and at speed it reads as a single blur however carefully the
+   * stagger is authored. Rounding each stone's place in the queue to a wave makes the mark build in
+   * layers you can count — a shell lands, then the next — which is what turns the growth into steps
+   * rather than a swell.
+   */
+  uGrowthSteps: { value: number };
+
+  uOvershoot: { value: number };
+  /**
+   * The rebound on the way OUT, and it wants to be 0.
+   *
+   * `uOvershoot` exists so an arriving stone slams past its resting place and settles — that is the
+   * whole "locks in" read. Applied to a departure the same curve makes every stone SWELL past full size
+   * before vanishing, which is why the retraction looked soft: the last thing you saw a stone do before
+   * it disappeared was get bigger.
+   */
+  uShrinkOvershoot: { value: number };
+  /** When scale finishes on the way IN, so a stone arrives already solid and then slots home. */
+  uScaleLead: { value: number };
+  /**
+   * When scale finishes on the way OUT — separate from the lead above, and it has to be.
+   *
+   * Growth wants scale to land EARLY, so the stone is full size while it slots in. Retraction wants the
+   * opposite: at 0.55 the stone stayed full size for most of the withdrawal and then blinked out at the
+   * end. At 1 the scale tracks the whole retraction, so the stone visibly shrinks until it is gone.
+   */
+  uShrinkScaleLead: { value: number };
+  uRotateLead: { value: number };
+  uSpinTurns: { value: number };
+  uSpiralTurns: { value: number };
+  uTremorCycles: { value: number };
+  uTremorAmplitude: { value: number };
+
+  /**
+   * The spark as a stone seats — hundreds of them under a bloom pass were meant to make the mark crackle.
+   *
+   * Off by default now. It is the one glow in this file that exists ONLY while `accretionGrowth` is
+   * between 0.72 and 1.0, so unlike the cavities it never shows at rest — which made it read as the
+   * change glowing rather than as the stone doing anything. See the control's note in `accretionTransition`.
+   */
+  uFlashColor: { value: THREE.Color };
+  uFlashStrength: { value: number };
+
+  /**
+   * ── The break face, molten ──
+   *
+   * Rock that is about to come apart heats at the seam first, stays molten while it travels, and cools
+   * once it has landed. Unlike the flash above this one has a PLACE — it is confined to a band around
+   * the faces the partition cut, which is why it can carry real brightness without becoming the wash
+   * that the flash became. Full reasoning in `docs/molten-fracture-plan.md`.
+   *
+   * The two colours are uniforms rather than controls, matching `uFlashColor`: the panel owns how hot
+   * it burns, the file owns what colour hot is.
+   */
+  uMoltenSeamColor: { value: THREE.Color };
+  uMoltenDeepColor: { value: THREE.Color };
+  uMoltenStrength: { value: number };
+  /**
+   * How far the heat reaches in from a break face, as a FRACTION of the stone — 0.1 is a tenth.
+   *
+   * Not world units, and it was once. `aFractureDistance` is normalised per stone precisely so this can
+   * be a percentage: the size hierarchy runs 30× from rim stones to core masses, and one world number
+   * that reads as a lip on a core mass swallows a rim stone whole.
+   */
+  uMoltenDepth: { value: number };
+  /**
+   * How long a landed stone takes to cool, as a span of PROGRESS.
+   *
+   * Not seconds, and it cannot be: `setTransition` is contractually pure in `(from, to, progress)`, so a
+   * wall-clock timer here would be a second clock — it would desync the moment the scrub is dragged and
+   * would not survive being driven by scroll. The conversion is just the round trip: at the lab's
+   * six-second default, one second is 0.17 of progress.
+   */
+  uMoltenCool: { value: number };
+  /** How far ahead of the break the seam lights up. The "neon, then crack" order. */
+  uMoltenLead: { value: number };
+
+  /** Exposed geode pockets on the stone — the reference's open cavities. */
+  uCavityMap: { value: THREE.Texture | null };
+  /** How far in from the outline a cavity can reach. */
+  uCavityWidth: { value: number };
+  /** Share of stones that carry one. Whole stones, not speckles, which is how the reference reads. */
+  uCavityCoverage: { value: number };
+  uCavityGlow: { value: number };
+  /**
+   * Scales the cavity texture's albedo, and it is NOT optional.
+   *
+   * `geode-druse.png` is a blazing fire-geode — its cores are near white. The stone it replaces has
+   * already been multiplied down to roughly a tenth by the material's tint, so mixing the cavity in raw
+   * put an eleven-fold albedo jump on whichever stones happened to open. That is not a cavity catching
+   * light, it is a hole cut through to a brighter scene.
+   */
+  uCavityTint: { value: number };
+  /**
+   * The cavity map's tiling, relative to the basalt's.
+   *
+   * It needs its own, because the two textures are read at completely different scales. The basalt is a
+   * surface — it wants to tile often enough that its craters are grain. The druse is a SUBJECT: a
+   * recognisable geode interior with distinct crystal pockets, and tiled as often as the basalt it
+   * turned into orange mush with no readable structure at all. Sampling both off `vMapUv` meant one
+   * repeat governed both, so making the stone finer necessarily destroyed the geode.
+   */
+  uCavityUvScale: { value: number };
+}
+
+/** Shared GLSL: the easings, and rotation without a matrix. */
+const GROWTH_HELPERS = /* glsl */ `
+  const float ACCRETION_TAU = 6.283185307179586;
+
+  float accretionEaseOut( float t ) {
+    float inverted = 1.0 - clamp( t, 0.0, 1.0 );
+    return 1.0 - inverted * inverted * inverted;
+  }
+
+  // Overshoots past 1 and settles back. Exactly 0 at t=0 and 1 at t=1 for any strength.
+  float accretionBackOut( float t, float strength ) {
+    float shifted = clamp( t, 0.0, 1.0 ) - 1.0;
+    return 1.0 + ( strength + 1.0 ) * shifted * shifted * shifted + strength * shifted * shifted;
+  }
+
+  // Rodrigues. Cheaper than building a matrix, and it is the same maths.
+  vec3 accretionSpin( vec3 point, vec3 axis, float angle ) {
+    float cosine = cos( angle );
+    float sine = sin( angle );
+    return point * cosine + cross( axis, point ) * sine + axis * dot( axis, point ) * ( 1.0 - cosine );
+  }
+
+  vec3 accretionSwing( vec3 point, float angle ) {
+    float cosine = cos( angle );
+    float sine = sin( angle );
+    return vec3( point.x * cosine - point.y * sine, point.x * sine + point.y * cosine, point.z );
+  }
+
+  // Cheap per-stone hash, so which stones carry a cavity is stable and needs no attribute.
+  float accretionHash( vec3 seed ) {
+    return fract( sin( dot( seed, vec3( 12.9898, 78.233, 37.719 ) ) ) * 43758.5453 );
+  }
+`;
+
+/**
+ * Teach a stone material to grow out of the core.
+ *
+ * Injected into standard PBR rather than hand-written, so the surface albedo and whatever burns through
+ * the emissive channel keep working untouched — the same reasoning every injection here gives. That is what
+ * let the body's texture be swapped from basalt to the geode without this file changing at all.
+ */
+export function enableStoneGrowth(
+  material: THREE.MeshStandardMaterial,
+  cavityMap: THREE.Texture | null,
+): StoneGrowthUniforms {
+  const uniforms: StoneGrowthUniforms = {
+    uProgress: { value: 1 },
+    uMode: { value: ACCRETION_MODE.settled },
+    // `extend` by default: it is the only one of the four that is genuinely growth rather than delivery.
+    uArrival: { value: 2 },
+    // `recede` — material going back where it came from. See uDeparture.
+    uDeparture: { value: 0 },
+    uCoreCentre: { value: new THREE.Vector3() },
+    uGrowDelay: { value: 0.4 },
+    uGrowStagger: { value: 0.68 },
+    uShrinkWindow: { value: 0.6 },
+    uShrinkStagger: { value: 0.62 },
+    uOrderJitter: { value: 0.08 },
+    uGrowthSteps: { value: 5 },
+    uOvershoot: { value: 1.15 },
+    uShrinkOvershoot: { value: 0 },
+    uScaleLead: { value: 0.55 },
+    uShrinkScaleLead: { value: 1 },
+    uRotateLead: { value: 0.72 },
+    // Off. A stone spinning on its own axis while it travels reads as debris being thrown, not as
+    // material being placed — and it fights the one thing the stone has that a pebble did not, which is
+    // a correct final orientation. Kept as a knob because the retraction can take a little of it.
+    uSpinTurns: { value: 0 },
+    uSpiralTurns: { value: 0.14 },
+    uTremorCycles: { value: 2.5 },
+    uTremorAmplitude: { value: 0.035 },
+    // ── Cooled right down ──
+    // Every glow here lands on top of the rig's bloom pass, which spreads anything over its threshold
+    // well past its own silhouette. Stacking generous emissive on generous bloom is what turned the
+    // stone into a light source instead of rock catching a key light — the reference's stone is DARK,
+    // and only the crystal and the hairline veins carry any light at all.
+    uFlashColor: { value: new THREE.Color('#ffb066') },
+    // 0, matching the panel's declared default. It matters that BOTH are zero: the lab pushes
+    // `flashStrength` every frame so this fallback is invisible there, but a future caller that drives
+    // the uniforms directly and never sends tuning would otherwise get the orange back for free.
+    uFlashStrength: { value: 0 },
+    uCavityMap: { value: cavityMap },
+    uCavityWidth: { value: 0.16 },
+    uCavityCoverage: { value: 0.34 },
+    uCavityGlow: { value: 0.5 },
+    uCavityTint: { value: 0.35 },
+    uCavityUvScale: { value: 1 },
+    // Every default from here down MATCHES the declared control in `accretionTransition`. That is the
+    // rule the flash got wrong: the lab pushes tuning every frame so a disagreeing fallback is invisible
+    // there, and then the first caller that drives these uniforms directly gets a look nobody authored.
+    // Both pulled DOWN the hue, and the strength pushed up to compensate — see the control's note.
+    // A near-white seam was washing the colour out of the effect; the white-hot now comes from the tone
+    // mapper compressing a saturated orange at the very peak, which is where it belongs.
+    uMoltenSeamColor: { value: new THREE.Color('#ff9a2e') },
+    uMoltenDeepColor: { value: new THREE.Color('#a82600') },
+    uMoltenStrength: { value: 1.2 },
+    // A FRACTION of the stone's depth from its own break faces, not world units — see `aFractureDistance`.
+    uMoltenDepth: { value: 0.1 },
+    uMoltenCool: { value: 0.17 },
+    uMoltenLead: { value: 0.08 },
+  };
+
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        /* glsl */ `#include <common>
+        attribute vec3 aChunkCentroid;
+        attribute vec3 aSeedPoint;
+        attribute vec3 aParentPoint;
+        attribute float aRadius;
+        attribute float aStart;
+        attribute vec3 aSpinAxis;
+        attribute float aSpinTurns;
+        attribute float aJitter;
+        attribute float aRim;
+        attribute float aFractureDistance;
+
+        uniform float uProgress;
+        uniform float uMode;
+        uniform float uArrival;
+        uniform float uDeparture;
+        uniform vec3 uCoreCentre;
+        uniform float uGrowDelay;
+        uniform float uGrowStagger;
+        uniform float uShrinkWindow;
+        uniform float uShrinkStagger;
+        uniform float uOrderJitter;
+        uniform float uGrowthSteps;
+        uniform float uOvershoot;
+        uniform float uShrinkOvershoot;
+        uniform float uScaleLead;
+        uniform float uShrinkScaleLead;
+        uniform float uRotateLead;
+        uniform float uSpinTurns;
+        uniform float uSpiralTurns;
+        uniform float uTremorCycles;
+        uniform float uTremorAmplitude;
+        uniform float uCavityWidth;
+        uniform float uCavityCoverage;
+        uniform float uMoltenCool;
+        uniform float uMoltenLead;
+
+        varying float vFlash;
+        varying float vCavity;
+        varying float vMoltenHeat;
+        varying float vFractureDistance;
+
+        ${GROWTH_HELPERS}
+
+        // This stone's place in the queue, 0..1 — near the core first.
+        //
+        // Extracted so the growth window and the molten window read the SAME number. Recomputing it in
+        // two places would work right up until one of them was retuned, and then the heat would drift
+        // off the motion it is supposed to be describing.
+        float accretionOrder() {
+          float order = clamp( aStart + ( aJitter - 0.5 ) * uOrderJitter, 0.0, 1.0 );
+
+          // Rounded into waves, so the mark builds in layers you can count. The jitter is applied
+          // BEFORE this, so it decides which wave a borderline stone joins — the wave fronts come out
+          // ragged like a real growth boundary rather than as perfect concentric shells. Set the jitter
+          // to 0 for crisp rings.
+          if ( uGrowthSteps >= 2.0 ) {
+            float waves = floor( uGrowthSteps );
+            order = min( floor( order * waves ), waves - 1.0 ) / ( waves - 1.0 );
+          }
+          return order;
+        }
+
+        // How settled this stone is: 1 at its resting place, 0 collapsed onto its seed on the core.
+        float accretionSettled() {
+          if ( uMode < 0.5 ) return 1.0;
+
+          float order = accretionOrder();
+
+          if ( uMode < 1.5 ) {
+            // Growing: near the core first, so the front travels outward.
+            float span = max( 1.0 - uGrowDelay, 1e-4 );
+            float start = uGrowDelay + order * uGrowStagger * span;
+            float width = max( ( 1.0 - uGrowStagger ) * span, 1e-4 );
+            return clamp( ( uProgress - start ) / width, 0.0, 1.0 );
+          }
+
+          // Retracting: far from the core first, so the mark collapses inward.
+          float span = max( uShrinkWindow, 1e-4 );
+          float start = ( 1.0 - order ) * uShrinkStagger * span;
+          float width = max( ( 1.0 - uShrinkStagger ) * span, 1e-4 );
+          return 1.0 - clamp( ( uProgress - start ) / width, 0.0, 1.0 );
+        }
+
+        // How molten this stone's break faces are, 0..1. Same windows as the growth above, read for
+        // temperature instead of for placement.
+        float accretionHeat() {
+          // A mark that is not changing has no break faces. An early return rather than a curve that
+          // happens to reach zero: this is the one failure here that would sit on screen indefinitely
+          // — a settled mark with glowing seams — so it is worth making structurally impossible.
+          if ( uMode < 0.5 ) return 0.0;
+
+          float order = accretionOrder();
+
+          if ( uMode < 1.5 ) {
+            // Growing: hot from the moment it leaves the core, cooling once it has seated.
+            float span = max( 1.0 - uGrowDelay, 1e-4 );
+            float start = uGrowDelay + order * uGrowStagger * span;
+            float landed = start + max( ( 1.0 - uGrowStagger ) * span, 1e-4 );
+
+            // ⚠ The cool-off ENDS at 1.0 at the latest, and the window is dragged backwards rather than
+            // forwards to make that true. At the authored stagger of 0.72 the last stones land at very
+            // nearly 1.0, and a window running forwards from the landing would still be burning with the
+            // mark sitting at rest. So late arrivals cool faster than early ones — a deliberate trade,
+            // and much the lesser one. The 1e-3 floor keeps the two edges apart, because a smoothstep
+            // whose edges coincide divides by zero and hands back a NaN.
+            float coolEnd = min( landed + uMoltenCool, 1.0 );
+            float coolStart = min( landed, coolEnd - 1e-3 );
+            return min(
+              smoothstep( start - 1e-3, start, uProgress ),
+              1.0 - smoothstep( coolStart, coolEnd, uProgress )
+            );
+          }
+
+          // Retracting: the seam lights BEFORE the stone lets go, and stays lit while it recedes. There
+          // is no cool-off on this side because there is nothing left to cool — every departure path
+          // collapses the stone to a point at growth 0, so it rasterises nothing.
+          float span = max( uShrinkWindow, 1e-4 );
+          float start = ( 1.0 - order ) * uShrinkStagger * span;
+          float lead = max( uMoltenLead, 1e-3 );
+          // ⚠ The outermost stone has start = 0, so its ignition wants to begin at NEGATIVE progress and
+          // would read as fully hot with the mark standing still at p=0. The second factor is what makes
+          // "cold at rest" hold unconditionally: those first few stones ignite as they go rather than
+          // before, which costs a little of the "neon, then crack" order on a handful of stones and buys
+          // an invariant that cannot be scrubbed around.
+          return smoothstep( max( start - lead, 0.0 ), start + 1e-3, uProgress )
+            * smoothstep( 0.0, lead, uProgress );
+        }`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        /* glsl */ `#include <begin_vertex>
+
+        float accretionGrowth = accretionSettled();
+
+        // Deliberately staggered — see the header. Scale lands first, then alignment, then position.
+        // On the way out the lead is its own number, so the stone shrinks across the whole withdrawal
+        // instead of holding full size and then blinking out.
+        float accretionLead = uMode > 1.5 ? uShrinkScaleLead : uScaleLead;
+        float accretionScale = accretionEaseOut( accretionGrowth / max( accretionLead, 1e-4 ) );
+        float accretionAlign = accretionEaseOut( accretionGrowth / max( uRotateLead, 1e-4 ) );
+        // The rebound belongs to arrivals only — a departure that swells before it goes reads as soft.
+        float accretionRebound = uMode > 1.5 ? uShrinkOvershoot : uOvershoot;
+        float accretionTravel = accretionBackOut( accretionGrowth, accretionRebound );
+
+        // Retracting stones tumble harder than growing ones, so the mess reads as coming apart rather
+        // than as the assembly played in reverse.
+        float accretionTumble = uMode > 1.5 ? 1.6 : 1.0;
+        float accretionAngle = aSpinTurns * uSpinTurns * accretionTumble
+          * ACCRETION_TAU * ( 1.0 - accretionAlign );
+
+        vec3 accretionLocal = accretionSpin( transformed - aChunkCentroid, aSpinAxis, accretionAngle );
+
+        // Outward through this stone — the direction growth happens along.
+        vec3 accretionRun = aChunkCentroid - aSeedPoint;
+        float accretionRunLength = length( accretionRun );
+        vec3 accretionDir = accretionRunLength > 1e-5
+          ? accretionRun / accretionRunLength
+          : vec3( 0.0, 0.0, 1.0 );
+
+        // Judder as it seats. Zero at growth 1 by construction, so a landed stone is perfectly still.
+        float accretionRing = sin( ACCRETION_TAU * uTremorCycles * accretionGrowth )
+          * pow( 1.0 - accretionGrowth, 2.0 );
+        vec3 accretionShake = accretionDir * accretionRing * uTremorAmplitude;
+
+        vec3 accretionCentre;
+
+        // Coming or going are authored separately — the same four paths, chosen by role. See uDeparture.
+        float accretionPath = uMode > 1.5 ? uDeparture : uArrival;
+
+        if ( accretionPath > 1.5 && accretionPath < 2.5 ) {
+          // EXTEND / COLLAPSE. No translation at all: a uniform scale anchored on a point on the stone's
+          // inner face, so its near side stays put and its material extends outward. The centroid does
+          // not move, which is what separates growth from delivery.
+          vec3 accretionAnchor = aChunkCentroid - accretionDir * aRadius + accretionShake;
+          vec3 accretionRestPoint = aChunkCentroid + accretionLocal;
+          accretionLocal = ( accretionRestPoint - accretionAnchor ) * accretionTravel;
+          accretionCentre = accretionAnchor;
+        } else {
+          // TRAVEL/RECEDE, IN PLACE and CREEP/WITHDRAW are one path with three origins. In place uses the
+          // stone's own centroid, so the mix collapses and it becomes a pure swell — with the overshoot
+          // landing on the SCALE rather than on a journey, which is what gives it a snap instead of a fade.
+          vec3 accretionOrigin = accretionPath < 0.5
+            ? aSeedPoint
+            : ( accretionPath < 1.5 ? aChunkCentroid : aParentPoint );
+          float accretionFill = accretionPath < 1.5 && accretionPath > 0.5 ? accretionTravel : accretionScale;
+          accretionLocal *= accretionFill;
+          accretionCentre = mix( accretionOrigin, aChunkCentroid, accretionTravel ) + accretionShake;
+        }
+
+        // The whole stone swung about the core's axis, decaying to nothing as it lands. Opposite
+        // directions for the two roles, which is what crosses the streams.
+        float accretionSpiralSign = uMode > 1.5 ? -1.0 : 1.0;
+        float accretionSwingAngle = uSpiralTurns * ACCRETION_TAU
+          * ( 1.0 - accretionTravel ) * accretionSpiralSign;
+
+        vec3 accretionPlaced = accretionCentre + accretionLocal;
+        transformed = uCoreCentre + accretionSwing( accretionPlaced - uCoreCentre, accretionSwingAngle );
+
+        objectNormal = accretionSwing(
+          accretionSpin( objectNormal, aSpinAxis, accretionAngle ),
+          accretionSwingAngle
+        );
+        vNormal = normalize( normalMatrix * objectNormal );
+
+        // A spark as it seats, and nothing at rest.
+        float accretionSeat = smoothstep( 0.72, 0.94, accretionGrowth );
+        vFlash = accretionSeat * accretionSeat * ( 1.0 - smoothstep( 0.94, 1.0, accretionGrowth ) );
+
+        // Whole stones near the outline open into geode, rather than every stone speckling.
+        float accretionOpen = step( accretionHash( aChunkCentroid * 7.0 ), uCavityCoverage );
+        vCavity = accretionOpen * ( 1.0 - smoothstep( 0.0, max( uCavityWidth, 1e-4 ), aRim ) );
+
+        // Heat is per stone and the band is per vertex, so they travel separately and are combined in
+        // the fragment. Handing the raw distance over rather than the falloff keeps the depth knob live
+        // AND lets the curve be evaluated per pixel — interpolating a smoothstep between two vertices a
+        // centimetre apart on a core mass is exactly how a soft gradient turns into a visible crease.
+        vMoltenHeat = accretionHeat();
+        vFractureDistance = aFractureDistance;`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        /* glsl */ `#include <common>
+        uniform sampler2D uCavityMap;
+        uniform float uCavityGlow;
+        uniform float uCavityTint;
+        uniform float uCavityUvScale;
+        uniform vec3 uFlashColor;
+        uniform float uFlashStrength;
+        uniform vec3 uMoltenSeamColor;
+        uniform vec3 uMoltenDeepColor;
+        uniform float uMoltenStrength;
+        uniform float uMoltenDepth;
+        varying float vFlash;
+        varying float vCavity;
+        varying float vMoltenHeat;
+        varying float vFractureDistance;`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        /* glsl */ `#include <color_fragment>
+        // Where the stone has opened, the surface is druse rather than basalt — scaled to sit in the
+        // same range as the stone it replaces, because the raw texture is far brighter than the tinted
+        // basalt around it. See uCavityTint.
+        //
+        // vMapUv already carries the basalt's repeat, so this rescales it to the cavity's own tiling
+        // rather than inheriting a number chosen for a completely different texture. See uCavityUvScale.
+        vec4 accretionCavity = texture2D( uCavityMap, vMapUv * uCavityUvScale );
+        diffuseColor.rgb = mix( diffuseColor.rgb, accretionCavity.rgb * uCavityTint, vCavity );`,
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        /* glsl */ `#include <emissivemap_fragment>
+        // The veins already burn through the material's own emissive map; an open cavity burns harder,
+        // and a seating stone throws a spark.
+        totalEmissiveRadiance *= 1.0 + vCavity * uCavityGlow;
+        totalEmissiveRadiance += uFlashColor * uFlashStrength * vFlash;
+
+        // The break face, still molten — near-white right at the seam and deepening to a dull orange as
+        // the heat reaches into the stone. The gradient is most of what sells this: a flat colour over
+        // the same band reads as orange paint on the edge rather than as something that is actually hot.
+        //
+        // Multiplied by the band TWICE over, once through the colour mix and once as intensity, so the
+        // hot core stays narrow while the falloff still carries some light. That is what keeps it from
+        // becoming a uniform glowing rim.
+        float accretionMoltenBand =
+          1.0 - smoothstep( 0.0, max( uMoltenDepth, 1e-4 ), vFractureDistance );
+        totalEmissiveRadiance +=
+          mix( uMoltenDeepColor, uMoltenSeamColor, accretionMoltenBand )
+          * uMoltenStrength * vMoltenHeat * accretionMoltenBand;`,
+      );
+  };
+
+  material.customProgramCacheKey = () => 'accretion-stone-growth';
+  material.needsUpdate = true;
+  return uniforms;
+}
+
+export interface CrystalGrowthUniforms {
+  uProgress: { value: number };
+  uMode: { value: number };
+  /** Crystal only starts once the stone is whole — the beat the reference is built on. */
+  uCrystalStart: { value: number };
+  uCrystalStagger: { value: number };
+  /** On the way out, crystal goes FIRST: it withdraws into the cracks before the stone lets go. */
+  uCrystalRetractBy: { value: number };
+  /** Brightest where it meets the stone, deepening toward the tip. Straight from the reference. */
+  uRootGlow: { value: number };
+  uTipGlow: { value: number };
+}
+
+/**
+ * Teach a crystal material to grow along its own length.
+ *
+ * Lengthwise, not uniformly: a crystal extends. Scaling one up from nothing in every direction is what
+ * makes it look like it faded in.
+ */
+export function enableCrystalGrowth(
+  material: THREE.MeshStandardMaterial,
+): CrystalGrowthUniforms {
+  const uniforms: CrystalGrowthUniforms = {
+    uProgress: { value: 1 },
+    uMode: { value: ACCRETION_MODE.settled },
+    uCrystalStart: { value: 0.78 },
+    uCrystalStagger: { value: 0.6 },
+    uCrystalRetractBy: { value: 0.22 },
+    // Cooled: the crystal should read as a glossy dielectric with light escaping from behind it, not as
+    // a bulb. The bloom pass supplies the halo, so the emissive only has to keep the deepest facets off
+    // black.
+    uRootGlow: { value: 1.2 },
+    uTipGlow: { value: 0.3 },
+  };
+
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        /* glsl */ `#include <common>
+        attribute float aOrder;
+        attribute float aCrystalJitter;
+
+        uniform float uProgress;
+        uniform float uMode;
+        uniform float uCrystalStart;
+        uniform float uCrystalStagger;
+        uniform float uCrystalRetractBy;
+
+        varying float vCrystalGrowth;
+        varying float vCrystalHeight;
+
+        float accretionCrystalGrowth() {
+          if ( uMode < 0.5 ) return 1.0;
+          float order = clamp( aOrder + ( aCrystalJitter - 0.5 ) * 0.4, 0.0, 1.0 );
+
+          if ( uMode < 1.5 ) {
+            float span = max( 1.0 - uCrystalStart, 1e-4 );
+            float start = uCrystalStart + order * uCrystalStagger * span;
+            float width = max( ( 1.0 - uCrystalStagger ) * span, 1e-4 );
+            return clamp( ( uProgress - start ) / width, 0.0, 1.0 );
+          }
+
+          float span = max( uCrystalRetractBy, 1e-4 );
+          float start = order * uCrystalStagger * span;
+          float width = max( ( 1.0 - uCrystalStagger ) * span, 1e-4 );
+          return 1.0 - clamp( ( uProgress - start ) / width, 0.0, 1.0 );
+        }`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        /* glsl */ `#include <begin_vertex>
+        float accretionCrystal = accretionCrystalGrowth();
+        vCrystalGrowth = accretionCrystal;
+        // Read off the UN-animated local position: the geometry is a unit point along +Y, so this is 0
+        // at the root and 1 at the tip. Taken from the position attribute rather than from a UV varying
+        // because the crystal material carries no map, so three never declares vMapUv and referencing
+        // it would fail to compile.
+        vCrystalHeight = clamp( position.y, 0.0, 1.0 );
+
+        // The geometry is a unit point along +Y, and the instance matrix supplies its length and girth —
+        // so extending Y here lengthens the crystal about its own root. Girth trails, so it reads as
+        // pushing out and thickening rather than inflating.
+        float accretionLength = accretionCrystal * accretionCrystal * ( 3.0 - 2.0 * accretionCrystal );
+
+        // ── Girth has to reach ZERO, not 22% ──
+        // This was a bare mix( 0.22, 1.0, length ), so at growth 0 the length collapsed but the girth
+        // did not: every ungrown crystal stayed a flat hexagon at 22% radius, sitting at its own root.
+        // Hundreds of those across a mark are the orange dots that showed before anything had formed.
+        // They carried no emissive — that is already gated on growth — but their ALBEDO was still lit,
+        // and a lit disc is perfectly visible.
+        //
+        // Folding the length back in keeps the trailing read (girth still lags, so a point pushes out
+        // before it thickens) while guaranteeing the prism degenerates to a single point at 0, which
+        // rasterises nothing at all.
+        float accretionGirth = accretionLength * mix( 0.22, 1.0, accretionLength );
+        transformed.y *= accretionLength;
+        transformed.xz *= accretionGirth;`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        /* glsl */ `#include <common>
+        uniform float uRootGlow;
+        uniform float uTipGlow;
+        varying float vCrystalGrowth;
+        varying float vCrystalHeight;`,
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        /* glsl */ `#include <emissivemap_fragment>
+        // Brightest where it leaves the stone, deepening toward the point — which is the reference's
+        // read exactly: light escaping from inside the cavity, not the crystal being a lamp.
+        totalEmissiveRadiance *= mix( uRootGlow, uTipGlow, vCrystalHeight );
+        // A crystal that has only just started is not yet lit, so a cluster brightens as it extends.
+        totalEmissiveRadiance *= vCrystalGrowth;`,
+      );
+  };
+
+  material.customProgramCacheKey = () => 'accretion-crystal-growth';
+  material.needsUpdate = true;
+  return uniforms;
+}
