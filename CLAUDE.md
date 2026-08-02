@@ -254,9 +254,17 @@ field, driven by **real asset progress** — not a timer.
 - **`GatherCanvas` + `gather.worker.ts`** render dust streaming in from off-screen. The render loop
   runs in a **Web Worker on an `OffscreenCanvas`** so it keeps painting while the main thread is
   blocked parsing glTF and compiling shaders. A main-thread fallback exists for older Safari.
-- **The sun assembles.** At 100% the ten fracture shards of `fractured_sun.glb` sweep in from
-  outside the frame and lock together; the star lights inside the closing shell. The intro holds
-  its handoff on `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
+- **The sun assembles.** The ten fracture shards of `fractured_sun.glb` sweep in from outside the
+  frame and lock together; the star lights inside the closing shell. The intro holds its handoff on
+  `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
+- ⚠ **The gate's waits are SERIAL, and that is load-bearing.** 100% does not cue the shards — it
+  cues the shader compiles, and only when both scenes report warm does the assembly start. The two
+  used to fire on the same tick, and that was the loading freeze: `compileAsync` runs
+  `renderer.compile()` **synchronously** before it awaits anything, so both heavy scenes were
+  blocking the main thread across the exact frames the flight was trying to play on — and the
+  flight is delta-timed with a clamp, so it stuck mid-air rather than catching up. Anything new
+  that must animate during a block belongs on the compositor or in a worker, not in a tween. See
+  `docs/loader-freeze-plan.md`.
 - Then the sun **flies from the wordmark's "o" into the hero square** and `REVEAL_EVENT` fires.
 
 ### Contract 1 — scroll is locked for the whole intro

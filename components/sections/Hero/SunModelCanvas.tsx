@@ -160,11 +160,15 @@ const ASSEMBLY_REVEAL_SPEEDUP = 3;
 /**
  * When to start on our own if no cue ever arrives — measured from PAGE LOAD, not from mount.
  *
- * Only a backstop for an intro that never reaches its gate. It sits past the intro's own 12s asset
- * timeout so the two can't race; the normal no-intro case is handled immediately by INTRO_MARKER_SELECTOR
- * instead of by waiting this out.
+ * Only a backstop for an intro that never reaches its gate. It has to sit past the intro's LAST possible
+ * cue or the two race — and on a stalled load that cue is late: the intro gives up on assets at 12s
+ * (ASSET_WAIT_TIMEOUT_MS), then compiles for up to 3.5s more (WARMUP_WAIT_MAX_MS) before it asks for the
+ * assembly, because those two stages are serial. Losing that race would start the shard flight in the
+ * middle of the compile, which is the exact freeze the serial gate exists to prevent. ⚠ Raise this
+ * whenever either of those two grows. The normal no-intro case is handled immediately by
+ * INTRO_MARKER_SELECTOR instead of by waiting this out.
  */
-const ASSEMBLE_CUE_FALLBACK_MS = 14000;
+const ASSEMBLE_CUE_FALLBACK_MS = 17000;
 /** An element only the loader renders — its presence means a cue is coming, so wait for it. */
 const INTRO_MARKER_SELECTOR = '.intro-o-slot';
 
@@ -666,6 +670,59 @@ export default function SunModelCanvas() {
     };
     document.addEventListener('visibilitychange', onVisibility);
 
+    /** Anything on a material that is actually a texture, without reaching for `any` to find it. */
+    const asTexture = (value: unknown): THREE.Texture | null =>
+      value instanceof THREE.Texture ? value : null;
+
+    /**
+     * Build the star's programs and upload its maps while nothing is watching.
+     *
+     * ⚠ THIS IS THE ONE THAT FROZE THE LOADER, and the freeze looked nothing like a shader compile:
+     * the whole page stopped, INCLUDING the dust field — which renders in a worker and cannot be
+     * blocked by main-thread JavaScript at all. That is the tell. The stall is in the GPU PROCESS, and
+     * the compositor cannot present anyone's frames while that is busy, worker canvases included. If a
+     * freeze ever takes the dust with it again, look for GPU work, not for a long task.
+     *
+     * The cause is `positionShards`: everything in `coronaParts` — the core sphere, the outer glow, the
+     * flares and the twenty corona planes — sits `visible = false` for the whole download, because the
+     * star is meant to light INSIDE the closing shell (see CORONA_APPEAR). three builds a program the
+     * first time an object is actually DRAWN, so none of those ~23 programs existed and none of their
+     * maps had been uploaded until the single frame at arrival 0.55 when they all turned visible at
+     * once. Every compile and every upload landed on that one frame, in the middle of the finale.
+     *
+     * Done here instead, right after the model lands — a beat already stalled by the glTF parse, where
+     * one more pause hides in noise the visitor cannot avoid anyway.
+     */
+    const warmStarMaterials = () => {
+      // 1 · Programs. `compile` walks with `traverse`, NOT `traverseVisible` (three r184 — only its
+      //     light gathering is visibility-filtered), so the hidden corona is compiled here even though
+      //     it will not be drawn for seconds yet. Nothing awaits this: the star is not needed until the
+      //     assembly, and the driver has long since finished linking by then. The catch only stops a
+      //     failure surfacing as an unhandled rejection — a material that fails here compiles late,
+      //     exactly as it used to.
+      renderer.compileAsync(scene, camera).catch(() => {});
+
+      // 2 · Maps. `compile` builds PROGRAMS only; three uploads a texture the first time it is bound for
+      //     a real draw. Without this the corona's maps would still land together on the frame the star
+      //     appears — and a texture upload with mipmap generation is the more expensive half of what was
+      //     stalling the GPU process.
+      const uploaded = new Set<THREE.Texture>();
+      coronaParts.forEach(({ object }) => {
+        object.traverse((child) => {
+          const material = (child as THREE.Mesh).material;
+          if (!material) return;
+          (Array.isArray(material) ? material : [material]).forEach((entry) => {
+            Object.values(entry).forEach((value) => {
+              const texture = asTexture(value);
+              if (!texture || uploaded.has(texture)) return;
+              uploaded.add(texture);
+              renderer.initTexture(texture);
+            });
+          });
+        });
+      });
+    };
+
     // ── Load ──
     const dracoLoader = new DRACOLoader();
     dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
@@ -875,6 +932,7 @@ export default function SunModelCanvas() {
       } else {
         positionShards(0, 0); // parked off-frame, so the parts visibly travel in
       }
+      warmStarMaterials();
       modelReady = true; // the one-shot assembly starts on the next frame after the cue
       applySize();
       forceRender = true;

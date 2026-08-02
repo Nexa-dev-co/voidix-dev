@@ -417,6 +417,31 @@ interface MarkLayer {
   bytes: number;
 }
 
+/**
+ * Longest a sliced build will wait for its next frame before pressing on regardless.
+ *
+ * rAF is the right yield here — handing the frame to the RENDERER is the entire point — but it is
+ * throttled to a near stop in a background tab, and this runs during the loader. Someone who switches
+ * tabs mid-load has to come back to a finished page, not to a build that stopped on its second mark.
+ */
+const BUILD_YIELD_TIMEOUT_MS = 100;
+
+/** Give the browser a frame to paint in. Resolves on the next frame, or on the timeout above. */
+function yieldToNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    let timer = 0;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    timer = window.setTimeout(settle, BUILD_YIELD_TIMEOUT_MS);
+    requestAnimationFrame(settle);
+  });
+}
+
 class AccretionTransition implements MarkTransitionStrategy {
   readonly object = new THREE.Group();
   metrics: { buildMilliseconds: number; bufferBytes: number; perMarkBytes: number };
@@ -443,6 +468,8 @@ class AccretionTransition implements MarkTransitionStrategy {
   private readonly coreRadius: number;
 
   private layers: MarkLayer[] = [];
+  /** Set by `dispose`, checked by `build` after every yield — the build outlives a fast unmount. */
+  private disposed = false;
 
   constructor(
     marks: PreparedMark[],
@@ -482,8 +509,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     this.core.frustumCulled = false;
     this.object.add(this.core);
 
+    // Zeroed rather than measured: cutting the marks is NOT done here — it is sliced across frames, and
+    // `createAccretionMark` awaits `build()` before handing the strategy over. See the note on `build`.
     this.metrics = { buildMilliseconds: 0, bufferBytes: 0, perMarkBytes: 0 };
-    this.rebuild();
   }
 
   /** The core, as the field every stone is seeded from. Rebuilt per call so a knob can move it. */
@@ -497,13 +525,32 @@ class AccretionTransition implements MarkTransitionStrategy {
     };
   }
 
-  private rebuild(): void {
+  /**
+   * Cut every mark. One mark per frame.
+   *
+   * ⚠ The slicing is the point, not an implementation detail. This is the longest uninterrupted block
+   * on the loader and it runs MID-DOWNLOAD, while the wordmark and the sun are on screen and expected to
+   * be moving — and triangulating four marks back to back froze all of it at once. Yielding does not
+   * make the work cheaper; it turns one visible stop into a stutter, which is the best available
+   * without moving the geometry off the main thread altogether.
+   *
+   * Separate from the constructor for the same reason: it has to be awaited, and `createAccretionMark`
+   * does that before handing the strategy over — so nothing outside this module ever sees a half-cut
+   * mark, and `setTransition` never has to defend against one.
+   */
+  async build(): Promise<void> {
     const startedAt = performance.now();
     this.disposeLayers();
 
     const baseRock = this.coreField();
 
-    this.layers = this.marks.map((mark, markIndex) => {
+    for (let markIndex = 0; markIndex < this.marks.length; markIndex += 1) {
+      // Between marks, never before the first: the caller is already awaiting us, so an opening yield
+      // would spend a frame buying nothing.
+      if (markIndex > 0) await yieldToNextFrame();
+      if (this.disposed) return;
+
+      const mark = this.marks[markIndex];
       const chunks = buildAccretionChunks(mark.shapes, mark.flipY, {
         targetSize: this.options.targetSize,
         depth: this.options.depth,
@@ -548,15 +595,19 @@ class AccretionTransition implements MarkTransitionStrategy {
 
       const { crystal, crystalUniforms, crystalBytes } = this.buildCrystalLayer(chunks, markIndex);
 
-      return {
+      // Pushed as each mark finishes rather than assigned in one go at the end: a build abandoned
+      // part-way through has to leave its finished layers reachable, or `dispose` cannot free their
+      // buffers. Nothing is ever left half-built across a yield — the yield is between marks, and one
+      // mark is cut start to finish inside a single iteration.
+      this.layers.push({
         stone,
         stoneUniforms,
         crystal,
         crystalUniforms,
         chunks,
         bytes: measureGeometryBytes(chunks.geometry) + crystalBytes,
-      };
-    });
+      });
+    }
 
     const buildMilliseconds = performance.now() - startedAt;
     const bufferBytes =
@@ -797,6 +848,9 @@ class AccretionTransition implements MarkTransitionStrategy {
   }
 
   dispose(): void {
+    // Stops a sliced `build()` at its next yield. Whatever it finished before then is in `this.layers`
+    // already and is freed by the call below.
+    this.disposed = true;
     this.disposeLayers();
     this.crystalGeometry.dispose();
     this.core.geometry.dispose();
@@ -830,5 +884,9 @@ export async function createAccretionMark(
   const sharesOneImage = STONE_TEXTURE_PATH === CAVITY_TEXTURE_PATH;
   const stoneTexture = await loadTexture(STONE_TEXTURE_PATH);
   const cavityTexture = sharesOneImage ? stoneTexture : await loadTexture(CAVITY_TEXTURE_PATH);
-  return new AccretionTransition(marks, options, stoneTexture, cavityTexture);
+  const strategy = new AccretionTransition(marks, options, stoneTexture, cavityTexture);
+  // Cutting the marks is sliced across frames, so it is awaited here rather than done in the
+  // constructor. Callers get a strategy that is already whole.
+  await strategy.build();
+  return strategy;
 }

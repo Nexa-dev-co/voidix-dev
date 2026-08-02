@@ -867,16 +867,29 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     // Warm the shaders + bloom pipeline before the deck is ever shown, so its first visible frame at
     // the services reveal doesn't stall on compilation. The intro fires ASSETS_WARMUP_EVENT once
-    // assets are in; we compile ASYNCHRONOUSLY (KHR_parallel_shader_compile where available) so the
-    // build runs on the driver's background threads instead of blocking the main thread — a
-    // synchronous compile here froze ~0.2s right as the reveal began. The deck isn't shown until the
-    // user scrolls to services, so there's ample time; the single composer.render() that warms the
-    // bloom passes lands after the promise resolves, while the deck is still hidden.
+    // assets are in; `compileAsync` hands the LINKING to the driver's background threads
+    // (KHR_parallel_shader_compile where available), which is why the reveal no longer eats the ~0.2s
+    // stall a fully synchronous compile used to cost it. The deck isn't shown until the user scrolls to
+    // services, so there's ample time; the single composer.render() that warms the bloom passes lands
+    // after the promise resolves, while the deck is still hidden.
+    //
+    // ⚠ It is NOT a free ride on a background thread, and an earlier version of this comment claimed it
+    // was. `compileAsync` runs `renderer.compile()` SYNCHRONOUSLY before it awaits anything (three's own
+    // source) — program creation and uploads still block the main thread. Only the wait for the driver
+    // to finish linking is offloaded. That block is why the intro's gate cues the sun's shard assembly
+    // only AFTER both scenes report warm, rather than alongside them.
     let disposed = false;
     const prewarmPipeline = () => {
       // Open the gates a crack first. `compileAsync` walks only VISIBLE objects, and a gate hides
       // itself at formation 0 (see PortalGate.update) — so without this the portal shader is not
       // built until the first swap, which is the exact stall this whole warm-up exists to prevent.
+      //
+      // ⚠ That premise no longer holds on three r184: `compile` gathers LIGHTS with `traverseVisible`
+      // but materials with plain `traverse`, so a hidden object is compiled regardless. Kept anyway —
+      // it costs nothing, it is correct on either behaviour, and it is not worth re-testing the deck to
+      // remove. Do NOT cite it as evidence that hiding an object defers its compile; the sun's corona
+      // freeze (see `warmStarMaterials` in SunModelCanvas) was a first-DRAW problem, not a visibility
+      // one, and needed an explicit `initTexture` pass that this does not do.
       // The deck is off screen throughout, and the render loop's own draw is gated off, so nothing
       // is on screen to see them. Cleared on every exit path below.
       portalState.formation = PORTAL_PREWARM_FORMATION;
@@ -903,7 +916,20 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         })
         .catch(() => { if (!disposed) finishWarmup(); });
     };
-    window.addEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
+    // Deferred out of the dispatch tick by TWO frames — one to get clear of the loader's own progress
+    // callback, and one more to land on a different frame from the works field, which defers by one.
+    // `compileAsync` runs `renderer.compile()` synchronously before it awaits anything, so without this
+    // the site's two heaviest compiles block back to back inside a single tick. The intro's gate waits
+    // for both regardless, so the extra frame costs nothing.
+    let warmupFrame = 0;
+    const onWarmupRequested = () => {
+      warmupFrame = requestAnimationFrame(() => {
+        warmupFrame = requestAnimationFrame(() => {
+          if (!disposed) prewarmPipeline();
+        });
+      });
+    };
+    window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
     // ── Model loading (Draco-compressed) ──
     const dracoLoader = new DRACOLoader();
@@ -1280,7 +1306,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       window.removeEventListener(DECK_REVEAL_EVENT, replayEntrance);
       window.removeEventListener(DECK_REVEAL_EVENT, showDeck);
       window.removeEventListener(DECK_HIDE_EVENT, hideDeck);
-      window.removeEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
+      window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
+      cancelAnimationFrame(warmupFrame);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       // Stop any running tweens, then dispose every loaded hull's geometry + materials.
       ships.forEach((ship) => {

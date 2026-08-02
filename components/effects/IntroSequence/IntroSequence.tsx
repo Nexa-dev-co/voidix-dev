@@ -59,17 +59,34 @@ const REDUCED_MOTION_DELAY = 0.3;
 // user at the loader). Kept well under the hero's REVEAL fallback so the intro always reveals first.
 const COUNTER_EASE_SECONDS = 0.5;
 const ASSET_WAIT_TIMEOUT_MS = 12000;
-// After assets download, three things happen at the gate: the (async) shader compiles kick off, the sun's
-// shards begin flying in, and the reveal holds until BOTH the scenes report warm and the sun reports
-// assembled — then a short settle so the reveal always begins on a smooth beat rather than on the tail of
-// a compile. Capped, so a machine that never reports (or a sun that never loads) can't trap the loader.
-const GATE_WAIT_MAX_MS = 5500;
+// ── The gate's two SERIAL waits ──
+// Once the assets are in, the shader compiles kick off; only once BOTH scenes report warm do the sun's
+// shards begin flying in; only once they land does the reveal go, after a short settle so it never
+// starts on the tail of a compile.
+//
+// ⚠ Those two stages used to be cued on the same tick, and that was the loading freeze. `compileAsync`
+// runs `renderer.compile()` SYNCHRONOUSLY before it awaits anything (three's own source) — so both heavy
+// scenes were blocking the main thread across the exact frames the shard flight was trying to play on.
+// The flight is delta-timed with a clamp, so it did not fast-forward to catch up: it stuck mid-air.
+// Serialising costs nothing in wall-clock, because that compile time was being taken out of the
+// animation either way. Nothing that has to look alive during the compile is on this thread any more —
+// the dust field is in a worker, and the underline pulses on the compositor.
+//
+// Each stage is capped, so a scene that never reports or a sun that never loads can't trap the loader.
+// ⚠ They are SERIAL, so the caps ADD. `ASSEMBLE_CUE_FALLBACK_MS` in SunModelCanvas is the sun's own
+// backstop and has to stay past ASSET_WAIT_TIMEOUT_MS + both of these, or on a stalled load it would cue
+// the assembly itself, mid-compile — which is the exact thing this split exists to prevent.
+const WARMUP_WAIT_MAX_MS = 3500;
+const ASSEMBLY_WAIT_MAX_MS = 3500;
 const WARMUP_SETTLE_MS = 250;
 
 // The sun is sized to a little over the "o" glyph so it reads as filling it.
 const SUN_IN_O_RATIO = 1.3;
 
 const OVERLAY_Z_INDEX = 10000;
+
+/** Toggles the underline's "still working" breathing. A CSS animation — see startHoldPulse for why. */
+const HOLD_PULSE_CLASS = "is-holding";
 
 // Scroll lock — held for the whole intro so a stray scroll can't drive the hero's
 // pinned sun (ScrollTrigger is live from mount) before the intro lands it.
@@ -198,76 +215,96 @@ export default function IntroSequence() {
       });
     };
 
-    // The gate opens in two stages once the timeline reaches the pre-handoff hold: first wait for the
-    // assets to download, THEN kick off their shader compiles and wait for the scenes to report warm
-    // (both capped by timeouts). The reveal resumes exactly once, only after everything is smooth.
+    // The gate opens in three serial stages once the timeline reaches the pre-handoff hold: wait for the
+    // assets to download → compile their shaders → fly the sun's shards in. Each stage is capped by a
+    // timeout, and the reveal resumes exactly once, only after everything is smooth.
     let gateReached = false;
     let warmupStarted = false;
+    let assemblyCued = false;
     let hasResumed = false;
     let assetsTimedOut = false;
     let sunAssembled = false;
     let resumeFrame = 0;
-    let warmupWaitTimeout = 0;
+    // One handle: the stages are strictly serial, so only one wait is ever armed at a time.
+    let gateTimeout = 0;
     // While we WAIT at the gate (for assets to download, then for their shaders to compile), breathe
     // the accent underline so the hold reads as "loading" and alive — the 5%-opacity ghost counter
-    // alone is too faint to signal it. Idempotent so repeated calls don't stack tweens.
+    // alone is too faint to signal it.
+    //
+    // ⚠ A CSS class, NOT a GSAP tween. This is the one piece of chrome whose whole job is to say "still
+    // working" during the compile — and a GSAP tween would be interpolated on the main thread, which is
+    // precisely the thread the compile is blocking. A CSS animation on `opacity` runs on the compositor
+    // and keeps painting straight through a block. Same reason `.loader-dot` was always a keyframe.
     const startHoldPulse = () => {
-      gsap.killTweensOf(".intro-underline");
-      gsap.to(".intro-underline", {
-        opacity: 0.35, duration: 0.85, repeat: -1, yoyo: true, ease: "sine.inOut",
-      });
+      document.querySelector(".intro-underline")?.classList.add(HOLD_PULSE_CLASS);
     };
     const stopHoldPulse = () => {
-      gsap.killTweensOf(".intro-underline");
-      gsap.set(".intro-underline", { opacity: 1 });
+      document.querySelector(".intro-underline")?.classList.remove(HOLD_PULSE_CLASS);
     };
 
     // Resume the timeline into the handoff/reveal. Deferred a frame so it never runs inside addPause's
-    // own callback (GSAP can swallow that) — and only ever once the scenes are actually warm.
+    // own callback (GSAP can swallow that) — and only ever once the star is actually built.
     const resumeReveal = () => {
       if (hasResumed) return;
       hasResumed = true;
-      window.clearTimeout(warmupWaitTimeout);
+      window.clearTimeout(gateTimeout);
       stopHoldPulse();
       resumeFrame = requestAnimationFrame(() => timeline.resume());
     };
 
-    // The gate opens only when the scenes have compiled AND the sun has finished assembling. Then a short
-    // settle (a beat of smooth animation) before the reveal, so it never starts on the tail of a compile.
-    // This is what stops the loader "stopping" as it hands off.
-    const checkGate = () => {
-      if (warmupStarted && !hasResumed && areWarmupsDone() && sunAssembled) {
-        window.clearTimeout(warmupWaitTimeout);
-        warmupWaitTimeout = window.setTimeout(resumeReveal, WARMUP_SETTLE_MS);
-      }
+    // ── Stage 3: the shards have landed → a short settle, then the reveal ──
+    // The settle is a beat of smooth animation before the handoff, so the reveal never begins on the
+    // tail of anything. This is what stops the loader "stopping" as it hands off.
+    const settleThenReveal = () => {
+      if (hasResumed) return;
+      window.clearTimeout(gateTimeout);
+      gateTimeout = window.setTimeout(resumeReveal, WARMUP_SETTLE_MS);
     };
+
+    // ── Stage 2: the scenes are warm → NOW fly the shards in ──
+    // The hold continues through the assembly: that flight IS the loader's last beat, so revealing over
+    // the top of it would throw away the payoff. It gets a quiet main thread to play on because the
+    // compiles are already behind us.
+    const cueAssembly = () => {
+      if (assemblyCued || hasResumed) return;
+      assemblyCued = true;
+      window.clearTimeout(gateTimeout);
+      window.dispatchEvent(new Event(SUN_ASSEMBLE_EVENT));
+      // The sun can already be assembled by the time we ask — under reduced motion it reports the moment
+      // its model lands (SunModelCanvas), long before this, and it will not report a second time.
+      if (sunAssembled) settleThenReveal();
+      else gateTimeout = window.setTimeout(settleThenReveal, ASSEMBLY_WAIT_MAX_MS);
+    };
+
     const onSunAssembled = () => {
       sunAssembled = true;
-      checkGate();
+      if (assemblyCued) settleThenReveal();
     };
     window.addEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
 
-    // 100%. Everything that was waiting on the download happens here: the shader compiles start, and the
-    // sun's shards begin their sweep in from off-frame. The hold continues through the assembly — that
-    // flight IS the loader's last beat, so revealing over the top of it would throw away the payoff.
-    const beginWarmupThenReveal = () => {
+    const checkWarm = () => {
+      if (warmupStarted && !assemblyCued && areWarmupsDone()) cueAssembly();
+    };
+
+    // ── Stage 1: 100% downloaded → start the shader compiles ──
+    // Only the compiles. The shards deliberately do NOT start here (see the constants above).
+    const beginWarmup = () => {
       if (warmupStarted) return;
       warmupStarted = true;
       startHoldPulse();
       window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
-      window.dispatchEvent(new Event(SUN_ASSEMBLE_EVENT));
-      warmupWaitTimeout = window.setTimeout(resumeReveal, GATE_WAIT_MAX_MS);
-      checkGate();
+      gateTimeout = window.setTimeout(cueAssembly, WARMUP_WAIT_MAX_MS);
+      checkWarm(); // a scene can already be warm if the warm-up ran on a previous mount
     };
 
     const tryBeginWarmup = () => {
-      if (gateReached && (areAssetsReady() || assetsTimedOut)) beginWarmupThenReveal();
+      if (gateReached && (areAssetsReady() || assetsTimedOut)) beginWarmup();
     };
 
     const stopAssetProgress = onAssetProgress(() => {
       syncCounterToAssets();
-      tryBeginWarmup(); // assets finished downloading → start compiling, start the shards
-      checkGate();      // a scene reported its shaders warm → maybe settle + reveal
+      tryBeginWarmup(); // assets finished downloading → start compiling
+      checkWarm();      // a scene reported its shaders warm → maybe start the shards
     });
     const assetWaitTimeout = window.setTimeout(() => {
       assetsTimedOut = true;
@@ -337,7 +374,7 @@ export default function IntroSequence() {
     // resumes on the same frame, so a fast / cached load feels exactly like before.
     timeline.addPause(">", () => {
       gateReached = true;
-      if (areAssetsReady() || assetsTimedOut) beginWarmupThenReveal();
+      if (areAssetsReady() || assetsTimedOut) beginWarmup();
       else startHoldPulse(); // still downloading — show life; the warm-up begins once assets are in
     });
 
@@ -392,10 +429,10 @@ export default function IntroSequence() {
       stopAssetProgress();
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
       window.clearTimeout(assetWaitTimeout);
-      window.clearTimeout(warmupWaitTimeout);
+      window.clearTimeout(gateTimeout);
       cancelAnimationFrame(resumeFrame);
       gsap.killTweensOf(counterDisplay);
-      gsap.killTweensOf(".intro-underline");
+      stopHoldPulse(); // a class now, not a tween — killTweensOf would no longer clear it
     };
   }, []);
 

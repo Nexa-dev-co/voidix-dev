@@ -1579,11 +1579,16 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
 
-    // Warm the meteor / fire / shard materials + bloom pipeline before the field is shown. Compiled
-    // ASYNCHRONOUSLY (background threads, where the GPU supports it) so it doesn't block the main
-    // thread — a synchronous compile at the intro's warm-up beat froze ~0.2s right before the reveal.
-    // The field isn't shown until the handoff, so there's time; the bloom-warming composer.render()
-    // lands after the promise resolves, while the field is still hidden.
+    // Warm the meteor / fire / shard materials + bloom pipeline before the field is shown. `compileAsync`
+    // hands the LINKING to the driver's background threads where the GPU supports it, which is why the
+    // reveal no longer eats the ~0.2s stall a fully synchronous compile used to cost it. The field isn't
+    // shown until the handoff, so there's time; the bloom-warming composer.render() lands after the
+    // promise resolves, while the field is still hidden.
+    //
+    // ⚠ It still BLOCKS, and an earlier version of this comment claimed it did not. `compileAsync` runs
+    // `renderer.compile()` synchronously before it awaits anything (three's own source) — only the wait
+    // for linking is offloaded. That block is why the intro's gate cues the sun's shard assembly only
+    // after both scenes report warm, instead of on the same tick as this.
     const warmUpField = () => {
       renderer
         .compileAsync(scene, camera)
@@ -1598,7 +1603,19 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         })
         .catch(() => { if (!disposed) reportWarmupDone('works'); });
     };
-    window.addEventListener(ASSETS_WARMUP_EVENT, warmUpField);
+    // Deferred out of the dispatch tick by one frame. `compileAsync` runs `renderer.compile()`
+    // SYNCHRONOUSLY before it awaits anything, and the event is dispatched from inside the loader's own
+    // progress callback — so without this, the block lands nested in asset-loading work with a frame
+    // already pending. The deck defers by TWO frames for the same reason, which also keeps the site's
+    // two heaviest compiles off a single tick; the intro's gate waits for both either way, so the extra
+    // frame is free. The field goes first because it is the larger of the two.
+    let warmupFrame = 0;
+    const onWarmupRequested = () => {
+      warmupFrame = requestAnimationFrame(() => {
+        if (!disposed) warmUpField();
+      });
+    };
+    window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
     // ── Meteor arrival (driven by handoff progress; fully reversible) ──
     // 0 = hidden/far, 1 = landed. Recomputed each frame in the render loop from the eased flight
@@ -2050,7 +2067,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
-      window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
+      window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
+      cancelAnimationFrame(warmupFrame);
       chamber?.dispose();
       singularity?.dispose();
       hud.dispose();
