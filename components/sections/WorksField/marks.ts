@@ -19,9 +19,9 @@ import {
  * then on a swap is a synchronous map lookup — exactly as cheap as the rock's re-carve was.
  *
  * ── Why the geometry is cached and not the mesh ──────────────────────────────────────────────────
- * Materials are live-tunable (colour, roughness, the hull/lava variant) and the scene rebuilds them
- * freely; geometry is the expensive, immutable half. Caching only the geometry keeps the tuner able to
- * rebuild a mark's look without re-fetching anything.
+ * Materials are cheap (colour, roughness, the hull/lava variant) and the scene rebuilds them
+ * freely; geometry is the expensive, immutable half. Caching only the geometry means a mark's look can
+ * be rebuilt without re-fetching anything.
  */
 
 const FONT_PATH = '/fonts/helvetiker_bold.typeface.json';
@@ -45,7 +45,7 @@ export interface MarkDefinition {
   kind: MarkKind;
   /** Path under `public/` for an `svg` mark, or the glyph itself for a `letter` mark. */
   source: string;
-  /** Human label, for the tuner and the letter lab. */
+  /** Human label. */
   label: string;
 }
 

@@ -3,7 +3,6 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
-import { isInsideTunerDock, isTuneScrollLocked } from "@/lib/tuneScrollLock";
 import { measureUntransformedRect } from "@/lib/measureUntransformedRect";
 import {
   computeCarouselLayout,
@@ -1528,18 +1527,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
 
     const handleWheel = (event: WheelEvent) => {
-      // ⚠ The tuner's own column scrolls itself, and this must not touch it. Ahead of the freeze on
-      // purpose: `preventDefault` cancels the DOCK's scroll as readily as the page's, so with this below
-      // the lock a panel taller than the viewport was unreachable in either state — frozen it was
-      // prevented deliberately, live it was prevented as part of stepping the carousel.
-      if (isInsideTunerDock(event.target)) return;
-      // Authoring freeze (?tune only). SWALLOWED rather than ignored: letting it through would still
-      // scroll the page, which moves the pin, which is the exact thing being frozen. Reads false on any
-      // normal load — see lib/tuneScrollLock.
-      if (isTuneScrollLocked()) {
-        event.preventDefault();
-        return;
-      }
+      // ⚠ This handler is bound `{ passive: false }` and `preventDefault`s every gesture in the
+      // carousel region, so it cancels the scrolling of ANYTHING layered over the page as readily as
+      // the page's own. Nothing on the site scrolls independently today; if something ever does, it
+      // needs an exemption here before it will respond to a wheel at all.
       if (swallowDuringGlide(event)) return;
       const direction = carouselDirection(event.deltaY);
       if (direction === 0) return; // fill phase or an end → native scroll handles it
@@ -1561,12 +1552,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       touchActive = true;
     };
     const handleTouchMove = (event: TouchEvent) => {
-      // Same reasoning as the wheel: a drag that started on a panel belongs to the panel.
-      if (isInsideTunerDock(event.target)) return;
-      if (isTuneScrollLocked()) {
-        event.preventDefault();
-        return;
-      }
       if (!touchActive) return;
       if (swallowDuringGlide(event)) return;
       const deltaY = touchStartY - event.touches[0].clientY; // swipe up = go forward

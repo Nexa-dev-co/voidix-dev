@@ -9,7 +9,7 @@ import { createStoneMaterial } from './meteorMaterial';
  * A mark built from a single surface reads as a solid blob at a distance — which is exactly the
  * failure it was reported with. The read comes from CONTRAST between chunks: mostly cold stone, a few
  * lighter asteroid faces catching the key light, and a scattering still molten. That's a mix, and a mix
- * has to be authored rather than guessed, so it's expressed as data the tuner can drive.
+ * has to be authored rather than guessed, so it is expressed as data rather than buried in a shader.
  *
  * ── The two treatments ───────────────────────────────────────────────────────────────────────────
  * Both come straight from the works field, unchanged, so a mark is made of visibly the same stuff as
@@ -95,13 +95,13 @@ export function createChunkMaterial(
  * They come from the palette this started as (a pale rim drawing the silhouette against a dark mass)
  * and the authored version went somewhere else entirely: the outline is now carried by white
  * `black-stone` at ~63%, `rim` is absent from the edge completely, and the tints are saturated rather
- * than a grey ladder. The names are kept only so a re-export from the lab diffs cleanly against this
- * file. **Trust the values, not the labels.**
+ * than a grey ladder. The names are the ones they were authored under and are kept for that reason
+ * alone. **Trust the values, not the labels.**
  *
  * ── Two fields here are inert, deliberately left as exported ─────────────────────────────────────
  * `emissiveIntensity` is only read for the `meteor` treatment (see `createChunkMaterial`), so the `5`
  * on `rim` and `black-stone` does nothing — they're `stone`. It is left exactly as exported so a
- * re-export from the lab doesn't show a phantom diff. What the lab showed IS what renders; these are
+ * they read as authored rather than as a silent edit. What is drawn is what renders; these are
  * dead data, not a discrepancy.
  *
  * ── What still holds from the original scheme ────────────────────────────────────────────────────

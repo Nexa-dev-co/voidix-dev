@@ -27,7 +27,7 @@ import * as THREE from 'three';
  */
 
 // The same three lobes that carve the field's meteors, so the base rock is visibly a sibling of the
-// rocks in the works field rather than a new species. Scaled by `carveAmplitude` so the lab can flatten
+// rocks in the works field rather than a new species. Scaled by `carveAmplitude`, which can flatten
 // it toward a smooth egg without leaving the family.
 const LOBE_LARGE = { frequency: 1.6, amplitude: 0.3 };
 const LOBE_MEDIUM = { frequency: 3.4, amplitude: 0.15 };

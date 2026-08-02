@@ -2,7 +2,7 @@ import * as THREE from "three";
 
 // The supernova burst — the flash that masks the sun→black-hole handoff.
 //
-// Lives in `lib/`, not in the lab that authors it: the contact finale runs this same code on the site
+// Lives in `lib/`, not beside its one caller: the contact finale runs this same code on the site
 // (docs/contact-singularity-plan.md). One copy on purpose — two would mean tuning one and shipping the
 // other.
 //

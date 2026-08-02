@@ -6,16 +6,11 @@ import type { PreparedMark } from './transitions/markTransition';
 /**
  * Every registry mark, resolved to the outlines a transition strategy builds from.
  *
- * ── Why this is shared between the lab and the section ───────────────────────────────────────────
- * It started inside `useTransitionLab`, where it existed so four candidates could be compared against
- * identical shapes. The works field now ships one of those candidates, so it needs the same outlines —
- * and "the same" has to mean it literally, not by inspection. Two copies of this function are one
- * `curveSegments` edit away from the lab judging a mark the section does not render, at which point
- * every look decision made in the lab is about a different object.
- *
- * So there is one loader, and the lab imports it from the section rather than the other way round.
- * That direction is deliberate and matches everything else under `WorksField/` that the labs consume
- * (`markBody`, `marks`, `transitions/*`): the section owns the marks, the lab borrows them.
+ * ── Why every mark goes through one loader ───────────────────────────────────────────────────────
+ * It began life in a comparison lab, where four candidate transitions had to be judged against
+ * identical shapes. The lab is gone and the section ships the candidate that won, but the reason for a
+ * single loader outlives it: `curveSegments` and the SVG's Y-flip decide what a mark actually IS, and
+ * a second copy of this function is one edit away from four marks cut to different fidelities.
  *
  * ── Why shapes rather than geometry ─────────────────────────────────────────────────────────────
  * `marks.ts`'s `loadMarks` returns extruded `ExtrudeGeometry`, which is what the old meteor-era body

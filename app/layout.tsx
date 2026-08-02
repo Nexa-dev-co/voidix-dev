@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { Syne, DM_Sans } from 'next/font/google';
-import NavbarGate from '@/components/layout/Navbar/NavbarGate';
+import Navbar from '@/components/layout/Navbar/Navbar';
 import './globals.css';
 
 const syne = Syne({
@@ -37,9 +37,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${syne.variable} ${dmSans.variable}`}>
       <body>
-        {/* Gated, not rendered directly: the bar is a fixed full-width click target at z-9999, and on
-            the authoring routes it is invisible and catches everything. See NavbarGate. */}
-        <NavbarGate />
+        {/* ⚠ `.nav-root` is fixed, full width, 4.5rem tall, at z-9999, and carries no
+            `pointer-events: none` — a transparent box still hit-tests. That is harmless while the
+            homepage is the only route, because the bar is really there and its own links want the
+            clicks. Add a second route and it becomes an invisible strip eating every click across the
+            top of it, which is exactly what used to happen on the lab pages. */}
+        <Navbar />
         {children}
       </body>
     </html>

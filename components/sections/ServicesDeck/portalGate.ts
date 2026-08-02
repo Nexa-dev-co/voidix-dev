@@ -72,9 +72,9 @@ const INTERIOR: [number, number] = [0.58, 0.94];    // the surface fills in
 
 // ── Look ──
 // The gate burns on the SUN's temperature ramp, not on a palette picked for this section: `#d92a05` →
-// `#ffeeb8` are the accretion spiral's authored colours from the lab, and they are already what the
-// loader's gather field runs on (see `gatherShader.ts` GATHER_DEFAULTS, `sunLabState.ts` DEFAULT
-// accretion). Same matter, same light — the dust that builds the star, the gate the fleet flies
+// `#ffeeb8` are the accretion spiral's authored colours, and they are already what the
+// loader's gather field runs on (see `gatherShader.ts` GATHER_DEFAULTS and
+// `lib/accretionShader.ts`). Same matter, same light — the dust that builds the star, the gate the fleet flies
 // through, and the spiral that falls into the black hole at the end are one arc. Keep all three in
 // step if the spiral is ever retuned.
 //

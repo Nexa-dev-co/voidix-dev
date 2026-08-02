@@ -1,18 +1,14 @@
-import { snapshotDefaults, restoreInPlace } from '@/lib/tunerReset';
-
 /**
  * The chamber reveal's numbers — fixed constants.
  *
  * Every value in the reveal (where the display hangs, where you end up standing, how the set is arranged,
- * the showcase path the camera walks) was authored against the on-screen tuning panel and baked in here.
+ * the showcase path the camera walks) was authored against an on-screen tuning panel and baked in here.
  * The scene reads this once and the FAQ hologram reads the `holo*` values for its look and size — both
  * via {@link getChamberTuning}.
  *
- * ⚠ The panel is NOT gone, whatever an earlier revision of this comment claimed: `chamberScene.ts`
- * dynamically imports `chamberTunerPanel` whenever the URL carries `?tune`, and it writes to this object
- * in place through {@link getWritableChamberTuning}. So a new value here also belongs in that panel —
- * CLAUDE.md is explicit that these are general editors rather than one-shot wizards, and a knob that
- * only exists in this file cannot be authored against the running room.
+ * That panel is gone, along with every other authoring surface on the site: these values ship as they
+ * are and are changed by editing this file. Nothing mutates the object at runtime, which is why the
+ * scene can safely hold it by reference for the life of the room.
  */
 
 /**
@@ -415,8 +411,8 @@ export interface ChamberTuning {
  *
  * ⚠ STALE — these keys walk to a podium that no longer exists. The podium and its ring portal were
  * removed and the hologram moved to the table, so every pose below aims at empty space. They are kept
- * only so the scene still has a path to sample while the new tour is authored in the `?tune` panel;
- * replace this array wholesale with the recorded keys. The comments on each key describe the OLD tour.
+ * only so the scene still has a path to sample; replace this array wholesale once a new tour is
+ * authored. The comments on each key describe the OLD tour.
  *
  * A ROUND TRIP. Keys up to the podium are the way IN (table → podium); keys from the podium on are the way
  * OUT (podium → turn → table). They SHARE the podium key — the pivot — so the two never seam, and
@@ -538,7 +534,7 @@ const CHAMBER_TUNING: ChamberTuning = {
   groundOpacity: 1,
 
   showFloorLights: true,
-  // Authored in ?tune against the running room. One every four tiles, with a fitting that is larger,
+  // Authored against the running room. One every four tiles, with a fitting that is larger,
   // softer-edged and altogether more lit than the first pass: a bigger lamp behind a fuller diffuser,
   // which on a DARK floor reads as a real fixture rather than as a pinpoint.
   floorLightEvery: 4,
@@ -682,7 +678,7 @@ const CHAMBER_TUNING: ChamberTuning = {
   tableRotZ: 0,
 
   // Floating with the table. The podium and its ring portal that used to back it are gone; the ground's
-  // grid is the backdrop now. These coordinates are the OLD plinth's and are re-authored in the ?tune panel.
+  // grid is the backdrop now. These coordinates are the OLD plinth's and still want re-authoring.
   showHologram: true,
   holoX: -4.4,
   holoY: 1.65,
@@ -730,32 +726,7 @@ const CHAMBER_TUNING: ChamberTuning = {
   envIntensity: 0,
 };
 
-// The shipped values, captured before the ?tune panel can touch them. This is what a reset restores.
-const CHAMBER_DEFAULTS = snapshotDefaults(CHAMBER_TUNING);
-
-/**
- * Put every value back the way it shipped.
- *
- * Restored IN PLACE — the scene holds this object (and the arrays inside it) by reference, so handing
- * back a fresh one would leave it driving the old copy. See lib/tunerReset.
- */
-export function resetChamberTuning(): void {
-  restoreInPlace(CHAMBER_TUNING, CHAMBER_DEFAULTS);
-}
-
 /** The chamber's fixed numbers. Read once by the scene and the hologram; never mutated. */
 export function getChamberTuning(): Readonly<ChamberTuning> {
-  return CHAMBER_TUNING;
-}
-
-/**
- * The same object, writable — for the `?tune` panel and nothing else.
- *
- * The scene reads the tuning ONCE and holds the reference, so mutating this object in place is what
- * makes the panel's sliders take effect on the next frame with nothing to rebuild. Separated from
- * {@link getChamberTuning} so the readonly type stays the default everywhere in the app path, and
- * reaching for a writable handle has to be deliberate.
- */
-export function getWritableChamberTuning(): ChamberTuning {
   return CHAMBER_TUNING;
 }

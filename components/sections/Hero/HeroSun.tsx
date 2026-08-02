@@ -14,8 +14,7 @@ import { useSunParallax } from './hooks/useSunParallax';
 // exactly one WebGL sun exists: the intro flies it from the loader "o" into the hero square, then
 // scroll expands it.
 //
-// This is now the real fractured_sun model rather than the old procedural plasma shader, so the page and
-// /sun-lab share one sun and the lab's presets can drive it.
+// This is the real fractured_sun model rather than the old procedural plasma shader.
 const SunCanvas = dynamic(() => import('./SunModelCanvas'), { ssr: false });
 
 const HERO_SQUARE_SELECTOR = '.hero-sun-card';

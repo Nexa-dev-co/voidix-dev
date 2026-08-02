@@ -17,7 +17,7 @@ import { getWorksTuning } from '../worksTuning';
 import { WORKS_PROJECTS } from '../worksProjects';
 import { MARK_CHANGE_SECONDS } from '../worksTransition';
 import { prepareMarks } from '../prepareMarks';
-import { accretionTransitionFactory } from '../transitions/accretionTransition';
+import { createAccretionMark } from '../transitions/accretionTransition';
 import type { MarkTransitionStrategy } from '../transitions/markTransition';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
@@ -329,8 +329,9 @@ const TONE_MAPPING_EXPOSURE = 1.15;
 // around them. Threshold and radius are deliberately left alone: raising the threshold would change
 // WHICH surfaces bloom, which is a different edit from how far the glow spreads.
 //
-// ⚠ Keep in step with `markLabRig.ts`. Its numbers exist to match this scene so a judgement made in the
-// transition lab transfers to the section; they were changed with this.
+// These four were authored against a comparison rig that mirrored this scene exactly. The rig is gone,
+// so this is now the only place they exist — and `accretionTransition`'s glow values were all chosen
+// against this threshold, so moving it re-grades the mark.
 const BLOOM_STRENGTH     = 0.48;
 const BLOOM_STRENGTH_LOW = 0.3;
 const BLOOM_RADIUS       = 0.55;
@@ -680,7 +681,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // [0, keys.length - 1], means a journey and its arrival are the same curve — so the camera never
     // brakes to a halt at an intermediate key the way a chain of per-leg tweens would.
     const tuning = getWorksTuning();
-    // Held by reference: the `?tune` panel splices this array, then calls rebuildPath().
     const viewKeys = tuning.keys;
     // Where each project's stop sits in the key list, by project index. Rebuilt with the path.
     let stopKeyIndex: number[] = [];
@@ -706,7 +706,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       return (2 * p1 - 2 * p2 + m1 + m2) * t3 + (-3 * p1 + 3 * p2 - 2 * m1 - m2) * t2 + m1 * t + p1;
     };
     // Split into per-channel arrays, so the spline isn't re-reading objects every frame. Rebuilt only
-    // when the keys actually change, which outside the tuner is never.
+    // when the keys actually change, which is once, at setup.
     const channelOf = (pick: (key: (typeof viewKeys)[number]) => number) => viewKeys.map(pick);
     let keyX: number[] = [];
     let keyY: number[] = [];
@@ -724,8 +724,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // ── Where the camera would be looking if the visitor weren't dragging ──
     // Captured by `updateCamera` before it applies the drag orbit, and used to place the sun (see
     // `publishSunParallax`). `restPoseValid` is false whenever something OTHER than the authored path
-    // owns the camera — the handoff flight, the `?tune` override — because then there is no "rest" to
-    // deviate from and the sun must simply stay where the pin put it.
+    // owns the camera — the handoff flight — because then there is no "rest" to deviate from and the
+    // sun must simply stay where the pin put it.
     const restForward = new THREE.Vector3();
     let restPoseValid = false;
 
@@ -906,7 +906,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     /**
      * Re-derive everything the path is made of from the key list. Called once at setup, and again by the
-     * tuner whenever it edits a key — which is the only thing that can change them.
+     * the section resizes. The key list itself is a constant, so nothing else can change it.
      */
     const rebuildPath = () => {
       stopKeyIndex = [];
@@ -983,8 +983,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       });
     };
 
-    // The free-fly override that used to head this function went with the `?tune` panel — it was the
-    // only thing that ever set it, so the branch narrowed to `never` the moment the panel was deleted.
     const updateCamera = (instant: boolean) => {
       if (instant || reduceMotion) {
         pathU = travelToU;
@@ -1174,12 +1172,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      * it before reporting the section ready, or the intro's counter would reach 100% while the body
      * was still being cut.
      *
-     * ── The tuning is deliberately EMPTY ──
-     * `accretionTransitionFactory.create` resolves `{ ...tuningDefaults(ACCRETION_CONTROLS), ...tuning }`,
-     * so passing nothing inherits every value authored in the lab exactly. That is the point: the lab
-     * at /letters/transition/accretion IS this section's tuning surface, and copying its ~60 numbers
-     * into a second file here would fork the look the moment either side was touched. Override a key
-     * here only when the SECTION genuinely needs to differ from the lab.
+     * The mark's ~60 authored numbers live in `ACCRETION_TUNING` in `accretionTransition.ts`, next to
+     * the code that reads them. They used to arrive from a comparison lab through a knob schema; that
+     * is gone, so the values are simply constants now and there is nothing to pass.
      */
     const buildMark = async () => {
       const marks = await prepareMarks();
@@ -1191,19 +1186,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         return found >= 0 ? found : 0;
       });
 
-      const strategy = await accretionTransitionFactory.create(
-        marks,
-        {
-          targetSize: tuning.markTargetSize,
-          depth: tuning.markDepth,
-          // The strategy loads the pair of surfaces its look depends on (cold stone + glowing druse),
-          // chosen together. Handing it one here would be fetched and ignored — see the note on
-          // `surfaceTexture` in markTransition.ts.
-          surfaceTexture: null,
-          performanceTier: lowPower ? 'low' : 'high',
-        },
-        {},
-      );
+      const strategy = await createAccretionMark(marks, {
+        targetSize: tuning.markTargetSize,
+        depth: tuning.markDepth,
+        performanceTier: lowPower ? 'low' : 'high',
+      });
       if (disposed) {
         strategy.dispose();
         return;
@@ -1246,9 +1233,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       markState.progress = 0;
     };
 
-    // `rebuildMark` used to live here — tear the mark down and cut it again, for the two knobs that are
-    // baked into geometry. The `?tune` panel was its only caller and went with it. Nothing else on this
-    // site changes the mark's geometry at runtime, so there is no longer anything that could need it.
+    // Nothing on this site changes the mark's geometry at runtime, so there is no rebuild path here —
+    // the mark is cut once, from `ACCRETION_TUNING`, and lives until the section is disposed.
 
     const buildField = async () => {
       await buildMark();
@@ -1796,8 +1782,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
       // ── Camera: fly the shared path during the handoff, else the normal focus-follow ──
       // Cleared here rather than in each branch that fails to set it: only the authored-path branch of
-      // `updateCamera` has a rest pose to offer, and the flight and the `?tune` override both bypass it
-      // entirely. Resetting once, up front, means a new way of driving the camera cannot accidentally
+      // `updateCamera` has a rest pose to offer, and the handoff flight bypasses it entirely.
+      // Resetting once, up front, means a new way of driving the camera cannot accidentally
       // inherit the last valid rest pose and drag the sun around with a stale one.
       restPoseValid = false;
       if (flightState.engaged) {
@@ -2044,12 +2030,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const resizeObserver = new ResizeObserver(applyRendererSize);
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
-    // ── No tuning panel ──
-    // The works field's `?tune` panel has been removed: its values are authored and baked into
-    // `worksTuning.ts`, and having three panels open at once made the dock's column taller than the
-    // viewport. `?tune` now opens the chamber's panel only. The deleted panel is in git if the field
-    // ever needs live authoring again — note that it owned the free-fly camera and `rebuildPath`, so
-    // restoring it means restoring `cameraOverride` and `rebuildMark` as its entry points.
+    // No authoring surface: every value this scene runs on is a constant in `worksTuning.ts` and
+    // `ACCRETION_TUNING`, edited in the file like any other. The panel that used to author them —
+    // along with its free-fly camera and its mark rebuild — is in git if it is ever wanted back.
 
     return () => {
       disposed = true;

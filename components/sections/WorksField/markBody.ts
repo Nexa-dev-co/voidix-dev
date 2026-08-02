@@ -187,7 +187,7 @@ export function createLetterMarkGeometry(
 //         dark, metallic ──────▶│      ◈       │
 //         edge (group 1)        └━━━━━━━━━━━━━━┘ ← emissive; blooms via the field's existing pass
 //
-// Both variants are built so the `?tune` panel can switch between them live — the call on which one
+// Both variants are built and the treatment picks between them — the call on which one
 // is right can only be made against the real lighting.
 
 export type MarkMaterialVariant = 'hull' | 'lava';

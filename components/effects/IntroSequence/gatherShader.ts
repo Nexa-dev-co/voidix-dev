@@ -102,8 +102,8 @@ export const GATHER_DEFAULTS = {
   /** Master fade, so the whole field can be pulled out without tearing it down. */
   opacity: 1,
   // The temperature ramp is the SUN's own, not a palette picked for the loader: these are the
-  // accretion spiral's authored colours from the lab (`#d92a05` → `#ffeeb8`, see
-  // `sunLabState.ts` DEFAULT accretion / `lib/accretionShader.ts`). Same matter, same light — the dust
+  // accretion spiral's authored colours (`#d92a05` → `#ffeeb8`, see
+  // `lib/accretionShader.ts`). Same matter, same light — the dust
   // that builds the star here is the dust that falls into the black hole at the end, so the two
   // ends of the site read as one arc. Keep them in step if the spiral is ever retuned.
   //

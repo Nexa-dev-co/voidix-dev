@@ -87,17 +87,6 @@ export interface ChamberScene {
    * from `window.innerHeight` on the other side would be quietly assuming the canvas fills the window.
    */
   update: (progress: number, viewportWidth: number, viewportHeight: number) => void;
-  /**
-   * Dev only (`?tune`): hand the camera to something else.
-   *
-   * The camera is otherwise a pure function of the reveal's progress, which means the only poses it can
-   * ever reach are the ones the current tour already visits — useless for authoring a NEW tour. While an
-   * override is set, `update` poses everything else as normal (the set, the display, the hologram) and
-   * leaves the camera alone. Pass `null` to give it back.
-   */
-  setCameraOverride: (
-    drive: ((deltaSeconds: number, camera: THREE.PerspectiveCamera) => void) | null,
-  ) => void;
   dispose: () => void;
 }
 
@@ -424,9 +413,8 @@ export function createChamberScene({
   };
 
   // Spline the keys in [startIndex, endIndex] at `u` (0..1 across that sub-range) into `playhead`'s given
-  // channels. Reads the keys live, so recording a pose in the tuner takes effect on the next frame with
-  // nothing to rebuild. This is a sub-range because the showcase is a round trip — the way in and the way
-  // out are two slices of one key list (see splitTour).
+  // channels. This is a sub-range because the showcase is a round trip — the way in and the way out are
+  // two slices of one key list (see splitTour).
   const sampleSpline = (
     startIndex: number,
     endIndex: number,
@@ -613,15 +601,6 @@ export function createChamberScene({
     playhead.ty = THREE.MathUtils.lerp(podium.ty, table.ty, turnT);
     playhead.tz = THREE.MathUtils.lerp(podium.tz, table.tz, turnT);
   };
-
-  // Dev only (?tune): teardown for the authoring panel, if one was ever loaded.
-  const tunerCleanups: (() => void)[] = [];
-
-  // Dev only (?tune): while set, this flies the camera instead of the reveal's progress.
-  let cameraOverride:
-    | ((deltaSeconds: number, camera: THREE.PerspectiveCamera) => void)
-    | null = null;
-  let lastCameraOverrideFrame = performance.now();
 
   // True while the spline owns the pose (the tour half of the span). Kept so the handheld sway can start
   // from rest the frame the tour engages, rather than reading a stale playhead delta (see the guard in update).
@@ -1065,15 +1044,7 @@ export function createChamberScene({
     // progress that drives everything else, so forward and back stay in sync for free.
     setHologramOpen(progress >= HOLO_OPEN_PROGRESS);
 
-    if (cameraOverride) {
-      // Dev only: something else is flying the camera (see setCameraOverride). Everything above still
-      // ran, so the set and the display are posed exactly as they would be — only the shot is borrowed.
-      const now = performance.now();
-      const overrideDelta = Math.min((now - lastCameraOverrideFrame) / 1000, 0.1);
-      lastCameraOverrideFrame = now;
-      cameraOverride(overrideDelta, camera);
-      camera.updateProjectionMatrix();
-    } else if (inTour) {
+    if (inTour) {
       // The tour half: the camera rides the spline, with the handheld drift layered on top. The drift is
       // coupled to the camera's own speed, so it breathes through the walk and settles to still once you
       // park at the podium — which is what you want for reading the FAQ. It's also faded out across the last
@@ -1134,9 +1105,7 @@ export function createChamberScene({
     // untouched. Publishing across the whole tour (not just at the podium) lets the panel track and grow as
     // you approach; it stays hidden until the camera actually turns to face it, since `publishHologram`
     // hides an anchor that's behind the camera.
-    // While a dev override is flying the camera the tour gate doesn't apply — you're placing the panel,
-    // so you have to be able to see it from wherever you've flown to.
-    const canPlaceHologram = (inTour || !!cameraOverride) && tuning.showHologram;
+    const canPlaceHologram = inTour && tuning.showHologram;
     if (canPlaceHologram) {
       publishHologram(viewportWidth, viewportHeight);
     } else {
@@ -1154,15 +1123,8 @@ export function createChamberScene({
       displayUniforms.uSpace.value = texture;
     },
     update,
-    setCameraOverride: (drive) => {
-      cameraOverride = drive;
-      // Reset the clock, or the first frame after taking the camera gets the whole idle gap as its
-      // delta and the free-fly lurches.
-      lastCameraOverrideFrame = performance.now();
-    },
     dispose: () => {
       disposed = true;
-      tunerCleanups.forEach((cleanup) => cleanup());
       // The room is gone; the panel anchored to it must not outlive it.
       setHologramOpen(false);
       hideHologram();
@@ -1185,24 +1147,6 @@ export function createChamberScene({
       dracoLoader.dispose();
     },
   };
-
-  // ── Dev tuning panel (off by default; opened with ?tune) ──
-  // Same pattern as the fleet and the works field: dynamically imported so lil-gui — and the whole
-  // authoring surface, including its free-fly camera — never enters the normal bundle.
-  if (new URLSearchParams(window.location.search).has('tune')) {
-    import('./chamberTunerPanel')
-      .then(({ createChamberTunerPanel }) =>
-        // The scene may have been torn down while the panel's chunk was in flight; if so the panel must
-        // not attach listeners to a camera nobody is drawing any more.
-        disposed
-          ? undefined
-          : createChamberTunerPanel({
-              scene: chamberScene,
-              onDispose: (cleanup) => tunerCleanups.push(cleanup),
-            }),
-      )
-      .catch(() => {});
-  }
 
   return chamberScene;
 }

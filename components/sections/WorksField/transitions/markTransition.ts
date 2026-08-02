@@ -1,44 +1,34 @@
 import * as THREE from 'three';
-import type { MarkTransitionId } from './transitionCatalog';
 
 /**
- * The contract every mark→mark transition implements, so four of them can be compared honestly.
+ * The contract the mark→mark transition implements.
  *
- * ── What is being compared ───────────────────────────────────────────────────────────────────────
- * The works field shows four projects, and on each step one mark has to become the next. Today it
- * cannot: `attachMorphTarget` bails when two geometries disagree on vertex count, which two extruded
- * marks always do, so `useWorksField` falls back to a hard cut hidden behind the spin. Four candidate
- * replacements exist and they differ by what carries the mark's identity across the change —
- * connectivity, pieces, a field, or a seed. See `docs/mark-transition-comparison.md`.
+ * ── What this is ────────────────────────────────────────────────────────────────────────────────
+ * The works field shows four projects, and on each step one mark has to become the next. It cannot do
+ * that by morphing: `attachMorphTarget` bails when two geometries disagree on vertex count, which two
+ * extruded marks always do. So the change is owned by a strategy that holds every mark at once and
+ * interpolates between two of them — see `accretionTransition.ts`, the one that shipped.
  *
- * ── Why a contract rather than four hooks ────────────────────────────────────────────────────────
- * Because the comparison is the deliverable. If each candidate brings its own camera, its own
- * framing, its own lighting and its own idea of how big a mark is, then what gets compared is four
- * different scenes and the answer is whichever one was tuned last. One harness owns the scene; a
- * strategy owns nothing but geometry, its material, and how it interpolates.
- *
- * ── The rules the contract enforces ──────────────────────────────────────────────────────────────
+ * ── The rules it enforces ───────────────────────────────────────────────────────────────────────
  * 1 · `setTransition` is a PURE FUNCTION of (from, to, progress). No internal timers, no "arrived"
  *     flags, no tweens. Scrubbing has to be indistinguishable from playing — which is the site's ONE
- *     CLOCK rule (`CLAUDE.md`) turned into a test instrument. A transition that cannot be scrubbed
- *     backwards cannot be trusted inside the pin later.
- * 2 · Every strategy is built with the SAME `targetSize` and the same world-unit `depth`, so no
- *     candidate wins by being framed more generously.
+ *     CLOCK rule (`CLAUDE.md`). A transition that cannot be scrubbed backwards cannot live in the pin.
+ * 2 · Marks are built to one `targetSize` and one world-unit `depth`, so the section's framing holds
+ *     whichever mark is on screen.
  * 3 · A strategy reports only what the renderer cannot know — how long it took to build and how many
- *     bytes it holds. Triangles, draw calls and programs are read from `renderer.info` by the harness,
- *     because a strategy asked to grade its own vertex count will grade it kindly.
+ *     bytes it holds. Everything observable from outside is read from `renderer.info` instead.
+ *
+ * It stayed an interface after the comparison rig that justified it was deleted, because the boundary
+ * is still worth having: `useWorksField` is 2,000 lines of camera, layout and scroll, and this keeps
+ * the geometry on the other side of a wall from all of it.
  */
-
-// Owned by the catalogue, which carries no three.js and can therefore be read by a Server Component.
-// Re-exported so a strategy only ever needs this one module.
-export type { MarkTransitionId };
 
 /**
  * A mark's outlines, resolved and ready to build from.
  *
- * Handed over as shapes rather than as a URL or a glyph because fetching and font loading are the
- * harness's job — and because every strategy needs the SAME outlines. Two strategies that each parsed
- * the SVG themselves would be one `curveSegments` change away from comparing different shapes.
+ * Handed over as shapes rather than as a URL or a glyph because fetching and font loading belong to
+ * the section (`prepareMarks.ts`) — and because every mark has to be parsed identically. Parsing per
+ * mark would be one `curveSegments` change away from four marks cut to different fidelities.
  */
 export interface PreparedMark {
   id: string;
@@ -67,18 +57,6 @@ export interface MarkTransitionBuildOptions {
    * `markGeodeBody` gets this right and is the reference.
    */
   depth: number;
-  /**
-   * A surface offered to strategies that want one — currently always null.
-   *
-   * It was a shared rock texture handed to every candidate, so none could win the comparison on albedo.
-   * That did not survive contact with a strategy whose look is a PAIR of textures chosen together (see
-   * accretion's surface and cavity), so it loads its own and the harness's copy was being fetched and
-   * ignored. Kept nullable rather than deleted because a simpler candidate may still want the offer.
-   *
-   * The fairness this was protecting now rests entirely on `markLabRig` — same camera, lights, probe
-   * and bloom for everyone — which is the part that actually decides whether a comparison is honest.
-   */
-  surfaceTexture: THREE.Texture | null;
   /** Lets a strategy pick a step count or an instance budget without measuring the device itself. */
   performanceTier: 'low' | 'high';
 }
@@ -86,8 +64,8 @@ export interface MarkTransitionBuildOptions {
 /**
  * What a strategy knows about itself that the renderer cannot see.
  *
- * Deliberately small. Everything observable from outside — triangles, calls, programs, frame time — is
- * measured by the harness instead, so these numbers cannot be used to flatter a candidate.
+ * Deliberately small. Everything observable from outside — triangles, calls, programs, frame time —
+ * is on `renderer.info` already, and duplicating it here would be a second number to keep honest.
  */
 export interface TransitionBuildMetrics {
   /** Wall-clock milliseconds spent preparing every mark. ②'s deciding number. */
@@ -101,58 +79,8 @@ export interface TransitionBuildMetrics {
   perMarkBytes: number;
 }
 
-/**
- * One authored knob, declared by a factory so the harness can render a slider for it.
- *
- * Declared rather than owned because the values have to live in React (they are UI state) while the
- * meaning lives with the strategy. A candidate that shipped with no knobs could not be authored at all
- * — and the whole reason each of these exists is that the numbers are not guessable.
- */
-export interface TuningControl {
-  key: string;
-  label: string;
-  min: number;
-  max: number;
-  step: number;
-  value: number;
-  /** Digits in the read-out. 0 for counts and layer numbers. */
-  decimals?: number;
-  /**
-   * A slider unless stated.
-   *
-   * `toggle` renders as an on/off button and stores 0 or 1 — some knobs are genuinely binary ("is this
-   * the first formation?") and dragging a slider between two values is a worse control than a button.
-   *
-   * `choice` renders `options` as a pill row and stores the chosen index. For knobs where the values are
-   * not a spectrum at all: four ways for a stone to arrive are four different ideas, not four points on
-   * a dial, and being able to flip between them side by side is the whole point of a rig.
-   */
-  kind?: 'slider' | 'toggle' | 'choice';
-  /** Labels for `choice`, one per integer value starting at 0. */
-  options?: string[];
-  /**
-   * True when changing it re-does work heavy enough to stutter a drag — a re-pack, a re-carve, a
-   * reallocation. The harness debounces these and pushes everything else live, so a look knob stays
-   * glued to the cursor while a geometry knob waits for you to let go.
-   */
-  rebuilds: boolean;
-}
-
-/** Current values by key. Flat numbers on purpose: a schema the harness can render without knowing anything. */
-export type TransitionTuning = Record<string, number>;
-
-/** Starting values, straight off a factory's declared controls. */
-export function tuningDefaults(controls: TuningControl[] | undefined): TransitionTuning {
-  const values: TransitionTuning = {};
-  controls?.forEach((control) => {
-    values[control.key] = control.value;
-  });
-  return values;
-}
-
 export interface MarkTransitionStrategy {
-  readonly id: MarkTransitionId;
-  /** Added to the harness's spin rig. A strategy never touches the camera, the lights or the composer. */
+  /** Added to the section's rig. A strategy never touches the camera, the lights or the composer. */
   readonly object: THREE.Object3D;
   readonly metrics: TransitionBuildMetrics;
   /**
@@ -167,34 +95,7 @@ export interface MarkTransitionStrategy {
    * `setTransition`, or it becomes a second clock and stops being scrubbable.
    */
   update(elapsedSeconds: number): void;
-  /**
-   * Take new values for the factory's declared controls.
-   *
-   * A strategy decides internally what a given change costs — the harness has no business knowing
-   * which knob re-packs a mark and which is a uniform. Absent when a candidate has nothing to author.
-   */
-  applyTuning?(tuning: TransitionTuning): void;
   dispose(): void;
-}
-
-/**
- * How the lab discovers and builds a candidate.
- *
- * `identity` is shown in the panel next to the tab, because the comparison stays honest only while it
- * is obvious that these four are answers to one question rather than four unrelated effects.
- */
-export interface MarkTransitionFactory {
-  id: MarkTransitionId;
-  label: string;
-  /** One line: what carries the mark's identity across the change. */
-  identity: string;
-  /** Knobs the harness should offer. Omitted when there is nothing to author. */
-  tuningControls?: TuningControl[];
-  create(
-    marks: PreparedMark[],
-    options: MarkTransitionBuildOptions,
-    tuning: TransitionTuning,
-  ): Promise<MarkTransitionStrategy>;
 }
 
 /** Clamp to the closed unit interval. Progress arrives from a slider, a tween or a scroll and none of them promise a range. */

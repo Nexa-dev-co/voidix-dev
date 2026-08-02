@@ -33,9 +33,9 @@ import { createSunParticles } from '@/lib/sunParticles';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
 //
-// This is the same sun authored in /sun-lab, so its presets can eventually drive the page as it scrolls
-// (peaceful → cracks → collapse → singularity). The numbers below ARE the lab's "Peaceful" preset; keep
-// them in step with `sunLabPresets.ts` rather than drifting a second copy of the look.
+// The star has four authored stages, and they are the site's spine (peaceful → cracks → collapse →
+// singularity). The numbers below are the Peaceful one. They came out of a model editor that has since
+// been deleted, so this file is now their only copy — there is nothing left to keep them in step with.
 //
 // It also ASSEMBLES, and that assembly is the loader's finale: when the load hits 100% the ten fracture
 // shards sweep in from outside the frame and lock together, the star lights inside the closing shell, and
@@ -44,10 +44,10 @@ import { createSunParticles } from '@/lib/sunParticles';
 const MODEL_PATH = '/models/fractured_sun.glb';
 const DRACO_DECODER_PATH = '/draco/';
 
-// ── The lab's "Peaceful" preset ──
+// ── The "Peaceful" stage ──
 const MODEL_ROTATION = { x: 5, y: 106, z: -59 };
 // Imported, NOT copied: the hero HUD's "orbital vector" readout displays this exact rate so the
-// telemetry reads as synced to the sun. Hard-coding the lab's 16 deg/s here would spin the sun 2.6x
+// telemetry reads as synced to the sun. Hard-coding the authored 16 deg/s here would spin the sun 2.6x
 // faster than the number on screen claims. One source of truth, so they cannot drift.
 const AUTO_ROTATE_DEGREES_PER_SECOND = VECTOR_DEG_PER_SECOND;
 const FLARE_SPIN_DEGREES_PER_SECOND = 15;
@@ -56,7 +56,7 @@ const FLARE_SPIN_DEGREES_PER_SECOND = 15;
  *
  * This was raised to compensate for having no bloom pass — that reason is now GONE (see `sunBloom`),
  * so the hero sun is running a Cracks-level emissive through a bloom it was tuned without. If the
- * calm hero star reads too hot, this is the first number to pull down: the lab's Peaceful stage
+ * calm hero star reads too hot, this is the first number to pull down: the Peaceful stage
  * leaves magma at the model's own default and lets bloom do the work, and 2.4 is the value its
  * CRACKS stage authors.
  */
@@ -232,10 +232,9 @@ const STATE_SETTLE_EPSILON = 0.0005;
 const rampWindow = (range: readonly [number, number], value: number) =>
   THREE.MathUtils.clamp((value - range[0]) / (range[1] - range[0]), 0, 1);
 
-// ── Services: the lab's "Cracks" stage ──
+// ── Services: the "Cracks" stage ──
 // The sun's SECOND state, and the next beat of the site's spine (peaceful → cracks → collapse →
-// singularity). Every number here mirrors CRACKS_STATE in `sunLabPresets.ts` — keep them in step
-// rather than drifting a second copy of the look.
+// singularity). Authored in the same deleted editor as Peaceful above, and likewise now only here.
 //
 // The star does not swap or reload: the same model eases from its Peaceful pose into this one on
 // `intensity`, so scrolling back up to the hero closes the cracks again.
@@ -254,8 +253,8 @@ const CRACKS_PULSE_SPEED = 0.3;
 const CRACKS_PULSE_PHASE_STEP = 0.7;
 
 // ── The sun's THIRD state: COLLAPSE ──
-// The star the works section is lit by. Every number mirrors COLLAPSE_STATE in `sunLabPresets.ts` —
-// keep them in step rather than drifting a second copy of the look.
+// The star the works section is lit by. ⚠ `singularityScene.ts` mirrors the four GEOMETRY values of
+// this pose so the star you leave and the star you come back to match — those two must not drift.
 //
 // This is not new machinery. Collapse is the SAME ten-shard rig the cracks already drive, carried
 // past zero: where the cracks part the shell by +0.18 of a shard radius, this crushes it inward by
@@ -310,8 +309,8 @@ interface Shard {
   homeQuaternion: THREE.Quaternion;
   /**
    * Unit direction from the fracture's centroid out to this shard's home — the axis it parts along
-   * when the star cracks open. Same construction as the lab's `computeCellSpread`, so the site and
-   * `/sun-lab` open the shell identically.
+   * when the star cracks open. `singularityScene.ts` builds it the same way, so the hero's crack and
+   * the contact finale's implosion part the shell along the same axes.
    */
   outward: THREE.Vector3;
   /** Its starting offset from home, already converted into the model's local frame. */
@@ -386,7 +385,7 @@ export default function SunModelCanvas() {
     const coreLight = new THREE.PointLight(CRACKS_CORE_LIGHT_COLOR, 0);
     scene.add(keyLight, fillLight, ambientLight, coreLight);
 
-    // Bloom — the lab's "Peaceful" glow, on a transparent canvas.
+    // Bloom — the Peaceful stage's glow, on a transparent canvas.
     //
     // NOT an EffectComposer. One was tried and it drew a visible RECTANGLE around the sun: a composer
     // ends by blitting its target to the canvas with a full-screen quad, and that quad writes alpha
@@ -621,7 +620,7 @@ export default function SunModelCanvas() {
     };
 
     /**
-     * Open the shell into the Cracks pose. Same construction as the lab's `positionShardsAt`: each
+     * Open the shell into the Cracks pose. Each
      * shard slides along its own outward axis by `spread × shardRadius`.
      *
      * Takes over shard positions from `positionShards` the moment the assembly finishes, so exactly

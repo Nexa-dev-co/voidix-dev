@@ -27,8 +27,8 @@ import * as THREE from 'three';
  * nothing at all for the whole services → works → chamber span.
  */
 
-// Mirrors the lab's "Peaceful" bloom (`sunLabPresets.ts` → `global.bloom`). Keep these in step with
-// it; they are the same three dials UnrealBloomPass exposes.
+// The sun's authored "Peaceful" bloom. This is now the only copy of it;
+// they are the same three dials UnrealBloomPass exposes.
 //
 // NOTE ON `THRESHOLD`: UnrealBloom thresholds the composer's buffer, which sits at a different
 // point in the tone-mapping chain than this pass does. The number is therefore a close analogue,
@@ -149,7 +149,7 @@ export interface SunBloom {
    * Re-grade the glow.
    *
    * Exposed because the star is not one look for the whole site: the works section eases it into the
-   * sun-lab's Collapse pose, which is graded far hotter (2.5 / 1 / 0.42 against the resting
+   * Collapse pose, which is graded far hotter (2.5 / 1 / 0.42 against the resting
    * 1.26 / 0.92 / 0.59). Those three live in this module's uniforms, so without a setter the collapse
    * could change the star's shape and its light but not how that light blooms — which is most of what
    * makes a collapse read as a collapse.

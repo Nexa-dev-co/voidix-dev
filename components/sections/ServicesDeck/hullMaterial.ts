@@ -29,7 +29,7 @@ export interface HullUniforms {
   emitPulse: { value: number };
 }
 
-/** The graded-palette uniforms, stored on `material.userData.hullUniforms` for the dev tuning panel. */
+/** The graded-palette uniforms, stored on `material.userData.hullUniforms`. */
 export interface HullShaderUniforms {
   uHullShadow: { value: THREE.Color };
   uHullMid: { value: THREE.Color };
@@ -88,7 +88,7 @@ function applyGradedHull(
     uRimPower: { value: RIM_POWER },
     uRimStrength: { value: RIM_STRENGTH },
   };
-  // Exposed so applyLitState can drive brightness and the dev panel can retune live.
+  // Exposed so applyLitState can drive brightness per frame.
   material.userData.tintBrightness = uniforms.brightness;
   material.userData.hullUniforms = shaderUniforms;
 

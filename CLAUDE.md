@@ -1,9 +1,9 @@
 # CLAUDE.md
 
-> **Rewritten 2026-07-28** against the actual source. The previous revision described a project
-> with only a Hero and a ServicesDeck and told you Work/Process/Contact "are not built yet" — three
-> sections and two labs had landed since. If you find this file disagreeing with the code again,
-> the code is right: fix this file as part of the change.
+> **Rewritten 2026-07-28** against the actual source; **revised 2026-08-02** when every authoring
+> route, tuning panel and runtime knob was deleted (see "Nothing is configurable at runtime"). If you
+> find this file disagreeing with the code again, the code is right: fix this file as part of the
+> change.
 
 ---
 
@@ -83,8 +83,6 @@ strengthen the Voidix identity? Could it appear on Awwwards? If not — build so
 |---|---|
 | `three` ^0.184 | All WebGL. Four independent scenes — see below. Always dynamically imported (`ssr: false`). |
 | `gsap` + `ScrollTrigger` + `ScrollToPlugin` | Used **directly**. No `@gsap/react`, no `useGSAP`. |
-| `lil-gui` | The `?tune` authoring panels only. Dynamically imported, never in the default bundle. |
-| `lucide-react` | Icons — **labs only** at present. |
 
 There is **no** shadcn/ui, no Framer Motion, no form library, no validation library, and **no
 smooth-scroll layer** — scroll is native. (`lenis`, `ogl` and `@gsap/react` were dependencies that
@@ -145,25 +143,20 @@ app/
   layout.tsx        # fonts, Navbar, metadata
   globals.css       # tokens + every component's CSS
   page.tsx          # the ONLY public route
-  sun-lab/          # authoring tool (noindex)
-  letters/          # glyph testbed (noindex)
 
 components/
   layout/Navbar/
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
-    ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial + tuner
-    WorksField/     # the project field + FieldCanvas + the mark systems + transitions/ + tuner
-    Chamber/        # the room: walls/ground/plinth, FaqHologram/, tuner
+    ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial
+    WorksField/     # the project field + FieldCanvas + the mark systems + transitions/
+    Chamber/        # the room: walls/ground/plinth, FaqHologram/
   effects/
     IntroSequence/  # loader: GatherCanvas, gather.worker, LoaderTelemetry/
     FluidCursor/    # hero ink trail (hand-rolled WebGL fluid sim)
     ConstellationFrame/
-  lab/
-    SunLab/         # /sun-lab — the fractured-sun + black-hole editor
-    LetterLab/      # /letters
 
-lib/                # shared: the pin's layout maths, events, perf systems, tuner plumbing
+lib/                # shared: the pin's layout maths, events, perf systems, tuning constants
 scripts/optimizeModels.mjs   # `npm run optimize:models` — per-model gltf-transform recipes
 docs/               # living design + state docs
 ```
@@ -282,8 +275,8 @@ way, or a restored scroll position moves things while the loader is still up.
 ## The shared sun
 
 **There is exactly one sun: `HeroSun` → `SunModelCanvas` → `fractured_sun.glb`.** It is the same
-model authored in `/sun-lab`, and its constants **are** the lab's "Peaceful" preset — keep them in
-step with `sunLabPresets.ts` rather than drifting a second copy.
+model a deleted editor authored, and its constants ARE that editor's "Peaceful" stage. This file is
+now the only copy of them.
 
 It is driven through exactly **three nested elements, one owner each** — sharing one between two
 owners is how you get a sun that jumps:
@@ -397,42 +390,37 @@ each other off, and both stop on tab-hidden. Preserve that.
 Costs, roughly: WorksField + Chamber ●●●●● > ServicesDeck ●●●●○ ≈ FluidCursor ●●●●○ > sun ●●●○○.
 `UnrealBloom` is the recurring expensive pass. Full breakdown in `docs/performance-ratings.md`.
 
-## The `?tune` authoring panel
+## Nothing is configurable at runtime
 
-**Only the chamber ships one now.** It is a `lil-gui` panel, **dynamically imported only when the URL
-has `?tune`** — nothing reaches the default bundle. Shared plumbing: `lib/tunerDock.ts` (the column),
-`tunerExport.ts` (prints a paste-ready constants block to the console), `tunerReset.ts`,
-`tuneScrollLock.ts`.
+**Deleted 2026-08-02, deliberately and by request.** There are no authoring routes, no `?tune`, no
+`lil-gui`, no knob schemas, no writable tuning handles. One route ships: `/`.
 
-The deck's and the works field's panels were deleted once their values were authored and baked into
-`deckTuning.ts` / `deckServices.ts` / `worksTuning.ts`. Three panels open at once made the dock's
-column taller than any viewport — which is also how it came out that the column could not be scrolled
-at all: the pin binds `wheel` on `window` with `{ passive: false }` and `preventDefault`s every gesture
-in the carousel region, cancelling the dock's scroll along with the page's. `isInsideTunerDock` in
-`tuneScrollLock.ts` is what exempts it, and any future panel gets that for free.
+What went: `/sun-lab` (the fractured-sun + black-hole editor), `/letters` and
+`/letters/transition/[strategy]` (the glyph testbed and the mark→mark comparison rig),
+`components/lab/**`, the chamber's `?tune` panel, `lib/tunerDock|tunerExport|tunerReset|tuneScrollLock`,
+and the transition strategy registry/catalogue along with `shards`, the candidate that never shipped.
+~10,900 lines. It is all in git if any of it is ever wanted back.
 
-Deleting those panels also took their exclusive support code: the works field's free-fly camera
-override and `rebuildMark`, and both files' `getWritable*Tuning` / `reset*Tuning` pairs. Restoring a
-panel means restoring those with it — they are one commit.
+**Every value is now a named constant in the file that reads it**, and in most cases that file is the
+only copy left:
 
-**These are general editors, not one-shot wizards.** When extending a lab or panel, give full
-control over the thing being edited rather than wiring a path to one preconceived outcome.
+| where | what it holds |
+|---|---|
+| `lib/chamberTuning.ts` | the room, the display rig, the showcase keys, the hologram |
+| `ServicesDeck/deckTuning.ts` + `deckServices.ts` | the fleet's stage; the per-ship palettes |
+| `WorksField/worksTuning.ts` | the camera path and where the mark sits |
+| `WorksField/transitions/accretionTransition.ts` → `ACCRETION_TUNING` | the mark's ~60 look and choreography numbers |
+| `Hero/SunModelCanvas.tsx` | the sun's Peaceful / Cracks / Collapse stages |
+| `Contact/singularityScene.ts` | the collapse finale |
 
-## The labs (`/sun-lab`, `/letters`)
+⚠ **Two pairs must not drift, and nothing enforces it any more.** `SunModelCanvas`'s COLLAPSE_* block
+and `singularityScene`'s four geometry values are the same pose — the star you leave at works and the
+star you come back to at contact. And `ACCRETION_TUNING`'s glow values were all graded against
+`useWorksField`'s `BLOOM_THRESHOLD` of 0.6; moving that threshold re-grades the mark.
 
-Authoring tools, `robots: noindex`, separate routes — nothing reaches the homepage bundle.
-
-- **`/sun-lab`** — a full editor for `fractured_sun.glb` and `black_hole.glb`: grouped object tree,
-  per-material controls, snapshot presets, and a **complete five-phase sun→black-hole finale**
-  (flash, shard implosion, gravitational redshift, spin-up + tremor, screen-space lensing, a
-  120k-particle accretion spiral). See `docs/sun-lab-remaining-work.md`.
-- **`/letters`** — extruded-glyph testbed.
-- **`/letters/transition/[strategy]`** — the mark→mark transition rig. One route per candidate, sharing
-  `markLabRig` (same camera, lights, probe and bloom as the works field) so the comparison is honest,
-  plus instruments read from `renderer.info`. **`accretion` is the one that shipped** — the homepage
-  passes `{}` for tuning and inherits this lab's authored defaults wholesale, so *this route is the
-  works section's tuning surface*. `shards` remains for comparison; `one-skin` and `field` are listed
-  but unbuilt. See `docs/mark-transition-comparison.md`.
+Many comments in those files explain a value by comparing it to what an editor showed, or by naming a
+six-second round trip it was authored on. That history is worth keeping — but the editors are gone, so
+read them as provenance, not as instructions to go and re-author something.
 
 ---
 
@@ -538,6 +526,6 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
 
-**Current plan of record: `docs/site-completion-plan.md`.** Section state docs:
-`services-deck-state.md`, `works-to-chamber-reveal.md`, `sun-lab-remaining-work.md`,
-`loader-sun-assembly-plan.md`.
+⚠ **The `docs/` directory is nearly empty**, and most of this file's `docs/*.md` citations point at
+files that are not in the tree. They are real history — they are in git — but do not send anyone to a
+path without checking it exists first.

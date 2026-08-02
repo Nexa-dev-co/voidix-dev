@@ -6,11 +6,10 @@ import { DECK_SERVICES } from './deckServices';
  *
  * ── What lives here, and what deliberately doesn't ───────────────────────────────────────────────
  * This file owns the STAGE. It does not own the ships' colour: each vessel's `profile` (the graded
- * palette) and its `light` override already live in deckServices.ts, which is the documented source of
- * truth for them and where the `?tune` panel has always baked them back to. Copying them here would
- * create two places to change a hull colour and one of them would rot.
+ * palette) and its `light` override already live in deckServices.ts, which is the source of truth for
+ * them. Copying them here would create two places to change a hull colour and one of them would rot.
  *
- * So the panel writes to two files, and says which is which:
+ * So the fleet's numbers are split across two files:
  *   • placement, culling, the rig          → here
  *   • palette + per-ship light              → deckServices.ts
  *

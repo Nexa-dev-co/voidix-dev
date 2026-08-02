@@ -51,16 +51,16 @@ const SHARD_NAME_PREFIX = 'Sphere_0_cell';
 /** The only lit material on the star, and the one carrying its glow — so the one redshift acts on. */
 const REDSHIFT_MATERIAL = 'magma';
 
-// ── The pose: the lab's "Collapse", which is where the star already is when you arrive ──
+// ── The pose: the authored "Collapse", which is where the star already is when you arrive ──
 // The works section carries the hero sun into this pose across the services→works handoff, so the star
-// you left and the star you come back to have to match. These four mirror COLLAPSE_STATE in
-// `sunLabPresets.ts` and the COLLAPSE_* block in `SunModelCanvas.tsx`; they are GEOMETRY, so they must
-// not drift. The grade below is a different matter — see the note on emissive.
+// you left and the star you come back to have to match. These four mirror the COLLAPSE_* block in
+// `SunModelCanvas.tsx`; they are GEOMETRY, so they must not drift. The grade below is a different
+// matter — see the note on emissive.
 const COLLAPSE_FRACTURE_SPREAD = -0.5;
 const COLLAPSE_MODEL_SCALE = 0.5;
 const COLLAPSE_ROTATE_DEGREES_PER_SECOND = 45;
 const COLLAPSE_FLARE_SPIN_DEGREES_PER_SECOND = 40;
-/** The model's authored pose, from the lab's Peaceful preset. Static; the spinner turns around it. */
+/** The model's authored resting pose. Static; the spinner turns around it. */
 const MODEL_ROTATION = { x: 5, y: 106, z: -59 };
 
 /**
@@ -83,13 +83,13 @@ const STAR_RADIUS = 2.4;
 const PRESENCE_EPSILON = 0.001;
 
 // ── The grade ──
-// ⚠ These do NOT mirror the lab, and cannot. The lab (and the hero sun) grade with ACESFilmic tone
+// ⚠ These do NOT mirror where they were authored, and cannot. That editor (and the hero sun) grade with ACESFilmic tone
 // mapping and a hand-rolled additive bloom on a frame containing nothing but the star. This renderer is
 // NeutralToneMapping + UnrealBloom at threshold 0.6, and its exposure and bloom are GLOBAL — they grade
 // the starfield and the debris too, so the star cannot be lit by pushing them. It is lit through its own
 // emissive instead, which is the only channel that touches the star alone.
 //
-// Authored against the works field's own numbers rather than converted from the lab's: the magma has to
+// Authored against the works field's own numbers rather than converted from the editor's: the magma has to
 // sit clearly above BLOOM_THRESHOLD (0.6) to glow at all, without dragging the whole frame up with it.
 const MAGMA_EMISSIVE = 3.2;
 const ENV_INTENSITY = 1.0;
@@ -133,9 +133,9 @@ const RING_POINT_SIZE = 28;
 export const CONTACT_BLOOM_STRENGTH = 1.05;
 
 // ── The finale ──
-// Every number below mirrors `SINGULARITY_STATE` in `sunLabPresets.ts` and the FINALE_* block in
-// `useSunLabScene.ts`, where they were authored and tuned. Keep them in step rather than drifting a
-// third copy of the look — /sun-lab is the tuning surface for all of this.
+// Every number below was authored in a sun-and-black-hole editor that has since been deleted, so this
+// file is now the only copy of the look. There is nothing left to keep it in step with — and equally
+// nothing left to re-author against, so treat these as expensive to have gotten right.
 //
 // The sequence, 0 → 1, and the order is the whole point:
 //
@@ -151,7 +151,7 @@ const FINALE_ARM_DELAY_SECONDS = 0.2;
 /**
  * Seconds the sequence takes to run 0 → 1.
  *
- * Shorter than the lab's 6, and the difference is what the two are FOR. Six seconds is a Play button's
+ * Shorter than the editor's 6, and the difference is what the two are FOR. Six seconds is a Play button's
  * duration: someone is reviewing the finale, scrubbing it, watching it deliberately. Here it is the end
  * of a page and the visitor is waiting for it, so the same choreography wants to be tighter.
  *
@@ -176,7 +176,7 @@ const FINALE_REWIND_SECONDS = 1.2;
 /**
  * When the star falls in. Smoothstepped, then CUBED — see the note on `collapse`.
  *
- * The START is earlier than the lab's 0.15 so the shell begins giving way almost as soon as the tremor
+ * The START is earlier than the editor's 0.15 so the shell begins giving way almost as soon as the tremor
  * has established itself. The END is not, and must not move: `FLASH_AT` is where the cubed curve reaches
  * zero, so the two are one decision — move this and the flash fires over a star that is already gone.
  */
@@ -204,7 +204,7 @@ const FINALE_SPIN_UP = 5;
 /**
  * Master brightness.
  *
- * Higher than the lab's 0.5, and the lab's own reasoning is why. It pulled this down because Singularity
+ * Higher than the editor's 0.5, and its own reasoning is why. It pulled this down because Singularity
  * stacks a flash on top of a hot grade AND 120k additively-blended particles, which clipped the frame to
  * white. None of that is on screen here at sequence 0.5: the star has just reached zero scale and there
  * is nothing else left to blow out — which is exactly the condition `lib/burstShader.ts` says the burst
@@ -235,8 +235,8 @@ const FLASH_SCREEN_DECAY = 0.24;
 /**
  * The burst's size unit, in WORLD units — deliberately not the star's radius.
  *
- * ⚠ This is the one number that does not survive the trip from the lab, and it is worth knowing why
- * before "restoring" it. There the burst is sized in sun-radii, which works because the lab frames the
+ * ⚠ This is the one number that did not survive the trip from where it was authored, and it is worth knowing why
+ * before "restoring" it. There the burst is sized in sun-radii, which works because that view frames the
  * sun to fill its viewport — sun-radii and screen-fractions are nearly the same thing. Here the star is
  * a small object in a wide space, so the same sizing put the flash's readable core at **3% of viewport
  * height**: a ~30px blob nobody could see. Sized against the frame instead (~2.55 units of half-height
@@ -363,7 +363,7 @@ const DIVE_BLACKOUT: readonly [number, number] = [0.68, 0.93];
 interface Shard {
   object: THREE.Object3D;
   home: THREE.Vector3;
-  /** Unit direction from the fracture centroid out to this shard — same construction as the lab's. */
+  /** Unit direction from the fracture centroid out to this shard — same construction the editor used. */
   outward: THREE.Vector3;
 }
 
@@ -409,7 +409,7 @@ export interface SingularityLensing {
   time: number;
 }
 
-/** Mirrors the lab's `blackHoleGroupForMaterialNames`, minus the parts only its editor needs. */
+/** Mirrors the editor's `blackHoleGroupForMaterialNames`, minus the parts only it needed. */
 function classifyBlackHoleMesh(materialNames: string[]): BlackHolePhase | null {
   if (materialNames.includes(BLACK_HOLE_PLANET_MATERIAL)) return null;
   const isRing = materialNames.some((name) => name === 'ring' || name === 'ring2');
@@ -625,7 +625,7 @@ export function createSingularityScene({
    *
    * Each shard carries its own phase so they fight out of step — in lockstep it reads as one mechanical
    * pulse rather than a star straining. Purely a function of `sequence`, so rewinding reproduces it
-   * exactly. Same construction as the lab's `positionShardsWithTremor`.
+   * exactly. Same construction as the editor's `positionShardsWithTremor`.
    */
   const positionShards = (spread: number, tremor: number, at: number) => {
     shards.forEach(({ object, home, outward }, index) => {
@@ -1034,7 +1034,7 @@ export function createSingularityScene({
     // ── The shards, and the axis each parts along ──
     // The ten fracture cells are Groups at the model root; their local positions carry the real assembly
     // offsets, so "outward" is measured entirely within that one frame — the same construction as the
-    // lab's `computeCellSpread`, so the site and /sun-lab crush the shell identically.
+    // same construction `SunModelCanvas` uses to open the shell, so the two agree.
     const shardObjects = modelRoot.children.filter((child) =>
       child.name.startsWith(SHARD_NAME_PREFIX),
     );

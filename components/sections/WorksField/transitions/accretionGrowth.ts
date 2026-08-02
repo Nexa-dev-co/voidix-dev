@@ -132,8 +132,8 @@ export interface StoneGrowthUniforms {
    * the faces the partition cut, which is why it can carry real brightness without becoming the wash
    * that the flash became. Full reasoning in `docs/molten-fracture-plan.md`.
    *
-   * The two colours are uniforms rather than controls, matching `uFlashColor`: the panel owns how hot
-   * it burns, the file owns what colour hot is.
+   * The two colours are uniforms rather than tuned values, matching `uFlashColor`: `ACCRETION_TUNING`
+   * owns how hot it burns, this file owns what colour hot is.
    */
   uMoltenSeamColor: { value: THREE.Color };
   uMoltenDeepColor: { value: THREE.Color };
@@ -151,8 +151,8 @@ export interface StoneGrowthUniforms {
    *
    * Not seconds, and it cannot be: `setTransition` is contractually pure in `(from, to, progress)`, so a
    * wall-clock timer here would be a second clock — it would desync the moment the scrub is dragged and
-   * would not survive being driven by scroll. The conversion is just the round trip: at the lab's
-   * six-second default, one second is 0.17 of progress.
+   * would not survive being driven by scroll. The conversion is just the round trip: at the six-second
+   * round trip these values were authored on, one second is 0.17 of progress.
    */
   uMoltenCool: { value: number };
   /** How far ahead of the break the seam lights up. The "neon, then crack" order. */
@@ -263,9 +263,9 @@ export function enableStoneGrowth(
     // stone into a light source instead of rock catching a key light — the reference's stone is DARK,
     // and only the crystal and the hairline veins carry any light at all.
     uFlashColor: { value: new THREE.Color('#ffb066') },
-    // 0, matching the panel's declared default. It matters that BOTH are zero: the lab pushes
-    // `flashStrength` every frame so this fallback is invisible there, but a future caller that drives
-    // the uniforms directly and never sends tuning would otherwise get the orange back for free.
+    // 0, matching `ACCRETION_TUNING`. It matters that BOTH are zero: the transition sets
+    // `flashStrength` every frame so this fallback is invisible, but a future caller that drives
+    // the uniforms directly and never sets it would otherwise get the orange back for free.
     uFlashStrength: { value: 0 },
     uCavityMap: { value: cavityMap },
     uCavityWidth: { value: 0.16 },
@@ -273,9 +273,9 @@ export function enableStoneGrowth(
     uCavityGlow: { value: 0.5 },
     uCavityTint: { value: 0.35 },
     uCavityUvScale: { value: 1 },
-    // Every default from here down MATCHES the declared control in `accretionTransition`. That is the
-    // rule the flash got wrong: the lab pushes tuning every frame so a disagreeing fallback is invisible
-    // there, and then the first caller that drives these uniforms directly gets a look nobody authored.
+    // Every default from here down MATCHES `ACCRETION_TUNING` in `accretionTransition`. That is the
+    // rule the flash got wrong: the transition writes every uniform each frame so a disagreeing fallback
+    // is invisible, and then the first caller that drives these directly gets a look nobody authored.
     // Both pulled DOWN the hue, and the strength pushed up to compensate — see the control's note.
     // A near-white seam was washing the colour out of the effect; the white-hot now comes from the tone
     // mapper compressing a saturated orange at the very peak, which is where it belongs.

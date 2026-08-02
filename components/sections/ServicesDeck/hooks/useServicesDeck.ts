@@ -26,8 +26,8 @@ import {
 
 // ── Framing ─────────────────────────────────────────────────────────────
 // The camera's pose and each hull's placement are all AUTHORED — they live
-// in deckTuning.ts and are pushed onto the scene every frame, so the ?tune panel can move them live.
-// Only the things that aren't adjustable stay here.
+// in deckTuning.ts and are pushed onto the scene every frame. Only the things
+// that were never authored stay here.
 
 // ── Starfield ───────────────────────────────────────────────────────────
 const STAR_COUNT         = 1200;
@@ -73,14 +73,14 @@ const RIM_LIGHT_TWEEN = 0.5;
 // shader; here we only drive the shared brightness uniform + the native emissive intensity.
 //
 // The levels themselves are AUTHORED — brightness, emissive strength and the engine pulse all live in
-// deckTuning so the ?tune panel can dial them, and are applied every frame.
+// deckTuning, and are applied every frame.
 
 // ── Selective bloom — OFF ──
 // Removed from the fleet 2026-07-28: with every stage light at 0 (see deckTuning) the ships are lit
 // only by the cracked sun behind them, and blooming their accents on top of that read as haze rather
 // than as glowing engines.
 //
-// The pass is still CONSTRUCTED and still wired to the ?tune panel, so it is one checkbox away — but
+// The pass is still CONSTRUCTED, so it is one constant away — but
 // it ships `enabled = false`, which makes EffectComposer skip it entirely rather than run the full
 // blur pyramid for a zero result. UnrealBloom is the most expensive pass on the site; a disabled one
 // costs nothing, a strength-0 one costs everything.
@@ -252,7 +252,7 @@ interface DeckShip {
   spin: THREE.Group;
   /** The loaded hull itself. Authored placement is applied here, on top of the normalised pose. */
   vessel: THREE.Group | null;
-  /** Every switchable mesh of this hull, by positional id — what the panel's part list toggles. */
+  /** Every switchable mesh of this hull, by positional id — what `hiddenParts` in the tuning switches off. */
   parts: Map<string, THREE.Mesh>;
   materials: THREE.Material[];
   /** Shared across this ship's hull materials → driven by litState (dim when leaving, bright when centred). */
@@ -352,8 +352,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const lowPower =
       window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
 
-    // The authored stage: camera, rig intensities, and where each hull sits. Read live every
-    // frame so the ?tune panel's sliders take effect with nothing to rebuild.
+    // The authored stage: camera, rig intensities, and where each hull sits.
     const tuning = getDeckTuning();
 
     // ── Renderer ──
@@ -368,8 +367,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     const scene  = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(tuning.cameraFov, 1, 0.1, 100);
-    // Re-applied every frame from the tuning, so the panel can move the shot live. Cheap: three writes
-    // and a lookAt on a camera that isn't otherwise animated while the deck is resting.
+    // Re-applied every frame from the tuning rather than once at build, so there is one code path for the
+    // shot. Cheap: three writes and a lookAt on a camera that isn't otherwise animated at rest.
     const applyCameraFromTuning = () => {
       camera.position.set(0, tuning.cameraHeight, tuning.cameraDistance);
       camera.lookAt(0, tuning.cameraLookY, 0);
@@ -585,7 +584,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(tuning.cameraFov / 2));
       // The camera looks slightly DOWN, so a world-z offset is not quite a depth offset. This is the
       // z component of its forward axis — ~0.993 at the resting shot, but it stays honest if the
-      // panel raises the camera.
+      // camera is ever raised.
       const forwardZ = tuning.cameraDistance / viewDistance;
       const frameAt = (depth: number) => {
         const halfHeight = (viewDistance - depth * forwardZ) * tanHalfFov;
@@ -928,9 +927,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           const ship = ships[index];
           ship.spin.add(vessel);
           ship.vessel = vessel;
-          // Catalogue every mesh so the panel can switch pieces off, and honour whatever is already
-          // baked into the tuning. Switched off rather than culled: the panel has to be able to turn a
-          // piece back on, and a hull is small enough that a hidden mesh costs nothing to keep around.
+          // Catalogue every mesh by positional id, and honour whatever is already
+          // baked into the tuning as hidden. Switched off rather than culled: a hidden piece has to be able
+          // to come back on, and a hull is small enough that a hidden mesh costs nothing to keep around.
           let partIndex = 0;
           vessel.traverse((child) => {
             if (!(child instanceof THREE.Mesh)) return;
@@ -1076,8 +1075,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       starfield.rotation.y = elapsed * STAR_DRIFT;
 
       // ── Push the authored stage onto the scene ──
-      // Applied every frame rather than on change, so the panel's sliders are live and there is exactly
-      // one code path whether or not the panel exists. All of it is plain property writes.
+      // Applied every frame rather than once at build: it keeps the authored stage and the animated state
+      // on one code path, and all of it is plain property writes.
       renderer.toneMappingExposure = tuning.exposure;
       // Multiplied, not assigned — see shipLightLevels.
       keyLight.intensity = shipLightLevels.key * tuning.keyMultiplier;
@@ -1265,12 +1264,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     applyRendererSize();
     const resizeObserver = new ResizeObserver(applyRendererSize);
     resizeObserver.observe(canvas.parentElement ?? canvas);
-
-    // ── No tuning panel ──
-    // The fleet's `?tune` panel has been removed: its values are authored and baked into `deckTuning.ts`
-    // and the palettes in `deckServices.ts`, and having three panels open at once made the dock's column
-    // taller than the viewport. `?tune` now opens the chamber's panel only. The deleted panel is in git
-    // if the fleet ever needs live authoring again.
 
     return () => {
       disposed = true;

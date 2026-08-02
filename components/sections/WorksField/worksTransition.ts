@@ -79,9 +79,9 @@ export const TEXT_SHEAR_DEGREES = -8;
  * ⚠ Several of the strategy's knobs are spans of PROGRESS, not seconds, so they all stretch with this.
  * At 4s: the geode is gone by ~0.7s, the stones have retracted by ~1.7s, growth runs ~1.1s → ~3.3s,
  * and the geode grows back over the last two thirds of a second. `moltenCool` at 0.17 lands at ~0.68s
- * — it was authored against the lab's six-second round trip, where the same span reads ~1.0s, so the
- * cooling is now brisker here than in `/letters/transition/accretion`. That is the one place this
- * duration and the lab's deliberately disagree; retune `moltenCool` there, not here, if it reads hot.
+ * — it was authored against a six-second round trip, where the same span reads ~1.0s, so the cooling
+ * is brisker here than where it was tuned. If it reads hot, `moltenCool` in `ACCRETION_TUNING` is the
+ * number, and it is now the only copy of it.
  */
 export const MARK_CHANGE_SECONDS = 4;
 

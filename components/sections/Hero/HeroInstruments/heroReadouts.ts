@@ -97,11 +97,11 @@ export const DISTORTION_DECAY_RATE = 1.4; // 1/s glide when it falls (…gentler
 // This is the SOURCE of the sun's idle spin, not a copy of it: SunModelCanvas imports
 // VECTOR_DEG_PER_SECOND and rotates at exactly that rate, so the readout and the sun cannot drift.
 //
-// The value is now the LAB's authored "Peaceful" spin (`sunLabPresets.ts` → `autoRotateSpeed: 16`),
+// The value is the sun's authored "Peaceful" spin (16 deg/s),
 // so the hero sun turns at the speed it was actually authored at rather than at the old procedural
 // sun's rate. It used to be derived the other way round — from
 // `ORB_ROTATION_SPEED_RAD_PER_FRAME = 0.0018` rad/frame at 60fps, which works out to ~6.2°/s, i.e.
-// 2.6× slower than the lab. Keep this in step with the preset, not with the old constant.
+// 2.6× slower. This is the live number; the old constant is history.
 export const VECTOR_DEG_PER_SECOND = 16;
 
 // The rad/frame form, kept because that is how the original procedural sun expressed it. Now DERIVED

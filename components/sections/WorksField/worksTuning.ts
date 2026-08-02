@@ -5,8 +5,8 @@
  * There used to be four meteors and the camera flew between them; a project was a PLACE. Now there is
  * one body and the camera moves around it, so a project is a POSE. That turns the whole section into
  * a recorded camera path — the same model the chamber's showcase already uses, for the same reason:
- * a path like this can only be judged by eye, so it's authored against the live scene in the `?tune`
- * panel and baked back in here.
+ * a path like this can only be judged by eye, so it was authored against the live scene and baked
+ * back in here.
  *
  * ── One list, stops tagged ───────────────────────────────────────────────────────────────────────
  * Every key is a camera pose. A key with `stop` set is where a project parks; a key without one is a
@@ -26,7 +26,7 @@
  * The services→works flight ends with the camera at `sharedCamera(1) − METEOR_SHARED_POSITION`, which
  * resolves to (0, 1.0, 7.0) looking at the origin (see lib/handoffFlightPath.ts). The FIRST STOP has
  * to be that pose, or the ship's arrival ends somewhere the browsing camera isn't and the seam tears.
- * The tuner has a button that writes it exactly; don't hand-edit it to something else.
+ * It must be written exactly; don't hand-edit it to something else.
  */
 
 
@@ -113,16 +113,16 @@ export const PROJECT_VIEW_KEYS: ProjectViewKey[] = [
 
 export interface WorksTuning {
   /**
-   * The camera path. Lives INSIDE the tuning rather than beside it so the `?tune` panel can splice keys
-   * in and out and have the scene pick them up on the next frame — the scene holds this array by
-   * reference and rebuilds its spline from it on demand.
+   * The camera path. Lives INSIDE the tuning rather than beside it because the scene holds this array
+   * by reference and rebuilds its spline from it, so the two can never disagree about which keys
+   * the path is made of.
    */
   keys: ProjectViewKey[];
 
   // ── The mark ──
   // The section's one body: a project's logo, cut into interlocking stones and grown out of a core,
-  // finished with geode on its rim. Everything about how it LOOKS is authored in the lab at
-  // /letters/transition/accretion and inherited from there — see `buildMark`. What lives here is only
+  // finished with geode on its rim. Everything about how it LOOKS lives in `ACCRETION_TUNING`
+  // (`transitions/accretionTransition.ts`) — see `buildMark`. What lives here is only
   // what the SECTION owns: how big the mark is in this scene, and where it sits.
   /**
    * Largest dimension of the mark, in world units.

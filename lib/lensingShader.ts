@@ -2,7 +2,7 @@ import * as THREE from "three";
 
 // Screen-space gravitational lensing — the "space behaves like fluid" pass.
 //
-// Lives in `lib/`, not in the lab that authors it: the contact finale runs this same code on the site
+// Lives in `lib/`, not beside its one caller: the contact finale runs this same code on the site
 // (docs/contact-singularity-plan.md). One copy on purpose — two would mean tuning one and shipping the
 // other.
 //
@@ -75,8 +75,8 @@ export const LENSING_SHADER = {
     // Returns the full RGBA rather than just the colour, because ALPHA IS LOAD-BEARING on the site: the
     // works field's space stage renders to a transparent texture, and createSpacePresentMaterial is a
     // raw shader specifically so that alpha survives to the canvas. Writing a constant 1.0 here would
-    // seal the canvas and paint the pinned hero sun out of the page. In /sun-lab the scene is opaque, so
-    // every alpha sampled is 1 and this is exactly equivalent to what it did before.
+    // seal the canvas and paint the pinned hero sun out of the page. Against an opaque scene every alpha
+    // sampled is 1 and this is exactly equivalent to returning the colour alone.
     // (No backticks in here - they would terminate the template literal. See CLAUDE.md.)
     vec4 sampleBent(vec2 uv, vec2 direction, float bend) {
       vec2 offset = direction * bend;
