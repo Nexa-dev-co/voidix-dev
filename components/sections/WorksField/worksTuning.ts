@@ -53,7 +53,7 @@ export interface ProjectViewKey {
  * The camera's landing pose at the end of the services→works flight. Stop 0 must equal this.
  * Derived, not guessed: it is `CAMERA_POSITION_KEYS.at(1) − METEOR_POSITION` from handoffFlightPath.
  */
-export const FLIGHT_LANDING_KEY: Omit<ProjectViewKey, 'stop'> = {
+const FLIGHT_LANDING_KEY: Omit<ProjectViewKey, 'stop'> = {
   x: 0,
   y: 1.0,
   z: 7.0,

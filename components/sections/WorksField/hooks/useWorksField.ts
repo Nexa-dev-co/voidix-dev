@@ -45,7 +45,8 @@ import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 // ambient shards. It used to clothe the section's body too, as both albedo and emissive map — the
 // mark loads its own pair instead (cold black stone, opening onto geode druse), because that look is
 // a pairing chosen together rather than one image doing two jobs. See accretionTransition.ts.
-const TEXTURE_SURFACE = '/textures/meteor/basalt-magma.png';
+// Built from textures-src by `npm run optimize:textures` — never edit the file in public/ directly.
+const TEXTURE_SURFACE = '/textures/meteor/basalt-magma.webp';
 
 // ── Camera / framing ────────────────────────────────────────────────────
 // The fallback field of view. Every authored key carries its own (see worksTuning), so this is only
@@ -558,7 +559,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
 
     // ── Renderer ──
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    // ⚠ `antialias: false` is deliberate and is NOT a quality cut — see the same note on the fleet's
+    // renderer. Every pixel here reaches the canvas through `screenComposer`, whose last pass is a
+    // fullscreen quad, so a multisampled default framebuffer would be resolving a rectangle. The AA
+    // that matters is `samples` on the two composer targets and the SMAAPass below.
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
     renderer.toneMapping = THREE.NeutralToneMapping;
@@ -1195,6 +1200,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         strategy.dispose();
         return;
       }
+
 
       // Every material under the strategy, for the arrival fade. `transparent` is set ONCE, here —
       // toggling it per frame invalidates the program and recompiles the shader, which is a stutter at

@@ -83,10 +83,6 @@ export const MARKS: MarkDefinition[] = [
   },
 ];
 
-export function markById(id: string): MarkDefinition {
-  return MARKS.find((mark) => mark.id === id) ?? MARKS[0];
-}
-
 /** Geometry for every mark, keyed by id, plus the loaded font so letters can be built on demand. */
 export interface MarkCache {
   geometries: Map<string, THREE.ExtrudeGeometry>;

@@ -106,8 +106,8 @@ export const VECTOR_DEG_PER_SECOND = 16;
 
 // The rad/frame form, kept because that is how the original procedural sun expressed it. Now DERIVED
 // from the authored degrees-per-second above, so the two can never disagree.
-export const ORB_ASSUMED_FPS = 60;
-export const ORB_ROTATION_SPEED_RAD_PER_FRAME =
+const ORB_ASSUMED_FPS = 60;
+const ORB_ROTATION_SPEED_RAD_PER_FRAME =
   (VECTOR_DEG_PER_SECOND * (Math.PI / 180)) / ORB_ASSUMED_FPS;
 
 // Shared frame-timing guards for the telemetry loop.

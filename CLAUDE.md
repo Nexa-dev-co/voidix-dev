@@ -380,9 +380,15 @@ These exist and are load-bearing — don't reinvent them:
 | `lib/` | Job |
 |---|---|
 | `adaptivePixelRatio.ts` | Measures real frame times and trades resolution for smoothness. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. |
-| `performanceTier.ts` | `'low' \| 'high'` from measured frame times; picks which texture tier to fetch. |
 | `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size.** |
-| `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones. |
+| `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones — **and is the sole source of the `lowPower` flag** the heavy scenes branch on. |
+
+⚠ **Nothing on this site picks quality from measured frame times.** A `performanceTier.ts` did exactly
+that — `'low' | 'high'` off `adaptivePixelRatio`'s samples, to choose a chamber texture tier — and an
+earlier revision of this file listed it here as load-bearing. It was imported by nobody, along with the
+`getPerformanceSnapshot()` that fed it; both were deleted 2026-08-02. `lowPower` is a **viewport and
+pointer check**, decided once at mount, and `adaptivePixelRatio` acts on its own measurements without
+telling anyone. If you want measured quality tiers, you are building it, not restoring it.
 
 **Only one heavy 3D scene ever draws at a time past the hero** — the deck and the works field gate
 each other off, and both stop on tab-hidden. Preserve that.

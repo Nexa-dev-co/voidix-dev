@@ -419,7 +419,7 @@ export interface ChamberTuning {
  * `returnKeyStart` marks where the way out begins. The first key is where the reveal LANDS, and the way
  * out's last key is where it re-enters the pull-back: both are the table pose, so neither hand-off seams.
  */
-export const SHOWCASE_KEYS: ShowcaseKey[] = [
+const SHOWCASE_KEYS: ShowcaseKey[] = [
   // ── The way IN: table → podium (keys 0–3) ──
   // 1. At the table, looking down at the screen you just backed out of.
   { x: -4.75, y: 1.77, z: 6.86, tx: -6.68, ty: -6.39, tz: 18.43, sx: -4.87, sy: 0.85, sz: 8.15, syaw: 180, spitch: 90, sroll: -10, sh: 0.95 },

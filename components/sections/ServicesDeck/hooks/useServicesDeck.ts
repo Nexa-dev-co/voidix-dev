@@ -356,7 +356,12 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const tuning = getDeckTuning();
 
     // ── Renderer ──
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    // ⚠ `antialias: false` is deliberate and is NOT a quality cut. Everything here draws through an
+    // EffectComposer, and a composer's final pass is a fullscreen quad — so the multisampled default
+    // framebuffer that `antialias: true` allocates has no geometry edges to resolve. It costs memory
+    // and a resolve every frame to antialias a rectangle. The real AA is `samples` on the composer
+    // target (MSAA, where the geometry actually is) plus the SMAAPass below.
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES

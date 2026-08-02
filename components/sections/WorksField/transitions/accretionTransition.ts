@@ -26,7 +26,7 @@ import {
  * Crucially the two are SEQUENTIAL, not simultaneous: the body is whole all the way up, and only once
  * the mark has landed do the points grow on the edges.
  *
- * The body's surface is the geode itself (`geode-druse.png`) rather than the crust around it. It was
+ * The body's surface is the geode itself (`geode-druse.webp`) rather than the crust around it. It was
  * basalt, on the reading that the mark is stone until the very end — but that made the points arrive as
  * decoration on an unrelated material. Growing them out of a body that is already visibly geode makes
  * them the finish of something rather than an addition to it.
@@ -72,8 +72,9 @@ const CORE_RADIUS_FRACTION = 0.24;
  *                 a SUBJECT, and a subject tiled across a surface stops being legible as itself.
  *   black-stone   angular facets, no bright channel at all. The body can finally be a body.
  *
- * Already registered in `markChunkMaterial`'s `CHUNK_TEXTURES` as "Black stone", and it is the same
- * image the geode crust spec uses — so the crust and this are literally the same rock.
+ * ⚠ Still a JPEG, and the only live texture NOT built from `textures-src`. At 70 KB it was never worth
+ * the round trip, but that also means it is the one surface here nobody can re-encode — add it to
+ * `textures-src` if it ever needs to change.
  */
 // Typed as `string` rather than left as a literal: these two are meant to be repointed while authoring,
 // and the loader below compares them. Narrowed to literals, that comparison is provably false and the
@@ -86,7 +87,7 @@ const STONE_TEXTURE_PATH: string = '/textures/meteor/black-stone-background-mate
  * briefly matched the surface, which made a cavity a scale change rather than a reveal; against black
  * stone the druse does the job it was picked for.
  */
-const CAVITY_TEXTURE_PATH: string = '/textures/geode/geode-druse.png';
+const CAVITY_TEXTURE_PATH: string = '/textures/geode/geode-druse.webp';
 /** Tiles across the core's diameter. The mark's own repeat is authored — see `stoneTextureRepeat`. */
 const CORE_TEXTURE_REPEAT = 2;
 
@@ -424,6 +425,18 @@ class AccretionTransition implements MarkTransitionStrategy {
   private readonly options: MarkTransitionBuildOptions;
 
   private readonly stoneTexture: THREE.Texture | null;
+  /**
+   * The stone surface at the authored repeat, cloned ONCE and shared by every mark.
+   *
+   * ⚠ It used to be cloned per mark, inside the build loop, with identical arguments every time.
+   * `Texture.clone()` shares the `.image` but takes a fresh uuid, and three keys its GPU uploads by
+   * uuid — so four marks meant four uploads of the same 1254² image with mips, about 24 MB of VRAM
+   * for nothing. The repeat is the only thing a clone was buying, and all four wanted the same one.
+   *
+   * If a mark ever needs its own repeat, this goes back in the loop — and the disposal below has to
+   * go with it.
+   */
+  private readonly sharedStoneMap: THREE.Texture | null;
   private readonly cavityTexture: THREE.Texture | null;
   private readonly crystalGeometry: THREE.BufferGeometry;
   private readonly core: THREE.Mesh;
@@ -440,6 +453,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     this.marks = marks;
     this.options = options;
     this.stoneTexture = stoneTexture;
+    this.sharedStoneMap = stoneTexture
+      ? cloneRepeated(stoneTexture, ACCRETION_TUNING.stoneTextureRepeat)
+      : null;
     this.cavityTexture = cavityTexture;
     this.crystalGeometry = createCrystalGeometry();
 
@@ -508,9 +524,7 @@ class AccretionTransition implements MarkTransitionStrategy {
       });
 
       const stoneMaterial = createMeteorMaterial(
-        this.stoneTexture
-          ? cloneRepeated(this.stoneTexture, ACCRETION_TUNING.stoneTextureRepeat)
-          : new THREE.Texture(),
+        this.sharedStoneMap ?? new THREE.Texture(),
         false,
       );
       // The throwaway above stands in when the surface failed to load. BOTH channels have to be cleared:
@@ -637,9 +651,10 @@ class AccretionTransition implements MarkTransitionStrategy {
     this.layers.forEach((layer) => {
       this.object.remove(layer.stone);
       layer.chunks.geometry.dispose();
-      const stoneMaterial = layer.stone.material as THREE.MeshStandardMaterial;
-      stoneMaterial.map?.dispose();
-      stoneMaterial.dispose();
+      // NOT `stoneMaterial.map?.dispose()` — the map is `sharedStoneMap`, one texture behind every
+      // layer. Freeing it here would pull it out from under the other three materials still using it.
+      // It belongs to the strategy's own lifetime; `dispose()` releases it.
+      (layer.stone.material as THREE.MeshStandardMaterial).dispose();
 
       if (!layer.crystal) return;
       this.object.remove(layer.crystal);
@@ -695,10 +710,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     stoneMaterial.roughness = ACCRETION_TUNING.stoneRoughness;
     stoneMaterial.metalness = ACCRETION_TUNING.stoneMetalness;
     stoneMaterial.color.copy(STONE_BASE_COLOR).multiplyScalar(ACCRETION_TUNING.stoneAlbedo);
-    // `map` and `emissiveMap` are the same clone, so one assignment retiles both. A repeat is folded
-    // into the uv transform each frame anyway (`matrixAutoUpdate`), so this costs no upload — which is
-    // why the basalt scale can be a live knob rather than a rebuilding one.
-    stoneMaterial.map?.repeat.setScalar(ACCRETION_TUNING.stoneTextureRepeat);
+    // The repeat is NOT re-applied here any more. It was a live knob when a panel could drag it; now
+    // it is a constant, baked into `sharedStoneMap` once at construction. Re-writing it every frame
+    // would also mean four layers writing the same value to one shared texture.
 
     const crystal = layer.crystalUniforms;
     if (!crystal || !layer.crystal) return;
@@ -789,6 +803,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     const coreMaterial = this.core.material as THREE.MeshStandardMaterial;
     coreMaterial.map?.dispose();
     coreMaterial.dispose();
+    // The one shared across every layer — see `sharedStoneMap`. Freed here rather than in
+    // `disposeLayers`, because it outlives any single rebuild of them.
+    this.sharedStoneMap?.dispose();
     this.stoneTexture?.dispose();
     // Guarded, because the two roles normally share one image — disposing it twice would free a texture
     // the second reference still thinks it owns.

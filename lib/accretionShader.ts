@@ -24,16 +24,6 @@ import * as THREE from "three";
 // ω over its shrinking path. The exact integral diverges at the horizon and needs clamping that costs
 // more than it buys; shear-by-initial-radius produces the same emergent arms and cannot blow up.
 
-/**
- * How many particles the disc is built from. Fixed — changing it rebuilds the geometry buffers.
- *
- * PERFORMANCE: the binding cost here is fill rate, not vertex count. Every particle is an additively
- * blended sprite, so cost ≈ count × pointSize². At the default framing a particle lands around 6px, which
- * puts this near 4M fragments — comfortable. Doubling `size` quadruples that. If the finale ever drops
- * frames, `size` is the dial to reach for before this constant.
- */
-export const ACCRETION_COUNT = 120000;
-
 export const ACCRETION_UNIFORMS = {
   /** The finale cursor, 0→1. Drives every particle's whole path. */
   uSequence: { value: 0 },
