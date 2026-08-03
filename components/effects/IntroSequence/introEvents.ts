@@ -46,6 +46,21 @@ export const SUN_ASSEMBLE_EVENT = 'voidix:sun-assemble';
 export const SUN_ASSEMBLED_EVENT = 'voidix:sun-assembled';
 
 /**
+ * Fired ONCE, on the frame the star actually lights inside its closing shell — the assembly's midpoint,
+ * not its cue.
+ *
+ * It exists because the gathering field has to pull back from around the star before the last shards
+ * dock, and "when should it pull back" turned out to have a wrong obvious answer. Keying that off
+ * `SUN_ASSEMBLE_EVENT` looked right and was not: the cue is the intro ASKING, and on a slow load the
+ * sun has no model yet and cannot answer — so the dust withdrew, left a hole around an empty "o", and
+ * held it there for however long the download had left to run. The loader's own field disappearing
+ * while nothing arrived to replace it.
+ *
+ * This fires from inside the flight, so it cannot happen unless there is a star to make room for.
+ */
+export const SUN_FORMING_EVENT = 'voidix:sun-forming';
+
+/**
  * Fired at the start of the handoff, telling the loader's gathering field to ignite — the last rush of
  * matter into the star, timed to land under the sun's flight out of the "o".
  *

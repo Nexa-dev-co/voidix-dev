@@ -254,9 +254,15 @@ field, driven by **real asset progress** — not a timer.
 - **`GatherCanvas` + `gather.worker.ts`** render dust streaming in from off-screen. The render loop
   runs in a **Web Worker on an `OffscreenCanvas`** so it keeps painting while the main thread is
   blocked parsing glTF and compiling shaders. A main-thread fallback exists for older Safari.
-- **The sun assembles.** The ten fracture shards of `fractured_sun.glb` sweep in from outside the
-  frame and lock together; the star lights inside the closing shell. The intro holds its handoff on
-  `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
+- **The ten shards WAIT ON SCREEN, then assemble.** For the whole download the fracture shards of
+  `fractured_sun.glb` drift and turn among the dust — the largest, hottest debris in the same flow —
+  then sweep in and lock together, and the star lights inside the closing shell. The intro holds its
+  handoff on `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
+  ⚠ They used to wait CLIPPED off-frame (`ASSEMBLY_ENTRY_MARGIN_*` above 1) so that "you never catch a
+  piece appearing". On a slow load that left the loader with nothing on it but dust for a minute, and
+  the star arriving from nowhere at the end. The margins now straddle the frame edge and
+  `positionShards` is driven every frame while it waits — the drift and tumble were always written,
+  nothing was advancing their clock.
 - ⚠ **The gate's waits are SERIAL, and that is load-bearing.** 100% does not cue the shards — the
   assembly starts only once both scenes report warm. They used to fire on the same tick, and the
   flight is delta-timed with a clamp, so it stuck mid-air rather than catching up.
@@ -358,6 +364,7 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:reveal` | `REVEAL_EVENT` | IntroSequence | **The** intro→site handoff. Hero pin, navbar entrance, sun z-index all wait on it. |
 | `voidix:intro-active` | `INTRO_ACTIVE_EVENT` | IntroSequence | Intro is up. |
 | `voidix:sun-assemble` / `-assembled` | `SUN_ASSEMBLE_EVENT` / `SUN_ASSEMBLED_EVENT` | IntroSequence ↔ SunModelCanvas | Cue and completion of the shard assembly. The intro holds on the latter. |
+| `voidix:sun-forming` | `SUN_FORMING_EVENT` | SunModelCanvas | The star has lit inside its closing shell — the assembly's MIDPOINT (`CORONA_APPEAR`), not its cue. The gather field withdraws from around the star on this. ⚠ It must not key off the *cue*: the cue is only the intro asking, and on a slow load the sun has no model to answer with — so the dust pulled back from an empty "o" and stayed pulled back for the rest of the download. Fired from inside the flight, so a star exists by construction. |
 | `voidix:intro-ignite` | `IGNITE_EVENT` | IntroSequence | The gather field's final rush. |
 | `voidix:assets-warmup` | `ASSETS_WARMUP_EVENT` | IntroSequence | Asks each scene to compile shaders during a still beat, so the stall is invisible. |
 | `deck:reveal` / `deck:hide` | `DECK_REVEAL_EVENT` / `DECK_HIDE_EVENT` | useHeroAnimation | **The fleet itself** enters/leaves — replay the craft's entrance. Nothing else. |

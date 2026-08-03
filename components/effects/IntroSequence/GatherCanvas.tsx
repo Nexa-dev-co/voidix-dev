@@ -6,7 +6,7 @@ import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import { GatherRenderer } from "./gatherRenderer";
 import { SUN_IN_O_RATIO, SUN_BODY_FILL, SUN_FRAMING_NUDGE_X } from "./gatherShader";
 import type { GatherMessage } from "./gatherMessages";
-import { IGNITE_EVENT, SUN_ASSEMBLE_EVENT, SUN_ASSEMBLED_EVENT } from "./introEvents";
+import { IGNITE_EVENT, SUN_FORMING_EVENT, SUN_ASSEMBLED_EVENT } from "./introEvents";
 
 // The loader's gathering field — matter falling together into the star the page opens on.
 //
@@ -46,10 +46,15 @@ const SUN_RADIUS_PER_GLYPH = (SUN_IN_O_RATIO * SUN_BODY_FILL) / 2;
 /**
  * Longest the dust will stay withdrawn from around the star waiting for an assembly to finish.
  *
- * The flight is `ASSEMBLY_SECONDS` (2.2 s) in `SunModelCanvas`, so this is that plus room for a slow
- * frame. It is a backstop for an assembly that was cued but can never run — see `onAssembleStart`.
+ * Only the SECOND HALF of the flight is spent withdrawn now (the withdrawal starts at
+ * `SUN_FORMING_EVENT`, the assembly's midpoint), so this only has to cover ~1.1 s of
+ * `ASSEMBLY_SECONDS` plus room for slow frames.
+ *
+ * Belt-and-braces rather than load-bearing: keyed to the forming event there is a star by construction,
+ * so `SUN_ASSEMBLED_EVENT` is genuinely coming. It stays because a hole left open in the loader's own
+ * field is a bad enough failure to be worth two lines. See `onSunForming`.
  */
-const CLEARING_MAX_MS = 4000;
+const CLEARING_MAX_MS = 3000;
 
 /**
  * Workers already attached to a canvas, so a re-run of the effect reuses one instead of transferring
@@ -190,14 +195,17 @@ export default function GatherCanvas() {
       if (worker) post(update);
       else fallback?.update(update);
     };
-    // ⚠ The release is also on a TIMER, and it has to be. `SUN_ASSEMBLE_EVENT` is cued by the gate when
-    // both scenes report warm — which can happen while `fractured_sun.glb` is still downloading, since
-    // the gate gives up on assets at ASSET_WAIT_TIMEOUT_MS. `SunModelCanvas` then has no model to fly,
-    // so it never answers with SUN_ASSEMBLED_EVENT, and the hole this opens around the star stays open
-    // for the rest of the loader — a bite taken out of the dust with nothing arriving to fill it.
-    // Exactly the case where the field most needs to look alive.
+    // ⚠ Keyed to SUN_FORMING, not to SUN_ASSEMBLE. The cue is the intro ASKING for the assembly; the
+    // forming event is the star actually lighting inside its shell, halfway through the flight. Keying
+    // the withdrawal to the cue meant that on a slow load — where the gate gives up on assets and asks
+    // for an assembly the sun has no model to perform — the dust pulled back from around an empty "o"
+    // and stayed pulled back for the whole remaining download. The field's own hole, with nothing
+    // arriving to fill it.
+    //
+    // On the forming event there is a star there by construction, and the dust has been streaming
+    // uninterrupted for the entire wait and the whole first half of the flight.
     let clearingFallback = 0;
-    const onAssembleStart = () => {
+    const onSunForming = () => {
       setClearing(1);
       window.clearTimeout(clearingFallback);
       clearingFallback = window.setTimeout(() => setClearing(0), CLEARING_MAX_MS);
@@ -206,7 +214,7 @@ export default function GatherCanvas() {
       window.clearTimeout(clearingFallback);
       setClearing(0);
     };
-    window.addEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
+    window.addEventListener(SUN_FORMING_EVENT, onSunForming);
     window.addEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
 
     return () => {
@@ -214,7 +222,7 @@ export default function GatherCanvas() {
       window.clearInterval(measureTimer);
       window.removeEventListener("resize", resize);
       window.removeEventListener(IGNITE_EVENT, onIgnite);
-      window.removeEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
+      window.removeEventListener(SUN_FORMING_EVENT, onSunForming);
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
       window.clearTimeout(clearingFallback);
       // Deferred so a StrictMode re-mount (which runs in the same commit) can cancel it and adopt the

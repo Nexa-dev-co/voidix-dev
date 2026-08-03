@@ -9,6 +9,7 @@ import {
   REVEAL_EVENT,
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
+  SUN_FORMING_EVENT,
   INTRO_MARKER_SELECTOR,
 } from '@/components/effects/IntroSequence/introEvents';
 import {
@@ -110,20 +111,29 @@ const ASSEMBLY_DEPTH = 23;
 /** Extra depth variation, so they are not all on one plane. */
 const ASSEMBLY_DEPTH_SPREAD = 20;
 /**
- * How far outside the visible frame the shards begin, as a multiple of the frame's own half-height at
- * their depth.
+ * How far out the shards wait, as a multiple of the frame's own half-height at their depth.
  *
- * Above 1 they start CLIPPED, which is the whole point: you never catch a piece appearing, it is simply
- * already sweeping in when it crosses the edge. Above ~1.42 clears the frame's corners too, so a shard
- * entering on a diagonal is hidden as reliably as one entering on an axis.
+ * ⚠ These were 1.45 / 2.6 — deliberately OUTSIDE the frame, on the reasoning that "you never catch a
+ * piece appearing, it is simply already sweeping in when it crosses the edge". That was a good idea for
+ * a fast load and the wrong one for a slow one: it meant the ten shards spent the entire download
+ * clipped off-screen, so the loader had nothing on it but dust, and the star arrived from nowhere at
+ * the very end.
+ *
+ * They now WAIT IN FRAME, drifting and turning among the dust (see `driftShards`) — the largest pieces
+ * of the same flow, visibly present for as long as the load takes. The band still straddles the edge:
+ * the near ones sit comfortably inside it, the far ones hang just past the corner and swim in and out.
+ *
+ * The cost of this is real and worth naming: a piece is no longer hidden until it is moving, so the
+ * flight begins from something the visitor has already been looking at. That is the trade — the star
+ * assembling out of debris you have been watching, instead of out of nothing.
  */
-const ASSEMBLY_ENTRY_MARGIN_MIN = 1.45;
+const ASSEMBLY_ENTRY_MARGIN_MIN = 0.55;
 /**
- * The furthest out any shard starts. Spreading the margin across a range staggers the entries — the
- * nearest piece edges into frame early, the furthest arrives last — instead of ten pieces crossing the
- * border on the same frame.
+ * The furthest out any shard waits. Spreading the margin across a range staggers the entries — the
+ * nearest piece is well inside the frame, the furthest is past its corner — instead of ten pieces
+ * sitting on one ring.
  */
-const ASSEMBLY_ENTRY_MARGIN_MAX = 2.6;
+const ASSEMBLY_ENTRY_MARGIN_MAX = 1.35;
 
 /**
  * When the star itself appears, as a fraction of the assembly.
@@ -139,6 +149,21 @@ const ASSEMBLY_SPREAD = 1.4;
 /** Drift amplitude while they are still travelling — the "floating" part. Fades to 0 as they land. */
 const ASSEMBLY_FLOAT = 0.55;
 const ASSEMBLY_FLOAT_SPEED = 0.55;
+/**
+ * How fast a waiting shard turns on its own axis, in degrees per second.
+ *
+ * The drift above moves them through space; this turns them. Without it the pieces held one fixed
+ * orientation for the whole wait and read as painted on rather than as floating — the tumble
+ * quaternion is a START pose, and slerping it toward home by an `arrival` that is still 0 leaves it
+ * exactly where it began.
+ *
+ * Slow, and each piece gets its own axis and its own rate (scaled by its phase), because ten rocks
+ * turning at one speed is a carousel. Faded out as the assembly takes over — a piece that is docking
+ * has to be settling into its true orientation, not still spinning.
+ */
+const IDLE_TUMBLE_DEGREES_PER_SECOND = 11;
+/** Slow orbit of the whole waiting field about the star, so the group circles rather than just bobbing. */
+const IDLE_ORBIT_DEGREES_PER_SECOND = 4;
 /**
  * How much hotter the magma runs while the pieces are still falling in, as a multiple of its resting
  * emissive. Infalling matter is hot and cools as it settles — but the real job is legibility: at the far
@@ -327,6 +352,8 @@ interface Shard {
   tumble: THREE.Quaternion;
   /** Per-shard phase so they drift out of step rather than bobbing in unison. */
   phase: number;
+  /** Its own axis of rotation while it waits — see IDLE_TUMBLE_DEGREES_PER_SECOND. */
+  spinAxis: THREE.Vector3;
 }
 
 /** Everything that is not a shard — the star's body and its corona, which grow in as the shell closes. */
@@ -426,6 +453,8 @@ export default function SunModelCanvas() {
     const heatedMaterials: THREE.MeshStandardMaterial[] = [];
     const flareSpins: FlareSpin[] = [];
     const scratchSpin = new THREE.Quaternion();
+    /** Scratch for a waiting shard's spun tumble pose, so the per-frame drift allocates nothing. */
+    const idleTumble = new THREE.Quaternion();
 
     // ── Sizing ──
     let forceRender = true;
@@ -609,19 +638,45 @@ export default function SunModelCanvas() {
         object.scale.copy(homeScale).multiplyScalar(coronaGrowth);
       });
 
-      shards.forEach(({ object, home, homeQuaternion, far, depth, tumble, phase }) => {
+      // The whole waiting field circles the star slowly, and stops circling as it docks. One angle for
+      // every piece, so they hold their formation while they orbit rather than scattering.
+      const orbit = THREE.MathUtils.degToRad(IDLE_ORBIT_DEGREES_PER_SECOND) * time * receding;
+      const orbitCos = Math.cos(orbit);
+      const orbitSin = Math.sin(orbit);
+
+      shards.forEach(({ object, home, homeQuaternion, far, depth, tumble, phase, spinAxis }) => {
         const distance =
           1 / THREE.MathUtils.lerp(1 / (cameraDistance + depth), 1 / cameraDistance, arrival);
         const travelling = (distance - cameraDistance) / depth;
         // Drift and tumble stay on the eased clock, not on `travelling` — `travelling` collapses early
         // by design now, and hanging the float off it would stop the pieces moving well before they land.
         const drift = receding * ASSEMBLY_FLOAT * shardRadius;
+        // The offset from home, orbited about the view axis. Rotating the OFFSET rather than the world
+        // position is what keeps the star's own centre fixed while the debris goes round it.
+        const offsetX = far.x * travelling;
+        const offsetY = far.y * travelling;
         object.position.set(
-          home.x + far.x * travelling + Math.sin(time * ASSEMBLY_FLOAT_SPEED + phase) * drift,
-          home.y + far.y * travelling + Math.cos(time * ASSEMBLY_FLOAT_SPEED * 0.8 + phase) * drift,
+          home.x + offsetX * orbitCos - offsetY * orbitSin +
+            Math.sin(time * ASSEMBLY_FLOAT_SPEED + phase) * drift,
+          home.y + offsetX * orbitSin + offsetY * orbitCos +
+            Math.cos(time * ASSEMBLY_FLOAT_SPEED * 0.8 + phase) * drift,
           home.z + far.z * travelling + Math.sin(time * ASSEMBLY_FLOAT_SPEED * 1.2 + phase) * drift,
         );
-        object.quaternion.slerpQuaternions(tumble, homeQuaternion, arrival);
+        // Turning on its own axis while it waits, settling into its true orientation as it docks.
+        //
+        // ⚠ The spin is applied to the TUMBLE pose and then the whole thing is slerped home, rather
+        // than being added after — so at arrival 1 the result is exactly `homeQuaternion`, with no
+        // residue. A spin applied on top would leave every shard a few degrees off its authored seat,
+        // and the fracture only looks like a fracture when the ten pieces line up exactly.
+        scratchSpin.setFromAxisAngle(
+          spinAxis,
+          THREE.MathUtils.degToRad(IDLE_TUMBLE_DEGREES_PER_SECOND) *
+            time *
+            (0.6 + phase / TWO_PI) *
+            receding,
+        );
+        idleTumble.copy(tumble).multiply(scratchSpin);
+        object.quaternion.slerpQuaternions(idleTumble, homeQuaternion, arrival);
       });
     };
 
@@ -876,6 +931,12 @@ export default function SunModelCanvas() {
             depth,
             tumble,
             phase: Math.random() * Math.PI * 2,
+            // A random unit axis, so no two pieces turn about the same one.
+            spinAxis: new THREE.Vector3(
+              Math.random() * 2 - 1,
+              Math.random() * 2 - 1,
+              Math.random() * 2 - 1,
+            ).normalize(),
           });
         });
       }
@@ -959,16 +1020,39 @@ export default function SunModelCanvas() {
       // The star always turns; it only stops once the works field has covered it completely.
     const moving = !covered;
 
+      // ── Waiting: the pieces drift, and they are ON SCREEN while they do it ──
+      //
+      // This branch is new and it is the whole of "the shards should be flying around until the load
+      // finishes". `positionShards` used to be called exactly once, at model-land, with a fixed time of
+      // 0 — so the ten pieces were placed off-frame and then held that single pose, motionless and
+      // clipped, for the entire download. The drift and tumble in `positionShards` were already written
+      // and simply never ran; nothing was advancing their clock.
+      //
+      // Now it runs every frame until the cue, at arrival 0 — where `receding` is 1, so the orbit, the
+      // float and the per-shard spin are all at full strength and the magma is at full ASSEMBLY_HEAT.
+      // The pieces read as the largest, hottest debris in the same flow the dust belongs to.
+      let assembling = false;
+      if (modelReady && !assemblyCued && !reduceMotion) {
+        positionShards(0, elapsed);
+        assembling = true; // keep drawing: something on this canvas is moving
+      }
+
       // Assembly: a one-shot flight in from deep space, run once the model is here AND the intro has
       // put the "o" on screen — whichever of those two lands last.
-      let assembling = false;
       if (modelReady && assemblyCued && assembly < 1) {
         const rate = (forceAssembled ? ASSEMBLY_REVEAL_SPEEDUP : 1) / ASSEMBLY_SECONDS;
         // Checked before the increment, so the frame that reaches exactly 1 still places the pieces —
         // they land on their true home rather than a fraction short of it.
+        const wasBeforeForming = assembly < CORONA_APPEAR;
         assembly = Math.min(1, assembly + delta * rate);
         positionShards(assembly, elapsed);
         assembling = true;
+        // The star has just lit inside the shell. The gathering field withdraws from around it on this,
+        // rather than on the CUE — the cue is only the intro asking, and on a slow load the model may
+        // not have arrived to answer it. See SUN_FORMING_EVENT.
+        if (wasBeforeForming && assembly >= CORONA_APPEAR) {
+          window.dispatchEvent(new Event(SUN_FORMING_EVENT));
+        }
         // The intro is holding its handoff on this. Fired from here rather than from a timer so it is the
         // frame the last shard actually lands, however long the flight ended up taking.
         if (assembly >= 1) window.dispatchEvent(new Event(SUN_ASSEMBLED_EVENT));
