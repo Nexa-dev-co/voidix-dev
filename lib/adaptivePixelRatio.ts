@@ -146,6 +146,19 @@ export function reportProbedFrameCost(
   const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / milliseconds);
   ceil = Math.min(hardwareCeil, Math.max(floor, affordable));
   softCeil = ceil;
+
+  // ── Say what was decided, in development ──
+  // This one measurement sets the resolution every heavy scene runs at for the whole session, and its
+  // effect is silent: a site that is uniformly soft and a site that is uniformly slow look like
+  // "something is wrong" rather than like a number. Reading it should not require adding a log first.
+  // Stripped from production builds by the bundler's dead-code elimination.
+  if (process.env.NODE_ENV === 'development') {
+    console.debug(
+      `[voidix] gpu probe: ${milliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
+        `at ratio ${probeRatio} → affordable ${affordable.toFixed(2)}, ` +
+        `ceiling ${ceil.toFixed(2)} (floor ${floor}, hardware max ${hardwareCeil})`,
+    );
+  }
   // Land on it rather than climb to it. A step-up reallocates every composer on the site, and paying
   // that stall to reach a level we have just MEASURED as affordable is a stall for nothing. A machine
   // measured as not capable starts low, which is the entire reason to measure before the first frame.

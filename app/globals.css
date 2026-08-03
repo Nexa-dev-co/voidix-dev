@@ -2497,6 +2497,25 @@ body {
   }
 }
 
+/* ── The wordmark's letters ───────────────────────────────────────────────────────────────────────
+   The one rule these need, and they had none.
+
+   Each letter is a Syne 800 glyph at `clamp(4.5rem, 19vw, 16rem)` — up to 256px — and the intro
+   animates yPercent, rotation, scale AND opacity on all five at once, through a `back.out(1.7)`
+   overshoot. Without a promotion hint the browser has no reason to give them their own layer, so it
+   RE-RASTERISES every glyph at its new transform on every frame of that animation. Five huge vector
+   glyphs, re-rendered ~60 times, on the beat where three WebGL contexts are also being built. That is
+   the stutter; it is not the animation being too ambitious.
+
+   Promoted, each glyph is rasterised once and the rest is a compositor transform.
+
+   The hint is left standing rather than cleared on completion, deliberately: `IntroSequence` unmounts
+   the whole subtree when it is done, so the layers go with it. There is nothing to clean up and no
+   long-lived cost — which is exactly why this is safe here and would not be on a permanent element. */
+.intro-letter {
+  will-change: transform, opacity;
+}
+
 /* The wordmark's underline, breathing while the loader waits at its gate.
    ⚠ CSS rather than a GSAP tween, and this is the whole point of it: the gate's longest wait is two
    WebGL scenes compiling their shaders, which BLOCKS the main thread — so a tween interpolated there

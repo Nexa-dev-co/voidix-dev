@@ -8,6 +8,7 @@ import {
   areAssetsReady,
   areWarmupsDone,
   onAssetProgress,
+  markStageQuiet,
   ASSETS_WARMUP_EVENT,
 } from "@/lib/assetLoadProgress";
 import {
@@ -79,6 +80,18 @@ const ASSET_WAIT_TIMEOUT_MS = 12000;
 const WARMUP_WAIT_MAX_MS = 3500;
 const ASSEMBLY_WAIT_MAX_MS = 3500;
 const WARMUP_SETTLE_MS = 250;
+/**
+ * A held beat between the last compile and the first frame of the shard flight.
+ *
+ * The flight is the loader's finale and it is delta-timed with a clamp, so whatever it loses in its
+ * opening frames it can never make back. Handing it the frame straight after two scenes have finished
+ * compiling and allocating their composers is the one place on the loader where that is most likely.
+ *
+ * ⚠ It ADDS to the gate's serial caps. `ASSEMBLE_CUE_FALLBACK_MS` in SunModelCanvas has to stay past
+ * ASSET_WAIT_TIMEOUT_MS + WARMUP_WAIT_MAX_MS + this, or on a stalled load the sun cues its own assembly
+ * first and the two race.
+ */
+const ASSEMBLY_LEAD_MS = 1000;
 
 // The sun is sized to a little over the "o" glyph so it reads as filling it.
 const SUN_IN_O_RATIO = 1.3;
@@ -172,6 +185,11 @@ export default function IntroSequence() {
 
     // Reduced motion: skip the show — drop the sun home, reveal, unmount.
     if (prefersReducedMotion()) {
+      // Nothing is going to animate, so the stage is already as quiet as it will ever be. Said out
+      // loud, because the timeline that normally says it is never built on this path — and a scene
+      // waiting on it would never warm, and would compile on the frame it is first drawn instead.
+      markStageQuiet();
+      window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
       if (counterRef.current) counterRef.current.textContent = "100";
       if (sunLayer) gsap.set(sunLayer, { autoAlpha: 1 });
       if (sunFlight) gsap.set(sunFlight, { x: 0, y: 0, scale: 1 });
@@ -269,11 +287,21 @@ export default function IntroSequence() {
       if (assemblyCued || hasResumed) return;
       assemblyCued = true;
       window.clearTimeout(gateTimeout);
-      window.dispatchEvent(new Event(SUN_ASSEMBLE_EVENT));
-      // The sun can already be assembled by the time we ask — under reduced motion it reports the moment
-      // its model lands (SunModelCanvas), long before this, and it will not report a second time.
-      if (sunAssembled) settleThenReveal();
-      else gateTimeout = window.setTimeout(settleThenReveal, ASSEMBLY_WAIT_MAX_MS);
+      // ── One quiet beat before the star moves ──
+      // The frame that precedes this one has just finished compiling two WebGL scenes and allocating
+      // their composers. Handing the shard flight the very next frame means its opening — the part that
+      // sets the pace for the whole 2.2 s sweep — is drawn on a GPU that has not yet caught its breath,
+      // and the flight is delta-timed with a clamp, so it cannot make that time back up.
+      //
+      // A second of stillness costs a second of loader and buys the finale a clean start. It also reads
+      // better: the star arrives into a held frame rather than on the tail of the counter hitting 100.
+      gateTimeout = window.setTimeout(() => {
+        window.dispatchEvent(new Event(SUN_ASSEMBLE_EVENT));
+        // The sun can already be assembled by the time we ask — under reduced motion it reports the
+        // moment its model lands (SunModelCanvas), and it will not report a second time.
+        if (sunAssembled) settleThenReveal();
+        else gateTimeout = window.setTimeout(settleThenReveal, ASSEMBLY_WAIT_MAX_MS);
+      }, ASSEMBLY_LEAD_MS);
     };
 
     const onSunAssembled = () => {
@@ -286,15 +314,17 @@ export default function IntroSequence() {
       if (warmupStarted && !assemblyCued && areWarmupsDone()) cueAssembly();
     };
 
-    // ── Stage 1: 100% downloaded → start the shader compiles ──
-    // Only the compiles. The shards deliberately do NOT start here (see the constants above).
+    // ── Stage 1: 100% downloaded → wait for the shader compiles ──
+    // It no longer STARTS them: each scene warms itself once its own assets are in and the stage has
+    // gone quiet (see the ASSETS_WARMUP_EVENT dispatch in the timeline below). By the time the last
+    // byte lands, most of that work is usually already done — which is the point. This stage is only
+    // the wait, and its cap.
     const beginWarmup = () => {
       if (warmupStarted) return;
       warmupStarted = true;
       startHoldPulse();
-      window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
       gateTimeout = window.setTimeout(cueAssembly, WARMUP_WAIT_MAX_MS);
-      checkWarm(); // a scene can already be warm if the warm-up ran on a previous mount
+      checkWarm(); // a scene can already be warm — on a fast load it will be
     };
 
     const tryBeginWarmup = () => {
@@ -367,6 +397,30 @@ export default function IntroSequence() {
       { scaleX: 1, duration: 0.7, ease: "power3.inOut" },
       ">-0.4",
     );
+
+    // ── The stage is now still: the heavy scenes may compile ──
+    //
+    // ⚠ Dispatched HERE, from the timeline, rather than from the gate at 100%. It no longer means
+    // "the assets are in" — each scene knows that about itself — it means "the loader has finished
+    // animating, so a GPU stall will not be seen".
+    //
+    // Both readings have been shipped and both were wrong on their own. Firing at 100% stacked two
+    // compiles and two first composer allocations immediately before the shard flight. Firing on each
+    // scene's own assets instead put them on top of the wordmark: five Syne 800 glyphs at up to 256 px
+    // animating transform and opacity through a `back.out` overshoot is the most expensive thing this
+    // loader ever draws, and on a fast connection the field's assets land right in the middle of it.
+    //
+    // A scene warms when BOTH are true, which is this signal and its own readiness — so the compile
+    // lands in the still beat below, where the only thing that has to look alive is the dust, and the
+    // dust is in a worker.
+    //
+    // Recorded as STATE as well as fired as an event: both scenes are dynamically imported, so on a
+    // slow connection a chunk can arrive after this line has already run, and a scene listening only
+    // for the event would wait forever on one that had already gone. See `isStageQuiet`.
+    timeline.add(() => {
+      markStageQuiet();
+      window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
+    });
 
     timeline.to({}, { duration: HOLD_BEFORE_HANDOFF });
 

@@ -151,8 +151,22 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
   const float DEPTH_NEAR = 22.0;
   const float DEPTH_FAR = 54.0;
 
-  /** Fraction of the field alive at zero progress — enough to read as a field, sparse enough to grow. */
-  const float MIN_DENSITY = 0.18;
+  /**
+   * Fraction of the field alive at zero progress.
+   *
+   * ⚠ Was 0.18, and 0.18 is where "the field reports the truth" stopped being a virtue. Do the sum for
+   * a stalled load: 18% of the grains alive, spread over the WHOLE viewport rather than a band, each
+   * one far enough out that \`scale\` is ~0.15-0.28 — which puts its alpha at ~0.3 and its point size
+   * under one pixel, so it clamps to SIZE_MIN_PIXELS. A screen of one-pixel dots at a third alpha on
+   * near-black, drifting at 0.16 trips per second, is not a thin trickle from deep space. It is an
+   * empty screen, and that is exactly what it was reported as.
+   *
+   * Half the field is the floor now. Progress still reads — density climbs to double this, and the
+   * FLOW RATE (gatherRenderer) doubles with it, which is the cue that actually carries — but the
+   * loader can no longer look switched off while it is working. The honest number the field cannot
+   * give you is on the counter and the telemetry meter anyway.
+   */
+  const float MIN_DENSITY = 0.5;
   /**
    * How much brighter a particle burns in the instant it is absorbed at the rim, and how narrow that
    * window is. Kept narrow on purpose: everything converges at the rim, so a wide flare window means a

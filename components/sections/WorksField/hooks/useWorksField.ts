@@ -37,10 +37,16 @@ import {
 import { hideHologram } from '@/lib/hologramPose';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { createWorksHud } from '../worksHud';
-import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
+import {
+  reportAssetProgress,
+  reportWarmupDone,
+  isStageQuiet,
+  ASSETS_WARMUP_EVENT,
+} from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame, reportProbedFrameCost } from '@/lib/adaptivePixelRatio';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
 import { warmSceneMaterials } from '@/lib/warmScene';
+import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 
 // ── Textures ────────────────────────────────────────────────────────────
 // The DEBRIS texture: dark basalt shot through with glowing lava veins, worn as plain rock by the
@@ -1178,6 +1184,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     loadingManager.onError = (url) => {
       console.error(`Works field asset failed to load: ${url}`);
       reportAssetProgress('works', 1);
+      // Arm the warm-up too, or a failed texture would leave this source reporting ready for the
+      // download but never warm — and the gate waits on BOTH, so it would sit out its full cap.
+      assetsIn = true;
+      warmWhenBothReady();
     };
 
     /**
@@ -1210,6 +1220,26 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       if (disposed) {
         strategy.dispose();
         return;
+      }
+
+      // ── What the mark actually cost, in development ──
+      // `ACCRETION_TUNING.capEdgeFraction` sits at 0.008 — the floor of the slider it was authored on —
+      // with `capSubdivisions: 2`, and each subdivision QUADRUPLES the triangle count. Its own comment
+      // says to watch the rig's triangle and build-time readouts before carrying it into the section,
+      // and the rig was deleted before anyone did. The strategy has measured itself since the day it was
+      // written and nothing has ever read the result.
+      //
+      // These two numbers answer the only open performance question left on this site: whether cutting
+      // four marks at this density is a rounding error or the longest block on the loader. Under ~60 ms
+      // total there is nothing here to chase; if it is hundreds, `capSubdivisions: 1` is a 4× cut and
+      // may well be invisible.
+      if (process.env.NODE_ENV === 'development') {
+        const { buildMilliseconds, bufferBytes, perMarkBytes } = strategy.metrics;
+        console.debug(
+          `[voidix] mark build: ${buildMilliseconds.toFixed(0)} ms for ${marks.length} marks, ` +
+            `${(bufferBytes / 1e6).toFixed(1)} MB of buffers ` +
+            `(${(perMarkBytes / 1e6).toFixed(1)} MB each)`,
+        );
       }
 
 
@@ -1314,13 +1344,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Land on the focused project immediately (no transition on first build).
       applyFocus(activeIndexRef.current, true);
       onStatus({ isLoading: false, percent: 100 });
-      // Fully built → mark the field ready for the intro's loader gate.
+      // Fully built → mark the field ready for the intro's loader gate…
       reportAssetProgress('works', 1);
-      // …and warm it NOW, rather than waiting for the whole page to finish downloading. See the note
-      // on `warmUpField` for why that wait was costing the loader its finale. Safe to call from here
-      // even though the const is declared further down the effect: everything on this path is async,
-      // so the effect body has long since finished running.
-      void warmUpField();
+      // …and arm the warm-up, which runs once the loader's stage is also quiet. Safe to reach forward
+      // to a const declared further down the effect: everything on this path is async, so the effect
+      // body has long since finished running.
+      assetsIn = true;
+      warmWhenBothReady();
     };
 
     // The debris texture is what the manager is waiting on; the mark then fetches its own outlines,
@@ -1335,6 +1365,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         console.error('Works field failed to build:', cause);
         onStatus({ isLoading: false, percent: 100 });
         reportAssetProgress('works', 1);
+        assetsIn = true;
+        warmWhenBothReady();
       });
     };
 
@@ -1718,10 +1750,29 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // section's warm-up inside the fleet's download, where the GPU is otherwise idle, and leaves only
     // one scene's worth of work on the tail.
     //
-    // ASSETS_WARMUP_EVENT stays as a BACKSTOP, for a section whose build failed and never got here.
-    // `warmupStarted` makes the two idempotent, and they can legitimately race.
+    // ⚠ But own-assets-in is only HALF the condition, and shipping it alone made the loader's wordmark
+    // stutter. The other half is that the loader has finished animating: five Syne 800 glyphs at up to
+    // 256 px, moving transform AND opacity through a `back.out` overshoot, are the most expensive thing
+    // the loader ever draws — and on a fast connection this section's assets land right on top of them.
+    // ASSETS_WARMUP_EVENT is now dispatched when the wordmark has resolved and the stage is still, so
+    // the compile goes where nothing is moving except the dust, which is in a worker and cannot stutter.
+    let assetsIn = false;
+    // Starts TRUE when there is no loader on the page. Under reduced motion the intro bypasses its
+    // timeline entirely and never dispatches, so waiting on the event would mean never warming at all.
+    // Read from the DOM rather than from INTRO_ACTIVE_EVENT because this hook is behind a dynamic
+    // import and mounts long after that event has been and gone — the same reason SunModelCanvas does it.
+    // Three ways to already be quiet, and all three are needed. The STATE covers a scene whose chunk
+    // arrived after the intro had already dispatched (this hook is dynamically imported, so on a slow
+    // connection that ordering is real). The DOM check covers reduced motion and any page with no
+    // loader on it. The event covers the ordinary case.
+    let stageQuiet =
+      isStageQuiet() || document.querySelector(INTRO_MARKER_SELECTOR) === null;
+    const warmWhenBothReady = () => {
+      if (assetsIn && stageQuiet) void warmUpField();
+    };
     const onWarmupRequested = () => {
-      void warmUpField();
+      stageQuiet = true;
+      warmWhenBothReady();
     };
     window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 

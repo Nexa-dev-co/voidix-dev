@@ -9,6 +9,7 @@ import {
   REVEAL_EVENT,
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
+  INTRO_MARKER_SELECTOR,
 } from '@/components/effects/IntroSequence/introEvents';
 import {
   SUN_FRAMING_NUDGE_X,
@@ -163,16 +164,15 @@ const ASSEMBLY_REVEAL_SPEEDUP = 3;
  * When to start on our own if no cue ever arrives — measured from PAGE LOAD, not from mount.
  *
  * Only a backstop for an intro that never reaches its gate. It has to sit past the intro's LAST possible
- * cue or the two race — and on a stalled load that cue is late: the intro gives up on assets at 12s
- * (ASSET_WAIT_TIMEOUT_MS), then compiles for up to 3.5s more (WARMUP_WAIT_MAX_MS) before it asks for the
- * assembly, because those two stages are serial. Losing that race would start the shard flight in the
- * middle of the compile, which is the exact freeze the serial gate exists to prevent. ⚠ Raise this
- * whenever either of those two grows. The normal no-intro case is handled immediately by
- * INTRO_MARKER_SELECTOR instead of by waiting this out.
+ * cue or the two race — and on a stalled load that cue is late, because the gate's stages are SERIAL and
+ * their caps add: the intro gives up on assets at 12s (ASSET_WAIT_TIMEOUT_MS), waits up to 3.5s more for
+ * the scenes to report warm (WARMUP_WAIT_MAX_MS), then holds a further 1s of stillness before asking
+ * (ASSEMBLY_LEAD_MS) — 16.5s in total. Losing that race would start the shard flight in the middle of a
+ * compile, which is the exact freeze the serial gate exists to prevent. ⚠ Raise this whenever any of
+ * those three grows. The normal no-intro case is handled immediately by INTRO_MARKER_SELECTOR instead of
+ * by waiting this out.
  */
-const ASSEMBLE_CUE_FALLBACK_MS = 17000;
-/** An element only the loader renders — its presence means a cue is coming, so wait for it. */
-const INTRO_MARKER_SELECTOR = '.intro-o-slot';
+const ASSEMBLE_CUE_FALLBACK_MS = 18500;
 
 // ── The hero → services state ramp ──
 // What carries the sun from Peaceful into Cracks. It is a pure function of SCROLL (the pin's

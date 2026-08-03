@@ -539,7 +539,12 @@ class AccretionTransition implements MarkTransitionStrategy {
    * mark, and `setTransition` never has to defend against one.
    */
   async build(): Promise<void> {
-    const startedAt = performance.now();
+    // ⚠ Accumulated per mark, NOT wall clock across the whole loop. The loop yields a frame between
+    // marks on purpose (see the note above), so elapsed time here would include ~16 ms of deliberate
+    // waiting per mark and report the cut as far more expensive than it is. This is the question the
+    // number exists to answer: how long does CUTTING cost. Wall clock is this plus one frame per mark,
+    // and the caller can work that out.
+    let workMilliseconds = 0;
     this.disposeLayers();
 
     const baseRock = this.coreField();
@@ -550,6 +555,7 @@ class AccretionTransition implements MarkTransitionStrategy {
       if (markIndex > 0) await yieldToNextFrame();
       if (this.disposed) return;
 
+      const markStartedAt = performance.now();
       const mark = this.marks[markIndex];
       const chunks = buildAccretionChunks(mark.shapes, mark.flipY, {
         targetSize: this.options.targetSize,
@@ -607,15 +613,15 @@ class AccretionTransition implements MarkTransitionStrategy {
         chunks,
         bytes: measureGeometryBytes(chunks.geometry) + crystalBytes,
       });
+      workMilliseconds += performance.now() - markStartedAt;
     }
 
-    const buildMilliseconds = performance.now() - startedAt;
     const bufferBytes =
       this.layers.reduce((total, layer) => total + layer.bytes, 0) +
       measureGeometryBytes(this.crystalGeometry) +
       measureGeometryBytes(this.core.geometry);
     this.metrics = {
-      buildMilliseconds,
+      buildMilliseconds: workMilliseconds,
       bufferBytes,
       perMarkBytes: Math.round(bufferBytes / Math.max(1, this.layers.length)),
     };

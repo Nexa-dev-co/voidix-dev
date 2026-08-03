@@ -44,6 +44,14 @@ const POST_INTERVAL_MS = 100;
 const SUN_RADIUS_PER_GLYPH = (SUN_IN_O_RATIO * SUN_BODY_FILL) / 2;
 
 /**
+ * Longest the dust will stay withdrawn from around the star waiting for an assembly to finish.
+ *
+ * The flight is `ASSEMBLY_SECONDS` (2.2 s) in `SunModelCanvas`, so this is that plus room for a slow
+ * frame. It is a backstop for an assembly that was cued but can never run — see `onAssembleStart`.
+ */
+const CLEARING_MAX_MS = 4000;
+
+/**
  * Workers already attached to a canvas, so a re-run of the effect reuses one instead of transferring
  * again.
  *
@@ -182,8 +190,22 @@ export default function GatherCanvas() {
       if (worker) post(update);
       else fallback?.update(update);
     };
-    const onAssembleStart = () => setClearing(1);
-    const onAssembleEnd = () => setClearing(0);
+    // ⚠ The release is also on a TIMER, and it has to be. `SUN_ASSEMBLE_EVENT` is cued by the gate when
+    // both scenes report warm — which can happen while `fractured_sun.glb` is still downloading, since
+    // the gate gives up on assets at ASSET_WAIT_TIMEOUT_MS. `SunModelCanvas` then has no model to fly,
+    // so it never answers with SUN_ASSEMBLED_EVENT, and the hole this opens around the star stays open
+    // for the rest of the loader — a bite taken out of the dust with nothing arriving to fill it.
+    // Exactly the case where the field most needs to look alive.
+    let clearingFallback = 0;
+    const onAssembleStart = () => {
+      setClearing(1);
+      window.clearTimeout(clearingFallback);
+      clearingFallback = window.setTimeout(() => setClearing(0), CLEARING_MAX_MS);
+    };
+    const onAssembleEnd = () => {
+      window.clearTimeout(clearingFallback);
+      setClearing(0);
+    };
     window.addEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
     window.addEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
 
@@ -194,6 +216,7 @@ export default function GatherCanvas() {
       window.removeEventListener(IGNITE_EVENT, onIgnite);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
+      window.clearTimeout(clearingFallback);
       // Deferred so a StrictMode re-mount (which runs in the same commit) can cancel it and adopt the
       // worker. A real unmount has nothing to cancel it, so the worker is genuinely torn down.
       const entry = WORKERS_BY_CANVAS.get(canvas);

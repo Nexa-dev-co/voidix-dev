@@ -48,11 +48,37 @@ const warmedSources = new Set<AssetSource>();
 const listeners = new Set<() => void>();
 
 /**
- * The intro fires this at its static pre-handoff hold, once assets are loaded, asking each scene to
- * compile its shaders + bloom pipeline during that still beat — so the (synchronous) compile stall
- * is invisible instead of janking the loading animation or hitching the reveal.
+ * Fired by the intro once its wordmark has finished animating: the stage is still, so a scene may
+ * spend a frame compiling without anybody seeing it.
+ *
+ * ⚠ It does NOT mean "the assets are in" any more, and the rename would be more trouble than the
+ * clarity is worth. Each scene knows about its own assets; what it cannot know is whether the loader
+ * is mid-flourish. Both halves are required before a warm-up runs — see either scene hook.
  */
 export const ASSETS_WARMUP_EVENT = 'voidix:assets-warmup';
+
+/**
+ * …and the same fact as STATE, because an event is a race.
+ *
+ * Both heavy scenes are behind `next/dynamic`, so on a slow connection their chunks can arrive after
+ * the intro's timeline has already dispatched. A scene that mounts a moment too late would wait
+ * forever on a signal that had already been and gone, never warm, and hold the gate to its cap.
+ * A scene therefore reads this at setup AND listens for the event; whichever order they happen in,
+ * the answer is the same.
+ */
+let stageIsQuiet = false;
+
+/** The loader's animation has settled (or there is no loader). Idempotent; notifies listeners. */
+export function markStageQuiet(): void {
+  if (stageIsQuiet) return;
+  stageIsQuiet = true;
+  listeners.forEach((listener) => listener());
+}
+
+/** True once the loader's stage has settled — safe to read at any time, including before mount. */
+export function isStageQuiet(): boolean {
+  return stageIsQuiet;
+}
 
 /** Record a source's load fraction (0..1). Monotonic: a lower value than already seen is ignored. */
 export function reportAssetProgress(source: AssetSource, value: number): void {

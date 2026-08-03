@@ -20,9 +20,11 @@ import {
   reportWarmupDone,
   onAssetProgress,
   getSourceProgress,
+  isStageQuiet,
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
+import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
 import {
   createPortalGate,
@@ -950,8 +952,26 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         if (!disposed) reportWarmupDone('deck'); // the intro holds the reveal until this fires
       }
     };
+    // ── When it runs: BOTH the fleet's own vessels AND a quiet loader ──
+    // Own-assets-in keeps this off the tail of the page's last byte (see above). The quiet-stage half is
+    // what keeps it off the loader's wordmark: five Syne 800 glyphs at up to 256 px animating transform
+    // and opacity through an overshoot is the most expensive thing the loader draws, and a compile
+    // landing on it is visible. ASSETS_WARMUP_EVENT now fires once that animation has resolved.
+    //
+    // `stageQuiet` starts TRUE when no loader is on the page — under reduced motion the intro skips its
+    // timeline and never dispatches, so waiting on it would mean never warming. Read from the DOM
+    // because this hook is behind a dynamic import and mounts after INTRO_ACTIVE_EVENT has gone.
+    let vesselsIn = false;
+    // State as well as event, because this hook is dynamically imported and its chunk can land after
+    // the intro has already dispatched. See `isStageQuiet` for why an event alone is a race.
+    let stageQuiet =
+      isStageQuiet() || document.querySelector(INTRO_MARKER_SELECTOR) === null;
+    const warmWhenBothReady = () => {
+      if (vesselsIn && stageQuiet) void prewarmPipeline();
+    };
     const onWarmupRequested = () => {
-      void prewarmPipeline();
+      stageQuiet = true;
+      warmWhenBothReady();
     };
     window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
@@ -971,9 +991,12 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // the fleet to actually be in.
       reportAssetProgress('deck', fraction);
       onStatus({ isLoading: !isDone, percent: isDone ? 100 : Math.round(fraction * 100) });
-      // Warm as soon as THIS section's own vessels are in, rather than waiting on the whole page. See
-      // the note on `prewarmPipeline` for why the shared wait was costing the loader its finale.
-      if (isDone) void prewarmPipeline();
+      // Arm the warm-up on THIS section's own vessels, rather than on the whole page. It still waits
+      // for the loader's stage to go quiet — see `warmWhenBothReady`.
+      if (isDone) {
+        vesselsIn = true;
+        warmWhenBothReady();
+      }
     };
     emitStatus();
 

@@ -16,6 +16,17 @@ export const REVEAL_EVENT = 'voidix:reveal';
 export const INTRO_ACTIVE_EVENT = 'voidix:intro-active';
 
 /**
+ * An element only the loader renders, so anything that mounts LATE can still ask "is there an intro?".
+ *
+ * `INTRO_ACTIVE_EVENT` is fired once, synchronously, on the intro's mount — which is fine for the hero
+ * (its effect runs first) and useless to everything behind a `next/dynamic` import, because those mount
+ * well after the event has been and gone. Those check the DOM instead. `SunModelCanvas` established
+ * this; the two heavy scene hooks need the same answer, so the selector lives here rather than being
+ * spelled out in three files.
+ */
+export const INTRO_MARKER_SELECTOR = '.intro-o-slot';
+
+/**
  * Fired when the load reaches 100%, cueing the sun's fracture shards to sweep in from off-frame.
  *
  * This is the loader's finale, so it is deliberately the LAST thing that happens rather than something

@@ -43,7 +43,12 @@ const IGNITE_SECONDS = 0.55;
 // Trips per second: how fast a particle falls from the far edge of the stream to the sun's rim. This is
 // where real progress is spent — a cold start is a slow trickle from deep space, a finished load is a
 // torrent — so the field reports the truth while never once holding a still pose.
-const FLOW_TRIPS_PER_SECOND_IDLE = 0.16; // ~6s per trip
+// ⚠ IDLE was 0.16 — one trip every SIX SECONDS. Against a grain clamped to a single pixel (see
+// SIZE_MIN_PIXELS), six seconds of travel is not slow motion, it is stillness: nothing on screen
+// visibly moves, which is the one thing this field exists to guarantee during a long wait. 0.3 is
+// ~3.3s per trip, which reads as a current. The ratio to FULL is still 1:1.7, so the stream visibly
+// quickens as the load completes and progress remains legible without a number.
+const FLOW_TRIPS_PER_SECOND_IDLE = 0.3; //  ~3.3s per trip
 const FLOW_TRIPS_PER_SECOND_FULL = 0.5; //  ~2s per trip
 /** Ignition dumps whatever is left into the star, so the stream surges as the sun lights. */
 const FLOW_IGNITE_SURGE = 3;
