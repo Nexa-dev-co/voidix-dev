@@ -31,6 +31,7 @@ import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
 import { warmSceneMaterials } from '@/lib/warmScene';
+import { reportAssetProgress } from '@/lib/assetLoadProgress';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
 //
@@ -699,7 +700,9 @@ export default function SunModelCanvas() {
     gltfLoader.setDRACOLoader(dracoLoader);
 
     let disposed = false;
-    gltfLoader.load(MODEL_PATH, (gltf) => {
+    gltfLoader.load(
+      MODEL_PATH,
+      (gltf) => {
       if (disposed) return;
       modelRoot = gltf.scene;
       modelBaseScale.copy(modelRoot.scale);
@@ -905,7 +908,29 @@ export default function SunModelCanvas() {
       modelReady = true; // the one-shot assembly starts on the next frame after the cue
       applySize();
       forceRender = true;
-    });
+        reportAssetProgress('sun', 1);
+      },
+      // ── The loader's gate waits on this, and until 2026-08-03 it did not ──
+      // The star is the hero's subject and the loader's whole finale is its ten shards flying in, but
+      // it was invisible to `assetLoadProgress`: the counter reached 100 % on the fleet and the field
+      // alone and handed off. On a slow connection that revealed a hero with nothing in it, and the sun
+      // faded in half a minute later when its 1.3 MB finally arrived behind 5.3 MB of vessels the
+      // visitor would not reach for another minute. See EXPECTED_SOURCES.
+      //
+      // `total` is 0 when the server sends no Content-Length (chunked / gzipped), in which case there
+      // is nothing honest to report and the source simply jumps to 1 on completion.
+      (progressEvent) => {
+        if (progressEvent.total > 0) {
+          reportAssetProgress('sun', progressEvent.loaded / progressEvent.total);
+        }
+      },
+      (error) => {
+        console.error(`Sun model failed to load: ${MODEL_PATH}`, error);
+        // Report ready anyway. A source that never reaches 1 holds the intro's gate until its timeout,
+        // so a missing star would cost every visitor twelve seconds on top of losing the star.
+        reportAssetProgress('sun', 1);
+      },
+    );
 
     // ── Render loop ──
     const clock = new THREE.Clock();

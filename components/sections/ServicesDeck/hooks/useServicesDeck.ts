@@ -15,7 +15,13 @@ import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
-import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
+import {
+  reportAssetProgress,
+  reportWarmupDone,
+  onAssetProgress,
+  getSourceProgress,
+  ASSETS_WARMUP_EVENT,
+} from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 import { getDeckTuning } from '../deckTuning';
 import {
@@ -198,6 +204,19 @@ const EXIT_SCALE_GAIN = 0.25; // a touch bigger as it powers past
 // scroll-back eases the handoff below 1 and the ship flies back on. (Verified from the flight-path
 // geometry in lib/handoffFlightPath.ts, not guessed.)
 const DECK_PARKED_THRESHOLD = 0.999;
+
+/**
+ * Longest the fleet will wait for the star before fetching its vessels anyway.
+ *
+ * The four hulls are 5.3 MB and are not wanted for tens of seconds; `fractured_sun.glb` is 1.3 MB and
+ * is wanted immediately. Starting both together just splits the bandwidth, which on a slow connection
+ * is what left the hero with no sun in it — see `startVesselLoads`.
+ *
+ * The cap exists so a sun that 404s or stalls cannot take the fleet down with it. Generous, because
+ * spending it is the *unusual* path: on any working connection the star reports in well under a
+ * second and this timer is cleared without ever firing.
+ */
+const VESSEL_HOLD_MAX_MS = 6000;
 
 // ── Heading — the nose points where the ship is actually going ──
 // Yaw is derived from the ship's own per-frame velocity, so the nose tracks its travel: screen-left
@@ -958,7 +977,38 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     emitStatus();
 
-    DECK_SERVICES.forEach((service, index) => {
+    // ── The fleet yields the wire to the star ──
+    //
+    // The four vessels are 5.3 MB and are not needed until the visitor scrolls to services, which is
+    // tens of seconds away. `fractured_sun.glb` is 1.3 MB and is needed NOW — it is the subject of the
+    // hero and the loader's own finale flies its ten shards in.
+    //
+    // Started together, they simply share the pipe: a browser opens all of these streams at once and
+    // the bandwidth splits roughly evenly across them, so on a slow connection the star finishes at
+    // about the same FRACTION of the total download as the ships do — i.e. right at the end. That is
+    // the whole of the reported bug: the site would open with no sun and the star would fade in
+    // 30–60 s later. Nothing was broken in the sun's code; it was queued behind cargo.
+    //
+    // Holding the fleet costs a fast connection nothing (the star lands in a fraction of a second) and
+    // on a slow one it takes the star from ~70 % of the download to ~17 % of it. Total bytes are
+    // unchanged; only the order is.
+    let vesselsStarted = false;
+    const startVesselLoads = () => {
+      if (vesselsStarted || disposed) return;
+      vesselsStarted = true;
+      DECK_SERVICES.forEach(loadVessel);
+    };
+    // ⚠ Capped, and the cap is not optional. A sun that 404s or stalls must never mean a fleet that
+    // never loads — the deck would sit empty forever and the intro's gate would wait out its own
+    // timeout on a source that had no reason to be late.
+    const vesselHoldTimer = window.setTimeout(startVesselLoads, VESSEL_HOLD_MAX_MS);
+    const stopWatchingSun = onAssetProgress(() => {
+      if (getSourceProgress('sun') >= 1) startVesselLoads();
+    });
+    // The star can already be in — a warm reload serves it from cache before this listener exists.
+    if (getSourceProgress('sun') >= 1) startVesselLoads();
+
+    function loadVessel(service: (typeof DECK_SERVICES)[number], index: number) {
       gltfLoader.load(
         service.modelPath,
         (gltf) => {
@@ -1015,7 +1065,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           emitStatus();
         },
       );
-    });
+    }
 
     // ── Drag-to-rotate + flick ──
     // Pointer down on the canvas grabs the centred craft. Dragging rotates it; on release a big
@@ -1316,6 +1366,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       window.removeEventListener(DECK_HIDE_EVENT, hideDeck);
       window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
       cancelAnimationFrame(warmupFrame);
+      window.clearTimeout(vesselHoldTimer);
+      stopWatchingSun();
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       // Stop any running tweens, then dispose every loaded hull's geometry + materials.
       ships.forEach((ship) => {

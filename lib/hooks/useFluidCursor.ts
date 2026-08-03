@@ -22,11 +22,40 @@ const MAX_DEVICE_PIXEL_RATIO = 2;
  * is untouched.
  */
 const MAX_INVERT_PIXEL_RATIO = 1;
-const MAX_FRAME_SECONDS = 1 / 60;
+/**
+ * Upper bound on the simulation's timestep — a SANITY clamp, not a frame-rate cap.
+ *
+ * ⚠ This was `1 / 60`, and that single number was both reported bugs at once.
+ *
+ * The clamp is applied to the real elapsed time, so on a machine running at 30 fps the sim was handed
+ * 16.7 ms of simulated time for 33 ms of real time — **the entire fluid ran at half speed**. Two
+ * consequences, and they are exactly what was reported:
+ *
+ *   1. "the cursor trail lagged" — the blob is pinned to the pointer by `velocityDissipation`, which is
+ *      a per-step decay. Halve the step and it settles half as fast, so the ink visibly trails the
+ *      cursor instead of sitting under it. The slower the machine, the further behind it falls. This
+ *      is not the frame rate being low; it is the physics being run in slow motion BECAUSE the frame
+ *      rate is low.
+ *   2. "it appeared in other sections" — dissipation is per-step too, so the ~0.6 s fade became ~1.2 s,
+ *      while `IDLE_AFTER_LAST_SPLAT_MS` below is measured in WALL CLOCK. The loop therefore stopped
+ *      while ink was still on screen, and a WebGL canvas keeps its last frame — so the trail froze
+ *      there, over every section past the hero, until the pointer moved again. (Everything under these
+ *      canvases goes transparent past the fill: `.hero-section.is-services` in globals.css.)
+ *
+ * A tab-restore or a breakpoint can hand us a delta of several seconds, and that still has to be
+ * clamped — but the bound belongs somewhere no real frame reaches. 1/15 s keeps the sim honest down to
+ * 15 fps and is well inside stability: advection is semi-Lagrangian and dissipation is `1/(1 + k·dt)`,
+ * both unconditionally stable for any positive step.
+ */
+const MAX_FRAME_SECONDS = 1 / 15;
 // The ink dissipates within ~0.6s of the last splat (densityDissipation is very high), after which the
 // sim renders a blank, fully-transparent frame forever. Once the pointer's been still longer than this we
 // stop the solve + composite entirely until the next splat — a still cursor (and touch devices between
 // touches) then cost nothing. Comfortably past the dissipation time, so nothing visible is ever cut off.
+//
+// ⚠ Wall clock, while dissipation is simulated time. Those only agree while the sim is fed real deltas
+// — see MAX_FRAME_SECONDS above, and the explicit clear on the way into idle, which is what makes this
+// safe rather than merely usually-correct.
 const IDLE_AFTER_LAST_SPLAT_MS = 900;
 
 /**
@@ -86,15 +115,35 @@ export function useFluidCursor(
     );
     visibilityObserver.observe(inkCanvas);
 
+    /** Wipe the sim AND the mask, so nothing is left painted on either canvas. */
+    const clearTrail = () => {
+      simulation.clear();
+      invertContext.setTransform(1, 0, 0, 1, 0, 0);
+      invertContext.globalCompositeOperation = 'source-over';
+      invertContext.clearRect(0, 0, invertCanvas.width, invertCanvas.height);
+    };
+
     // The trail is the hero's alone. While the fleet is up (the hero stays pinned, so the
-    // IntersectionObserver still reports "visible") we stop splatting, so no new ink is laid and
-    // the existing trail dissipates away — the cursor leaves no trail over the services section.
+    // IntersectionObserver still reports "visible") we stop splatting, so no new ink is laid.
     // ⚠ The BLACK STAGE, not the deck's reveal. The deck's event only fires when the fleet itself is
     // entered, and a navbar jump goes straight from the hero to works or contact without ever
     // entering it — which left the ink splatting over the whole rest of the site. See
     // lib/blackStageEvent.ts.
+    //
+    // ⚠ And it CLEARS rather than leaving the ink to dissipate. Waiting for the fade was the original
+    // design and it is one assumption deep: it needs the loop to keep stepping long enough to finish
+    // the decay. That held while the sim was fed real deltas on a 60 fps machine and stopped holding
+    // on anything slower (see MAX_FRAME_SECONDS) — the loop idled first and froze half-faded ink onto
+    // a canvas that, past the fill, has nothing opaque left in front of it.
+    //
+    // Clearing here is invisible: `.hero-sun-fill` is still fully black over this canvas at the moment
+    // the stage flips, and only fades out afterwards (0.5 s, see `.is-services` in globals.css). So the
+    // ink is behind an opaque square on the frame it is wiped.
     let inVoid = false;
-    const onBlackStage = (event: Event) => { inVoid = readBlackStageActive(event); };
+    const onBlackStage = (event: Event) => {
+      inVoid = readBlackStageActive(event);
+      if (inVoid) clearTrail();
+    };
     window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     // ── Pointer tracking ──────────────────────────────────────────────
@@ -146,6 +195,8 @@ export function useFluidCursor(
     let animationFrame = 0;
     let lastFrameTime = performance.now();
     const startTime = lastFrameTime;
+    /** Latches the one clear that happens on the way into idle — see the render loop. */
+    let isIdle = true;
 
     const renderFrame = () => {
       animationFrame = requestAnimationFrame(renderFrame);
@@ -162,10 +213,23 @@ export function useFluidCursor(
       // buffers never fall out of step with the canvas during a still stretch.
       if (resizeCanvases()) simulation.resize();
 
-      // Idle once the trail has fully dissipated and the pointer's gone quiet — the canvas is already
-      // transparent, so skipping the solve + composite changes nothing on screen. The next splat
-      // (mouse/touch) pushes lastSplatTime forward and the loop resumes on the same frame.
-      if (now - lastSplatTime > IDLE_AFTER_LAST_SPLAT_MS) return;
+      // Idle once the trail has dissipated and the pointer's gone quiet. The next splat (mouse/touch)
+      // pushes lastSplatTime forward and the loop resumes on the same frame.
+      //
+      // ⚠ The transition into idle CLEARS, exactly once. This used to just `return` on the assumption
+      // that the canvas was already transparent by now — true only if the decay actually finished, and
+      // the decay is measured in simulated time while this threshold is wall clock. On any machine not
+      // holding 60 fps those two disagreed and the loop parked with ink still painted (see
+      // MAX_FRAME_SECONDS). One clear on the way in costs a single frame and makes "idle" mean empty
+      // rather than probably-empty.
+      if (now - lastSplatTime > IDLE_AFTER_LAST_SPLAT_MS) {
+        if (!isIdle) {
+          isIdle = true;
+          clearTrail();
+        }
+        return;
+      }
+      isIdle = false;
 
       simulation.frame(deltaSeconds, (now - startTime) / 1000);
 

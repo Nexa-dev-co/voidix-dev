@@ -63,7 +63,19 @@ export interface FluidConfig {
 export const FLUID_CONFIG: FluidConfig = {
   // Both are texture sizes in pixels-per-side (powers of two), left at the library defaults.
   simulationResolution: 128, // 128×128 physics grid — coarse is fine; the blob has no fine detail to resolve
-  dyeResolution: 1024, // 1024×1024 ink texture — 8× finer than the physics, so the ink edges stay crisp
+  /**
+   * 512×512 ink texture — 4× finer than the physics, which is what keeps the ink's edge from reading
+   * as blocky.
+   *
+   * ⚠ Was 1024, the source library's default, and that default exists for a fluid you FLING — long
+   * smeared streaks whose edges you follow across the screen. This one is the opposite: the
+   * `densityDissipation` two lines down is pushed ~10× past the library's, so the ink is killed almost
+   * the moment it is laid and never forms an edge worth resolving at 1024. It was costing four times
+   * the advection and splat bandwidth, every frame, on the first screen a visitor sees.
+   *
+   * If the blob ever reads soft or stepped at the rim, this is the one number to put back.
+   */
+  dyeResolution: 512,
 
   // Dissipation = a per-frame decay rate; bigger number → fades faster. Both are pushed WAY up.
   densityDissipation: 10.2, // ink fades ~3× faster than default → no lingering tail   (reference default: 1)
