@@ -30,6 +30,7 @@ import {
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
+import { warmSceneMaterials } from '@/lib/warmScene';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
 //
@@ -670,58 +671,26 @@ export default function SunModelCanvas() {
     };
     document.addEventListener('visibilitychange', onVisibility);
 
-    /** Anything on a material that is actually a texture, without reaching for `any` to find it. */
-    const asTexture = (value: unknown): THREE.Texture | null =>
-      value instanceof THREE.Texture ? value : null;
-
     /**
      * Build the star's programs and upload its maps while nothing is watching.
      *
-     * ⚠ THIS IS THE ONE THAT FROZE THE LOADER, and the freeze looked nothing like a shader compile:
-     * the whole page stopped, INCLUDING the dust field — which renders in a worker and cannot be
-     * blocked by main-thread JavaScript at all. That is the tell. The stall is in the GPU PROCESS, and
-     * the compositor cannot present anyone's frames while that is busy, worker canvases included. If a
-     * freeze ever takes the dust with it again, look for GPU work, not for a long task.
-     *
-     * The cause is `positionShards`: everything in `coronaParts` — the core sphere, the outer glow, the
-     * flares and the twenty corona planes — sits `visible = false` for the whole download, because the
-     * star is meant to light INSIDE the closing shell (see CORONA_APPEAR). three builds a program the
-     * first time an object is actually DRAWN, so none of those ~23 programs existed and none of their
-     * maps had been uploaded until the single frame at arrival 0.55 when they all turned visible at
-     * once. Every compile and every upload landed on that one frame, in the middle of the finale.
+     * ⚠ THIS IS THE ONE THAT FROZE THE LOADER. The cause is `positionShards`: everything in
+     * `coronaParts` — the core sphere, the outer glow, the flares and the twenty corona planes — sits
+     * `visible = false` for the whole download, because the star is meant to light INSIDE the closing
+     * shell (see CORONA_APPEAR). three builds a program the first time an object is actually DRAWN, so
+     * none of those ~23 programs existed and none of their maps had been uploaded until the single
+     * frame at arrival 0.55 when they all turned visible at once. Every compile and every upload
+     * landed on that one frame, in the middle of the finale.
      *
      * Done here instead, right after the model lands — a beat already stalled by the glTF parse, where
      * one more pause hides in noise the visitor cannot avoid anyway.
+     *
+     * The mechanism moved to `lib/warmScene.ts` when it turned out the sun was not special: the room
+     * and the contact star have exactly the same shape (built lazily, drawn much later) and were
+     * paying exactly the same stall. Read its header for why the maps have to be uploaded separately
+     * from the compile, and for the GPU-process reasoning that found this in the first place.
      */
-    const warmStarMaterials = () => {
-      // 1 · Programs. `compile` walks with `traverse`, NOT `traverseVisible` (three r184 — only its
-      //     light gathering is visibility-filtered), so the hidden corona is compiled here even though
-      //     it will not be drawn for seconds yet. Nothing awaits this: the star is not needed until the
-      //     assembly, and the driver has long since finished linking by then. The catch only stops a
-      //     failure surfacing as an unhandled rejection — a material that fails here compiles late,
-      //     exactly as it used to.
-      renderer.compileAsync(scene, camera).catch(() => {});
-
-      // 2 · Maps. `compile` builds PROGRAMS only; three uploads a texture the first time it is bound for
-      //     a real draw. Without this the corona's maps would still land together on the frame the star
-      //     appears — and a texture upload with mipmap generation is the more expensive half of what was
-      //     stalling the GPU process.
-      const uploaded = new Set<THREE.Texture>();
-      coronaParts.forEach(({ object }) => {
-        object.traverse((child) => {
-          const material = (child as THREE.Mesh).material;
-          if (!material) return;
-          (Array.isArray(material) ? material : [material]).forEach((entry) => {
-            Object.values(entry).forEach((value) => {
-              const texture = asTexture(value);
-              if (!texture || uploaded.has(texture)) return;
-              uploaded.add(texture);
-              renderer.initTexture(texture);
-            });
-          });
-        });
-      });
-    };
+    const warmStarMaterials = () => warmSceneMaterials(renderer, scene, camera);
 
     // ── Load ──
     const dracoLoader = new DRACOLoader();

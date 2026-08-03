@@ -537,7 +537,11 @@ body {
     0 0 0 1px rgba(0, 229, 255, 0.08),
     0 0 2.25rem 0 rgba(0, 229, 255, 0.07);
   transform-origin: center center;
-  will-change: transform, border-radius;
+  /* Transform only. `border-radius` was hinted here for a tween that animated 0px to 0px (nothing
+     gives this element a radius) — and a standing will-change on a paint property keeps the browser
+     ready to repaint an element that grows to cover the viewport, which is the opposite of the point.
+     See the phase-1 tween in useHeroAnimation. */
+  will-change: transform;
 }
 
 /* The black square itself — "poured in" on reveal via the clip-path rising. */

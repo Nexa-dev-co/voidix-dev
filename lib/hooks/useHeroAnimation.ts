@@ -1180,6 +1180,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
       // Phase 1 — the square expands to fill the viewport while the sun rises + grows.
       // Function-based values so invalidateOnRefresh recomputes them from fresh geometry.
+      //
+      // ⚠ Transforms ONLY, and `borderRadius: 0` is deliberately not among them any more. Nothing gives
+      // `.hero-sun-card` a radius — check globals.css, there is no rule — so that tween was
+      // interpolating 0px to 0px. Not free, though: `border-radius` is a PAINT property, and GSAP wrote
+      // it every frame of the fill on an element that by the end of the span covers the whole viewport,
+      // so every one of those frames invalidated a full-screen repaint underneath whatever else was
+      // drawing. Transforms composite; keeping this list to transforms is what makes the fill cheap.
       scrollTimeline.to(
         heroCardElement,
         {
@@ -1187,7 +1194,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           y: () => geometry.translateY,
           scaleX: () => geometry.scaleX,
           scaleY: () => geometry.scaleY,
-          borderRadius: 0,
           ease: "power1.inOut",
           duration: fillFraction,
         },

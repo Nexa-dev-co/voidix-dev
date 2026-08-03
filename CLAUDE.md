@@ -257,14 +257,23 @@ field, driven by **real asset progress** — not a timer.
 - **The sun assembles.** The ten fracture shards of `fractured_sun.glb` sweep in from outside the
   frame and lock together; the star lights inside the closing shell. The intro holds its handoff on
   `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
-- ⚠ **The gate's waits are SERIAL, and that is load-bearing.** 100% does not cue the shards — it
-  cues the shader compiles, and only when both scenes report warm does the assembly start. The two
-  used to fire on the same tick, and that was the loading freeze: `compileAsync` runs
-  `renderer.compile()` **synchronously** before it awaits anything, so both heavy scenes were
-  blocking the main thread across the exact frames the flight was trying to play on — and the
-  flight is delta-timed with a clamp, so it stuck mid-air rather than catching up. Anything new
-  that must animate during a block belongs on the compositor or in a worker, not in a tween. See
-  `docs/loader-freeze-plan.md`.
+- ⚠ **The gate's waits are SERIAL, and that is load-bearing.** 100% does not cue the shards — the
+  assembly starts only once both scenes report warm. They used to fire on the same tick, and the
+  flight is delta-timed with a clamp, so it stuck mid-air rather than catching up.
+- ⚠ **But each scene warms ITSELF, when its OWN assets land — not at the global 100%.**
+  `ASSETS_WARMUP_EVENT` is now only a backstop for a section whose build failed. The shared wait was
+  stacking two compiles and both scenes' first-ever composer render into a two-frame window at exactly
+  100%, immediately before the flight. Self-warming spends the field's share inside the fleet's
+  download, where the GPU is idle. **Each warm-up is one operation per frame** for the same reason.
+- ⚠ **The stall is in the GPU PROCESS, not on the main thread**, and the discriminator is cheap: *does
+  the worker-rendered dust freeze with it?* If yes, stop looking at JavaScript — the compositor cannot
+  present anyone's frames while the GPU process is busy, worker canvases included. Both a first draw
+  (allocation + upload) and a first compile land there. See `docs/loader-freeze-plan.md` §7 and
+  `docs/lag-and-freeze-diagnosis.md` §6.
+- **Anything built lazily and drawn later must be warmed** — `lib/warmScene.ts`, on an idle frame.
+  The sun's corona, the chamber and the contact star all had the same shape: built, hidden, then
+  compiling and uploading every map on the single frame they first appeared, which for two of them was
+  inside a scrubbed crossing.
 - Then the sun **flies from the wordmark's "o" into the hero square** and `REVEAL_EVENT` fires.
 
 ### Contract 1 — scroll is locked for the whole intro
@@ -387,22 +396,43 @@ These exist and are load-bearing — don't reinvent them:
 
 | `lib/` | Job |
 |---|---|
-| `adaptivePixelRatio.ts` | Measures real frame times and trades resolution for smoothness. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. |
-| `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size.** |
+| `gpuProbe.ts` | Times **one real frame** of a real pipeline with a GPU drain either side of it. Used once, on the works field's warm-up render — a render that had to happen anyway, so the measurement is nearly free. |
+| `adaptivePixelRatio.ts` | The shared resolution. **Native by default; above native has to be EARNED** by the probe. Also runs a live controller on real frame times for the rest of the session. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. |
+| `warmScene.ts` | Compiles a scene's programs **and uploads its maps** on an idle frame. Both halves are needed: `compile()` builds programs only, and three uploads a texture on first *draw*. |
+| `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size — shrinking one invalidates them exactly as much as growing one.** |
 | `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones — **and is the sole source of the `lowPower` flag** the heavy scenes branch on. |
 
-⚠ **Nothing on this site picks quality from measured frame times.** A `performanceTier.ts` did exactly
-that — `'low' | 'high'` off `adaptivePixelRatio`'s samples, to choose a chamber texture tier — and an
-earlier revision of this file listed it here as load-bearing. It was imported by nobody, along with the
-`getPerformanceSnapshot()` that fed it; both were deleted 2026-08-02. `lowPower` is a **viewport and
-pointer check**, decided once at mount, and `adaptivePixelRatio` acts on its own measurements without
-telling anyone. If you want measured quality tiers, you are building it, not restoring it.
+⚠ **The site DOES pick quality from a measurement now, and it is new** (2026-08-03). An earlier
+revision of this file said the opposite, correctly at the time: a `performanceTier.ts` had classified
+`'low' | 'high'` off `adaptivePixelRatio`'s own samples, was imported by nobody, and was deleted with
+`getPerformanceSnapshot()` on 2026-08-02. **What exists now is not that design.** `performanceTier`
+read the live controller's samples, which is circular — the controller had already acted on them.
+`gpuProbe` takes ONE independent measurement before the first visible frame, and
+`reportProbedFrameCost` solves a ratio from it (`probeRatio × √(budget ÷ measured)`). `lowPower` is
+still a **viewport and pointer check** decided once at mount, and is a separate thing.
+
+**The default is native.** Rendering above it costs 2.25× the pixels *and* 2.25× the render-target
+memory through bloom and post; a machine has to measure fast enough to be allowed it. Guessing upward
+and clawing back does not work, because the claw-back only happens after the expensive configuration
+has already been allocated on the machine that could not afford it.
 
 **Only one heavy 3D scene ever draws at a time past the hero** — the deck and the works field gate
-each other off, and both stop on tab-hidden. Preserve that.
+each other off, and both stop on tab-hidden. Preserve that. ⚠ **The sun is the exception and always
+has been:** it is demand-rendered but `covered` only goes true at the chamber reveal, so it draws
+alongside the deck through services and alongside the field through works. Deliberate — the star
+breathes and collapses across those spans, and the works backdrop is transparent behind it.
+
+⚠ **`samples` on a composer target is paid TWICE.** `EffectComposer` clones the target it is handed
+(`renderTarget2 = renderTarget.clone()`) and `RenderTarget.copy` carries `samples` across. A
+full-resolution 4× MSAA HalfFloat target is ~83 MB on a 1512×982 panel at ratio 1, so a two-composer
+scene at `samples: 4` is ~330 MB before anything else. Count them before adding one. The works field's
+**screen** stage runs at `samples: 0` for exactly this reason: for the whole of works it draws one
+pixel-aligned fullscreen quad carrying an already-resolved texture, and its `SMAAPass` is likewise
+enabled only while the chamber is on screen.
 
 Costs, roughly: WorksField + Chamber ●●●●● > ServicesDeck ●●●●○ ≈ FluidCursor ●●●●○ > sun ●●●○○.
-`UnrealBloom` is the recurring expensive pass. Full breakdown in `docs/performance-ratings.md`.
+`UnrealBloom` is the recurring expensive pass. Diagnosis of what actually made a laptop crawl — with
+the numbers — is in `docs/lag-and-freeze-diagnosis.md`.
 
 ## Nothing is configurable at runtime
 

@@ -76,6 +76,18 @@ export const GRAVITY_INTENSIFY_ENTER = 0.55;
 export const GRAVITY_INTENSIFY_EXIT = 0.45;
 
 // ── 02 Cursor Influence — distance-to-orb weighted, spiked by velocity ───────
+/**
+ * The pointer speed that reads as "flat out", in screen-heights per second — the reference every
+ * velocity readout on this panel is normalised against. Expressed per screen-height so it means the
+ * same thing on any display.
+ *
+ * ⚠ It lived in `fluidConfig` as `SPEED_FOR_MAX_RADIUS`, where it set how far a fast flick swelled the
+ * ink blob. That mapping is gone (both ends of its range had been tuned to the same number, so it was
+ * interpolating between a value and itself — see `BLOB_RADIUS_PX`), and this panel was the only thing
+ * still reading it. Moved here rather than deleted, because the READOUT is real and needs a reference:
+ * "Field Distortion" is the pointer's own speed ratio and would otherwise have nothing to be a ratio of.
+ */
+export const POINTER_SPEED_REFERENCE = 10;
 export const INFLUENCE_MAX_DISTANCE_VMIN = 0.75; // distance (in viewport min-dimensions) at which influence reaches 0
 export const INFLUENCE_BASE_WEIGHT = 0.82; // how much raw proximity contributes…
 export const INFLUENCE_VELOCITY_WEIGHT = 0.55; // …and how much a fast cursor near the orb spikes it

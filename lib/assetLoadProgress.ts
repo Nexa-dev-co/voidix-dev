@@ -19,15 +19,20 @@ export type AssetSource = (typeof EXPECTED_SOURCES)[number];
 // honest pace — an unweighted average would leap to 50% the instant the lighter source finished, then
 // crawl. Weights sum to 1.
 //
-//   deck   ~8.5 MB of vessels
-//   works  ~7.0 MB — the basalt its debris wears (3.5), the geode druse the mark's cavities open
-//          onto (3.4), the black stone of the mark's body, three logo outlines and a typeface
+//   deck   ~5.3 MB — four vessels (2.5 + 2.1 + 0.4 + 0.3), Draco-compressed
+//   works  ~0.95 MB — the basalt its debris wears (0.41), the geode the mark's cavities open onto
+//          (0.39), the black stone of the mark's body (0.07), three logo outlines and a typeface (0.06)
 //
-// RE-WEIGH THESE if either side's assets change size. They were 0.93/0.07 when the field was ~0.6 MB
-// of small maps, then 0.71/0.29 when it was ~3.5 MB; leaving them at an old value after the field
-// grows parks the counter near the top for the whole of the largest download on the site — which is
-// exactly what "the counter is honest because of this" is supposed to prevent.
-const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.55, works: 0.45 };
+// ⚠ RE-WEIGH THESE whenever either side's assets change size, and note that SHRINKING one is just as
+// invalidating as growing it. They have been 0.93/0.07, then 0.71/0.29, then 0.55/0.45 as the field's
+// maps grew to two 3.3 MB PNGs — and then those PNGs were re-encoded to WebP (~0.4 MB the pair, a 94%
+// cut) and the weights were not moved with them. So the counter sprinted to ~45%, stopped dead, and
+// crawled through the fleet's 5.3 MB, which is precisely the dishonesty this file exists to prevent.
+//
+// Not the raw byte ratio (which is nearer 0.85/0.15): the works source's last stretch is not a
+// download at all — it covers preparing the outlines and CUTTING four marks, real CPU time the visitor
+// waits through (see WORKS_TEXTURE_SHARE in useWorksField). The extra weight pays for that.
+const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.78, works: 0.22 };
 
 const progressBySource = new Map<AssetSource, number>();
 const warmedSources = new Set<AssetSource>();

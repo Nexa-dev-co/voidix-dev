@@ -865,21 +865,30 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
-    // Warm the shaders + bloom pipeline before the deck is ever shown, so its first visible frame at
-    // the services reveal doesn't stall on compilation. The intro fires ASSETS_WARMUP_EVENT once
-    // assets are in; `compileAsync` hands the LINKING to the driver's background threads
-    // (KHR_parallel_shader_compile where available), which is why the reveal no longer eats the ~0.2s
-    // stall a fully synchronous compile used to cost it. The deck isn't shown until the user scrolls to
-    // services, so there's ample time; the single composer.render() that warms the bloom passes lands
-    // after the promise resolves, while the deck is still hidden.
+    // ── Warm-up: build every program and allocate every buffer while the deck is off screen ──
     //
-    // ⚠ It is NOT a free ride on a background thread, and an earlier version of this comment claimed it
-    // was. `compileAsync` runs `renderer.compile()` SYNCHRONOUSLY before it awaits anything (three's own
-    // source) — program creation and uploads still block the main thread. Only the wait for the driver
-    // to finish linking is offloaded. That block is why the intro's gate cues the sun's shard assembly
-    // only AFTER both scenes report warm, rather than alongside them.
+    // Two beats, ONE PER FRAME. `compileAsync` is not the free ride an earlier version of this comment
+    // claimed: it runs `renderer.compile()` SYNCHRONOUSLY before it awaits anything (three's own
+    // source), so program creation and uploads still block — only the wait for the driver to finish
+    // linking is offloaded. And the `composer.render()` after it is the more expensive half anyway,
+    // because that is where the composer's two full-resolution multisampled targets are ALLOCATED.
+    //
+    // Both are GPU-process work, and while the GPU process is busy the compositor cannot present
+    // anyone's frames — including the loader's worker-rendered dust. Given a frame each they are two
+    // short hitches rather than one long one. See `warmUpField` in useWorksField for the full note.
+    //
+    // ⚠ Run when the FLEET's own vessels are in (see emitStatus), not when the whole page has finished
+    // downloading. ASSETS_WARMUP_EVENT remains as a backstop; `warmupStarted` makes the two idempotent.
     let disposed = false;
-    const prewarmPipeline = () => {
+    let warmupStarted = false;
+    let warmupFrame = 0;
+    const nextWarmupFrame = () =>
+      new Promise<void>((resolve) => {
+        warmupFrame = requestAnimationFrame(() => resolve());
+      });
+    const prewarmPipeline = async () => {
+      if (warmupStarted || disposed) return;
+      warmupStarted = true;
       // Open the gates a crack first. `compileAsync` walks only VISIBLE objects, and a gate hides
       // itself at formation 0 (see PortalGate.update) — so without this the portal shader is not
       // built until the first swap, which is the exact stall this whole warm-up exists to prevent.
@@ -900,34 +909,30 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       ships.forEach((ship) => {
         ship.stage.visible = true;
       });
-      const finishWarmup = () => {
+      try {
+        // Out of the caller's tick first — this is reached from inside a GLTFLoader `onLoad`, straight
+        // after a Draco decode and a full material re-skin. `compileAsync` runs `renderer.compile()`
+        // synchronously, so without this it stacks on top of that rather than getting its own frame.
+        await nextWarmupFrame();
+        if (disposed) return;
+
+        await renderer.compileAsync(scene, camera);
+        if (disposed) return;
+        await nextWarmupFrame();
+        if (disposed) return;
+        // Forces the bloom + SMAA passes to compile, and — the expensive part — allocates the
+        // composer's targets, so neither lands on the frame the fleet is first revealed.
+        composer.render();
+      } catch {
+        // A failed compile is not a reason to trap the loader; whatever failed compiles on first draw.
+      } finally {
         portalState.formation = 0;
         ships.forEach((ship) => applyOpacity(ship));
-        reportWarmupDone('deck'); // the intro holds the reveal until this fires
-      };
-      renderer
-        .compileAsync(scene, camera)
-        .then(() => {
-          if (disposed) return;
-          // Forces the bloom passes to compile too (this is the only part that can still block, and
-          // only on a GPU with no parallel-compile extension — during the intro hold, never at reveal).
-          composer.render();
-          finishWarmup();
-        })
-        .catch(() => { if (!disposed) finishWarmup(); });
+        if (!disposed) reportWarmupDone('deck'); // the intro holds the reveal until this fires
+      }
     };
-    // Deferred out of the dispatch tick by TWO frames — one to get clear of the loader's own progress
-    // callback, and one more to land on a different frame from the works field, which defers by one.
-    // `compileAsync` runs `renderer.compile()` synchronously before it awaits anything, so without this
-    // the site's two heaviest compiles block back to back inside a single tick. The intro's gate waits
-    // for both regardless, so the extra frame costs nothing.
-    let warmupFrame = 0;
     const onWarmupRequested = () => {
-      warmupFrame = requestAnimationFrame(() => {
-        warmupFrame = requestAnimationFrame(() => {
-          if (!disposed) prewarmPipeline();
-        });
-      });
+      void prewarmPipeline();
     };
     window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
@@ -947,6 +952,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // the fleet to actually be in.
       reportAssetProgress('deck', fraction);
       onStatus({ isLoading: !isDone, percent: isDone ? 100 : Math.round(fraction * 100) });
+      // Warm as soon as THIS section's own vessels are in, rather than waiting on the whole page. See
+      // the note on `prewarmPipeline` for why the shared wait was costing the loader its finale.
+      if (isDone) void prewarmPipeline();
     };
     emitStatus();
 
