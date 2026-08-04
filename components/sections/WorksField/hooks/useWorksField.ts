@@ -52,6 +52,7 @@ import {
 } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame, reportProbedFrameCost } from '@/lib/adaptivePixelRatio';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
+import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { warmSceneMaterials } from '@/lib/warmScene';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { SLATE_200, SLATE_400, SLATE_800 } from '@/lib/coolPalette';
@@ -1257,7 +1258,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // four marks at this density is a rounding error or the longest block on the loader. Under ~60 ms
       // total there is nothing here to chase; if it is hundreds, `capSubdivisions: 1` is a 4× cut and
       // may well be invisible.
-      if (process.env.NODE_ENV === 'development') {
+      if (telemetryEnabled) {
         const { buildMilliseconds, bufferBytes, perMarkBytes } = strategy.metrics;
         console.debug(
           `[voidix] mark build: ${buildMilliseconds.toFixed(0)} ms for ${marks.length} marks, ` +

@@ -1,3 +1,5 @@
+import { telemetryEnabled } from '@/lib/telemetryEnabled';
+
 /**
  * Shared dynamic resolution for the heavy WebGL scenes (the services fleet + the works field).
  *
@@ -103,7 +105,7 @@ let lastSoftCeilProbeAt = 0;
  * is what turns that from a surprise into a decision.
  */
 function logRatioChange(what: string, from: number, fps: number, note: string): void {
-  if (process.env.NODE_ENV !== 'development') return;
+  if (!telemetryEnabled) return;
   const megapixelChange = ((pixelRatio * pixelRatio) / (from * from) - 1) * 100;
   console.log(
     `%c[pixels] ${what}%c ${from.toFixed(2)} → ${pixelRatio.toFixed(2)}` +
@@ -171,12 +173,16 @@ export function reportProbedFrameCost(
   ceil = Math.min(hardwareCeil, Math.max(floor, affordable));
   softCeil = ceil;
 
-  // ── Say what was decided, in development ──
+  // ── Say what was decided ──
   // This one measurement sets the resolution every heavy scene runs at for the whole session, and its
   // effect is silent: a site that is uniformly soft and a site that is uniformly slow look like
   // "something is wrong" rather than like a number. Reading it should not require adding a log first.
-  // Stripped from production builds by the bundler's dead-code elimination.
-  if (process.env.NODE_ENV === 'development') {
+  // Stripped from the public build by the bundler's dead-code elimination.
+  //
+  // ⚠ A dev server is the WRONG place to read this. The probe times one real frame, and on a dev
+  // build that frame is competing with an unminified bundle and StrictMode's second scene. A preview
+  // is where the number means something — which is why the gate is `telemetryEnabled`.
+  if (telemetryEnabled) {
     console.debug(
       `[voidix] gpu probe: ${milliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
         `at ratio ${probeRatio} → affordable ${affordable.toFixed(2)}, ` +
