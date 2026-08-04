@@ -43,9 +43,10 @@ import {
 // so the camera moves it for free), no resize choreography, no demand-render gate. It opens already
 // collapsed and its only job is to die.
 
-// ⚠ The SAME file the hero sun loads. Both fetches now share one download, because `lib/modelLoading`
-// turns three's file cache on — before that this was a second 1.31 MB off the wire, spent mid-scroll
-// during the chamber reveal.
+// ⚠ The SAME file the hero sun loads, and it IS fetched twice — a second 1.31 MB off the wire, spent
+// mid-scroll during the chamber reveal. Sharing it via three's `Cache` was tried and reverted because
+// that flag breaks the works field outright; `lib/modelLoading.ts` has the full reason and the way to
+// reclaim it safely.
 const MODEL_PATH = '/models/fractured_sun.glb';
 
 /** The fracture shards are the only children whose names start with this. Everything else is corona. */

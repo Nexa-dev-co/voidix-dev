@@ -357,6 +357,9 @@ const BLOOM_THRESHOLD    = 0.6;
 const BLOOM_MSAA_SAMPLES = 4;
 
 const MAX_FRAME_SECONDS = 0.05; // clamp dt so a tab-restore doesn't fling the animation
+
+/** Labels each run of the effect in the development trace. See `effectRun` in the hook. */
+let effectRunCounter = 0;
 const LOW_POWER_MAX_WIDTH = 760;
 
 export interface FieldStatus {
@@ -1127,6 +1130,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // section was torn down while it was awaiting — otherwise a fast unmount leaves an orphaned
     // strategy holding GPU buffers with nothing to dispose it.
     let disposed = false;
+    // Which run of this effect we are. StrictMode double-invokes in development, and the two runs are
+    // indistinguishable in a log without this — which is exactly the question the trace below has to
+    // answer: did the SECOND one ever arm its loader, or is the discarded first one all there was?
+    effectRunCounter += 1;
+    const effectRun = effectRunCounter;
     const markRigs: MarkRig[] = [];
     let shardMeshes: THREE.InstancedMesh[] = [];
     const shardGeometries: THREE.BufferGeometry[] = [];
@@ -1212,8 +1220,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      * is gone, so the values are simply constants now and there is nothing to pass.
      */
     const buildMark = async () => {
+      traceBuild('prepareMarks: start');
       const marks = await prepareMarks();
-      if (disposed || marks.length === 0) return;
+      traceBuild(`prepareMarks: done (${marks.length} marks)`);
+      if (disposed || marks.length === 0) {
+        traceBuild(`buildMark: bailing (disposed=${disposed}, marks=${marks.length})`);
+        return;
+      }
       reportAssetProgress('works', WORKS_OUTLINES_DONE);
 
       markIndexOfProject = WORKS_PROJECTS.map((project) => {
@@ -1221,11 +1234,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         return found >= 0 ? found : 0;
       });
 
+      traceBuild('createAccretionMark: start (loads 2 textures, then cuts every mark)');
       const strategy = await createAccretionMark(marks, {
         targetSize: tuning.markTargetSize,
         depth: tuning.markDepth,
         performanceTier: lowPower ? 'low' : 'high',
       });
+      traceBuild('createAccretionMark: done');
       if (disposed) {
         strategy.dispose();
         return;
@@ -1292,9 +1307,32 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // Nothing on this site changes the mark's geometry at runtime, so there is no rebuild path here —
     // the mark is cut once, from `ACCRETION_TUNING`, and lives until the section is disposed.
 
+    /**
+     * Where the field's build got to — development only.
+     *
+     * "Charting the field · 100%" is shown by `FieldCanvas` for as long as `status.isLoading` holds,
+     * and the percentage comes from the LoadingManager, which only ever tracked the one debris
+     * texture. So it reaches 100 the moment that texture lands and then sits there for the whole
+     * asynchronous build behind it — the outlines, the typeface, two more surfaces and the cutting of
+     * every mark. A build that stops anywhere in there looks exactly like a build that finished.
+     * These lines are what tell the two apart.
+     */
+    const traceBuild = (stage: string) => {
+      if (process.env.NODE_ENV !== 'development') return;
+      console.log(`%c[works #${effectRun}] ${stage}`, 'color:#8ab4ff;font-weight:600');
+    };
+    traceBuild('effect: setup');
+
     const buildField = async () => {
+      traceBuild('buildField: start');
       await buildMark();
-      if (disposed) return;
+      if (disposed) {
+        // Ordinary under StrictMode's double-mount: this is the discarded first pass, and the second
+        // one owns the overlay. Logged because if it ever happens to the SURVIVING mount the section
+        // stays behind its loading label forever, and that is otherwise invisible.
+        traceBuild('buildField: bailing after buildMark (disposed)');
+        return;
+      }
 
       // Ambient shard debris — two irregular base shapes, each instanced across the field.
       const totalShards = lowPower ? SHARD_COUNT_LOW : SHARD_COUNT;
@@ -1352,6 +1390,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
       // Land on the focused project immediately (no transition on first build).
       applyFocus(activeIndexRef.current, true);
+      traceBuild('buildField: done — clearing the loading label');
       onStatus({ isLoading: false, percent: 100 });
       // Fully built → mark the field ready for the intro's loader gate…
       reportAssetProgress('works', 1);
@@ -1370,6 +1409,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // leave `reportAssetProgress('works', …)` capped at 0.99 forever, which hangs the intro on a
     // loader that never reaches 100%. Report ready and let the section degrade instead.
     loadingManager.onLoad = () => {
+      traceBuild('loadingManager.onLoad — the debris texture is in, starting the build');
       buildField().catch((cause: unknown) => {
         console.error('Works field failed to build:', cause);
         onStatus({ isLoading: false, percent: 100 });
@@ -2249,6 +2289,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
+      traceBuild('effect: TEARDOWN — disposed is now true for this run');
       window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
       stopLatePrefetch();
       cancelAnimationFrame(warmupFrame);

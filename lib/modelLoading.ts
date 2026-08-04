@@ -27,30 +27,45 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 const DRACO_DECODER_PATH = '/draco/';
 
 /**
- * ── Why the file cache is on ─────────────────────────────────────────────────────────────────────
- * Off by default in three, and being off cost real bytes here, because two different things ask for
- * the same files:
+ * ── ⚠ THE FILE CACHE MUST STAY OFF. Turning it on breaks the works field. ────────────────────────
  *
- *   · `fractured_sun.glb` (1.31 MB) is loaded TWICE — once by `SunModelCanvas` for the hero, once by
- *     `singularityScene` for the star that dies at contact. The second fetch happens mid-scroll,
- *     during the chamber reveal, which is the worst moment on the site to spend a megabyte.
- *   · the Draco decoder, four times over, before the change above.
+ * It is tempting: `fractured_sun.glb` (1.31 MB) is genuinely loaded TWICE — by `SunModelCanvas` for
+ * the hero and by `singularityScene` for the star that dies at contact — and the second fetch lands
+ * mid-scroll during the chamber reveal. Enabling three's `Cache` deduplicates exactly that.
  *
- * With the cache on, the second ask is answered from memory and never touches the network — including
- * across React StrictMode's development double-mount, which until now genuinely re-downloaded every
- * model on every dev page load.
+ * It also breaks the section, via a real defect in three's own `ImageLoader`. Its cache entry is
+ * added BEFORE the image has finished decoding (its error path calls `Cache.remove`, which is only
+ * meaningful if an incomplete entry can exist), so a second request for a still-loading image takes
+ * this branch:
  *
- * ⚠ The cost is real and worth stating: three's `Cache` is a plain Map with NO eviction, so every
- * response stays as a raw ArrayBuffer for the life of the page — roughly 10 MB across every model
- * here. That is system memory, not GPU memory, and this site's constraint is GPU memory
- * (`docs/lag-and-freeze-diagnosis.md` §1), so it is a good trade. It would stop being one if the
- * asset set grew several times over.
+ *     if ( cached.complete === true ) {
+ *       scope.manager.itemStart( url );                  // bookkeeping happens
+ *       setTimeout( () => { onLoad( cached ); scope.manager.itemEnd( url ); }, 0 );
+ *     } else {
+ *       _loading.get( cached ).push( { onLoad, onError } );   // <-- and NOTHING ELSE
+ *     }
  *
- * It does NOT dedupe the parsed result: two loads of the same URL still produce two independent scene
- * graphs with their own geometries and textures. That is what the hero and the contact star each
- * need — only the download is shared.
+ * The queued callback does fire, so the texture arrives — but that request's `LoadingManager` is
+ * never told an item started or ended. Its `itemsTotal` stays 0, and `LoadingManager.onLoad` only
+ * ever fires from `itemEnd`.
+ *
+ * `useWorksField` hangs its ENTIRE build off `loadingManager.onLoad`. Under React StrictMode the
+ * effect runs twice against the same texture URL, so with the cache on:
+ *
+ *     run #1  starts the image, is torn down, its onLoad fires, build bails on `disposed`  ✓ correct
+ *     run #2  finds the in-flight cache entry, takes the else branch, manager never fires  ✗ no build
+ *
+ * The surviving run therefore never calls `onStatus({ isLoading: false })` and the section sits
+ * behind "Charting the field · 100%" forever. Diagnosed 2026-08-04 from the `[works #N]` trace in
+ * `useWorksField`, which is still there and will say so again in one line if this is ever retried.
+ *
+ * The Draco duplication this was also meant to solve is already fixed properly, by the single shared
+ * loader below. What is left on the table is one 1.31 MB re-download. If that is ever worth
+ * reclaiming, do it WITHOUT this flag: fetch the star's bytes once into a module-level promise and
+ * hand the same ArrayBuffer to `GLTFLoader.parse()` twice. The two consumers need separate scene
+ * graphs anyway, so only the download was ever shareable.
  */
-Cache.enabled = true;
+Cache.enabled = false;
 
 let sharedDracoLoader: DRACOLoader | null = null;
 
