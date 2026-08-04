@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { getSharedDracoLoader } from '@/lib/modelLoading';
+import { createFrameTimer } from '@/lib/frameTimer';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
@@ -581,7 +582,9 @@ export default function SunModelCanvas() {
       // pace and is actually watched.
       forceAssembled = false;
       assemblyCued = true;
-      positionShards(0, clock.getElapsedTime());
+      // Reads only — this used to be `getElapsedTime()`, which advanced the clock from OUTSIDE the
+      // render loop and so stole the next frame's delta. See lib/frameTimer.ts.
+      positionShards(0, frameTimer.elapsed());
       forceRender = true;
     };
     window.addEventListener(SUN_REGATHER_EVENT, onRegather);
@@ -1024,7 +1027,7 @@ export default function SunModelCanvas() {
     );
 
     // ── Render loop ──
-    const clock = new THREE.Clock();
+    const frameTimer = createFrameTimer(MAX_FRAME_SECONDS);
     // The Cracks ramp — 0 on the hero, 1 on services. Every difference between the star's two states
     // is a function of this one value, so the transition reverses for free. `ringForm` is the same
     // idea on its own window of the same scroll.
@@ -1037,7 +1040,7 @@ export default function SunModelCanvas() {
     let animationFrame = 0;
     const animate = () => {
       animationFrame = requestAnimationFrame(animate);
-      const delta = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
+      const delta = frameTimer.tick();
 
       // Ease our own copy of the scrubbed targets, so the choreography can't be outrun by a fast
       // flick and never steps between the pin's ticks and our own frames.
@@ -1046,7 +1049,7 @@ export default function SunModelCanvas() {
       ringForm += (targetRingForm - ringForm) * stateEase;
       ringWorksForm += (targetRingWorks - ringWorksForm) * stateEase;
       collapse += (targetCollapse - collapse) * stateEase;
-      const elapsed = clock.getElapsedTime();
+      const elapsed = frameTimer.elapsed();
       // The star always turns; it only stops once the works field has covered it completely.
     const moving = !covered;
 

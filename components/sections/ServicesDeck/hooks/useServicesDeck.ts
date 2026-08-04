@@ -2,6 +2,7 @@ import { useEffect, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { getSharedDracoLoader } from '@/lib/modelLoading';
+import { createFrameTimer } from '@/lib/frameTimer';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -1150,7 +1151,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
 
     // ── Render loop ──
-    const clock = new THREE.Clock();
+    // Unclamped, which is what this loop has always had. ⚠ It is the only one of the three without a
+    // max delta, so a tab-restore integrates the whole gap in a single step here. Left as-is rather
+    // than quietly changed — see lib/frameTimer.ts.
+    const frameTimer = createFrameTimer();
     let frameId = 0;
     // 0..1 inside a departure window, clamped flat outside it — keeps each beat in sequence.
     const departWindow = (curveWindow: [number, number], value: number) =>
@@ -1159,10 +1163,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
 
-      // getDelta() advances the clock and updates elapsedTime, so read elapsedTime directly after
-      // (calling getElapsedTime() too would double-advance the delta).
-      const deltaSeconds = clock.getDelta();
-      const elapsed = clock.elapsedTime;
+      const deltaSeconds = frameTimer.tick();
+      const elapsed = frameTimer.elapsed();
       starfield.rotation.y = elapsed * STAR_DRIFT;
 
       // ── Push the authored stage onto the scene ──

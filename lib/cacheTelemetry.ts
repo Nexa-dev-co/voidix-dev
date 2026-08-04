@@ -139,14 +139,18 @@ function report(entry: PerformanceResourceTiming & ResourceTimingExtras): void {
       ? `${kilobytes(entry.transferSize)} over the wire`
       : `${kilobytes(entry.decodedBodySize)} without touching the network`;
 
+  // ⚠ Floored at zero. A worker's own chunk can report a NEGATIVE duration — its timing origin is the
+  // worker's, not the document's, so the subtraction crosses two clocks. Reporting "-83 ms" makes the
+  // whole readout look untrustworthy over one entry that is merely unmeasurable.
+  const durationMs = Math.max(0, entry.duration);
   const throughput =
-    delivery === 'network' && entry.duration > 0
-      ? `, ~${(entry.transferSize / 1024 / (entry.duration / 1000)).toFixed(0)} KB/s`
+    delivery === 'network' && durationMs > 0
+      ? `, ~${(entry.transferSize / 1024 / (durationMs / 1000)).toFixed(0)} KB/s`
       : '';
 
   console.log(
     `%c[cache] ${delivery.toUpperCase()}%c ${category} %c${path}%c\n  ${size}, ` +
-      `${entry.duration.toFixed(0)} ms${throughput}`,
+      `${durationMs.toFixed(0)} ms${throughput}`,
     style,
     STYLE_DIM,
     '',
@@ -202,13 +206,4 @@ export function startCacheTelemetry(): void {
   // cache miss, and whatever it does not is work that was simply never thrown away.
   window.addEventListener(LOOP_RESET_EVENT, () => summarise('lap'));
 
-  navigator.storage?.estimate?.().then((estimate) => {
-    const quota = estimate.quota ?? 0;
-    const usage = estimate.usage ?? 0;
-    console.log(
-      `%c[cache] storage%c ${kilobytes(usage)} used of ${(quota / 1024 / 1024).toFixed(0)} MB quota`,
-      'color:#ff8a1a;font-weight:700',
-      STYLE_DIM,
-    );
-  }).catch(() => {});
 }

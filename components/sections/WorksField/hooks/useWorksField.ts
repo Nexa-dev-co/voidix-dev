@@ -40,6 +40,7 @@ import {
   type SingularityScene,
 } from '@/components/sections/Contact/singularityScene';
 import { prefetchWhenAssetsReady } from '@/lib/prefetchWhenAssetsReady';
+import { createFrameTimer } from '@/lib/frameTimer';
 import { hideHologram } from '@/lib/hologramPose';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { createWorksHud } from '../worksHud';
@@ -1871,7 +1872,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
 
     // ── Render loop ──
-    const clock = new THREE.Clock();
+    const frameTimer = createFrameTimer(MAX_FRAME_SECONDS);
     let frameId = 0;
     // Warp state — read from the camera's own speed each frame so the streaks + FOV follow the exact
     // launch/arrive curve of the travel tween (longer hops naturally streak harder).
@@ -1881,8 +1882,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     let warp = 0;
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
-      const deltaSeconds = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
-      const elapsed = clock.elapsedTime;
+      const deltaSeconds = frameTimer.tick();
+      const elapsed = frameTimer.elapsed();
 
       // The debris and the starfield keep their slow ambient drift and nothing else. They used to
       // counter-rotate against the body during a change, so the two rates would add into the apparent
