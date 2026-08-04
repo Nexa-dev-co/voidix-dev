@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { getSharedDracoLoader } from '@/lib/modelLoading';
+import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createFrameTimer } from '@/lib/frameTimer';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
@@ -404,6 +404,9 @@ export default function SunModelCanvas() {
       preserveDrawingBuffer: true,
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_DEVICE_PIXEL_RATIO));
+    // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads —
+    // the loader throws rather than guessing. See lib/modelLoading.ts.
+    detectKtx2Support(renderer);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = EXPOSURE;
 
@@ -767,6 +770,7 @@ export default function SunModelCanvas() {
     // ── Load ──
     const gltfLoader = new GLTFLoader();
     gltfLoader.setDRACOLoader(getSharedDracoLoader());
+    gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
     let disposed = false;
     gltfLoader.load(

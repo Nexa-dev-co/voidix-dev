@@ -1,5 +1,7 @@
 import { Cache } from 'three';
+import type { WebGLRenderer } from 'three';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 
 /**
  * One Draco decoder and one file cache for the whole page.
@@ -25,6 +27,7 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
  */
 
 const DRACO_DECODER_PATH = '/draco/';
+const BASIS_TRANSCODER_PATH = '/basis/';
 
 /**
  * ── ⚠ THE FILE CACHE MUST STAY OFF. Turning it on breaks the works field. ────────────────────────
@@ -76,4 +79,64 @@ export function getSharedDracoLoader(): DRACOLoader {
     sharedDracoLoader.setDecoderPath(DRACO_DECODER_PATH);
   }
   return sharedDracoLoader;
+}
+
+/**
+ * ── The page's one KTX2 transcoder ───────────────────────────────────────────────────────────────
+ *
+ * KTX2 (Basis Universal) textures stay COMPRESSED in GPU memory. Today's WebP maps do not: WebP is a
+ * download format, and the driver expands every one of them to raw RGBA plus a mip chain the moment it
+ * is uploaded. One 1024² map costs ~5.6 MB resident that way; the same map as ETC1S is ~0.7 MB and as
+ * UASTC ~1.4 MB, at the SAME resolution. Across this site's models that is ~169 MB of texture becoming
+ * roughly 30 — without shrinking a single picture. See `docs/adaptive-asset-tier-plan.md` §5.0.
+ *
+ * ⚠ INERT UNTIL THE ASSETS ARE RE-ENCODED. `GLTFLoader` only consults this loader for a model that
+ * declares `KHR_texture_basisu`, and every GLB in `public/models` currently declares
+ * `EXT_texture_webp` instead. Wiring it ahead of the encode is deliberate: it is the risky half (four
+ * call sites, three renderers, an initialisation order that throws if you get it wrong) and it can be
+ * reviewed on its own, with nothing visible riding on it.
+ *
+ * ⚠ Shared for the same reason Draco is, and more so. A `KTX2Loader` fetches `basis_transcoder.wasm`
+ * (527 KB) and spins its own worker pool per instance. Four of them would be over 2 MB of transcoder.
+ *
+ * ⚠ Never disposed, exactly as above: `dispose()` terminates the workers, so the first scene to unmount
+ * would break decoding for every scene still alive.
+ *
+ * ⚠ There is no preload link for the transcoder yet, on purpose. It is 527 KB and nothing fetches it
+ * until a model actually carries a KTX2 texture — preloading it today would spend that on every
+ * visitor for nothing. Add it beside Draco's in `app/layout.tsx` in the same change that ships the
+ * re-encoded models, and for the same reason Draco has one: the transcoder is a SERIAL dependency, not
+ * a parallel cost.
+ */
+let sharedKtx2Loader: KTX2Loader | null = null;
+
+/**
+ * Tell the KTX2 loader which compressed formats this machine's GPU accepts.
+ *
+ * ⚠ This is not optional and it has no Draco equivalent — `KTX2Loader.load()` throws outright if it
+ * has never been called. Basis Universal is a *transcode* target, not a GPU format: the file has to be
+ * turned into ASTC, ETC2, BC7 or whatever this particular driver supports, and the loader cannot know
+ * which until it has been shown a renderer.
+ *
+ * Call it immediately after creating a renderer. Repeat calls are harmless — `detectSupport` only
+ * reads extension flags off the context and writes them to a config object, so the last renderer wins
+ * and every renderer on one page reports the same GPU anyway.
+ *
+ * ⚠ Two of the four model loaders on this site have no renderer to offer: `chamberScene` and
+ * `singularityScene` are drawn by the works field's renderer and deliberately never receive it (a GPU
+ * texture cannot cross a WebGL context, which is the whole reason they live inside that hook). They
+ * are safe regardless, because `useWorksField` — the thing that constructs them — has already called
+ * this with the renderer they will be drawn by.
+ */
+export function detectKtx2Support(renderer: WebGLRenderer): void {
+  getSharedKtx2Loader().detectSupport(renderer);
+}
+
+/** The page's one KTX2 transcoder. Hand it to a `GLTFLoader` with `setKTX2Loader`. */
+export function getSharedKtx2Loader(): KTX2Loader {
+  if (!sharedKtx2Loader) {
+    sharedKtx2Loader = new KTX2Loader();
+    sharedKtx2Loader.setTranscoderPath(BASIS_TRANSCODER_PATH);
+  }
+  return sharedKtx2Loader;
 }

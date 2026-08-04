@@ -1,7 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { getSharedDracoLoader } from '@/lib/modelLoading';
+import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createFrameTimer } from '@/lib/frameTimer';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -370,6 +370,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // and a resolve every frame to antialias a rectangle. The real AA is `samples` on the composer
     // target (MSAA, where the geometry actually is) plus the SMAAPass below.
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
+    // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads —
+    // the loader throws rather than guessing. See lib/modelLoading.ts.
+    detectKtx2Support(renderer);
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES
@@ -965,6 +968,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // ── Model loading (Draco-compressed) ──
     const gltfLoader = new GLTFLoader();
     gltfLoader.setDRACOLoader(getSharedDracoLoader());
+    gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
     // ── Load the four vessels (Draco-compressed) ──
     const loadProgress = new Array(ships.length).fill(0);

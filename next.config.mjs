@@ -23,9 +23,12 @@ const nextConfig = {
       // round trip on every load even when the body is already on disk.
       { source: '/models/:path*', headers: [{ key: 'Cache-Control', value: IMMUTABLE_ASSET_CACHE }] },
       { source: '/textures/:path*', headers: [{ key: 'Cache-Control', value: IMMUTABLE_ASSET_CACHE }] },
-      // The Draco decoder is a versioned third-party build that never changes in place, so this one
-      // carries none of the caveat above.
+      // The Draco decoder and the Basis transcoder are versioned third-party builds copied out of
+      // `node_modules/three`. They never change in place, so these two carry none of the caveat above
+      // — and both are large enough (245 KB and 585 KB) that a conditional request per reload is worth
+      // removing.
       { source: '/draco/:path*', headers: [{ key: 'Cache-Control', value: IMMUTABLE_ASSET_CACHE }] },
+      { source: '/basis/:path*', headers: [{ key: 'Cache-Control', value: IMMUTABLE_ASSET_CACHE }] },
     ];
   },
 };

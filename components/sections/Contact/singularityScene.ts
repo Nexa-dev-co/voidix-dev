@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { getSharedDracoLoader } from '@/lib/modelLoading';
+import { getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { SUN_BODY_FILL } from '@/components/effects/IntroSequence/gatherShader';
 import { createSunParticles, type SunParticles } from '@/lib/sunParticles';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
@@ -946,6 +946,9 @@ export function createSingularityScene({
 
   const gltfLoader = new GLTFLoader();
   gltfLoader.setDRACOLoader(getSharedDracoLoader());
+  // Same as the chamber: drawn by the works field's renderer, never handed one, and detection has
+  // already happened there. See lib/modelLoading.ts.
+  gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
   gltfLoader.load(MODEL_PATH, (gltf) => {
     // The load is fired well before it is needed, so a visitor who leaves the page mid-glide can land

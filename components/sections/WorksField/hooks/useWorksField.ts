@@ -52,6 +52,7 @@ import {
 } from '@/lib/assetLoadProgress';
 import { getPixelRatio, sampleFrame, reportProbedFrameCost } from '@/lib/adaptivePixelRatio';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
+import { detectKtx2Support } from '@/lib/modelLoading';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { warmSceneMaterials } from '@/lib/warmScene';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
@@ -585,6 +586,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // fullscreen quad, so a multisampled default framebuffer would be resolving a rectangle. The AA
     // that matters is `samples` on the two composer targets and the SMAAPass below.
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
+    // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads, and
+    // it covers the two scenes hosted in this renderer as well as this one: `chamberScene` and
+    // `singularityScene` load models but are never handed a renderer, deliberately — see
+    // lib/modelLoading.ts. They are constructed further down this same effect, so by the time either
+    // can ask for the transcoder this has already run.
+    detectKtx2Support(renderer);
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
     renderer.toneMapping = THREE.NeutralToneMapping;

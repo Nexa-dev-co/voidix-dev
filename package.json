@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "optimize:models": "node scripts/optimizeModels.mjs",
-    "optimize:textures": "node scripts/optimizeTextures.mjs"
+    "optimize:textures": "node scripts/optimizeTextures.mjs",
+    "trim:geometry": "node scripts/trimGeometry.mjs"
   },
   "dependencies": {
     "@types/three": "^0.184.1",

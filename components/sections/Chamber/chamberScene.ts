@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { getSharedDracoLoader } from '@/lib/modelLoading';
+import { getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { createGroundGrid } from './groundGrid';
 import { createChamberWalls } from './chamberWalls';
@@ -304,6 +304,10 @@ export function createChamberScene({
   // ── Loading ──
   const gltfLoader = new GLTFLoader();
   gltfLoader.setDRACOLoader(getSharedDracoLoader());
+  // No `detectKtx2Support` here: this scene has no renderer and never gets one (a GPU texture cannot
+  // cross a context, which is why the works field draws this room). `useWorksField` — which builds
+  // this — has already detected against the renderer these models will be drawn by.
+  gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
   let tableGroup: THREE.Group | null = null;
   let tablePivot: THREE.Group | null = null;
