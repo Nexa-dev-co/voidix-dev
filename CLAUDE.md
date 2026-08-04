@@ -151,9 +151,25 @@ Everything ships working from ~360px phones to large desktops **in the same chan
 
 - **Fluid by default** — `clamp()` / viewport units and the `--fs-*` tokens, not fixed px. Reach for
   a breakpoint only when fluid scaling genuinely can't fix the layout.
-- **The breakpoint is `@media (max-width: 51.25em)`** (≈820px). Reuse it.
+- **There are two breakpoints, and they mean different things.** `@media (max-width: 51.25em)`
+  (≈820px) is the main one — reuse it for anything that is simply "narrow", and most things only need
+  this. `@media (max-width: 30em)` (480px) is the TRUE PHONE, added 2026-08-04 for the contact
+  section: a 390px portrait phone and an 800px landscape tablet are not the same problem, and the
+  contact footer's three link columns are correct at 800px and wrong at 390px. Don't reach for 30em
+  when 51.25em would do.
+- **Full-height boxes use `100svh`, with a `100vh` line above it as the fallback.** On mobile browsers
+  `100vh` is the LARGE viewport — the height the page would have with the chrome hidden — so anything
+  pinned to the bottom of a `100vh` box (the fleet's carousel strip, the works arrows, the contact
+  footer) sits under the toolbar. `svh` is the small viewport and, unlike `dvh`, never changes as you
+  scroll, so it can't reflow mid-gesture. Applies to `.hero-section`, `.deck-overlay`, `.works-overlay`.
 - **3D scenes reframe, not stretch** — update camera aspect on resize, keep subjects framed at
-  portrait, clamp DPR.
+  portrait, clamp DPR. ⚠ **The portrait pull-back lives in `lib/portraitPullback.ts` and BOTH the deck
+  and the works field read it from there.** It used to be one inline expression in `useWorksField`'s
+  resize handler, which was fine until you remember that the services→works flight hands one camera
+  between two renderers: the field pulled back on a phone, the flight did not, and the mark arrived
+  filling the frame and shrank by 1.9× the instant browsing took over. The flight now ramps between
+  the two framings, exactly 1 at progress 0 (the fleet's resting shot) and exactly the browsing scale
+  at 1 (`FLIGHT_LANDING_KEY`). Change one scene's use of it and you must change the other's.
 - **Scrubbed animation must survive resize** — `invalidateOnRefresh` + function-based tween values,
   measure with `measureUntransformedRect` (never a transformed `getBoundingClientRect`), and
   `ScrollTrigger.config({ ignoreMobileResize: true })` so a mobile address bar doesn't re-pin.

@@ -87,14 +87,33 @@ const DEFAULT_ETC1S_SLOTS = '*';
 const ETC1S_QUALITY = 160;
 
 /**
- * Per-model texture exceptions. Empty on purpose — every model currently takes the ETC1S default.
+ * Per-model texture exceptions. Two knobs, and the cheap one comes first:
  *
- * `uastcSlots` buys the correct-but-expensive codec back for one model's specific maps, at roughly
- * 830 KB per 1024² map (see the block above). Reach for it only with the model on screen and a
- * specific artifact to point at — and prefer halving that map's resolution first, which costs 4× less
- * wire and is usually less visible than a mis-lit normal.
+ * `maxTextureSize` caps a model whose maps are simply larger than anything on screen can sample. Every
+ * halving is 4× the VRAM and roughly 3× the wire, and unlike a codec change it costs nothing anywhere
+ * else.
+ *
+ * `uastcSlots` buys the correct-but-expensive codec back for specific maps, at roughly 830 KB per
+ * 1024² map (see the block above). Reach for it only with the model on screen and a specific artifact
+ * to point at — and try `maxTextureSize` first, because a slightly soft normal map reads better than a
+ * mis-lit one and costs 4× less.
  */
-const TEXTURE_RECIPES = {};
+const TEXTURE_RECIPES = {
+  'spaceship3.glb': {
+    maxTextureSize: 512,
+    // Four 1024² maps — 4.2 megatexels — on a model with 2,819 VERTICES. Whatever this ship is, it is
+    // not 4 million pixels of detail: it is the smallest hull in the fleet and never fills the frame.
+    // It was mis-specified long before any of this (docs/adaptive-asset-tier-plan.md §5.1 flagged it
+    // from the raw numbers) and it is the one model here whose textures were always paying for
+    // resolution nothing could sample.
+    //
+    // It is also the model ETC1S cost the most: its WebP maps compressed to 0.50 bits/texel, the
+    // lowest on the site, and ETC1S has a floor near 0.85 that no amount of quality tuning goes below.
+    // Capping the size fixes the cause rather than arguing with the codec — and lands it well under
+    // where it started.
+    why: '4.2 megatexels on 2,819 vertices',
+  },
+};
 
 // Per-model treatment. A model absent from GEOMETRY_RECIPES is not decimated at all — the right
 // default for nearly everything here, and why `optimizeModels.mjs` sets `simplify: false` almost
@@ -244,9 +263,10 @@ for (const fileName of fileNames) {
   // Scratch files, one per stage. `simplify` writes UNCOMPRESSED geometry (it had to decode Draco to
   // touch the mesh at all), so that intermediate is several times larger than either end of this pipe.
   const scratch = (stage) => join(tmpdir(), `voidix-${fileName}.${stage}.glb`);
-  const stages = ['simplified', 'geometry', 'png', 'uastc', 'etc1s', 'final'];
+  const stages = ['simplified', 'geometry', 'png', 'resized', 'uastc', 'etc1s', 'final'];
 
-  console.log(`\n── ${fileName}${geometryRecipe ? ` — ${geometryRecipe.why}` : ''}`);
+  const reasons = [geometryRecipe?.why, TEXTURE_RECIPES[fileName]?.why].filter(Boolean);
+  console.log(`\n── ${fileName}${reasons.length ? ` — ${reasons.join('; ')}` : ''}`);
 
   try {
     // 1. Geometry, only where a recipe asks for it. Everything else keeps the Draco stream it
@@ -275,22 +295,33 @@ for (const fileName of fileNames) {
     //    every downstream skip looks like a --slots problem instead.
     runTransform(['png', current, scratch('png'), '--formats', '*']);
 
-    // 3. Any slot a recipe has bought UASTC for. Runs FIRST, so its glob sees the original textures
-    //    and step 4's exclusion has something real to exclude.
-    const uastcSlots = TEXTURE_RECIPES[fileName]?.uastcSlots;
-    if (uastcSlots) {
-      runTransform(['uastc', scratch('png'), scratch('uastc'), '--slots', uastcSlots]);
-    } else {
-      copyFileSync(scratch('png'), scratch('uastc'));
+    // 3. Cap the resolution, where a recipe says the maps are bigger than anything can sample.
+    //    ⚠ After the PNG stage, not before: this resamples, and resampling a lossless intermediate
+    //    keeps the operation to a single resample rather than a decode-resize-recompress round trip.
+    const textureRecipe = TEXTURE_RECIPES[fileName];
+    let textureInput = scratch('png');
+    if (textureRecipe?.maxTextureSize) {
+      const size = String(textureRecipe.maxTextureSize);
+      runTransform(['resize', textureInput, scratch('resized'), '--width', size, '--height', size]);
+      textureInput = scratch('resized');
     }
-    // 4. Everything else — which is normally everything. `assertTextureCodecs` proves the globs held.
+
+    // 4. Any slot a recipe has bought UASTC for. Runs FIRST of the two codecs, so its glob sees the
+    //    original textures and step 5's exclusion has something real to exclude.
+    const uastcSlots = textureRecipe?.uastcSlots;
+    if (uastcSlots) {
+      runTransform(['uastc', textureInput, scratch('uastc'), '--slots', uastcSlots]);
+    } else {
+      copyFileSync(textureInput, scratch('uastc'));
+    }
+    // 5. Everything else — which is normally everything. `assertTextureCodecs` proves the globs held.
     runTransform([
       'etc1s', scratch('uastc'), scratch('etc1s'),
       '--slots', uastcSlots ? `!${uastcSlots}` : DEFAULT_ETC1S_SLOTS,
       '--quality', String(ETC1S_QUALITY),
     ]);
 
-    // 5. ⚠ Re-apply Draco, because every texture pass above DECODED it. gltf-transform decompresses
+    // 6. ⚠ Re-apply Draco, because every texture pass above DECODED it. gltf-transform decompresses
     //    geometry on read whatever it was asked to do, so a model that needed no geometry work still
     //    comes out of step 4 uncompressed — the first run shipped `spaceship3` 45 % LARGER for this
     //    reason. Re-encoding at the same bit depths against the same bounding box lands the positions

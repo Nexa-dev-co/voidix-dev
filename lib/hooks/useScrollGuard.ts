@@ -43,7 +43,7 @@ const END_EPSILON = 1;
  */
 const GESTURE_IDLE_MS = 300;
 
-export function useHologramScrollGuard(
+export function useScrollGuard(
   scrollRef: RefObject<HTMLDivElement | null>,
 ): void {
   useEffect(() => {

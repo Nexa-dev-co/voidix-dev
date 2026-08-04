@@ -12,6 +12,7 @@ import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
+import { flightPullbackScale, portraitPullbackScale } from '@/lib/portraitPullback';
 import { createStoneMaterial } from '../meteorMaterial';
 import { getWorksTuning } from '../worksTuning';
 import { WORKS_PROJECTS } from '../worksProjects';
@@ -1910,7 +1911,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
       // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
-      distanceScale = aspect < 1 ? THREE.MathUtils.clamp(1 / aspect, 1, 1.9) : 1;
+      // ⚠ The flight reads this too (see the handoff branch in the render loop). It used to be an
+      // inline expression here and nowhere else, which is precisely how the arrival came to pop.
+      distanceScale = portraitPullbackScale(aspect);
       renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
       // Both stages follow the adaptive resolution. The composers resize their own buffers in place;
@@ -2044,8 +2047,27 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // Same shared pose the deck reads, shifted so the field's origin (meteor 01) lands on the
         // shared meteor spot — so the ship (deck canvas) and this field composite as one space.
         computeFlightPose(flightState.current, flightPose);
-        camera.position.copy(flightPose.cameraPosition).sub(meteorOffset);
         flightLookTarget.copy(flightPose.cameraTarget).sub(meteorOffset);
+        camera.position.copy(flightPose.cameraPosition).sub(meteorOffset);
+        // ── The portrait pull-back, ramped across the crossing ──
+        // The flight's landing pose IS stop 0 (worksTuning's FLIGHT_LANDING_KEY says so, and says it
+        // must never be hand-edited away from it). But `updateCamera` then multiplies that pose's
+        // offset by `distanceScale`, and on a phone that is 1.9 — so the identity the seam depends on
+        // held only on a landscape screen. The mark arrived filling the frame and shrank by nearly
+        // half the moment browsing took the camera. Applying the same scale HERE, ramped to exactly 1
+        // at progress 0 and exactly `distanceScale` at 1, makes both ends identities again and turns
+        // the pop into part of the dolly.
+        //
+        // ⚠ The deck's own camera does the same thing off the same shared function. If you change one,
+        // change both — they are one continuous space photographed by two renderers, and they only
+        // composite because they agree on where the camera is.
+        //
+        // Scaled about the AIM POINT, never about the world origin: this pushes the camera away from
+        // what it is looking at, which is the whole intent. Scaling the position would slide the shot.
+        camera.position
+          .sub(flightLookTarget)
+          .multiplyScalar(flightPullbackScale(distanceScale, flightState.current))
+          .add(flightLookTarget);
         camera.lookAt(flightLookTarget);
         if (Math.abs(camera.fov - flightPose.cameraFov) > 0.001) {
           camera.fov = flightPose.cameraFov;

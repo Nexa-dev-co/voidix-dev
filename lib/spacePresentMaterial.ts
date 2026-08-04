@@ -35,6 +35,19 @@ import * as THREE from 'three';
  * The chamber's display is a physical object in a room and has to occlude and be occluded properly, so
  * it depth-tests like anything else. Neither touches colour, so both uses still produce identical
  * pixels from identical input — which is the guarantee the whole reveal rests on.
+ *
+ * `uPictureSpan` is the third, and it exists for the phone. The display's WIDTH tracks the viewport's
+ * aspect (that match is what makes progress 0 pixel-exact), so on a portrait phone the picture is far
+ * narrower than the tabletop it is laid into and the bare table showed down either side of it. This
+ * lets the QUAD be wider than the picture, with the surplus painted solid black — so the display reads
+ * as a screen in a black panel at every aspect, rather than as a picture floating on a slate desk.
+ *
+ * It is deliberately part of THIS material rather than a second plane behind the display. The display
+ * lies flat INTO the table's surface (`rigPitch: 90`), so anything coplanar with it z-fights against
+ * the tabletop; one quad has one depth and cannot fight anything.
+ *
+ * At `(1, 1)` — which is what the full-bleed pass always uses — every added instruction folds to an
+ * exact identity, so the bit-exact copy the reveal rests on is untouched. See the shader for how.
  */
 
 const VERTEX_SHADER = /* glsl */ `
@@ -50,21 +63,42 @@ const FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
 
   uniform sampler2D uSpace;
-  uniform float uOpaque; // 0 = keep the space's transparency, 1 = a solid screen
-  uniform vec4 uCrop;    // trim the picture's edges: (left, right, top, bottom), each 0..1
+  uniform float uOpaque;    // 0 = keep the space's transparency, 1 = a solid screen
+  uniform vec4 uCrop;       // trim the picture's edges: (left, right, top, bottom), each 0..1
+  uniform vec2 uPictureSpan; // quad size / picture size, per axis. (1,1) = the picture fills the quad
   varying vec2 vUv;
 
   void main() {
-    // Read from a sub-rectangle of the render rather than all of it, so the display's borders can be
-    // trimmed. All zero = the whole picture, which is what the full-bleed pass always uses.
+    // 1. Quad space to PICTURE space. The picture sits centred in the quad occupying 1/uPictureSpan of
+    //    it, so anything past the edge lands outside 0..1 and becomes the black panel below.
+    //
+    //    Written as an offset from vUv rather than the obvious (vUv - 0.5) * span + 0.5, and the
+    //    difference matters: at span 1.0 the term (uPictureSpan - 1.0) is exactly zero, so this is
+    //    vUv + 0.0 and the full-bleed pass keeps the bit-exact copy it is promised. The centred form
+    //    would round-trip through a subtract and an add and could come back a ulp off.
+    vec2 pictureUv = vUv + (vUv - 0.5) * (uPictureSpan - 1.0);
+
+    // 2. Read from a sub-rectangle of the render rather than all of it, so the display's borders can be
+    //    trimmed. All zero = the whole picture, which is what the full-bleed pass always uses.
     vec2 uv = vec2(
-      mix(uCrop.x, 1.0 - uCrop.y, vUv.x),
-      mix(uCrop.w, 1.0 - uCrop.z, vUv.y)
+      mix(uCrop.x, 1.0 - uCrop.y, pictureUv.x),
+      mix(uCrop.w, 1.0 - uCrop.z, pictureUv.y)
     );
     vec4 space = texture2D(uSpace, uv);
-    // The rgb is passed through untouched — no tone mapping, no encoding. It is still linear HDR at
-    // this point, and the screen pipeline's OutputPass is the one and only place that gets to change it.
-    gl_FragColor = vec4(space.rgb, mix(space.a, 1.0, uOpaque));
+
+    // 3. Inside the picture, or out on the panel? Inclusive at both edges — step(e, x) is 1 when x == e
+    //    — so at span 1.0 this is 1.0 across the whole quad and step 4 folds to an identity.
+    float inPicture = step(0.0, pictureUv.x) * step(pictureUv.x, 1.0)
+                    * step(0.0, pictureUv.y) * step(pictureUv.y, 1.0);
+
+    // 4. The rgb is passed through untouched — no tone mapping, no encoding. It is still linear HDR at
+    //    this point, and the screen pipeline's OutputPass is the one and only place that gets to change
+    //    it. The panel is black and always OPAQUE, whatever uOpaque is doing: it is the screen's own
+    //    body, not the dark of space, and it must never be a hole through to the room behind it.
+    gl_FragColor = vec4(
+      space.rgb * inPicture,
+      mix(1.0, mix(space.a, 1.0, uOpaque), inPicture)
+    );
   }
 `;
 
@@ -73,6 +107,12 @@ export interface SpacePresentUniforms {
   uOpaque: { value: number };
   /** (left, right, top, bottom) edge insets, 0..1. All zero shows the whole picture. */
   uCrop: { value: THREE.Vector4 };
+  /**
+   * Quad size ÷ picture size, per axis. `(1, 1)` — the default — means the picture fills the quad
+   * exactly and the material behaves precisely as it did before this uniform existed. Anything above 1
+   * on an axis widens the QUAD, leaving opaque black either side of an unchanged picture.
+   */
+  uPictureSpan: { value: THREE.Vector2 };
 }
 
 export interface SpacePresentMaterial {
@@ -93,6 +133,7 @@ export function createSpacePresentMaterial(
     uSpace: { value: spaceTexture },
     uOpaque: { value: 0 },
     uCrop: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uPictureSpan: { value: new THREE.Vector2(1, 1) },
   };
 
   const material = new THREE.ShaderMaterial({

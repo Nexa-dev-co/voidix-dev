@@ -841,16 +841,35 @@ export function createChamberScene({
     const cropBottom = tuning.cropBottom * eased;
     displayUniforms.uCrop.value.set(cropLeft, cropRight, cropTop, cropBottom);
 
-    // The quad shrinks along with the trim, so the picture is CROPPED rather than squashed into a
-    // smaller frame. With no crop this is the full viewport aspect — which is what keeps `coverDistance`
-    // exact at progress 0.
+    // The picture shrinks along with the trim, so it is CROPPED rather than squashed into a smaller
+    // frame. With no crop this is the full viewport aspect — which is what keeps `coverDistance` exact
+    // at progress 0.
     const keptWidth = Math.max(1 - cropLeft - cropRight, 0.001);
     const keptHeight = Math.max(1 - cropTop - cropBottom, 0.001);
-    display.scale.set(
-      screenHeight * aspect * keptWidth,
-      screenHeight * keptHeight,
-      1,
-    );
+    const pictureWidth = screenHeight * aspect * keptWidth;
+    const pictureHeight = screenHeight * keptHeight;
+
+    // ── The black panel the picture sits in ──
+    // The QUAD is at least as wide as the tabletop the screen is set into, whatever shape the picture
+    // is; the shader paints the surplus solid black (`uPictureSpan`). On a portrait phone the picture
+    // is barely a third of the tabletop's width, and without this the bare slate showed down both
+    // sides of it.
+    //
+    // Only the width can ever need it: `screenHeight` is authored, so the picture's HEIGHT is fixed
+    // and only its width moves with the aspect.
+    //
+    // ⚠ This must never touch the picture's own size or position. `coverDistance` is derived from
+    // `displayHeight` alone and the seam at progress 0 is the picture covering the frustum exactly —
+    // so the quad is free to overhang the frame there (it does, and it is off-screen), but the picture
+    // is not free to move. A `max` rather than an assignment is what guarantees that: at any landscape
+    // aspect the picture is already the wider of the two and the panel adds literally nothing.
+    //
+    // The divisor is floored because `screenHeight` is TOUR-DRIVEN (`playhead.sh`) rather than a
+    // constant — a key authored at zero height would otherwise hand the shader a NaN span, and a NaN
+    // vertex position doesn't render a small display, it renders nothing at all.
+    const panelWidth = Math.max(pictureWidth, screenHeight * tuning.displayPanelAspect);
+    display.scale.set(panelWidth, pictureHeight, 1);
+    displayUniforms.uPictureSpan.value.set(panelWidth / Math.max(pictureWidth, 1e-6), 1);
     display.position.copy(rigPosition);
     display.rotation.copy(rigRotation);
 

@@ -140,6 +140,11 @@ html {
   color-scheme: dark;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  /* Pull-to-refresh is not a gesture this site can afford. The whole page is ONE pinned ScrollTrigger
+     holding several megabytes of decoded glTF and compiled shaders, so an accidental refresh at the
+     top doesn't cost a repaint — it costs the entire loading sequence again. This also stops the
+     rubber-band from chaining, which is what used to expose the canvas colour under the hero. */
+  overscroll-behavior-y: none;
 }
 
 html::-webkit-scrollbar {
@@ -531,7 +536,17 @@ body {
   position: relative;
   isolation: isolate;
   width: 100%;
+  /* ⚠ `svh`, not `vh`, and the fallback line above it is not optional.
+     On iOS Safari and Chrome Android `100vh` is the LARGE viewport — the height the page would have
+     if the browser chrome were hidden — so a `100vh` box on a phone runs ~100px past the bottom of
+     what you can actually see. Everything this site pins to the bottom of a full-height box (the
+     fleet's carousel strip, the works arrows, the contact footer) was landing under the toolbar.
+     `svh` is the SMALL viewport: the height WITH the chrome showing. It is also the one that never
+     changes as you scroll, so unlike `dvh` it cannot reflow the page mid-gesture — and
+     `ScrollTrigger.config({ ignoreMobileResize: true })` already means the pin doesn't care either
+     way. Desktop is unaffected: with no browser chrome to subtract the two units are identical. */
   height: 100vh;
+  height: 100svh;
   background: #e2dfd2;
   display: flex;
   flex-direction: column;
@@ -1135,7 +1150,10 @@ body {
   display: flex;
   flex-direction: column;
   width: 100%;
+  /* Small viewport — see the note on .hero-section. This is the box the carousel strip hangs off the
+     bottom of via `margin-top: auto`, so at `100vh` the strip sat under the phone's toolbar. */
   min-height: 100vh;
+  min-height: 100svh;
   padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.5rem, 5vw, 5rem) clamp(1.75rem, 5vh, 3.25rem);
   pointer-events: none;
 }
@@ -1994,13 +2012,150 @@ body {
   }
 }
 
+/* ─── Contact on a phone ─────────────────────────────────────────────
+   ⚠ THE CONSTRAINT HERE IS HEIGHT, NOT WIDTH, and it is unlike anywhere else on the site: contact is
+   the last stop in the hero's ONE pin, so this section is a single fixed viewport with nothing below
+   it to scroll to. Copy, form, loop button and footer either fit or they are simply gone.
+
+   They did not fit. At 360×640 the stack ran roughly 150px over, and because `.contact-body` justifies
+   to flex-end on mobile the overflow went off the TOP — so the section's own title was cut off under
+   the navbar while the footer looked fine. Everything below is that 150px, taken back a few pixels at
+   a time from padding and leading rather than by dropping anything: every link, the licence credit and
+   the whole lead paragraph are still here.
+
+   30em (480px) rather than the site's usual 51.25em: at 500–820px the desktop-ish footer still works
+   and the three link columns still sit side by side. This is the true-phone breakpoint. */
+@media (max-width: 30em) {
+  .contact-section {
+    /* The navbar is 4.5rem; this clears it and stops paying for the desktop's generous shoulder. */
+    padding-top: 5rem;
+    padding-bottom: 1rem;
+  }
+
+  .contact-title {
+    font-size: 1.35rem;
+    line-height: 1.1;
+  }
+
+  .contact-lead {
+    margin-top: 0.6rem;
+    line-height: 1.5;
+  }
+
+  .contact-panel {
+    padding: 1.1rem 1rem;
+  }
+
+  .contact-form {
+    gap: 0.6rem;
+  }
+
+  .contact-field {
+    gap: 0.25rem;
+  }
+
+  .contact-textarea {
+    min-height: 2.75rem;
+  }
+
+  /* Full width, and tall enough to be a touch target rather than a mouse one. A shrink-wrapped button
+     tucked under a full-width form reads as an afterthought on a phone. */
+  .contact-send {
+    align-self: stretch;
+    margin-top: 0.35rem;
+    padding: 0.7rem 1.4rem;
+    text-align: center;
+  }
+
+  .contact-loop {
+    padding-bottom: 0.6rem;
+  }
+
+  .contact-loop-button {
+    padding: 0.55rem 1.25rem 0.55rem 1rem;
+  }
+
+  /* ── The footer proper ──
+     Desktop lays this out as brand | three link columns | credit, which on a phone wrapped into a
+     ragged six-line block whose columns did not line up with each other. Here each group becomes one
+     LABEL-LED ROW instead — the kicker in a fixed gutter on the left, its links running off to the
+     right — so the three groups read as a small table and every link lands on the same left edge.
+
+         DIRECT      hello@voidix.studio
+         ELSEWHERE   X  LinkedIn  GitHub  Dribbble
+         LEGAL       Privacy  Terms
+
+     Three lines for eight links, the group titles kept (they are what makes "Privacy · Terms" read as
+     Legal rather than as more navigation), and it is shorter than what it replaced. */
+  .contact-footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.7rem;
+    padding-top: 0.85rem;
+  }
+
+  .contact-footer-brand {
+    flex-wrap: wrap;
+    gap: 0.15rem 0.6rem;
+  }
+
+  .contact-footer-groups {
+    flex-direction: column;
+    gap: 0.45rem;
+    width: 100%;
+  }
+
+  .contact-footer-group {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+
+  /* The gutter. Fixed width and no shrink, because the whole point is that the three rows of links
+     start at one x — a title column that sized to its own content would stagger them. */
+  .contact-footer-group-title {
+    flex: 0 0 4.25rem;
+    margin-bottom: 0;
+  }
+
+  .contact-footer-links {
+    flex: 1;
+    gap: 0.2rem 0.85rem;
+  }
+
+  /* --fs-tiny is 10px, which is a fine footnote and a poor tap target. One step up the scale, plus
+     vertical padding, gets each link to a comfortable touch height without adding a visible row gap —
+     the padding overlaps the flex gap rather than stacking with it. */
+  .contact-footer-link {
+    font-size: var(--fs-small);
+    padding: 0.2rem 0;
+  }
+
+  /* The credit stays fine print — it is the one thing here that is legally required to be legible
+     rather than prominent, and it is the longest string in the footer.
+
+     ⚠ `flex-basis: auto` is load-bearing, not tidying. The base rule sets `flex-basis: 100%` to claim a
+     full line in the desktop footer's wrapping ROW; this footer is a COLUMN, where flex-basis sizes the
+     main axis — so that same 100% asks for a credit line as tall as the entire footer. */
+  .contact-credit {
+    flex-basis: auto;
+    line-height: 1.45;
+  }
+
+  .contact-credit .contact-footer-link {
+    padding: 0;
+  }
+}
+
 .works-overlay {
   position: relative;
   z-index: 2;
   display: flex;
   flex-direction: column;
   width: 100%;
+  /* Small viewport — see the note on .hero-section. The arrow nav hangs off the bottom of this box. */
   min-height: 100vh;
+  min-height: 100svh;
   padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.5rem, 5vw, 5rem) clamp(1.75rem, 5vh, 3.25rem);
   pointer-events: none;
 }

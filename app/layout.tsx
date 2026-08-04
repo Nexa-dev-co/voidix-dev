@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Syne, DM_Sans } from 'next/font/google';
 import Navbar from '@/components/layout/Navbar/Navbar';
 import './globals.css';
@@ -31,6 +31,28 @@ export const metadata: Metadata = {
       'Custom web applications, SaaS, CRM, mobile, and AI — engineered to hold users in orbit.',
     type: 'website',
   },
+};
+
+/**
+ * ⚠ THIS IS THE FIX FOR THE CREAM BANDS ON iOS SAFARI, and the cause is not what it looks like.
+ *
+ * `body` is already `--bg` (#060606) and always has been, and with `html` carrying no background of
+ * its own that black propagates to the canvas — so the overscroll gutter was never the problem. What
+ * is beige is the BROWSER's own chrome: since iOS 15, Safari tints the address bar and the bottom
+ * toolbar to match the page, and with no `theme-color` to go on it SAMPLES what is actually rendered
+ * at the top and bottom of the viewport. The hero is `#e2dfd2` and, being pinned, fills the frame —
+ * so Safari faithfully paints its chrome the hero's cream.
+ *
+ * Declaring the colour takes the decision away from the sampler: the chrome is the page black at every
+ * scroll position, on every section, and the hero stays exactly the cream it is. Nothing on the page
+ * changes — this only ever painted browser furniture.
+ *
+ * `colorScheme` matches the `color-scheme: dark` already on `html` in globals.css, so form controls and
+ * the chrome's own icons agree with a dark bar.
+ */
+export const viewport: Viewport = {
+  themeColor: '#060606',
+  colorScheme: 'dark',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

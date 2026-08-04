@@ -13,6 +13,7 @@ import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
+import { flightPullbackScale, portraitPullbackScale } from '@/lib/portraitPullback';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
@@ -1141,6 +1142,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // whenever the adaptive controller shifts the ratio. Defined before the render loop so the loop
     // can call it without a forward reference.
     let appliedPixelRatio = getPixelRatio();
+    // How far the flight's camera pulls back on a narrow frame, at its far end. Held here beside the
+    // aspect it is derived from rather than recomputed in the loop, so the two can't disagree — and
+    // read ONLY by the handoff below. The fleet's own resting shot is deliberately not touched by it
+    // (see the flight branch for why the ramp has to start at exactly 1).
+    let portraitScale = 1;
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -1148,6 +1154,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const ratio = getPixelRatio();
       appliedPixelRatio = ratio;
       camera.aspect = width / height;
+      portraitScale = portraitPullbackScale(camera.aspect);
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
@@ -1301,7 +1308,22 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
         // Drive the shared camera: holds through the launch, then tracks the ship left, then frames
         // the meteor.
-        camera.position.copy(flightPose.cameraPosition);
+        //
+        // The portrait pull-back rides on top, off the SAME shared function the works field uses (see
+        // lib/portraitPullback.ts). It is here for the field's benefit, not the deck's: the field's
+        // browsing camera has always pulled back on a narrow frame, and until this existed the flight
+        // handed it a camera at landscape distance — so the mark landed big and snapped small. The
+        // deck has to apply the identical scale or the ship and the debris it is flying through stop
+        // being in the same place, which is the one thing this crossing cannot survive.
+        //
+        // The ramp is exactly 1 until progress 0.3, which is where `CAMERA_POSITION_KEYS` stops
+        // holding — so the fleet's resting shot, and the whole launch off the pad, are untouched at
+        // every viewport size.
+        camera.position
+          .copy(flightPose.cameraPosition)
+          .sub(flightPose.cameraTarget)
+          .multiplyScalar(flightPullbackScale(portraitScale, departure))
+          .add(flightPose.cameraTarget);
         camera.lookAt(flightPose.cameraTarget);
         if (Math.abs(camera.fov - flightPose.cameraFov) > 0.001) {
           camera.fov = flightPose.cameraFov;

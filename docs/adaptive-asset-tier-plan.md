@@ -661,17 +661,39 @@ reason: the transcoder is a serial dependency, not a parallel cost. *(Added in �
    cargo_spaceship 2513 → 2850 KB  (+13%)   226,545 → 217,383   (−4%)   10× ETC1S
    fractured_sun   1313 → 1315 KB   (+0%)     7,694 →   7,283   (−5%)    8× ETC1S
    spaceship       2096 → 2082 KB   (−1%)   204,582 → 190,661   (−7%)    4× ETC1S
-   spaceship3       277 →  491 KB  (+77%)     2,819 →   2,815   (−0%)    4× ETC1S
+   spaceship3       277 →  192 KB  (−31%)     2,819 →   2,815   (−0%)    4× ETC1S @512
    star_aventure    391 →  401 KB   (+3%)    67,160 →  61,034   (−9%)    5× ETC1S
    table            621 →  468 KB  (−25%)   196,997 → 131,330  (−33%)    2× ETC1S
    ─────────────────────────────────────────────────────────────────────────────
-                   9.91 → 9.69 MB  (−2.3%)                     ~169 MB → ~40 MB VRAM
+                   9.91 → 9.39 MB  (−5.2%)                     ~169 MB → ~38 MB VRAM
 ```
 
 **The download did not go up.** §5.0 predicted "flat to slightly up" and hedged toward up; it came out
-slightly **down**. ETC1S has a near-fixed bitrate while WebP's varies with content, so it ties or wins
-wherever WebP was already large (`fractured_sun` +0.1 %, and it is the model the loader gate waits on)
-and costs where WebP was small (`spaceship3` +77 %, from four unusually well-compressed maps).
+**down**.
+
+The mechanism is a **floor, not a fixed rate** — worth stating precisely, because it predicts what the
+next model will do:
+
+```
+   MODEL            TEXELS      WebP bits/texel  →  ETC1S bits/texel
+   black_hole       6.8 Mpx          1.50        →       1.29    ↓
+   fractured_sun    5.9 Mpx          1.71        →       1.71    =
+   star_aventure    1.0 Mpx          1.51        →       1.63    ↑ slightly
+   table            0.5 Mpx          0.87        →       1.28    ↑
+   cargo_spaceship 10.5 Mpx          0.89        →       1.22    ↑
+   spaceship        4.2 Mpx          0.65        →       0.85    ↑
+   spaceship3       4.2 Mpx          0.50        →       0.92    ↑↑  ← before the 512 cap
+```
+
+WebP spans 0.50 → 1.71 bits per texel; **ETC1S never goes below ~0.85.** The block format is fixed at
+4 bpp and only the BasisLZ palette on top is content-adaptive, and that palette has overhead. So:
+anything WebP compressed below ~0.9 bpp grows, anything above ~1.3 bpp shrinks or ties — including
+`fractured_sun`, which is the model the loader gate waits on.
+
+`spaceship3` was the worst case for exactly that reason (0.50 bpp, and 99 % of its file is texture
+because it has 17 KB of geometry). Capping it at 512² addresses the cause rather than the codec: it
+was carrying 4.2 megatexels on 2,819 vertices, which §5.1 had already flagged from the raw numbers.
+**277 → 192 KB, below where it started, with VRAM at ~1.3 MB.**
 
 ### ⚠⚠ UASTC for normal maps is unaffordable here, and that is a departure from the textbook
 
