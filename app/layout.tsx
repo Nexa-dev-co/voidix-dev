@@ -77,6 +77,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           as="fetch"
           crossOrigin="anonymous"
         />
+        {/* The Basis transcoder, for exactly Draco's reason. Every model's textures are KTX2 now, and
+            `KTX2Loader` does not fetch this until the first transcode is asked for — i.e. after the
+            .glb has fully landed — so without the preload the star's textures wait out another
+            527 KB after the model itself is already in.
+
+            ⚠ It did NOT ship with the loader wiring, deliberately: while every model still carried
+            WebP this was 527 KB spent on every visitor to serve none of them. It earns its place in
+            the same change that made the models KTX2, and it would have to come back out if they
+            ever stopped being.
+
+            The .wasm only. `basis_transcoder.js` is the small loader shim that three fetches
+            alongside it; it is 58 KB and arrives in the same round trip. */}
+        <link
+          rel="preload"
+          href="/basis/basis_transcoder.wasm"
+          as="fetch"
+          crossOrigin="anonymous"
+        />
       </head>
       <body>
         {/* ⚠ `.nav-root` is fixed, full width, 4.5rem tall, at z-9999, and carries no

@@ -577,6 +577,143 @@ window, no per-model ladders and no extra files. It is a build-script change plu
 every visitor gets a site that looks exactly like today's. If the laptop is smooth after this, Phase 2
 may not be worth its complexity at all.
 
+### 10a · What shipped — 2026-08-04
+
+**Step 4 is in. Steps 2 and 3 turned out not to need doing.**
+
+| | |
+|---|---|
+| `scripts/compareModels.mjs` | The §5.3 invariants, as a runnable check: primitive count + order, material names, node names, texture slots. Exits non-zero on any change. |
+| `scripts/buildModels.mjs` | The whole pipeline — geometry where a recipe asks for it, then KTX2 for every texture — with **the assertions run before anything is published**. `npm run build:models`. |
+| `models-src/from-public/` | A copy of the shipped GLBs, taken before anything was re-encoded, so the pass always reads a stable input and re-running can never compound. |
+
+⚠ **This started as two scripts and had to become one.** A separate KTX2 pass would have read
+`public/models` and written back to it, so every re-run would decode its own previous output and
+re-compress it — compounding the loss and taking minutes to do it. Both stages have to read a source
+they never write to. `trimGeometry.mjs` was folded into `buildModels.mjs` for that reason; the
+geometry numbers below were produced by it and are unchanged by the merge.
+
+```
+   table.glb        621 KB → 440 KB   (−29%)    196,997 → 131,260 verts  (−33%)
+   black_hole.glb  2936 KB → 2482 KB  (−16%)    368,063 → 221,622 verts  (−40%)
+   ────────────────────────────────────────────────────────────────────────────
+                     −635 KB on the wire, −212k vertices per frame
+```
+
+⚠ **`--error` is the real safety rail, not `--ratio`.** Both recipes asked for 0.5 and got 0.60–0.67:
+meshoptimizer treats the ratio as a target and the error as a limit, and at `MAX_ERROR = 0.001` it
+refused to go further without visibly moving the silhouette. That is the correct direction to be
+wrong in. Raise it only with the model on screen.
+
+**This supersedes §5.2's geometry ladder for these two.** That table left `black_hole` untouched at
+`high` while §5.1 called it "CUT HARD" — an inconsistency in the first draft. It is now cut at every
+tier, on the grounds §5.1 gave: four seconds on screen, behind a shader that bends it.
+
+**Step 2 (ORM packing) was already done** — verified by reading the materials. `cargo_spaceship` and
+`spaceship3` already point `metallicRoughnessTexture` and `occlusionTexture` at the same image;
+`spaceship`, `fractured_sun` and `star_aventure` carry no occlusion map at all. glTF's own convention
+had packed them and nobody had checked.
+
+**Step 3 (half-resolution for the dull maps) is subsumed by step 1** and should not be built
+separately. A 1024² ETC1S map is ~0.7 MB resident; the same map halved to 512² and left uncompressed
+is ~1.4 MB. **KTX2 at full resolution beats a downscale**, so doing both buys little and costs a
+visible resolution.
+
+### 10b · Step 1, the runtime half — 2026-08-04
+
+Landed ahead of the encode, deliberately: this is the risky half and it can be reviewed with nothing
+visible riding on it. `npx tsc --noEmit` and `npm run build` both clean.
+
+| | |
+|---|---|
+| `public/basis/` | `basis_transcoder.js` + `.wasm` (585 KB), copied out of `node_modules/three`. |
+| `lib/modelLoading.ts` | `getSharedKtx2Loader()` and `detectKtx2Support(renderer)`, beside the shared Draco loader and never disposed for the same reason. |
+| four `GLTFLoader` sites | `setKTX2Loader(...)` — sun, deck, chamber, singularity. |
+| three renderers | `detectKtx2Support(renderer)` immediately after construction. |
+| `next.config.mjs` | `/basis/:path*` gets the immutable header Draco already had. |
+
+**It is inert today.** `GLTFLoader` only consults a KTX2 loader for a model declaring
+`KHR_texture_basisu`, and every GLB in `public/models` still declares `EXT_texture_webp`.
+
+⚠ **`detectSupport` is the trap, and it has no Draco equivalent.** Basis Universal is a *transcode*
+target rather than a GPU format: the file must become ASTC, ETC2, BC7 or whatever the driver takes,
+and `KTX2Loader.load()` **throws** if it was never shown a renderer. That is why detection is a
+separate export from the loader — `chamberScene` and `singularityScene` both load models and are
+deliberately never handed a renderer (a GPU texture cannot cross a context, which is why the works
+field draws them). They are safe by construction: `useWorksField` detects with the renderer they will
+be drawn by, in the same effect that later builds them.
+
+**Cost of landing it early: 3 kB of bundle** (60.7 → 63.7 kB). The 585 KB transcoder is in `public/`
+and is not fetched until a model actually carries a KTX2 texture.
+
+⚠ **No `<link rel="preload">` for the transcoder yet, on purpose.** It is 527 KB and nothing fetches it
+today, so preloading would spend that on every visitor for nothing. Add it beside Draco's in
+`app/layout.tsx` **in the same change that ships the re-encoded models** — and for Draco's exact
+reason: the transcoder is a serial dependency, not a parallel cost. *(Added in §10c.)*
+
+### 10c · Step 1, the encode — 2026-08-04
+
+**All seven models are KTX2. `npx tsc --noEmit` and `npm run build` clean.**
+
+```
+                            WIRE                    VERTS                 TEXTURES
+   black_hole      2936 → 2311 KB  (−21%)   368,063 → 221,646  (−40%)   15× ETC1S
+   cargo_spaceship 2513 → 2850 KB  (+13%)   226,545 → 217,383   (−4%)   10× ETC1S
+   fractured_sun   1313 → 1315 KB   (+0%)     7,694 →   7,283   (−5%)    8× ETC1S
+   spaceship       2096 → 2082 KB   (−1%)   204,582 → 190,661   (−7%)    4× ETC1S
+   spaceship3       277 →  491 KB  (+77%)     2,819 →   2,815   (−0%)    4× ETC1S
+   star_aventure    391 →  401 KB   (+3%)    67,160 →  61,034   (−9%)    5× ETC1S
+   table            621 →  468 KB  (−25%)   196,997 → 131,330  (−33%)    2× ETC1S
+   ─────────────────────────────────────────────────────────────────────────────
+                   9.91 → 9.69 MB  (−2.3%)                     ~169 MB → ~40 MB VRAM
+```
+
+**The download did not go up.** §5.0 predicted "flat to slightly up" and hedged toward up; it came out
+slightly **down**. ETC1S has a near-fixed bitrate while WebP's varies with content, so it ties or wins
+wherever WebP was already large (`fractured_sun` +0.1 %, and it is the model the loader gate waits on)
+and costs where WebP was small (`spaceship3` +77 %, from four unusually well-compressed maps).
+
+### ⚠⚠ UASTC for normal maps is unaffordable here, and that is a departure from the textbook
+
+§5.0 committed to "UASTC for normal maps, ETC1S for everything else" on the standard grounds: ETC1S is
+a palette codec and normal maps encode directions, so a shared palette entry points the surface the
+wrong way. That reasoning is sound. The price is not:
+
+```
+   ONE 1024² NORMAL MAP        UASTC 972 KB        ETC1S 140 KB
+```
+
+UASTC is ~1 byte per texel and high-entropy, so `--zstd 18` barely touches it, and `--rdo` at lambda
+0.25 / 0.5 / 0.75 produced **byte-identical output** — it does not help. Seven normal maps on the site
+means ~7 MB added to a ~10 MB page whose loader gate already waits out a 1.3 MB download on a bad
+connection.
+
+So the build is **ETC1S everywhere**, with a per-model `uastcSlots` escape hatch that is currently
+empty. Before reaching for it on a hull that looks wrong, halve that map's resolution instead: 4× less
+wire than UASTC, and a slightly soft normal is usually less visible than a mis-lit one.
+
+### Four ways this failed silently before it worked
+
+Each one reported success and produced a broken or bloated file. All four are now either fixed in the
+pipeline or caught by a gate.
+
+| what happened | why | what catches it now |
+|---|---|---|
+| **Nothing was encoded at all.** First run: `4× NOT KTX2 (image/webp)`, file 45 % larger. | The KTX2 encoder reads PNG and JPEG only. It **skips** WebP with a warning and exits 0. | A `png` stage before it — and `assertTextureCodecs` fails the build on any texture that is not KTX2. |
+| **The PNG stage was a no-op.** | `--formats` defaults to `"png"`, i.e. *only touch textures that are already PNG*. Needs `--formats "*"`. | Same gate — the skip count stays non-zero. |
+| **Draco was dropped.** `spaceship3` shipped 45 % larger with identical geometry. | Every texture pass decodes `KHR_draco_mesh_compression` on read, whatever it was asked to do. | A `draco` stage at the end of the pipeline. |
+| **The slot glob matched nothing.** The normal map fell through as a 1.3 MB PNG, inflating the model 6× while every invariant passed. | `{normalTexture}` — a brace group with one member does not expand. Plain `normalTexture` works. | `assertTextureCodecs` again, plus the per-codec counts it prints. |
+
+⚠ **`assertTextureCodecs` is the most valuable thing in `buildModels.mjs`** and it caught three of
+those four on their first run. It reads the KTX2 header of every image and fails the build on anything
+that is not compressed. Note the KTX2 `supercompressionScheme` field is at byte **44** — twelve
+identifier bytes then *eight* uint32s, not nine.
+
+**Also observed: the Draco re-encode welds.** Models with no geometry recipe still lost 4–9 % of their
+vertices (`star_aventure` −9.1 %). That is duplicate-vertex merging, not decimation — the shape is
+unchanged — but it means no model comes through this pipeline byte-identical, and `high` is therefore
+no longer "today's bytes copied" in the sense §3.1 assumed.
+
 ### Phase 2 — the tiers, if Phase 1 was not enough
 
 | # | change | risk | payoff |

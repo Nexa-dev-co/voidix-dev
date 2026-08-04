@@ -9,7 +9,7 @@
     "lint": "next lint",
     "optimize:models": "node scripts/optimizeModels.mjs",
     "optimize:textures": "node scripts/optimizeTextures.mjs",
-    "trim:geometry": "node scripts/trimGeometry.mjs"
+    "build:models": "node scripts/buildModels.mjs"
   },
   "dependencies": {
     "@types/three": "^0.184.1",
