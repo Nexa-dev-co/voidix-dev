@@ -54,6 +54,7 @@ import { getPixelRatio, sampleFrame, reportProbedFrameCost } from '@/lib/adaptiv
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
 import { warmSceneMaterials } from '@/lib/warmScene';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
+import { SLATE_200, SLATE_400, SLATE_800 } from '@/lib/coolPalette';
 
 // ── Textures ────────────────────────────────────────────────────────────
 // The DEBRIS texture: dark basalt shot through with glowing lava veins, worn as plain rock by the
@@ -303,7 +304,7 @@ const SHARD_Z_CENTER    = -16; // pushed BEHIND the body (which sits at the orig
 const SHARD_MIN_SCALE   = 0.05;
 const SHARD_MAX_SCALE   = 0.28; // capped so a chunk never reads as a giant boulder
 const SHARD_DRIFT_SPEED = 0.012; // rad/s slow yaw drift on the whole debris field
-const SHARD_TINT        = 0x1c2530; // darker than the body so the mark reads as the subject
+const SHARD_TINT        = SLATE_200; // darker than the body so the mark reads as the subject
 // Debris keeps clear of a sphere around every pose the camera can hold, so a chunk never spawns right
 // on top of the lens and blows up huge in perspective when you arrive at a stop.
 const SHARD_CAMERA_KEEPOUT  = 5;
@@ -330,10 +331,11 @@ const STAR_OPACITY      = 0.85;
 const STAR_DRIFT        = 0.008;
 
 // ── Lighting ─────────────────────────────────────────────────────────────
-const KEY_LIGHT_COLOR      = 0xdfe7ff; // cool key so the stone reads blue-grey, not warm — this is
-                                       // what makes the mark's amber geode read as heat
+const KEY_LIGHT_COLOR      = SLATE_800; // the coldest key on the site, so the stone reads blue-grey,
+                                        // not warm — this is what makes the mark's amber geode read
+                                        // as heat rather than as paint
 const KEY_LIGHT_INTENSITY  = 2.1;
-const FILL_LIGHT_COLOR     = 0x2a3550;
+const FILL_LIGHT_COLOR     = SLATE_400;
 const FILL_LIGHT_INTENSITY = 0.6;
 const AMBIENT_INTENSITY    = 0.18;
 const TONE_MAPPING_EXPOSURE = 1.15;

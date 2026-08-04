@@ -34,6 +34,7 @@ import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
 import { warmSceneMaterials } from '@/lib/warmScene';
+import { SLATE_400 } from '@/lib/coolPalette';
 import {
   reportAssetProgress,
   reportWarmupDone,
@@ -73,7 +74,8 @@ const EXPOSURE = 1.42;
 const ENV_INTENSITY = 1.77;
 const KEY_COLOR = 0xfff4e0;
 const KEY_INTENSITY = 2.7;
-const FILL_COLOR = 0x2a3550;
+/** The shared cool fill — the same sky the fleet and the works field are lit by. */
+const FILL_COLOR = SLATE_400;
 const FILL_INTENSITY = 0.5;
 const AMBIENT_INTENSITY = 0.25;
 const CAMERA_FOV = 45;

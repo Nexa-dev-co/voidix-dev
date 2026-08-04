@@ -78,8 +78,9 @@ const MAX_RENDER_SCALE = 2.5;
 // CSS variable.
 const COLOR_VALUE = 'rgba(235, 232, 224, 0.92)'; // --fg
 const COLOR_LABEL = 'rgba(235, 232, 224, 0.42)'; // --muted, lifted slightly for the smaller on-screen size
-const COLOR_ACCENT = '#ff8a1a'; // --sun-accent
-const COLOR_ACCENT_HOT = '#ffcd8c'; // --sun-accent-bright, for a value that is actively moving
+// Canvas-drawn, so these can't read the CSS tokens — keep them in step with the heat ramp by hand.
+const COLOR_ACCENT = '#ff8a1a'; // --heat-600 / --sun-accent, the anchor
+const COLOR_ACCENT_HOT = '#ffcd8c'; // --heat-900 / --sun-accent-bright, for a value actively moving
 const COLOR_RULE = 'rgba(235, 232, 224, 0.14)';
 
 /** Hairline rules bracketing the top and bottom rows — the frame that makes it read as an instrument. */

@@ -26,6 +26,7 @@ import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
+import { SLATE_600 } from '@/lib/coolPalette';
 import {
   createPortalGate,
   PORTAL_GATE_RADIUS_X,
@@ -66,7 +67,7 @@ const FLIGHT_WEAVE_SWAY_SPEED  = 0.45;
 // ── Lighting (shared stage rig; the centred craft is always powered) ──
 const KEY_LIGHT_COLOR      = 0xfff2e2; // warm key so the hull reads with its own colour, not washed cold
 const KEY_LIGHT_INTENSITY  = 2.4;      // directional → reveals the surface/normal detail
-const FILL_LIGHT_COLOR     = 0x9aa7bb; // neutral cool fill
+const FILL_LIGHT_COLOR     = SLATE_600; // neutral cool fill
 const FILL_LIGHT_INTENSITY = 0.5;
 const RIM_LIGHT_INTENSITY  = 0.8;      // a cyan-ish edge by default; recoloured per ship (see applyRimColor)
 const AMBIENT_INTENSITY    = 0.16;     // low so the directional key carves out contrast/texture

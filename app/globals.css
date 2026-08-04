@@ -4,6 +4,63 @@
 
 /* ─── Design Tokens ─────────────────────────────────────────────── */
 :root {
+  /* ── The heat ramp — the site's ONE colour scale ──
+     It is a TEMPERATURE scale, not a tint scale. `gatherShader.ts` states the principle: cooling
+     matter glows deep red and whitens as it heats. So the hue rotates 11° → 46° as the luminance
+     climbs, because that is what hot matter actually does — a flat ramp of one hue at varying
+     lightness would read as paint, not as light.
+
+     Nine of these twelve stops were already authored by hand, in separate files, on separate
+     occasions, by people asked to "make this look like the star". They lined up into this curve on
+     their own; the ramp only names them. Where a stop says which file it came from, that file now
+     imports the meaning from here even when it still holds its own literal (shaders and Three.js
+     colours can't read a CSS custom property).
+
+     Luminance is strictly monotonic top to bottom. Keep it that way — several consumers were graded
+     against a stop's VALUE, not its hue.
+
+     ⚠ THE BOTTOM HALF IS NOT FOR TYPE. Everything at --heat-400 and below fails 4.5:1 even on the
+     page black (#d92a05 manages 4.13:1). Those stops are for light, geometry and glow. The floor for
+     small text on black is --heat-500 (7.80:1). On the hero's CREAM the whole ramp fails and you
+     want --accent-deep instead — see below. */
+  --heat-000: #1a0d05; /* ember-black — unlit metal, surfaces                              lum  15 */
+  --heat-000-rgb: 26 13 5;
+  --heat-100: #3d1503; /* char — hairlines and borders on black                            lum  28 */
+  --heat-100-rgb: 61 21 3;
+  --heat-200: #6b1a04; /* the throat of things            (portalGate COLOR_INNER)         lum  42 */
+  --heat-200-rgb: 107 26 4;
+  --heat-300: #a82600; /* deep molten          (accretionGrowth uMoltenDeepColor)          lum  63 */
+  --heat-300-rgb: 168 38 0;
+  --heat-400: #d92a05; /* the spiral, cold dust     (accretionShader / gatherShader)       lum  76 */
+  --heat-400-rgb: 217 42 5;
+  --heat-500: #ff7b00; /* the room's fittings              (chamberTuning floor/wall)      lum 142 */
+  --heat-500-rgb: 255 123 0;
+  --heat-600: #ff8a1a; /* ⭐ THE ANCHOR — the sun's own light                              lum 155 */
+  --heat-600-rgb: 255 138 26;
+  --heat-700: #ffa200; /* lamp bodies                       (chamberTuning cores)          lum 170 */
+  --heat-700-rgb: 255 162 0;
+  --heat-800: #ffb24d; /* brushed warm metal                     (deck 03 accent)          lum 187 */
+  --heat-800-rgb: 255 178 77;
+  --heat-900: #ffcd8c; /* pale hot core                                                    lum 211 */
+  --heat-900-rgb: 255 205 140;
+  --heat-950: #ffe6c8; /* white-hot compression   (SunModelCanvas COLLAPSE_CORE)           lum 233 */
+  --heat-950-rgb: 255 230 200;
+  --heat-999: #ffeeb8; /* starlight              (gatherShader colorHot, portal core)      lum 238 */
+  --heat-999-rgb: 255 238 184;
+
+  /* ── The cool axis — the thing amber is HOT AGAINST ──
+     Amber only reads as heat if something in frame is cold. Every scene already knew this and each
+     one picked its own blue, so there were eight of them and three were the same colour under
+     different names. These are the three that remain.
+
+     THE RULE: the cool axis is LIGHTING AND SUBSTRATE ONLY. It never carries brand, type or UI. Its
+     entire job is to be the cold the star is warm against. The numeric mirror for the WebGL scenes
+     is `lib/coolPalette.ts` — keep the two in step. */
+  --slate-200: #1e2732; /* void debris, rock albedo */
+  --slate-400: #2a3550; /* fill light, everywhere */
+  --slate-600: #a2aec2; /* cool keys, stone highlights */
+  --slate-800: #dfe7ff; /* the works field's cold key */
+
   --bg: #060606;
   /* The page background as channels, for the places that need it TRANSLUCENT — the contact form has to
      sit legibly over a live black hole without blacking the scene out behind it. Keep in step with
@@ -17,23 +74,47 @@
      the deck read as the studio while the loader and the hero's instruments read as the thing being
      built. That split is gone: one accent, and it is the colour the star throws.
 
-     Aliased rather than copied so `--sun-accent` stays the single place to retune it — change the star
-     and the navbar, the meters, the CTA, the contact form and the footer all follow. */
+     Aliased all the way down (--heat-600 → --sun-accent → --accent) rather than copied, so the ramp
+     stays the single place to retune it — change --heat-600 and the navbar, the meters, the CTA, the
+     contact form and the footer all follow. */
   --accent: var(--sun-accent);
   --accent-rgb: var(--sun-accent-rgb);
-  --border: rgba(235, 232, 224, 0.08);
+
+  /* ⚠ THE SECOND ACCENT, AND IT IS NOT OPTIONAL.
+     Amber is excellent on the page black (8.59:1) and terrible on the hero's cream: the anchor
+     manages 1.77:1 there, nowhere near the 4.5:1 small text needs. This is the anchor DEEPENED until
+     it holds 5.93:1 on #e2dfd2 — the value the hero HUD already arrived at independently, promoted
+     here so the next thing that lands on the cream doesn't have to rediscover it.
+
+     Pick by SUBSTRATE, not by importance: --accent on black, --accent-deep on the cream. If you ever
+     retune it, check it against the cream first — amber is a far worse starting point for legibility
+     on a warm background than the cyan ever was. */
+  --accent-deep: #8f4400;
+  --accent-deep-rgb: 143 68 0;
+
+  /* Hairlines carry a breath of the star rather than neutral grey, so the site's chrome reads as LIT
+     rather than as UI drawn on top of it.
+
+     It IS a visibly warm line — over --bg it composites to about rgb(31 19 8) where the old neutral
+     gave rgb(24 24 23), and that warmth is the point. What is held steady is the WEIGHT: the alpha
+     went 0.08 → 0.10 to compensate for amber's lower luminance, so the composited line lands at
+     luminance ~21 against the old ~24 and no border gets heavier or lighter than it was.
+
+     Every consumer is on a dark surface (services detail, works, contact panel, footer, intro). If a
+     hairline is ever needed on the hero's CREAM, this is the wrong token — 10% amber on #e2dfd2 is
+     nearly invisible. Use --accent-deep at a low alpha there. */
+  --border: rgb(var(--heat-600-rgb) / 0.1);
   --card: #0d0d0d;
 
   /* ── The sun's palette ──
-     The star's own light: warm amber with a pale hot core. Anything that should read as coming
-     FROM the sun pulls from here — the loader (its whole job is the star assembling), the hero's
-     neon frame, the hero HUD. Deliberately NOT the brand cyan (--accent), which stays with the
-     navbar, the fleet and the deck. Retune the star's colour in these four lines and every
-     surface lit by it follows. */
-  --sun-accent: #ff8a1a;
-  --sun-accent-rgb: 255 138 26;
-  --sun-accent-bright: #ffcd8c;
-  --sun-accent-bright-rgb: 255 205 140;
+     The star's own light: warm amber with a pale hot core. Anything that should read as coming FROM
+     the sun pulls from here — the loader (its whole job is the star assembling), the hero's neon
+     frame, the hero HUD. These are the ramp's two brightest working stops under the names the sun's
+     own consumers use; retune --heat-600 / --heat-900, not these. */
+  --sun-accent: var(--heat-600);
+  --sun-accent-rgb: var(--heat-600-rgb);
+  --sun-accent-bright: var(--heat-900);
+  --sun-accent-bright-rgb: var(--heat-900-rgb);
 
   /* Fluid type scale for the small UI labels (the large display sizes carry their own
      clamp() inline). Each token scales smoothly between a phone and a large-desktop size,
@@ -157,7 +238,7 @@ body {
   visibility: hidden;
 }
 
-/* Transparent stand-in for the cyan mark, which is painted by .nav-accent. */
+/* Transparent stand-in for the orbital mark, which is painted by .nav-accent. */
 .nav-mark-spacer {
   display: block;
   width: 1.625rem;
@@ -174,11 +255,11 @@ body {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(0, 229, 255, 0) 5%,
-    rgba(0, 229, 255, 0.45) 30%,
-    rgba(0, 229, 255, 0.65) 50%,
-    rgba(0, 229, 255, 0.45) 70%,
-    rgba(0, 229, 255, 0) 95%,
+    rgb(var(--accent-rgb) / 0) 5%,
+    rgb(var(--accent-rgb) / 0.45) 30%,
+    rgb(var(--accent-rgb) / 0.65) 50%,
+    rgb(var(--accent-rgb) / 0.45) 70%,
+    rgb(var(--accent-rgb) / 0) 95%,
     transparent 100%
   );
   pointer-events: none;
@@ -345,7 +426,7 @@ body {
 }
 
 .nav-cta:hover::before {
-  border-color: rgba(0, 229, 255, 0.45);
+  border-color: rgb(var(--accent-rgb) / 0.45);
 }
 
 .nav-cta:hover {
@@ -426,8 +507,10 @@ body {
   width: 0; /* set per-item in JS */
   height: 0.125rem;
   overflow: hidden;
-  /* faint always-on track so every section reads as having its own line */
-  background: rgba(0, 229, 255, 0.14);
+  /* Faint always-on track so every section reads as having its own line. One stop DOWN the ramp from
+     the fill that runs over it (--heat-500 under --heat-600), so an empty meter reads as the same
+     light banked rather than as a grey slot waiting to be filled. */
+  background: rgb(var(--heat-500-rgb) / 0.14);
 }
 
 .nav-meter-fill {
@@ -436,7 +519,7 @@ body {
   background: var(--accent);
   transform: scaleX(var(--meter-progress, 0));
   transform-origin: left center;
-  box-shadow: 0 0 0.5rem 0 rgba(0, 229, 255, 0.5);
+  box-shadow: 0 0 0.5rem 0 rgb(var(--accent-rgb) / 0.5);
 }
 
 /* ─── Hero ───────────────────────────────────────────────────────── */
@@ -534,8 +617,8 @@ body {
   position: relative;
   z-index: 20;
   box-shadow:
-    0 0 0 1px rgba(0, 229, 255, 0.08),
-    0 0 2.25rem 0 rgba(0, 229, 255, 0.07);
+    0 0 0 1px rgb(var(--accent-rgb) / 0.08),
+    0 0 2.25rem 0 rgb(var(--accent-rgb) / 0.07);
   transform-origin: center center;
   /* Transform only. `border-radius` was hinted here for a tween that animated 0px to 0px (nothing
      gives this element a radius) — and a standing will-change on a paint property keeps the browser
@@ -654,7 +737,7 @@ body {
 
 /* ─── Hero instrument HUD ─────────────────────────────────────────── */
 /* Two telemetry columns flanking the headline. Labels invert (mix-blend-mode: difference, like
-   the headline); values stay brand-cyan on a normal blend so the invert never muddies the accent.
+   the headline); values stay on the accent at a normal blend so the invert never muddies it.
    CRITICAL: the column carries NO z-index / transform / opacity of its own — that would make it a
    stacking context and trap the labels' blend (the .hero-main trap). The blended labels themselves
    carry z-index:5 to sit above the ink trail, and blend against the hero underneath. */
@@ -668,20 +751,16 @@ body {
   gap: clamp(0.85rem, 2.1vh, 1.7rem);
   pointer-events: none;
   transition: opacity 0.4s ease; /* return fade only — entering services hides instantly (see .is-services) */
-}
-.hero-hud--left {
-  left: clamp(1.5rem, 3.6vw, 3.75rem);
-  align-items: flex-start;
-  text-align: left;
 
-  /* The Core OS panel's instrument colour — the sun's amber DEEPENED, because the raw
-     --sun-accent (#ff8a1a) manages only 1.77:1 on the cream and this is small text. #8f4400 holds
-     5.25:1, comfortably past the 4.5 bar and past the 4.82 of the cyan it replaced. The glow triplet
-     is the raw amber, reserved for the ONLINE pulse where contrast is not the constraint.
+  /* The instrument palette, declared ONCE for both columns so the two telemetry stacks read as one
+     system. It used to be copied into --left and --right, with the second block's comment saying
+     "same as the left panel" — which is a comment doing a cascade's job.
 
-     ⚠ If this is ever retuned, check it against the cream (#e2dfd2) first — amber is a far worse
-     starting point for legibility on a warm background than the cyan ever was. */
-  --hud-accent: #8f4400;
+     The accent is --accent-deep: the anchor deepened, because the raw amber manages only 1.77:1 on
+     the cream and this is small text. It holds 5.93:1, comfortably past the 4.5 bar and past the
+     4.82 of the cyan it replaced. The glow triplet is the RAW amber, reserved for the ONLINE pulse
+     where contrast is not the constraint. See the contrast note on --accent-deep in :root. */
+  --hud-accent: var(--accent-deep);
   --hud-accent-glow-rgb: var(--sun-accent-rgb);
   /* Muted label glyph — through the difference blend this reads mid-gray on the cream, a clear
      step quieter than the near-black values (which use --hero-invert-text, like the headline). */
@@ -689,17 +768,15 @@ body {
   /* Resting track under the energy fill — a hairline ghost of the panel's ink. */
   --hud-track: rgb(0 0 0 / 0.14);
 }
+.hero-hud--left {
+  left: clamp(1.5rem, 3.6vw, 3.75rem);
+  align-items: flex-start;
+  text-align: left;
+}
 .hero-hud--right {
   right: clamp(1.5rem, 3.6vw, 3.75rem);
   align-items: flex-end;
   text-align: right;
-
-  /* Same deepened-amber / muted / track tokens as the left panel, so the two telemetry columns read
-     as one system. See the contrast note there before changing either. */
-  --hud-accent: #8f4400;
-  --hud-accent-glow-rgb: var(--sun-accent-rgb);
-  --hud-label-muted: #6f6f6f;
-  --hud-track: rgb(0 0 0 / 0.14);
 }
 /* Right-panel modules mirror the left stack but hug the right edge, and the influence bar grows
    inward from that outer edge. */
@@ -2094,10 +2171,18 @@ body {
   z-index: 9600; /* above the works canvas + the (by now faded) sun; below the navbar's 9998/9999 */
   pointer-events: none;
   visibility: hidden;
-  /* Overwritten from the tuning; these are only the shape of the thing before the scene is up. */
-  --holo-ink-rgb: 11, 15, 18;
-  --holo-tint-rgb: 13, 127, 143;
-  --holo-frame-color: #04060a;
+  /* Overwritten from the tuning by useHologramTracking; these are only the shape of the thing before
+     the scene is up. They still have to be RIGHT — a fallback that disagrees with the tuning is a
+     flash of the wrong colour on the frame before the hook first runs. These three were left behind
+     by the white-room build: near-black ink, a TEAL tint and a blue-black frame, none of which the
+     tuning has said since. Now mirrors `chamberTuning`'s holoInk / holoTint / holoFrameColor.
+
+     Written as literals, and as COMMA triplets, because that is the form the rgba() calls below take
+     — the ramp's own tokens are space-separated and can't be substituted in here. Keep this tint in
+     step with --heat-600 by hand. */
+  --holo-ink-rgb: 235, 232, 224;
+  --holo-tint-rgb: 255, 138, 26;
+  --holo-frame-color: #000000;
   --holo-panel-rgb: 11, 10, 9;
   --holo-opacity: 0;
   --holo-glow: 0;

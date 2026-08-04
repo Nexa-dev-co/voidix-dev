@@ -7,6 +7,7 @@ import { createChamberWalls } from './chamberWalls';
 import { createChamberPlinth } from './chamberPlinth';
 import { applySurfaceLighting } from './chamberSurfaceLighting';
 import { hideHologram, publishHologramPose } from '@/lib/hologramPose';
+import { SLATE_600, SLATE_800 } from '@/lib/coolPalette';
 import {
   CHAMBER_HOLOGRAM_EVENT,
   type ChamberHologramDetail,
@@ -62,10 +63,19 @@ const FOV = 45;
 // The environment matters more than it looks. The scene shares the works field's PMREM, which is a
 // RoomEnvironment — a bright studio box — and these props are metal. At any real intensity that turns a
 // dim room into a chrome showroom. So it's dialled right down by default and left on a knob.
-const SCREEN_LIGHT_COLOR = 0x6fd9ff;
+/**
+ * The light the display throws back into the room. It was a saturated cyan (0x6fd9ff), which is
+ * physically honest for a screen showing a starfield — but it is only showing a starfield some of
+ * the time. Through the reveal the thing on that screen is the mark, which is amber, and a cyan
+ * bounce off an amber screen reads as a bug rather than as physics.
+ *
+ * SLATE_800 keeps it unmistakably cold against the room's warm fittings without being a hue that
+ * appears nowhere else on the site.
+ */
+const SCREEN_LIGHT_COLOR = SLATE_800;
 const SCREEN_LIGHT_DISTANCE = 9;
 const SCREEN_LIGHT_OFFSET = 0.6; // sits in front of the display, throwing light back into the room
-const KEY_LIGHT_COLOR = 0x9fb6d4;
+const KEY_LIGHT_COLOR = SLATE_600;
 
 // The dark of space has to stop reading as transparency and start reading as an unlit panel — and the
 // pinned sun (a fixed DOM billboard behind the canvas) has to leave with it, or it would hang in the

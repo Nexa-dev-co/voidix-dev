@@ -95,30 +95,55 @@ Defined in `app/globals.css` `:root`, exposed to Tailwind in `tailwind.config.ts
 a colour.**
 
 ```css
---bg: #060606;                        /* near-black page background */
---fg: #ebe8e0;                        /* warm off-white text        */
---muted: rgba(235, 232, 224, 0.38);   /* secondary / metadata       */
---accent: var(--sun-accent);          /* the sun's amber, #ff8a1a   */
---border: rgba(235, 232, 224, 0.08);  /* hairlines                  */
---card: #0d0d0d;                      /* elevated surfaces          */
+--bg: #060606;                          /* near-black page background */
+--fg: #ebe8e0;                          /* warm off-white text        */
+--muted: rgba(235, 232, 224, 0.38);     /* secondary / metadata       */
+--accent: var(--sun-accent);            /* → --heat-600, the sun's amber #ff8a1a */
+--accent-deep: #8f4400;                 /* the anchor, for the CREAM  */
+--border: rgb(var(--heat-600-rgb)/0.1); /* hairlines — warm, on dark surfaces only */
+--card: #0d0d0d;                        /* elevated surfaces          */
 ```
 
 Non-token colours that matter: the hero's cream `#e2dfd2` and `--hero-invert-text: #c0c0c0`.
 
-**The accent IS the sun.** `--accent` used to be an electric cyan held deliberately apart from the star;
-that split is gone and it now aliases `--sun-accent`. Retune the star and the navbar, the meters, the
-CTA, the contact form and the footer all follow.
+### The heat ramp (added 2026-08-04)
 
-⚠ **Amber on a light background needs deepening, and two places already do it.** The raw `#ff8a1a`
-manages 1.77:1 on the hero's cream and 2.36:1 on the chamber's white room — nowhere near the 4.5:1 small
-text needs. `--hud-accent` (`#8f4400`) and `chamberTuning`'s `holoTint` (`#a85400`) are the deepened
-versions. Check any retune of those against their own background, not against black.
+**There is one colour scale, `--heat-000 … --heat-999`, and it is a TEMPERATURE scale, not a tint
+scale** — the hue rotates 11° → 46° as luminance climbs, because that is what hot matter does.
+Luminance is strictly monotonic; keep it that way, several consumers were graded against a stop's
+value rather than its hue.
+
+Nine of its twelve stops were values already authored by hand in separate files (`portalGate`,
+`accretionGrowth`, `gatherShader`, `chamberTuning`, `SunModelCanvas`, deck 03). The ramp did not
+invent a palette — it named the one that had already converged. Full audit and rationale in
+`docs/amber-color-system.md`.
+
+`--accent` → `--sun-accent` → `--heat-600`, aliased all the way down. Retune `--heat-600` and the
+navbar, the meters, the CTA, the contact form and the footer all follow.
+
+⚠ **The bottom half of the ramp is not for type.** `--heat-400` and below fail 4.5:1 even on the page
+black (`#d92a05` is 4.13:1). Those stops are light, geometry and glow. The floor for small text on
+black is `--heat-500` (7.80:1).
+
+⚠ **Amber on a light background needs deepening — pick the accent by SUBSTRATE.** The raw `#ff8a1a`
+manages 1.77:1 on the hero's cream, nowhere near the 4.5:1 small text needs. `--accent-deep`
+(`#8f4400`, 5.93:1 on the cream) exists for exactly this and `--hud-accent` now aliases it. Check any
+retune against the cream, not against black. (`chamberTuning`'s `holoTint` was the other deepened
+value, at `#a85400` for the WHITE room; that room is dark now and it is back to the raw `#ff8a1a`.)
+
+**The cool axis is the counterweight, and it has a rule.** `--slate-200/400/600/800`, mirrored for
+the WebGL scenes in `lib/coolPalette.ts` — amber only reads as heat if something in frame is cold.
+Every scene knew this and each picked its own blue; there were eight and three were the same colour
+under different names. **It is lighting and substrate ONLY — never brand, type or UI.**
+
+**The one deliberate exception** is the deck's AI ship (`deckServices` 04), a purple→cyan that is
+kept on purpose. The fleet is allowed one alien. Don't "fix" it.
 
 **Type:** `--font-syne` (Syne, 700/800) for display via `.font-display`; `--font-dm-sans` (DM Sans,
 300/400/500) is the `<body>` default. `.eyebrow` is the uppercased kicker helper. A fluid scale
 (`--fs-micro … --fs-mark`) drives sizing — use it rather than fixed px.
 
-**All CSS lives in `app/globals.css`** (~1,900 lines, class-based). There are no CSS Modules.
+**All CSS lives in `app/globals.css`** (~2,700 lines, class-based). There are no CSS Modules.
 
 ## Responsiveness — non-negotiable
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createMeteorMaterial } from '../meteorBody';
+import { SLATE_600 } from '@/lib/coolPalette';
 import { lobeAt, type RockField } from '../markRockField';
 import { buildAccretionChunks, type AccretionChunks } from './accretionChunks';
 import { createCrystalGeometry, placeAccretionCrystals } from './accretionCrystals';
@@ -117,16 +118,21 @@ const CORE_TEXTURE_REPEAT = 2;
  * the facets that are the whole reason this texture was chosen. So it is near-neutral now, and slightly
  * blue — the field's debris runs a cool slate (`meteorMaterial.ts`) for the same reason, which is that
  * a cold body is what makes the amber in the cavities read as heat rather than as the general colour of
- * everything.
+ * everything. That cross-reference is now a shared value rather than two files agreeing by comment:
+ * both pull from `lib/coolPalette`.
  *
  * `stoneAlbedo` scales it, and is the knob to reach for rather than editing this.
+ *
+ * ⚠ The grading survives the consolidation: SLATE_600 is ~2% darker than the `#aab2bd` it replaces and
+ * its peak channel is scaled by `stoneAlbedo` at 0.2, so it lands nowhere near the ~0.75 linear ceiling
+ * the note above sets. If that albedo is ever raised, re-check the peak against that ceiling.
  *
  * ⚠ It reaches the albedo ONLY. `createMeteorMaterial` points `emissiveMap` at the same texture, and the
  * emissive path is `emissive × emissiveIntensity × emissiveMap` — the material's tint is not in it.
  * That mattered enormously with a lava texture; with this one the emissive channel has almost nothing
  * bright to multiply, which is exactly why the body can now be trusted to stay dark.
  */
-const STONE_TINT = '#aab2bd';
+const STONE_TINT = SLATE_600;
 
 /** Scratch for the stone's albedo scale, so a per-frame tint costs no allocation. */
 const STONE_BASE_COLOR = new THREE.Color(STONE_TINT);
