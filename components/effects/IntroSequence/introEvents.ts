@@ -12,6 +12,17 @@ export const REVEAL_EVENT = 'voidix:reveal';
  * The hero listens so it can extend its own reveal-fallback: if this never fires the intro is absent
  * or crashed on mount, so the hero recovers fast; if it does, the hero trusts the intro and only
  * keeps a long ultimate safety net.
+ *
+ * ⚠ Fired on mount AND repeated as a HEARTBEAT while the loader's gate is waiting on the star (see
+ * `tickGate`). It has to be: the gate no longer gives up after a fixed 12 s, it waits for as long as
+ * the star keeps arriving — which at 20 KB/s is well over a minute — and the hero's ultimate net is a
+ * fixed 20 s. Without the repeat, a legitimately slow load would trip that net and the hero would
+ * reveal itself BEHIND the loader's veil, with the pin built while scroll is still locked
+ * (Contract 2). Re-asserting "the intro is alive" is exactly what the hero's handler wants, so no
+ * second event was needed; it clears and re-arms the timer each time.
+ *
+ * The hero is its only listener. Everything else deliberately reads the DOM (see below), so the
+ * repeat cannot reach anything that expected a one-shot.
  */
 export const INTRO_ACTIVE_EVENT = 'voidix:intro-active';
 

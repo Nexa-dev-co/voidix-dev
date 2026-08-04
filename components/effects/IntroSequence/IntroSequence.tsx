@@ -4,13 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import gsap from "gsap";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import {
-  getAssetProgress,
-  areAssetsReady,
-  areWarmupsDone,
+  getSourceProgress,
+  areArrivedWarmupsDone,
+  isSourceLoaded,
+  getMillisecondsSinceActivity,
   onAssetProgress,
   markStageQuiet,
   ASSETS_WARMUP_EVENT,
 } from "@/lib/assetLoadProgress";
+import { startCacheTelemetry } from "@/lib/cacheTelemetry";
 import {
   REVEAL_EVENT,
   INTRO_ACTIVE_EVENT,
@@ -55,11 +57,40 @@ const SUN_FLIGHT_DURATION = 1.1;
 const SETTLE_AFTER_REVEAL = 0.4;
 const REDUCED_MOTION_DELAY = 0.3;
 
-// Loader gate: how smoothly the counter chases real load progress, and the longest we'll hold the
-// reveal waiting for assets before proceeding anyway (a safety net so a stalled asset can't trap the
-// user at the loader). Kept well under the hero's REVEAL fallback so the intro always reveals first.
+// How smoothly the counter chases real load progress.
 const COUNTER_EASE_SECONDS = 0.5;
-const ASSET_WAIT_TIMEOUT_MS = 12000;
+
+// ── The gate waits for the STAR, and it waits as long as the star needs ──
+//
+// It used to give up on ALL assets after a flat 12 s. That is why the site opened with a hole where
+// the sun goes: at 20 KB/s `fractured_sun.glb` needs ~78 s, so the deadline expired long before the
+// subject of the hero could possibly arrive, every time, no matter how the download was ordered.
+// No amount of prioritising beats a deadline shorter than the file.
+//
+// Three things changed together, and each covers a case the others do not:
+//
+//   · the gate waits on the STAR alone, not the whole 7.3 MB page. It is what the first screen is
+//     made of; the fleet is a minute of scrolling away and has no business holding the reveal.
+//   · it waits while the star is MOVING rather than until a clock runs out — so a slow connection is
+//     waited out and a dead one is not (see ASSET_STALL_GIVE_UP_MS).
+//   · and because that wait can genuinely be a minute, the visitor is told how long and given a way
+//     out (see SKIP_OFFER_ETA_SECONDS). Waiting is now their choice rather than ours.
+//
+// ⚠ There is still no unbounded wait anywhere. The old cap protected against a stalled asset; that
+// job now belongs to the stall window, which is the same instrument `lib/yieldToStarDownload.ts`
+// uses for the same reason.
+
+/**
+ * Give up on the star after this long with NO sign of life — not merely no progress.
+ *
+ * Measured against `reportSourceActivity`, so a server that sends no `Content-Length` (where the
+ * fraction cannot move off 0 for the whole download) is still recognised as alive. Generous: the
+ * only thing on the other side of it is revealing a hero without its subject.
+ */
+const ASSET_STALL_GIVE_UP_MS = 15000;
+
+/** How often the gate re-asserts its heartbeat and re-checks for a stall. */
+const GATE_TICK_MS = 500;
 // ── The gate's two SERIAL waits ──
 // Once the assets are in, the shader compiles kick off; only once BOTH scenes report warm do the sun's
 // shards begin flying in; only once they land does the reveal go, after a short settle so it never
@@ -73,10 +104,11 @@ const ASSET_WAIT_TIMEOUT_MS = 12000;
 // animation either way. Nothing that has to look alive during the compile is on this thread any more —
 // the dust field is in a worker, and the underline pulses on the compositor.
 //
-// Each stage is capped, so a scene that never reports or a sun that never loads can't trap the loader.
-// ⚠ They are SERIAL, so the caps ADD. `ASSEMBLE_CUE_FALLBACK_MS` in SunModelCanvas is the sun's own
-// backstop and has to stay past ASSET_WAIT_TIMEOUT_MS + both of these, or on a stalled load it would cue
-// the assembly itself, mid-compile — which is the exact thing this split exists to prevent.
+// Each stage is capped, so a scene that never reports can't trap the loader. ⚠ They are SERIAL, so the
+// caps ADD — but they now add on top of a DOWNLOAD WAIT WITH NO FIXED LENGTH, so the total is a
+// function of the visitor's bandwidth and cannot be written down here any more. That is why
+// `ASSEMBLE_CUE_FALLBACK_MS` in SunModelCanvas is measured from the model landing rather than from
+// page load: after the landing what is still owed is exactly these two, which is knowable.
 const WARMUP_WAIT_MAX_MS = 3500;
 const ASSEMBLY_WAIT_MAX_MS = 3500;
 const WARMUP_SETTLE_MS = 250;
@@ -88,8 +120,9 @@ const WARMUP_SETTLE_MS = 250;
  * compiling and allocating their composers is the one place on the loader where that is most likely.
  *
  * ⚠ It ADDS to the gate's serial caps. `ASSEMBLE_CUE_FALLBACK_MS` in SunModelCanvas has to stay past
- * ASSET_WAIT_TIMEOUT_MS + WARMUP_WAIT_MAX_MS + this, or on a stalled load the sun cues its own assembly
- * first and the two race.
+ * WARMUP_WAIT_MAX_MS + this, or the sun cues its own assembly first and the two race — which is the
+ * one comparison that survived the download wait becoming unbounded, because both sides of it are now
+ * measured from the same moment: the model landing.
  */
 const ASSEMBLY_LEAD_MS = 1000;
 
@@ -126,6 +159,11 @@ export default function IntroSequence() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
+    // What the network actually did, in the console, development only. Started here because this is
+    // the earliest client component that always mounts — and it reads a BUFFERED observer, so the
+    // resources that landed before this line ran are reported too. See lib/cacheTelemetry.ts.
+    startCacheTelemetry();
+
     // Tell the hero an intro is actually running (so it extends its reveal-fallback and doesn't fire
     // early during a legitimate slow load). The hero's effect runs before this one, so its listener
     // is already registered.
@@ -213,10 +251,16 @@ export default function IntroSequence() {
       },
     });
 
-    // ── Honest loader: real asset progress + hold the reveal until it's in ──
-    // The counter now reflects what's actually loading (eased so it climbs smoothly), and the intro
-    // pauses at the pre-handoff beat until every asset the entry needs is loaded — or a safety
-    // timeout elapses — so the reveal never lands on a half-built scene. See lib/assetLoadProgress.
+    // ── Honest loader: the counter measures THE THING BEING WAITED FOR ──
+    //
+    // ⚠ The star's own progress, not `getAssetProgress()`'s weighted total across all three sources.
+    // The two agreed while the gate waited for the whole page; now that it waits for the star alone
+    // they do not, and the total would be actively misleading — on a slow connection the star is
+    // ~18% of the weighted download, so the loader would hand off at "18" and the visitor would watch
+    // a counter fail to finish. 100 now means what it says: ready to enter.
+    //
+    // Nothing is hidden by this. `LoaderTelemetry` still reports each module's real progress, so the
+    // fleet streaming on into the hero is visible to anyone looking for it.
     const counterDisplay = { value: 0 };
     const paintCounter = () => {
       if (counterRef.current) {
@@ -225,7 +269,7 @@ export default function IntroSequence() {
     };
     const syncCounterToAssets = () => {
       gsap.to(counterDisplay, {
-        value: Math.round(getAssetProgress() * 100),
+        value: Math.round(getSourceProgress('sun') * 100),
         duration: COUNTER_EASE_SECONDS,
         ease: "power1.out",
         overwrite: true,
@@ -240,9 +284,12 @@ export default function IntroSequence() {
     let warmupStarted = false;
     let assemblyCued = false;
     let hasResumed = false;
-    let assetsTimedOut = false;
+    /** The star stopped showing any sign of life — proceed without it rather than wait forever. */
+    let starGaveUp = false;
     let sunAssembled = false;
     let resumeFrame = 0;
+    /** The gate's 500 ms clock: countdown, stall check, and when to offer the skip. */
+    let gateTicker = 0;
     // One handle: the stages are strictly serial, so only one wait is ever armed at a time.
     let gateTimeout = 0;
     // While we WAIT at the gate (for assets to download, then for their shaders to compile), breathe
@@ -311,10 +358,15 @@ export default function IntroSequence() {
     window.addEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
 
     const checkWarm = () => {
-      if (warmupStarted && !assemblyCued && areWarmupsDone()) cueAssembly();
+      // ⚠ `areArrivedWarmupsDone`, not `areWarmupsDone`. The reveal waits on the star now, so on a
+      // slow connection the fleet can still be streaming when the star is ready — and a scene that
+      // has not downloaded cannot have compiled. Requiring it to would make every slow load sit out
+      // this stage's full cap for a scene nobody will see for another minute. On a fast load all
+      // three are in before this is consulted, so the two are the same function.
+      if (warmupStarted && !assemblyCued && areArrivedWarmupsDone()) cueAssembly();
     };
 
-    // ── Stage 1: 100% downloaded → wait for the shader compiles ──
+    // ── Stage 1: the star is in → wait for the shader compiles ──
     // It no longer STARTS them: each scene warms itself once its own assets are in and the stage has
     // gone quiet (see the ASSETS_WARMUP_EVENT dispatch in the timeline below). By the time the last
     // byte lands, most of that work is usually already done — which is the point. This stage is only
@@ -327,20 +379,59 @@ export default function IntroSequence() {
       checkWarm(); // a scene can already be warm — on a fast load it will be
     };
 
+    // ── What the reveal actually waits for ──
+    // The STAR, and nothing else. The hero opens on it; the fleet and the field are a minute of
+    // scrolling away and used to hold the reveal for no reason anyone could point at.
     const tryBeginWarmup = () => {
-      if (gateReached && (areAssetsReady() || assetsTimedOut)) beginWarmup();
+      if (gateReached && (isSourceLoaded('sun') || starGaveUp)) beginWarmup();
     };
 
     const stopAssetProgress = onAssetProgress(() => {
       syncCounterToAssets();
-      tryBeginWarmup(); // assets finished downloading → start compiling
+      tryBeginWarmup(); // the star finished downloading → start compiling
       checkWarm();      // a scene reported its shaders warm → maybe start the shards
     });
-    const assetWaitTimeout = window.setTimeout(() => {
-      assetsTimedOut = true;
-      tryBeginWarmup();
-    }, ASSET_WAIT_TIMEOUT_MS);
     syncCounterToAssets(); // paint whatever has already loaded before the first new report
+
+    // ── The gate's ticker: is the star still coming, and does the hero still trust us ──
+    //
+    // One interval rather than two timers, because both questions want the same clock. It runs only
+    // while the gate is waiting and stops the moment the wait is over.
+    let gateWaitStartedAt = 0;
+
+    const stopGateTicker = () => {
+      window.clearInterval(gateTicker);
+      gateTicker = 0;
+    };
+
+    const tickGate = () => {
+      if (hasResumed || warmupStarted) {
+        stopGateTicker();
+        return;
+      }
+
+      // ── Tell the hero we are still here ──
+      // Its ultimate reveal-fallback is a fixed 20 s (REVEAL_FALLBACK_WITH_INTRO_MS), sized back when
+      // this gate gave up after 12 s. It now waits for as long as the star keeps arriving, which on a
+      // slow connection is far longer than that — so without this heartbeat the hero would reveal
+      // itself behind the veil, building its pin while scroll is still locked. Its handler clears and
+      // re-arms on every one of these, which is precisely what is wanted.
+      window.dispatchEvent(new Event(INTRO_ACTIVE_EVENT));
+
+      // ── Is it still alive? ──
+      // Against ACTIVITY, not against the fraction: a server sending no `Content-Length` cannot move
+      // the fraction at all, and reading that as a stall would abandon a perfectly healthy download.
+      // `null` means the star has never reported — its chunk may not even have mounted yet — so the
+      // wait is measured from when the gate started instead of giving up on something not begun.
+      const sinceActivity = getMillisecondsSinceActivity('sun');
+      const silentFor =
+        sinceActivity ?? (gateWaitStartedAt ? performance.now() - gateWaitStartedAt : 0);
+      if (silentFor > ASSET_STALL_GIVE_UP_MS) {
+        starGaveUp = true;
+        stopGateTicker();
+        tryBeginWarmup();
+      }
+    };
 
     // 1. Editorial frame + corner chrome settle in. (fromTo, not from, so the end
     //    state is explicit — a bare from() mis-captures its end value under React
@@ -428,8 +519,16 @@ export default function IntroSequence() {
     // resumes on the same frame, so a fast / cached load feels exactly like before.
     timeline.addPause(">", () => {
       gateReached = true;
-      if (areAssetsReady() || assetsTimedOut) beginWarmup();
-      else startHoldPulse(); // still downloading — show life; the warm-up begins once assets are in
+      if (isSourceLoaded('sun') || starGaveUp) {
+        beginWarmup();
+        return;
+      }
+      // Still waiting on the star. Show life, and start the clock that decides whether this wait is
+      // short enough to simply sit through or long enough to need explaining.
+      startHoldPulse();
+      gateWaitStartedAt = performance.now();
+      gateTicker = window.setInterval(tickGate, GATE_TICK_MS);
+      tickGate();
     });
 
     // 6. Handoff — chrome leaves, the dark veil lifts to reveal the cream hero,
@@ -482,7 +581,7 @@ export default function IntroSequence() {
       unlockScroll();
       stopAssetProgress();
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
-      window.clearTimeout(assetWaitTimeout);
+      window.clearInterval(gateTicker);
       window.clearTimeout(gateTimeout);
       cancelAnimationFrame(resumeFrame);
       gsap.killTweensOf(counterDisplay);
@@ -674,6 +773,7 @@ export default function IntroSequence() {
                 transform: "scaleX(0)",
               }}
             />
+
           </div>
         </div>
       </div>

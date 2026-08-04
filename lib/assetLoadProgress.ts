@@ -48,6 +48,17 @@ const warmedSources = new Set<AssetSource>();
 const listeners = new Set<() => void>();
 
 /**
+ * When each source last showed a sign of life, for stall detection.
+ *
+ * ⚠ Separate from `progressBySource` on purpose, and the reason is a real deployment case: when the
+ * server sends no `Content-Length` (chunked or compressed) a loader has no honest FRACTION to report
+ * and jumps straight from 0 to 1. Anything watching the fraction for staleness would then see a
+ * perfectly healthy 78-second download as "stalled at 0" and give up on it. Bytes are always known
+ * even when the total is not, so activity is recorded on its own clock.
+ */
+const lastActivityAt = new Map<AssetSource, number>();
+
+/**
  * Fired by the intro once its wordmark has finished animating: the stage is still, so a scene may
  * spend a frame compiling without anybody seeing it.
  *
@@ -89,6 +100,53 @@ export function reportAssetProgress(source: AssetSource, value: number): void {
   listeners.forEach((listener) => listener());
 }
 
+/**
+ * Note that a source is still moving, whether or not its fraction could be updated.
+ *
+ * Call this on EVERY progress event — including the ones carrying no usable total. It is what lets
+ * the loader tell "slow" apart from "dead" without punishing a server that does not send a length.
+ */
+export function reportSourceActivity(source: AssetSource): void {
+  lastActivityAt.set(source, performance.now());
+}
+
+/**
+ * Milliseconds since this source last showed life, or `null` if it has never reported at all.
+ *
+ * `null` is genuinely different from "a long time": before a dynamically imported scene has mounted
+ * there is nothing to be stalled yet, and treating that as a stall would give up on a download that
+ * had not begun.
+ */
+export function getMillisecondsSinceActivity(source: AssetSource): number | null {
+  const last = lastActivityAt.get(source);
+  return last === undefined ? null : performance.now() - last;
+}
+
+/** True once this one source has finished downloading. */
+export function isSourceLoaded(source: AssetSource): boolean {
+  return (progressBySource.get(source) ?? 0) >= 1;
+}
+
+/**
+ * True when every source that has FINISHED DOWNLOADING has also reported its warm-up.
+ *
+ * The difference from requiring EVERY source to be warm matters only on a slow connection, and it
+ * matters a lot there. The
+ * reveal now waits for the star rather than for the whole page (see IntroSequence), so the fleet can
+ * still be streaming when the star is ready — and a scene that has not downloaded cannot possibly
+ * have compiled. Requiring it to would make every slow load sit out the warm stage's full cap for a
+ * scene that is not going to be on screen for another minute.
+ *
+ * On a fast load all three finish downloading before this is ever consulted, so it is identical to
+ * demanding all three — which is what the gate used to do, and what it still effectively does
+ * whenever the connection allows.
+ */
+export function areArrivedWarmupsDone(): boolean {
+  return EXPECTED_SOURCES.every(
+    (source) => !isSourceLoaded(source) || warmedSources.has(source),
+  );
+}
+
 /** Combined 0..1 across every expected source, weighted by download size (missing source = 0). */
 export function getAssetProgress(): number {
   let progress = 0;
@@ -114,11 +172,6 @@ export function reportWarmupDone(source: AssetSource): void {
   if (warmedSources.has(source)) return;
   warmedSources.add(source);
   listeners.forEach((listener) => listener());
-}
-
-/** True once every expected source has reported its shaders compiled. */
-export function areWarmupsDone(): boolean {
-  return EXPECTED_SOURCES.every((source) => warmedSources.has(source));
 }
 
 /** Subscribe to progress changes; returns an unsubscribe fn. */

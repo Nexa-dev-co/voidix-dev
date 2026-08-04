@@ -25,15 +25,21 @@ import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents
 import { LOOP_PROGRESS_EVENT, LOOP_RESET_EVENT, readLoopProgress } from '@/lib/loopEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
-import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
+import {
+  createChamberScene,
+  TABLE_MODEL,
+  type ChamberScene,
+} from '@/components/sections/Chamber/chamberScene';
 // Hosted here for the same reason the chamber is: it has to be drawn by THIS renderer. The chamber
 // because a GPU texture cannot cross a context; the star because lensing can only bend what is already
 // in this framebuffer. See docs/contact-singularity-plan.md §3.
 import {
   createSingularityScene,
   CONTACT_BLOOM_STRENGTH,
+  BLACKHOLE_MODEL_PATH,
   type SingularityScene,
 } from '@/components/sections/Contact/singularityScene';
+import { prefetchWhenAssetsReady } from '@/lib/prefetchWhenAssetsReady';
 import { hideHologram } from '@/lib/hologramPose';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { createWorksHud } from '../worksHud';
@@ -1578,6 +1584,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
 
+    // ── Rung 3: warm the cache for the two models nobody waits for ──
+    // `ensureChamber` and `ensureSingularity` above still fetch these exactly when they always did —
+    // this only means the bytes are usually already here by then. Both are fetched mid-scroll on a
+    // first visit (the black hole is 2.94 MB, the largest asset on the site), which is most of why the
+    // first lap is rougher than every lap after it. Starts only once every gated source has reported
+    // in, so it competes with neither the star nor the fleet. See lib/prefetchWhenAssetsReady.ts.
+    const stopLatePrefetch = prefetchWhenAssetsReady([TABLE_MODEL, BLACKHOLE_MODEL_PATH]);
+
     // The return: the same room, walked back out of. It only ever UNDOES the reveal (see
     // combineChamberTarget), so it never engages the chamber on its own — arriving here without the
     // reveal having run would mean scrubbing a room that was never entered.
@@ -2233,6 +2247,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
       window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
+      stopLatePrefetch();
       cancelAnimationFrame(warmupFrame);
       cancelAnimationFrame(lazyWarmupFrame);
       chamber?.dispose();

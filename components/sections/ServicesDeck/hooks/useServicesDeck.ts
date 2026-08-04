@@ -1,7 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { getSharedDracoLoader } from '@/lib/modelLoading';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -18,11 +18,10 @@ import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hull
 import {
   reportAssetProgress,
   reportWarmupDone,
-  onAssetProgress,
-  getSourceProgress,
   isStageQuiet,
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
+import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
@@ -45,7 +44,6 @@ const STAR_SIZE          = 0.16;
 const STAR_DRIFT         = 0.011; // radians/second of yaw drift — the "floating through space" feel
 
 // ── Fleet ───────────────────────────────────────────────────────────────
-const DRACO_DECODER_PATH = '/draco/';
 const TARGET_SIZE = 2.3;  // largest dimension every vessel is normalised to
 const BASE_YAW    = -0.6; // resting 3/4 view so hulls don't read flat-on
 const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the stage plane
@@ -206,19 +204,6 @@ const EXIT_SCALE_GAIN = 0.25; // a touch bigger as it powers past
 // scroll-back eases the handoff below 1 and the ship flies back on. (Verified from the flight-path
 // geometry in lib/handoffFlightPath.ts, not guessed.)
 const DECK_PARKED_THRESHOLD = 0.999;
-
-/**
- * Longest the fleet will wait for the star before fetching its vessels anyway.
- *
- * The four hulls are 5.3 MB and are not wanted for tens of seconds; `fractured_sun.glb` is 1.3 MB and
- * is wanted immediately. Starting both together just splits the bandwidth, which on a slow connection
- * is what left the hero with no sun in it — see `startVesselLoads`.
- *
- * The cap exists so a sun that 404s or stalls cannot take the fleet down with it. Generous, because
- * spending it is the *unusual* path: on any working connection the star reports in well under a
- * second and this timer is cleared without ever firing.
- */
-const VESSEL_HOLD_MAX_MS = 6000;
 
 // ── Heading — the nose points where the ship is actually going ──
 // Yaw is derived from the ship's own per-frame velocity, so the nose tracks its travel: screen-left
@@ -976,10 +961,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
     // ── Model loading (Draco-compressed) ──
-    const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
     const gltfLoader = new GLTFLoader();
-    gltfLoader.setDRACOLoader(dracoLoader);
+    gltfLoader.setDRACOLoader(getSharedDracoLoader());
 
     // ── Load the four vessels (Draco-compressed) ──
     const loadProgress = new Array(ships.length).fill(0);
@@ -1021,15 +1004,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       vesselsStarted = true;
       DECK_SERVICES.forEach(loadVessel);
     };
-    // ⚠ Capped, and the cap is not optional. A sun that 404s or stalls must never mean a fleet that
-    // never loads — the deck would sit empty forever and the intro's gate would wait out its own
-    // timeout on a source that had no reason to be late.
-    const vesselHoldTimer = window.setTimeout(startVesselLoads, VESSEL_HOLD_MAX_MS);
-    const stopWatchingSun = onAssetProgress(() => {
-      if (getSourceProgress('sun') >= 1) startVesselLoads();
-    });
-    // The star can already be in — a warm reload serves it from cache before this listener exists.
-    if (getSourceProgress('sun') >= 1) startVesselLoads();
+    // Held until the star is in, stalls, or fails — see lib/yieldToStarDownload.ts, which also
+    // covers the already-cached case and why this is a stall detector rather than the flat 6 s
+    // deadline it replaces (that deadline expired mid-download on exactly the connections it
+    // existed to protect, and the fleet then starved the star the rest of the way).
+    const stopYieldingToStar = yieldToStarDownload(startVesselLoads);
 
     function loadVessel(service: (typeof DECK_SERVICES)[number], index: number) {
       gltfLoader.load(
@@ -1389,8 +1368,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       window.removeEventListener(DECK_HIDE_EVENT, hideDeck);
       window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
       cancelAnimationFrame(warmupFrame);
-      window.clearTimeout(vesselHoldTimer);
-      stopWatchingSun();
+      stopYieldingToStar();
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       // Stop any running tweens, then dispose every loaded hull's geometry + materials.
       ships.forEach((ship) => {
@@ -1412,7 +1390,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       gsap.killTweensOf(keyLight.color);
       gsap.killTweensOf(keyLight);
       gsap.killTweensOf(fillLight.color);
-      dracoLoader.dispose();
+      // No dracoLoader.dispose() — it is shared and page-lifetime (see lib/modelLoading.ts).
       starfield.geometry.dispose();
       starfieldMaterial.dispose();
       swapTimeline?.kill();

@@ -284,8 +284,15 @@ const FULL_CLIP = "inset(0% 0 0 0)";
 const EMPTY_CLIP = "inset(100% 0 0 0)";
 // If the intro never fires its reveal, reveal anyway. Two nets: a SHORT one for when the intro is
 // absent / crashed on mount (recover fast), swapped for a LONG ultimate one the moment the intro
-// signals it's alive (INTRO_ACTIVE_EVENT) — because a running intro legitimately holds its reveal
-// until assets load (its own ASSET_WAIT_TIMEOUT_MS), so the net must clear that worst case.
+// signals it's alive (INTRO_ACTIVE_EVENT).
+//
+// ⚠ The long net is no longer sized against anything the intro can be measured against, and it must
+// not be. A running intro legitimately holds its reveal until the STAR has downloaded, with no upper
+// bound — at 20 KB/s that is well over a minute — so no fixed number here could both cover a crashed
+// intro quickly and outlast a slow one. `INTRO_ACTIVE_EVENT` is therefore repeated as a heartbeat
+// while the intro's gate is waiting, and the handler below re-arms this timer on every one. So what
+// this value really means is "how long after the intro STOPS reporting do we take over", and 20 s is
+// generous for that.
 const REVEAL_FALLBACK_NO_INTRO_MS = 7000;
 const REVEAL_FALLBACK_WITH_INTRO_MS = 20000;
 

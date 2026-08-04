@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { getSharedDracoLoader } from '@/lib/modelLoading';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
@@ -33,7 +33,11 @@ import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
 import { warmSceneMaterials } from '@/lib/warmScene';
-import { reportAssetProgress } from '@/lib/assetLoadProgress';
+import {
+  reportAssetProgress,
+  reportWarmupDone,
+  reportSourceActivity,
+} from '@/lib/assetLoadProgress';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
 //
@@ -46,7 +50,6 @@ import { reportAssetProgress } from '@/lib/assetLoadProgress';
 // only then does the intro hand over. See the assembly section below.
 
 const MODEL_PATH = '/models/fractured_sun.glb';
-const DRACO_DECODER_PATH = '/draco/';
 
 // ── The "Peaceful" stage ──
 const MODEL_ROTATION = { x: 5, y: 106, z: -59 };
@@ -186,18 +189,28 @@ const ASSEMBLY_SECONDS = 2.2;
 /** If the hero reveals while parts are still inbound, hurry them rather than snapping them into place. */
 const ASSEMBLY_REVEAL_SPEEDUP = 3;
 /**
- * When to start on our own if no cue ever arrives — measured from PAGE LOAD, not from mount.
+ * When to start on our own if no cue ever arrives — measured from THE MODEL LANDING, not page load.
  *
  * Only a backstop for an intro that never reaches its gate. It has to sit past the intro's LAST possible
- * cue or the two race — and on a stalled load that cue is late, because the gate's stages are SERIAL and
- * their caps add: the intro gives up on assets at 12s (ASSET_WAIT_TIMEOUT_MS), waits up to 3.5s more for
- * the scenes to report warm (WARMUP_WAIT_MAX_MS), then holds a further 1s of stillness before asking
- * (ASSEMBLY_LEAD_MS) — 16.5s in total. Losing that race would start the shard flight in the middle of a
- * compile, which is the exact freeze the serial gate exists to prevent. ⚠ Raise this whenever any of
- * those three grows. The normal no-intro case is handled immediately by INTRO_MARKER_SELECTOR instead of
- * by waiting this out.
+ * cue or the two race: losing that race starts the shard flight in the middle of a compile, which is the
+ * exact freeze the serial gate exists to prevent.
+ *
+ * ⚠ It used to be measured from page load (18500), derived by adding up the gate's three serial caps —
+ * 12s to give up on assets + 3.5s for the warm-up + 1s of lead. That arithmetic could not survive the
+ * gate it described. The intro now waits on the star for as long as the star keeps arriving instead of
+ * giving up on a deadline, so its "last possible cue" is a function of the visitor's BANDWIDTH and has
+ * no upper bound at all — at 20 KB/s the star lands around 78s, and any fixed number from page load is
+ * either far too small or an arbitrary guess at how slow a connection can get.
+ *
+ * Measured from the landing, the question becomes local and answerable: the model is here, so the only
+ * thing still owed is the intro's remaining gate — WARMUP_WAIT_MAX_MS (3.5s) plus ASSEMBLY_LEAD_MS (1s).
+ * This sits past that with room to spare, and it no longer has to be revised when anything upstream of
+ * the download changes. Before the model lands there is nothing to assemble, so there is nothing for
+ * this to be late for.
+ *
+ * The normal no-intro case is handled immediately by INTRO_MARKER_SELECTOR instead of by waiting this out.
  */
-const ASSEMBLE_CUE_FALLBACK_MS = 18500;
+const ASSEMBLE_CUE_FALLBACK_MS = 8000;
 
 // ── The hero → services state ramp ──
 // What carries the sun from Peaceful into Cracks. It is a pure function of SCROLL (the pin's
@@ -594,12 +607,10 @@ export default function SunModelCanvas() {
     // and mounts well after the intro has already announced itself — the event would be long gone.
     const introOnPage = document.querySelector(INTRO_MARKER_SELECTOR) !== null;
     if (!introOnPage) cueAssembly();
-    // Ultimate safety net: an intro that is on the page but never reaches its gate (a stalled asset it
-    // gives up on at 12s) must not leave the sun in pieces forever.
-    const cueFallbackTimer = window.setTimeout(
-      cueAssembly,
-      Math.max(0, ASSEMBLE_CUE_FALLBACK_MS - performance.now()),
-    );
+    // Ultimate safety net: an intro that is on the page but never reaches its gate must not leave the
+    // sun in pieces forever. Armed from the model's landing (see ASSEMBLE_CUE_FALLBACK_MS) — until
+    // then there is nothing to assemble and nothing this could be late for.
+    let cueFallbackTimer = 0;
     const onReveal = () => {
       forceAssembled = true;
       cueAssembly(); // past the point of waiting for a cue that clearly is not coming
@@ -749,10 +760,8 @@ export default function SunModelCanvas() {
     const warmStarMaterials = () => warmSceneMaterials(renderer, scene, camera);
 
     // ── Load ──
-    const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
     const gltfLoader = new GLTFLoader();
-    gltfLoader.setDRACOLoader(dracoLoader);
+    gltfLoader.setDRACOLoader(getSharedDracoLoader());
 
     let disposed = false;
     gltfLoader.load(
@@ -967,9 +976,20 @@ export default function SunModelCanvas() {
       }
       warmStarMaterials();
       modelReady = true; // the one-shot assembly starts on the next frame after the cue
+      // There is now something to assemble, so the backstop starts counting. See
+      // ASSEMBLE_CUE_FALLBACK_MS for why this is armed here rather than at page load.
+      cueFallbackTimer = window.setTimeout(cueAssembly, ASSEMBLE_CUE_FALLBACK_MS);
       applySize();
       forceRender = true;
-        reportAssetProgress('sun', 1);
+      reportAssetProgress('sun', 1);
+      // ⚠ The star is one of EXPECTED_SOURCES, so `areWarmupsDone()` counts it — and until now
+      // nothing ever reported it, which meant that gate could never close. The intro's fast path
+      // (`checkWarm`) was therefore dead on every load and `cueAssembly` only ever fired from its
+      // 3.5s safety cap, so EVERY visitor — cached, fast machine, both scenes already warm — sat at
+      // 100% for WARMUP_WAIT_MAX_MS before the shards moved. Reported HERE, next to the corona
+      // compile it stands for: `warmStarMaterials` is the one warm-up that matters to the flight
+      // that is about to run, because it is that flight's own materials.
+      reportWarmupDone('sun');
       },
       // ── The loader's gate waits on this, and until 2026-08-03 it did not ──
       // The star is the hero's subject and the loader's whole finale is its ten shards flying in, but
@@ -981,6 +1001,12 @@ export default function SunModelCanvas() {
       // `total` is 0 when the server sends no Content-Length (chunked / gzipped), in which case there
       // is nothing honest to report and the source simply jumps to 1 on completion.
       (progressEvent) => {
+        // Unconditional, and before the total check. The loader's gate now waits on this star for as
+        // long as it keeps moving instead of giving up on a fixed deadline, so it needs to know the
+        // difference between a slow download and a dead one — and on a server that sends no
+        // `Content-Length` the fraction below never moves off 0 no matter how healthy the transfer
+        // is. Bytes arriving is the honest signal; the fraction is only the presentable one.
+        reportSourceActivity('sun');
         if (progressEvent.total > 0) {
           reportAssetProgress('sun', progressEvent.loaded / progressEvent.total);
         }
@@ -990,6 +1016,10 @@ export default function SunModelCanvas() {
         // Report ready anyway. A source that never reaches 1 holds the intro's gate until its timeout,
         // so a missing star would cost every visitor twelve seconds on top of losing the star.
         reportAssetProgress('sun', 1);
+        // Same reasoning one stage further down the gate: there is no model, so there is nothing to
+        // warm and nothing this star can still be waiting for. Without this a 404 would clear the
+        // asset wait and then hold the WARM wait to its own cap instead.
+        reportWarmupDone('sun');
       },
     );
 
@@ -1193,7 +1223,9 @@ export default function SunModelCanvas() {
       bloom.dispose();
       environmentTexture.dispose();
       pmrem.dispose();
-      dracoLoader.dispose();
+      // The Draco loader is shared and page-lifetime now — disposing it here would terminate the
+      // decoder workers the fleet, the chamber and the contact star are still using. See
+      // lib/modelLoading.ts.
       renderer.dispose();
     };
   }, []);

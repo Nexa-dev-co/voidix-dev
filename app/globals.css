@@ -2537,6 +2537,7 @@ body {
   }
 }
 
+
 .loader-throughput {
   position: absolute;
   left: clamp(1.6rem, 4vw, 2.6rem);

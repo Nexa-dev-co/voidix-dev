@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { getSharedDracoLoader } from '@/lib/modelLoading';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { createGroundGrid } from './groundGrid';
 import { createChamberWalls } from './chamberWalls';
@@ -49,8 +49,9 @@ import {
 // The podium and its ring portal are gone on purpose: the hologram no longer floats over a plinth
 // across the room, it sits with the table. What fills the space behind it is the ground (below), which
 // costs no download at all.
-const TABLE_MODEL = '/models/table.glb';
-const DRACO_DECODER_PATH = '/draco/';
+// Exported so the rung-3 prefetch has ONE source for this path rather than a copy that can drift —
+// see lib/prefetchWhenAssetsReady.ts.
+export const TABLE_MODEL = '/models/table.glb';
 
 const FOV = 45;
 
@@ -291,10 +292,8 @@ export function createChamberScene({
   };
 
   // ── Loading ──
-  const dracoLoader = new DRACOLoader();
-  dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
   const gltfLoader = new GLTFLoader();
-  gltfLoader.setDRACOLoader(dracoLoader);
+  gltfLoader.setDRACOLoader(getSharedDracoLoader());
 
   let tableGroup: THREE.Group | null = null;
   let tablePivot: THREE.Group | null = null;
@@ -1144,7 +1143,7 @@ export function createChamberScene({
           }
         }),
       );
-      dracoLoader.dispose();
+      // No dracoLoader.dispose() — it is shared and page-lifetime (see lib/modelLoading.ts).
     },
   };
 

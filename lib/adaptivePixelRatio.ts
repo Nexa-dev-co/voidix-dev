@@ -91,6 +91,30 @@ let elapsed = 0;            // accumulated sampled time, for the oscillation + p
 let lastStepUpAt = -Infinity;
 let lastSoftCeilProbeAt = 0;
 
+/**
+ * Say out loud when the site changes how many pixels it draws — development only.
+ *
+ * This is the quietest thing that happens on the whole site and one of the most consequential. It is
+ * also half the answer to "why is the lap after Travel in Time so much smoother": a first pass that
+ * struggles steps this DOWN, `softCeil` then stops it climbing back, and every later lap renders
+ * fewer pixels. That reads as the site warming up. It is the site giving up resolution.
+ *
+ * Nothing resets it on the loop, deliberately — see the module header. Being able to watch it happen
+ * is what turns that from a surprise into a decision.
+ */
+function logRatioChange(what: string, from: number, fps: number, note: string): void {
+  if (process.env.NODE_ENV !== 'development') return;
+  const megapixelChange = ((pixelRatio * pixelRatio) / (from * from) - 1) * 100;
+  console.log(
+    `%c[pixels] ${what}%c ${from.toFixed(2)} → ${pixelRatio.toFixed(2)}` +
+      ` (${megapixelChange > 0 ? '+' : ''}${megapixelChange.toFixed(0)}% pixels)` +
+      ` at ~${fps.toFixed(0)} fps${note}` +
+      `\n  floor ${floor}, ceiling ${ceil.toFixed(2)}, soft ceiling ${softCeil.toFixed(2)}`,
+    what.startsWith('STEP') ? 'color:#ff5c5c;font-weight:700' : 'color:#5bd6a0;font-weight:700',
+    'color:#888',
+  );
+}
+
 function ensureInitialised(): void {
   if (initialised) return;
   initialised = true;
@@ -198,15 +222,20 @@ export function sampleFrame(dtSeconds: number): void {
   if (slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
     // A drop this soon after a step-up means that higher level was too expensive — cap below it so we
     // don't climb straight back into it. This turns endless oscillation into a single detect-and-settle.
-    if (elapsed - lastStepUpAt < RECENT_STEP_UP_SECONDS) {
+    const recap = elapsed - lastStepUpAt < RECENT_STEP_UP_SECONDS;
+    if (recap) {
       softCeil = Math.max(floor, pixelRatio - STEP);
     }
+    const from = pixelRatio;
     pixelRatio = Math.max(floor, pixelRatio - STEP);
+    logRatioChange('STEPPED DOWN', from, fps, recap ? ` — and capped here (that level cost too much)` : '');
     slowFor = 0;
     fastFor = 0;
   } else if (fastFor >= SETTLE_UP_SECONDS && pixelRatio < effectiveCeil) {
+    const from = pixelRatio;
     pixelRatio = Math.min(effectiveCeil, pixelRatio + STEP);
     lastStepUpAt = elapsed;
+    logRatioChange('stepped up', from, fps, '');
     slowFor = 0;
     fastFor = 0;
   } else if (
