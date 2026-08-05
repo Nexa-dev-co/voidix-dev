@@ -22,6 +22,7 @@ import {
 } from "./introEvents";
 import GatherCanvas from "./GatherCanvas";
 import LoaderTelemetry from "./LoaderTelemetry/LoaderTelemetry";
+import MotionPrompt from "./MotionPrompt/MotionPrompt";
 
 // The shared sun lives in HeroSun, as three nested elements so no two things ever own one transform:
 //   .hero-sun-layer    — the outer layer (we fade its opacity in; the hero pin owns its transform)
@@ -57,6 +58,21 @@ const SUN_FLIGHT_DURATION = 1.1;
 const SETTLE_AFTER_REVEAL = 0.4;
 const REDUCED_MOTION_DELAY = 0.3;
 
+/**
+ * When the motion offer appears, in seconds from mount.
+ *
+ * Past the wordmark's resolve (WORDMARK_DELAY + SUN_FADE_IN + SUN_SOLO_HOLD + RESOLVE_DURATION lands
+ * around 2.1 s), so it arrives into the still beat where the gate waits rather than competing with
+ * the most expensive thing this loader draws. It is an aside, and it should read as one — it must
+ * never be the thing you are looking at while the wordmark is assembling.
+ */
+const MOTION_PROMPT_DELAY = 2.4;
+/** The quiet path has no timeline to wait out — the stage is still from the first frame. */
+const MOTION_PROMPT_DELAY_QUIET = 0.8;
+/** Toggled by the loader rather than by React — see MotionPrompt's header for why. */
+const MOTION_PROMPT_SHOWN_CLASS = "is-offered";
+const MOTION_PROMPT_SELECTOR = ".intro-motion-prompt";
+
 // How smoothly the counter chases real load progress.
 const COUNTER_EASE_SECONDS = 0.5;
 
@@ -73,8 +89,12 @@ const COUNTER_EASE_SECONDS = 0.5;
 //     made of; the fleet is a minute of scrolling away and has no business holding the reveal.
 //   · it waits while the star is MOVING rather than until a clock runs out — so a slow connection is
 //     waited out and a dead one is not (see ASSET_STALL_GIVE_UP_MS).
-//   · and because that wait can genuinely be a minute, the visitor is told how long and given a way
-//     out (see SKIP_OFFER_ETA_SECONDS). Waiting is now their choice rather than ours.
+//   · and because that wait can genuinely be a minute, it is made legible: the counter tracks the
+//     STAR's real fraction (not a weighted total that would sit near 18% for the whole download)
+//     and the underline breathes while the gate holds, so a long wait reads as working rather than
+//     as stuck. ⚠ There is no skip control. An earlier revision of this comment cited a
+//     `SKIP_OFFER_ETA_SECONDS` and claimed the visitor was "given a way out" — neither the constant
+//     nor the control was ever built. If one is wanted, build it; do not assume it is there.
 //
 // ⚠ There is still no unbounded wait anywhere. The old cap protected against a stalled asset; that
 // job now belongs to the stall window, which is the same instrument `lib/yieldToStarDownload.ts`
@@ -173,6 +193,24 @@ export default function IntroSequence() {
     const sunLayer = document.querySelector(SUN_LAYER_SELECTOR);
     const sunFlight = document.querySelector(SUN_FLIGHT_SELECTOR);
 
+    // ── The motion offer ──
+    // A class, not React state, for the same reason the hold pulse is one: this component must not
+    // re-render while the intro is running. Queried rather than held in a ref because the prompt is a
+    // sibling of the intro's root, outside `rootRef` — it has to be, since that root is `aria-hidden`
+    // with `pointer-events: none` and an offer you cannot click or hear is not an offer.
+    let motionPromptTimer = 0;
+    const offerMotionChoice = () => {
+      document
+        .querySelector(MOTION_PROMPT_SELECTOR)
+        ?.classList.add(MOTION_PROMPT_SHOWN_CLASS);
+    };
+    const withdrawMotionChoice = () => {
+      window.clearTimeout(motionPromptTimer);
+      document
+        .querySelector(MOTION_PROMPT_SELECTOR)
+        ?.classList.remove(MOTION_PROMPT_SHOWN_CLASS);
+    };
+
     // Hold the page at the top for the duration of the intro. overflow:hidden stops
     // the wheel/trackpad; the explicit listeners cover keyboard + any browser that
     // still leaks momentum scroll past overflow:hidden.
@@ -221,26 +259,105 @@ export default function IntroSequence() {
       gsap.set(sunFlight, { x: deltaX, y: deltaY, scale });
     };
 
-    // Reduced motion: skip the show — drop the sun home, reveal, unmount.
+    // ── Reduced motion: skip the SHOW, not the WAIT ──
+    //
+    // No dust, no wordmark resolve, no shard flight. But the gate below still has to happen, and
+    // this path used to throw it away on a flat 300 ms timer while writing "100" into the counter.
+    // Unlocking scroll that early hands a phone on cellular a fleet section with nothing in it —
+    // the models are still tens of megabytes out, and every other path on this site waits for them.
+    // Reduced motion asks for less MOVEMENT. It does not ask to arrive before the site exists, and
+    // the visitors most likely to have it set (iOS, where it is a common everyday setting) are also
+    // the most likely to be on the connection where the difference is a minute.
+    //
+    // Built from the same primitives as the real gate — `isSourceLoaded` and the stall window — so
+    // there is one notion of "the star is in" rather than two that can disagree.
+    //
+    // ⚠ What it deliberately does NOT wait for is the shader warm-up and the shard assembly.
+    // `ASSETS_WARMUP_EVENT` still fires immediately and each scene still warms itself when its own
+    // assets land, so that work happens either way; waiting on it only protects a cinematic, and
+    // this path has none. The assembly is force-completed by REVEAL_EVENT (see SunModelCanvas), so
+    // there is nothing there to watch either.
     if (prefersReducedMotion()) {
       // Nothing is going to animate, so the stage is already as quiet as it will ever be. Said out
       // loud, because the timeline that normally says it is never built on this path — and a scene
       // waiting on it would never warm, and would compile on the frame it is first drawn instead.
       markStageQuiet();
       window.dispatchEvent(new Event(ASSETS_WARMUP_EVENT));
-      if (counterRef.current) counterRef.current.textContent = "100";
       if (sunLayer) gsap.set(sunLayer, { autoAlpha: 1 });
       if (sunFlight) gsap.set(sunFlight, { x: 0, y: 0, scale: 1 });
-      const timeoutId = window.setTimeout(() => {
-        revealHero();
-        unlockScroll();
-        setDone(true);
-      }, REDUCED_MOTION_DELAY * 1000);
+
+      const quietWaitStartedAt = performance.now();
+      let quietTicker = 0;
+      let quietRevealTimeout = 0;
+
+      // The real fraction, painted straight in. The counter's usual `gsap.to` ease is itself motion,
+      // and the hard "100" this used to write was simply untrue while the star was still arriving.
+      const paintQuietCounter = () => {
+        if (counterRef.current) {
+          counterRef.current.textContent = String(
+            Math.round(getSourceProgress("sun") * 100),
+          );
+        }
+      };
+
+      const isStarSettled = () => {
+        if (isSourceLoaded("sun")) return true;
+        // ⚠ `null` means the star has never reported — its chunk may not have mounted yet — so the
+        // wait is measured from when it started rather than read as "silent for 0 ms", which would
+        // wait forever on a source that never begins. Same reasoning as `tickGate`.
+        const sinceActivity = getMillisecondsSinceActivity("sun");
+        const silentFor =
+          sinceActivity ?? performance.now() - quietWaitStartedAt;
+        return silentFor > ASSET_STALL_GIVE_UP_MS;
+      };
+
+      const finishQuietIntro = () => {
+        window.clearInterval(quietTicker);
+        withdrawMotionChoice();
+        quietRevealTimeout = window.setTimeout(() => {
+          revealHero();
+          unlockScroll();
+          setDone(true);
+        }, REDUCED_MOTION_DELAY * 1000);
+      };
+
+      // Worth making the offer on THIS path above all others: the visitor has arrived with the OS
+      // flag set, and this is where the site says so out loud and hands back the choice, rather than
+      // stripping itself down without ever mentioning it.
+      motionPromptTimer = window.setTimeout(
+        offerMotionChoice,
+        MOTION_PROMPT_DELAY_QUIET * 1000,
+      );
+
+      paintQuietCounter();
+      if (isStarSettled()) {
+        // A warm cache lands straight here — it should not sit out a tick to discover that.
+        finishQuietIntro();
+      } else {
+        quietTicker = window.setInterval(() => {
+          paintQuietCounter();
+          // ⚠ Load-bearing, not a status ping. The hero arms a reveal fallback and RE-ARMS it on
+          // every one of these (REVEAL_FALLBACK_WITH_INTRO_MS). A download longer than that net,
+          // with nothing beating, has the hero reveal itself and build its pin behind the veil
+          // while scroll is still locked. The real gate dispatches this from `tickGate` for exactly
+          // the same reason.
+          window.dispatchEvent(new Event(INTRO_ACTIVE_EVENT));
+          if (isStarSettled()) finishQuietIntro();
+        }, GATE_TICK_MS);
+      }
+
       return () => {
-        window.clearTimeout(timeoutId);
+        window.clearInterval(quietTicker);
+        window.clearTimeout(quietRevealTimeout);
+        window.clearTimeout(motionPromptTimer);
         unlockScroll();
       };
     }
+
+    motionPromptTimer = window.setTimeout(
+      offerMotionChoice,
+      MOTION_PROMPT_DELAY * 1000,
+    );
 
     // Release the scroll lock when the intro actually finishes (the component returns
     // null but stays mounted, so the effect cleanup can't be relied on to unlock).
@@ -314,6 +431,10 @@ export default function IntroSequence() {
       hasResumed = true;
       window.clearTimeout(gateTimeout);
       stopHoldPulse();
+      // Taken off screen before the handoff, not left to fade with the veil — it is a SIBLING of the
+      // intro root, so the veil's fade-out does not cover it and it would otherwise still be sitting
+      // over the hero after the reveal.
+      withdrawMotionChoice();
       resumeFrame = requestAnimationFrame(() => timeline.resume());
     };
 
@@ -344,8 +465,12 @@ export default function IntroSequence() {
       // better: the star arrives into a held frame rather than on the tail of the counter hitting 100.
       gateTimeout = window.setTimeout(() => {
         window.dispatchEvent(new Event(SUN_ASSEMBLE_EVENT));
-        // The sun can already be assembled by the time we ask — under reduced motion it reports the
-        // moment its model lands (SunModelCanvas), and it will not report a second time.
+        // The sun can already be assembled by the time we ask, and it will not report a second
+        // time. Its own safety net (ASSEMBLE_CUE_FALLBACK_MS, armed from the model landing) can
+        // fire before this cue does on a load where the warm stage runs long — so the star
+        // assembles itself and reports into a listener that is not yet waiting for it.
+        // ⚠ NOT because of reduced motion, which an earlier revision of this comment claimed: that
+        // path returns before this gate is ever built.
         if (sunAssembled) settleThenReveal();
         else gateTimeout = window.setTimeout(settleThenReveal, ASSEMBLY_WAIT_MAX_MS);
       }, ASSEMBLY_LEAD_MS);
@@ -592,6 +717,7 @@ export default function IntroSequence() {
   if (done) return null;
 
   return (
+    <>
     <div
       ref={rootRef}
       aria-hidden
@@ -778,5 +904,16 @@ export default function IntroSequence() {
         </div>
       </div>
     </div>
+
+    {/* ⚠ A SIBLING of the root above, not a child of it. That root is `aria-hidden` with
+        `pointer-events: none` — correct for a loader made entirely of decoration, and fatal for the
+        one thing on it a visitor is meant to act on. Neither can be undone from inside: per spec,
+        `aria-hidden="false"` on a descendant of an `aria-hidden="true"` element does not restore it.
+
+        Rendered unconditionally and revealed by a class, so nothing here depends on a
+        `prefersReducedMotion()` read during render — that would differ between server and client and
+        break hydration, the same reason `GatherCanvas` always mounts. */}
+    <MotionPrompt />
+    </>
   );
 }

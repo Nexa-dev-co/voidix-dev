@@ -5,6 +5,7 @@ import {
 } from '@/components/effects/FluidCursor/fluidConfig';
 import { createFluidSimulation } from '@/components/effects/FluidCursor/fluidSimulation';
 import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
+import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
 /**
@@ -71,7 +72,10 @@ export function useFluidCursor(
     const inkCanvas = inkCanvasRef.current;
     const invertCanvas = invertCanvasRef.current;
     if (!inkCanvas || !invertCanvas) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // Through the helper, not `matchMedia` directly — see lib/motionPreference.ts. Returning here
+    // means no WebGL context is ever created, which is the point: hiding it would leave the rAF
+    // loops running.
+    if (prefersReducedMotion()) return;
 
     const invertContext = invertCanvas.getContext('2d');
     if (!invertContext) return;

@@ -69,6 +69,36 @@ const MAX_SANE_DT = 0.5;         // ignore absurd deltas (tab-restore, breakpoin
 const PIPELINE_FRAME_BUDGET_MS = 9;
 
 /**
+ * How much of that budget is deliberately LEFT UNSPENT.
+ *
+ * ── Why saturating a machine is the wrong target ─────────────────────────────────────────────────
+ * A frame rate is an average and the thing a visitor notices is the tail. A machine solved to land
+ * *exactly* on budget is one that drops a frame every time anything varies — a garbage collection, a
+ * texture upload, a heavier moment in the scroll — because it had nothing spare to absorb it. The same
+ * machine given a little room holds its rate solidly. Sizing to the average and being surprised by the
+ * tail is the classic version of this mistake.
+ *
+ * Three things this absorbs, and the probe can see none of them:
+ *
+ *   · everything outside the works pipeline — the sun's own canvas and bloom, the compositor, the
+ *     blend layers. `PIPELINE_FRAME_BUDGET_MS` nominally leaves ~7.7 ms for these; on a 4K laptop that
+ *     was out by roughly six times.
+ *   · frame-to-frame variance, which is what actually reads as stutter.
+ *   · thermal decay. A laptop's first minute is not its tenth, and the probe only ever sees the first.
+ *
+ * ⚠ EXPRESSED AGAINST COST, NOT AGAINST THE RATIO, and the difference is not small. Cost scales with
+ * the SQUARE of the ratio, so trimming the ratio by 15 % would remove 28 % of the pixels — nearly
+ * double the intended margin. Applying it here, to milliseconds, means 15 % is 15 %: the solve simply
+ * targets 7.65 ms instead of 9.
+ *
+ * ⚠ Deliberately NOT applied to `MAX_DRAWING_BUFFER_MEGAPIXELS`. That cap is what actually binds on a
+ * dense panel, and on a machine measured not to be fill-bound a margin there is quality given away for
+ * nothing — with no way back, since `fillBound` only ever restores up to the ceiling.
+ */
+const SAFETY_HEADROOM_FRACTION = 0.15;
+const SPENDABLE_FRAME_BUDGET_MS = PIPELINE_FRAME_BUDGET_MS * (1 - SAFETY_HEADROOM_FRACTION);
+
+/**
  * Smallest frame worth believing, in megapixels (~224²).
  *
  * A section measured before its first resize is drawing into a 1×1 buffer, which is instant and says
@@ -290,7 +320,7 @@ export function reportProbedFrameCost(
 
   // Narrowed by the rejection ladder above — `milliseconds === null` is the first case it catches.
   const believableMilliseconds = milliseconds as number;
-  const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / believableMilliseconds);
+  const affordable = probeRatio * Math.sqrt(SPENDABLE_FRAME_BUDGET_MS / believableMilliseconds);
   probedAffordableRatio = affordable;
 
   // ── The pixel ceiling, which no ratio can express ──
@@ -316,6 +346,9 @@ export function reportProbedFrameCost(
     console.log(
       `[voidix] gpu probe: ${believableMilliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
         `at ratio ${probeRatio} → affordable ${affordable.toFixed(2)}, ceiling ${ceil.toFixed(2)}` +
+        `
+  solved against ${SPENDABLE_FRAME_BUDGET_MS.toFixed(2)} ms of a ${PIPELINE_FRAME_BUDGET_MS} ms budget` +
+        ` (${(SAFETY_HEADROOM_FRACTION * 100).toFixed(0)}% held back)` +
         `\n  bound by ${
           ceil === floor
             ? 'the floor'
@@ -497,7 +530,7 @@ export function sampleFrame(dtSeconds: number): void {
         'GAVE BACK',
         from,
         fps,
-        ` — cutting ${((1 - (from * from) / (pixelRatio * pixelRatio)) * -100).toFixed(0)}% of the` +
+        ` — cutting ${((1 - (from * from) / (pixelRatio * pixelRatio)) * 100).toFixed(0)}% of the` +
           ` pixels changed nothing (${fpsBeforeStepDown.toFixed(0)} → ${fps.toFixed(0)} fps).` +
           `\n  This frame is not fill-bound; resolution is not the lever. Holding here.`,
       );

@@ -1532,6 +1532,7 @@ body {
   .nav-dial-mark {
     display: block;
   }
+
 }
 
 /* ─── Services Deck — the four-craft fleet (homepage) ────────────── */
@@ -2271,13 +2272,22 @@ body {
   }
 }
 
+/* The sweep is ambient motion with nothing to report — exactly what this setting asks us to drop.
+   The track stays, so the card keeps its composition.
+
+   ⚠ Stated twice, OS and visitor, and unlike most of the reduced-motion blocks in this file this one
+   genuinely needs it: the blanket rule at the bottom only collapses DURATIONS, and `opacity: 0` is
+   not a duration. A rule that merely says `animation: none` is already covered down there. */
 @media (prefers-reduced-motion: reduce) {
-  /* The sweep is ambient motion with nothing to report — exactly what this setting asks us to drop.
-     The track stays, so the card keeps its composition. */
-  .section-jump-scan::after {
+  :root:not([data-motion='full']) .section-jump-scan::after {
     animation: none;
     opacity: 0;
   }
+}
+
+:root[data-motion='reduced'] .section-jump-scan::after {
+  animation: none;
+  opacity: 0;
 }
 
 /* The filter lives in an SVG that must be in the document but must never take space or catch a click. */
@@ -2288,12 +2298,18 @@ body {
   pointer-events: none;
 }
 
+/* A crawling, displaced edge is exactly the kind of involuntary motion this setting asks us to drop.
+   The flood still happens (it is the transition, not decoration) — it just has a clean edge.
+
+   ⚠ The other rule the blanket cannot cover: `filter` is not a duration either. */
 @media (prefers-reduced-motion: reduce) {
-  /* A crawling, displaced edge is exactly the kind of involuntary motion this setting asks us to drop.
-     The flood still happens (it is the transition, not decoration) — it just has a clean edge. */
-  .loop-veil-cream {
+  :root:not([data-motion='full']) .loop-veil-cream {
     filter: none;
   }
+}
+
+:root[data-motion='reduced'] .loop-veil-cream {
+  filter: none;
 }
 
 /* ─── Contact ───────────────────────────────────────────────────────
@@ -4187,6 +4203,91 @@ body {
 }
 
 
+/* ─── The loader's motion offer ───────────────────────────────────────
+   Centred under the wordmark, above the frame's fill meter — the loader's bottom-left is already the
+   throughput readout and its bottom-right is the ghost counter, so the middle is the only clear lane.
+
+   ⚠ `fixed`, not `absolute`. This element is a SIBLING of the intro's root rather than a child of it,
+   because that root is `aria-hidden` with `pointer-events: none` and this is the one thing on the
+   loader meant to be read aloud and pressed. It therefore has no positioned ancestor to hang from.
+
+   ⚠ Above the veil (z 10000) and level with the sun, which cannot reach down here — the star flies
+   between the "o" and the hero square, both of which are centre-stage. */
+.intro-motion-prompt {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: clamp(3.25rem, 7vh, 5rem);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: min(90vw, 34rem);
+  text-align: center;
+  text-wrap: balance;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-small);
+  /* Revealed by the loader adding `.is-offered`, and taken away again before the handoff. Hidden
+     rather than merely transparent so it can never take a press while invisible. */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.5s ease,
+    visibility 0s linear 0.5s;
+}
+
+.intro-motion-prompt.is-offered {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 0.5s ease,
+    visibility 0s;
+}
+
+.intro-motion-copy {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* An underlined word rather than a bordered button: the loader is an editorial frame and a chip in
+   the middle of it would read as an interruption. The rule under it is what says "press me". */
+.intro-motion-action {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0.25rem 0;
+  cursor: pointer;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  border-bottom: 1px solid rgb(var(--accent-rgb) / 0.45);
+  transition:
+    color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.intro-motion-action:hover {
+  border-bottom-color: var(--accent);
+}
+
+.intro-motion-action:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0.3rem;
+}
+
+/* A ~310px measure cannot hold the sentence and the action on one line — stacking them keeps the
+   action a full-width target instead of a word squeezed against the edge. */
+@media (max-width: 30em) {
+  .intro-motion-prompt {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}
+
 .loader-throughput {
   position: absolute;
   left: clamp(1.6rem, 4vw, 2.6rem);
@@ -4238,12 +4339,34 @@ body {
 }
 
 /* ─── Reduced motion ─────────────────────────────────────────────── */
+/* ── The blanket rule, and the TWO ways it can be asked for ──
+   ⚠ The same declarations twice, and it is not duplication. The media query is the OPERATING SYSTEM
+   asking. The attribute is the VISITOR asking, through the loader's offer — and the two disagree
+   often enough to matter: a phone with no OS flag whose owner pressed "Reduce motion" gives the media
+   query nothing to match, so without the second selector every CSS animation on the site would keep
+   running while the JavaScript half quietly obeyed.
+
+   `data-motion` carries the RESOLVED answer (see lib/motionPreference.ts), which is also what makes
+   `:not([data-motion='full'])` work in the other direction: an explicit "show me all of it" needs a
+   way OUT of the media query on a machine whose OS asks for reduced motion.
+
+   ⚠ Before the JavaScript runs there is no attribute at all — and no attribute matches
+   `:not([data-motion='full'])`, so the OS setting still governs the very first paint. That ordering
+   is what stops a reduced-motion visitor seeing a flash of animation before the module initialises. */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  :root:not([data-motion='full']) *,
+  :root:not([data-motion='full']) *::before,
+  :root:not([data-motion='full']) *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+:root[data-motion='reduced'] *,
+:root[data-motion='reduced'] *::before,
+:root[data-motion='reduced'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
 }

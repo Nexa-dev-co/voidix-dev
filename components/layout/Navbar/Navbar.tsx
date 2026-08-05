@@ -121,7 +121,12 @@ export default function Navbar() {
             control that actually takes the press is a transparent button of the same size in the bar
             above, exactly as `.nav-mark-spacer` stands in for this mark. */}
         {/* No ghost twin, unlike `.nav-accent-logo` — the button's word is out of flow, so the button's
-            box is exactly this mark's size and the two line up with nothing to reserve. */}
+            box is exactly this mark's size and the two line up with nothing to reserve.
+
+            ⚠ Nothing may be added beside this without a matching spacer, and vice versa: the mark is
+            painted here while the button that presses it lives in `.nav-root`, so anything that
+            changes one cluster's width slides the amber off its own control. That is half of why the
+            motion toggle is not in the phone's bar — see the note in the bar below. */}
         <span className="nav-dial-mark" data-open={fan.isOpen}>
           <svg viewBox="0 0 100 100" aria-hidden="true">
             <circle className="nav-dial-track" cx="50" cy="50" r="42" />
@@ -154,13 +159,45 @@ export default function Navbar() {
           <span className="nav-wordmark">VOIDIX</span>
         </a>
 
-        {/* One of these, never both — the meters measure `.nav-link` labels, and two sets of them in
-            the document would have it position every meter over whichever it found first. */}
+        {/* The nav list is rendered at one width only — the meters measure `.nav-link` labels, and two
+            sets of them in the document would have it position every meter over whichever it found
+            first. */}
+        {!isNarrow && (
+          <nav aria-label="Main navigation">
+            <ul className="nav-items">
+              {NAV_ITEMS.map((navItem) => (
+                <li key={navItem.href} className="nav-item" data-enter={navItem.enter}>
+                  <a
+                    href={navItem.href}
+                    className="nav-link"
+                    data-key={navItem.key}
+                    onClick={(event) => handleNavClick(event, navItem.key)}
+                  >
+                    <span className="nav-link-text">
+                      <span className="nav-link-label">{navItem.label}</span>
+                      <span className="nav-link-number">{navItem.number}</span>
+                    </span>
+                    <LinkArrow />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
+
+        {/* ⚠ The motion control is NOT here, and that is a decision rather than an omission. It is
+            offered once, on the loader, where the visitor is already waiting and the offer lands
+            before the first cinematic instead of after one has already made them feel unwell — see
+            IntroSequence/MotionPrompt. Putting a copy in the bar was built and removed; if it comes
+            back, note that at phone widths it moves the dial button ~48px left, and the fan's pivot
+            is measured off that button, so every node on the arc goes with it (the topmost is
+            already the furthest left, at −101 design units, with its label hanging further left
+            still). */}
         {isNarrow ? (
-          /* The press target for the accent layer's mini-orbit. Transparent and exactly its size — the
-             same stand-in arrangement `.nav-mark-spacer` uses for the logo's mark, and for the same
-             reason: the amber has to live outside the difference blend, but the click has to live
-             inside it. */
+          /* The press target for the accent layer's mini-orbit. Transparent and exactly its size —
+             the same stand-in arrangement `.nav-mark-spacer` uses for the logo's mark, and for the
+             same reason: the amber has to live outside the difference blend, but the click has to
+             live inside it. */
           <button
             ref={toggleRef}
             className="nav-dial-toggle"
@@ -168,62 +205,40 @@ export default function Navbar() {
             onClick={fan.toggle}
             aria-expanded={fan.isOpen}
             aria-haspopup="true"
-            // The visible word is "Navigate"; this says what pressing it produces. It no longer has to
-            // teach a gesture — `aria-expanded` and `aria-haspopup` already describe a tap-to-open.
+            // The visible word is "Navigate"; this says what pressing it produces. It no longer has
+            // to teach a gesture — `aria-expanded` and `aria-haspopup` already describe a
+            // tap-to-open.
             aria-label="Navigate — open the section dial"
             data-open={fan.isOpen}
           >
             {/* ⚠ OUT OF FLOW, and that is the whole point of it being here.
                 As a flex sibling the word became part of the control's box: the button grew to
                 ~95px, its centre moved off the mark, and since the glow ring and the pivot are both
-                measured from that box, the highlight sat beside the orbit instead of around it and the
-                fan swung out of thin air. Absolutely positioned, it takes no part in the box — the
-                button stays exactly the mark's 1.75rem, so `getBoundingClientRect` still returns the
-                mark's own centre — while still rendering beside it and still taking the press, because
-                an absolutely positioned child is a child. It also removes the need for the ghost twin
-                the accent layer used to carry to reserve the same width. */}
+                measured from that box, the highlight sat beside the orbit instead of around it and
+                the fan swung out of thin air. Absolutely positioned, it takes no part in the box —
+                the button stays exactly the mark's 1.75rem, so `getBoundingClientRect` still
+                returns the mark's own centre — while still rendering beside it and still taking the
+                press, because an absolutely positioned child is a child. It also removes the need
+                for the ghost twin the accent layer used to carry to reserve the same width. */}
             <span className="nav-dial-label">Navigate</span>
           </button>
         ) : (
-          <>
-            <nav aria-label="Main navigation">
-              <ul className="nav-items">
-                {NAV_ITEMS.map((navItem) => (
-                  <li key={navItem.href} className="nav-item" data-enter={navItem.enter}>
-                    <a
-                      href={navItem.href}
-                      className="nav-link"
-                      data-key={navItem.key}
-                      onClick={(event) => handleNavClick(event, navItem.key)}
-                    >
-                      <span className="nav-link-text">
-                        <span className="nav-link-label">{navItem.label}</span>
-                        <span className="nav-link-number">{navItem.number}</span>
-                      </span>
-                      <LinkArrow />
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </nav>
-
-            <button className="nav-cta" type="button" onClick={handleCtaClick}>
-              <span>Start Project</span>
-              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-                <path
-                  d="M1 10L10 1M10 1H3.5M10 1V7.5"
-                  stroke="currentColor"
-                  strokeWidth="1.25"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              <span className="cta-corner cta-tl" aria-hidden="true" />
-              <span className="cta-corner cta-tr" aria-hidden="true" />
-              <span className="cta-corner cta-bl" aria-hidden="true" />
-              <span className="cta-corner cta-br" aria-hidden="true" />
-            </button>
-          </>
+          <button className="nav-cta" type="button" onClick={handleCtaClick}>
+            <span>Start Project</span>
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+              <path
+                d="M1 10L10 1M10 1H3.5M10 1V7.5"
+                stroke="currentColor"
+                strokeWidth="1.25"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="cta-corner cta-tl" aria-hidden="true" />
+            <span className="cta-corner cta-tr" aria-hidden="true" />
+            <span className="cta-corner cta-bl" aria-hidden="true" />
+            <span className="cta-corner cta-br" aria-hidden="true" />
+          </button>
         )}
 
       </header>
