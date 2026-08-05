@@ -55,7 +55,7 @@ import {
   getPixelRatio,
   sampleFrame,
   reportProbedFrameCost,
-  getProbedSpareCapacity,
+  hasEarnedExtraQuality,
 } from '@/lib/adaptivePixelRatio';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
 import { detectKtx2Support } from '@/lib/modelLoading';
@@ -408,24 +408,20 @@ const BLOOM_MSAA_SAMPLES_BY_TIER: Record<DeviceTier, number> = {
 const BLOOM_MSAA_SAMPLES_EARNED = 4;
 
 /**
- * How much SPARE capacity 4× has to be paid for out of — what the resolution did not already take.
+ * ── When 4× is switched on: SUSTAINED 50 fps AT FULL RESOLUTION, and never before ────────────────
  *
- * ⚠ Against `getProbedSpareCapacity()`, never against the raw affordable ratio. The probe's figure is
- * spent the moment it lands: `adaptivePixelRatio` sets the pixel ratio TO the number it solves, so a
- * machine measured at 1.32 is already rendering at 1.32 with nothing left. Checking the raw number
- * spends the same headroom twice, and that is not a hypothetical — see the log quoted in
- * `getProbedSpareCapacity`, where a laptop took its 1.32 as resolution, was granted 4× MSAA against
- * the same 1.32, fell to 23 fps and gave the resolution back.
+ * `hasEarnedExtraQuality()` is the gate — see its definition in `adaptivePixelRatio`. It requires the
+ * site to have actually held 50 fps at its own ceiling for four seconds, on the real page.
  *
- * `1.25` means "could have drawn ~56 % more pixels than it settled for, and still did not". The
- * surplus is real when the PANEL is the binding constraint rather than the GPU — a 1× monitor caps the
- * ratio at 1.5 however fast the card is, and that is the case this exists to spend.
+ * ⚠ This replaced two attempts to buy MSAA with the probe, and both failed the same way: they spent
+ * headroom the resolution had already taken. The first compared against the raw affordable ratio,
+ * which `reportProbedFrameCost` lands on the instant it is computed. The second compared against
+ * `affordable ÷ ceiling` — which looked like leftover but was exactly what the memory cap was
+ * withholding, so a 4K laptop was granted 4×, hit 20 fps and gave its resolution back to pay for it.
  *
- * ⚠ The probe measures a frame drawn at the FLOOR samples. It therefore does not include the cost of
- * the thing it is being asked to authorise, which is the second reason for a margin over a bare `>= 1`.
+ * The probe measures one pipeline on a quiet stage and its spread on one machine was ninefold. It is
+ * fit to set a CAP. It is not fit to authorise spending.
  */
-const MSAA_EARN_MIN_SPARE_CAPACITY = 1.25;
-
 /**
  * A hard ceiling on what the space composer's two buffers may cost, in bytes.
  *
@@ -1895,62 +1891,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // size, on a render that had to happen anyway.
         reportProbedFrameCost(cost.milliseconds, cost.megapixels, renderer.getPixelRatio());
 
-        // ── Now, and only now, is 4× MSAA allowed to be considered ──
-        // The resolution has just been settled from the same measurement, so anything spent here comes
-        // out of headroom that is genuinely left over rather than out of the frame's sharpness. See
-        // BLOOM_MSAA_SAMPLES_BY_TIER for why this is not decided at construction.
-        //
-        // `null` means the probe produced nothing believable, and that is read as "not earned" — the
-        // floor stands. `potato` is a hard cap: `saveData` is an instruction, not a hint.
-        const spareCapacity = getProbedSpareCapacity();
-        // What 4× would actually cost at the resolution that was just settled — see
-        // SPACE_COMPOSER_MEMORY_BUDGET_BYTES for why the spare-capacity ratio cannot answer this.
-        const drawingContext = renderer.getContext();
-        const projectedBytes = estimateComposerBytes(
-          drawingContext.drawingBufferWidth,
-          drawingContext.drawingBufferHeight,
-          BLOOM_MSAA_SAMPLES_EARNED,
-        );
-        const withinMemoryBudget = projectedBytes <= SPACE_COMPOSER_MEMORY_BUDGET_BYTES;
-        const earnsMsaa =
-          deviceTier !== 'potato' &&
-          spareCapacity !== null &&
-          spareCapacity >= MSAA_EARN_MIN_SPARE_CAPACITY &&
-          withinMemoryBudget;
-        if (earnsMsaa && spaceBuffer.samples < BLOOM_MSAA_SAMPLES_EARNED) {
-          // Both of them: `EffectComposer` clones the target it is handed, and the clone is a real
-          // second buffer that the scene renders into on alternating frames.
-          //
-          // ⚠ `setSize` will NOT rebuild these — it only disposes when the DIMENSIONS change, and they
-          // have not. `samples` is read in `setupRenderTarget`, so the framebuffers have to be thrown
-          // away explicitly for the new count to take. Three rebuilds them on the next draw, which is
-          // the one immediately below.
-          for (const target of [spaceComposer.renderTarget1, spaceComposer.renderTarget2]) {
-            target.samples = BLOOM_MSAA_SAMPLES_EARNED;
-            target.dispose();
-          }
-          if (telemetryEnabled) {
-            console.log(
-              `[voidix] msaa: earned ${BLOOM_MSAA_SAMPLES_EARNED}× on the space stage ` +
-                `(spare capacity ${spareCapacity.toFixed(2)}× after resolution, tier ${deviceTier})`,
-            );
-          }
-          drawWarmupFrame();
-        } else if (telemetryEnabled) {
-          // ⚠ Say so. An absent line is indistinguishable from "the warm-up never ran", which is the
-          // ambiguity that made the probe's own silent-failure path so expensive to diagnose.
-          const reason = !withinMemoryBudget
-            ? `4× would cost ${(projectedBytes / 1048576).toFixed(0)} MB of render target, over the ` +
-              `${SPACE_COMPOSER_MEMORY_BUDGET_BYTES / 1048576} MB budget`
-            : spareCapacity === null
-              ? 'nothing was measured'
-              : `spare capacity ${spareCapacity.toFixed(2)}× — the resolution has it`;
-          console.log(
-            `[voidix] msaa: staying at ${spaceBuffer.samples}× on the space stage ` +
-              `(tier ${deviceTier}) — ${reason}`,
-          );
-        }
-
         await nextWarmupFrame();
         if (disposed) return;
         if (getPixelRatio() !== appliedPixelRatio) {
@@ -2054,6 +1994,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // composer (the composer caches its own pixel ratio, so it must be told separately or the bloom
     // targets stay at the old density). Also owns the portrait pull-back. Used for real resizes and
     // whenever the adaptive controller shifts the ratio; defined before the loop so it can call it.
+    /** One MSAA upgrade attempt per session, whichever way it goes. */
+    let msaaRaised = false;
     let appliedPixelRatio = getPixelRatio();
     // The canvas's CSS size, which the chamber needs in full — not just as an aspect. Its display wears
     // the aspect (that's what makes the cover distance exact), and its hologram's anchor is projected
@@ -2449,6 +2391,45 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // ever do it on a genuinely idle frame: the field off screen (services / the fill) or the tab
       // backgrounded. Also frozen entirely through either crossing.
       if (!handoffActive && !revealScrubbing) {
+        // ── The one optional extra, on a frame nobody is watching ──
+        // Rebuilding these framebuffers blocks exactly as long as a resize does, so it rides the same
+        // rule: only while this scene is NOT being drawn. `hasEarnedExtraQuality` has by then required
+        // 50 fps at full resolution for four seconds — see the constant block above for the two
+        // probe-based versions of this that spent the resolution instead of what was left over.
+        if (
+          !msaaRaised &&
+          !isDrawing &&
+          deviceTier !== 'potato' &&
+          hasEarnedExtraQuality() &&
+          spaceBuffer.samples < BLOOM_MSAA_SAMPLES_EARNED
+        ) {
+          const drawingContext = renderer.getContext();
+          const projectedBytes = estimateComposerBytes(
+            drawingContext.drawingBufferWidth,
+            drawingContext.drawingBufferHeight,
+            BLOOM_MSAA_SAMPLES_EARNED,
+          );
+          msaaRaised = true; // one attempt per session, whichever way it goes
+          if (projectedBytes <= SPACE_COMPOSER_MEMORY_BUDGET_BYTES) {
+            // ⚠ BOTH buffers, and `dispose` rather than `setSize`: the latter only rebuilds when the
+            // DIMENSIONS change, and `samples` is read in `setupRenderTarget`.
+            for (const target of [spaceComposer.renderTarget1, spaceComposer.renderTarget2]) {
+              target.samples = BLOOM_MSAA_SAMPLES_EARNED;
+              target.dispose();
+            }
+          }
+          if (telemetryEnabled) {
+            console.log(
+              projectedBytes <= SPACE_COMPOSER_MEMORY_BUDGET_BYTES
+                ? `[voidix] msaa: raised to ${BLOOM_MSAA_SAMPLES_EARNED}× on the space stage — ` +
+                    `50 fps held at full resolution, and it costs ${(projectedBytes / 1048576).toFixed(0)} MB`
+                : `[voidix] msaa: earned but declined — 4× would cost ` +
+                    `${(projectedBytes / 1048576).toFixed(0)} MB, over the ` +
+                    `${SPACE_COMPOSER_MEMORY_BUDGET_BYTES / 1048576} MB budget`,
+            );
+          }
+        }
+
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
           // In sync → measure this frame. Only frames we actually DREW, so idle frames can't fake

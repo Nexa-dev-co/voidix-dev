@@ -43,6 +43,9 @@ const MIN_BELIEVABLE_MILLISECONDS = 0.15;
 /** A frame so slow the reading is more likely a hitch (a tab switch, a GC pause) than a frame cost. */
 const MAX_BELIEVABLE_MILLISECONDS = 400;
 
+/** Odd, so the median is a real sample rather than an average of two. Three drains, two extra frames. */
+const PROBE_SAMPLES = 3;
+
 export interface GpuFrameCost {
   /** Wall-clock milliseconds for one drained frame, or null if the reading could not be trusted. */
   milliseconds: number | null;
@@ -75,13 +78,31 @@ export function measureGpuFrameCost(
   const megapixels = (context.drawingBufferWidth * context.drawingBufferHeight) / 1e6;
 
   try {
-    // Drain whatever is still outstanding from earlier frames, so none of it is charged to us.
-    context.finish();
-
-    const startedAt = performance.now();
-    drawFrame();
-    context.finish();
-    const milliseconds = performance.now() - startedAt;
+    // ── ⚠ THE MEDIAN OF SEVERAL, NOT ONE ────────────────────────────────────────────────────────
+    // One drained frame is far too noisy to size a session against. Measured across five loads of the
+    // same page on the same 4K laptop, this reported:
+    //
+    //     0.6 · 3.5 · 3.9 · 5.7 ms      → an "affordable" ratio of 3.87 · 1.60 · 1.52 · 1.26
+    //
+    // A NINEFOLD spread, and the site's resolution followed it — so the same machine opened at wildly
+    // different quality depending on nothing it could observe. The cause is where this runs: right
+    // after `buildField`, which has just spent two to three seconds cutting four marks on the CPU. The
+    // machine is still hot, the scheduler still busy, and the first sample catches whatever is left of
+    // that.
+    //
+    // A median across a few consecutive drains throws out the outlier in either direction for a cost
+    // of two extra frames during a loader that is already holding.
+    const samples: number[] = [];
+    for (let sample = 0; sample < PROBE_SAMPLES; sample += 1) {
+      // Drain whatever is still outstanding, so none of it is charged to this sample.
+      context.finish();
+      const startedAt = performance.now();
+      drawFrame();
+      context.finish();
+      samples.push(performance.now() - startedAt);
+    }
+    samples.sort((left, right) => left - right);
+    const milliseconds = samples[Math.floor(samples.length / 2)];
 
     const believable =
       milliseconds >= MIN_BELIEVABLE_MILLISECONDS &&

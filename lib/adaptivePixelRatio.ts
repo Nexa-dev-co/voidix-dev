@@ -162,6 +162,31 @@ const STEP_DOWN_VERDICT_SECONDS = 1.5;
 const STEP_DOWN_MIN_GAIN = 1.08;
 
 /**
+ * ── Extras are bought with OBSERVED frame rate, at full resolution, or not at all ────────────────
+ *
+ * The rule, stated by the person who has to look at it: *quality over MSAA — we can have MSAA if the
+ * frame rate is above 50 at high quality.* Both halves matter and the second is the one that keeps
+ * getting lost.
+ *
+ * The probe cannot answer this. It times one pipeline on a quiet stage before the site exists, and its
+ * spread on a single machine was ninefold (see `gpuProbe`). Worse, spending its number on samples is
+ * how the resolution came to be traded away for MSAA twice in one day — first against the raw ratio,
+ * then against a "spare capacity" that turned out to be what the memory cap was withholding.
+ *
+ * Sustained frame rate has none of those problems. It is the real thing, measured on the real site, at
+ * the real resolution, over seconds rather than one draw.
+ *
+ * ⚠ `pixelRatio >= effectiveCeil` is the "at high quality" half, and it is not optional. A machine
+ * holding 55 fps because it has already given up a third of its pixels has not earned anything — it is
+ * coping. Extras are only ever bought on top of full quality, never instead of it.
+ */
+const EXTRA_QUALITY_FPS = 50;
+/** Long enough that a quiet stretch between sections cannot pass for headroom. */
+const EXTRA_QUALITY_SECONDS = 4;
+let extraQualityFor = 0;
+let extraQualityEarned = false;
+
+/**
  * Say out loud when the site changes how many pixels it draws — development only.
  *
  * This is the quietest thing that happens on the whole site and one of the most consequential. It is
@@ -329,9 +354,21 @@ export function reportProbedFrameCost(
   // difference is its direction. Climbing reads as the site sharpening; walking down reads as it
   // giving up, which is the thing that was actually being reported.
   //
-  // ⚠ A machine measured as NOT capable still starts low, which is the whole reason to measure before
-  // the first frame — `Math.min` keeps a sub-native ceiling intact.
-  pixelRatio = Math.min(ceil, 1);
+  // ── …and then it was put BACK, once the verdict existed ──
+  //
+  // Starting at native was a workaround for having no way to tell whether a step down helped. It cost
+  // real quality to buy that safety: on a dpr-2.5 panel, 1.0 is ~40 % of the panel's density, and the
+  // site visibly opened softer than it had the day before. Reported as exactly that.
+  //
+  // `fillBound` is the proper fix. A cut is now a hypothesis that gets checked, and a machine that
+  // cannot convert pixels into frames takes ONE step and gets them back. With that in place, landing on
+  // the ceiling is safe again — and it is the better default, because on the machines where the probe
+  // IS right (which is most of them) it arrives at full quality immediately instead of spending four
+  // seconds climbing into it.
+  //
+  // ⚠ A machine measured as NOT capable still starts below native. `ceil` carries that; nothing here
+  // raises it.
+  pixelRatio = ceil;
 }
 
 /**
@@ -384,6 +421,18 @@ export function getProbedSpareCapacity(): number | null {
   return probedAffordableRatio / ceil;
 }
 
+/**
+ * True once this machine has held `EXTRA_QUALITY_FPS` at its full resolution for long enough to mean
+ * it — the only gate anything optional may be switched on behind.
+ *
+ * Latched: it is a licence, not a live reading. Something that allocated on the strength of it must
+ * not be torn down again the moment a scroll dips the frame rate, because the tearing down is itself
+ * a stall. If conditions genuinely worsen, the resolution controller is what responds.
+ */
+export function hasEarnedExtraQuality(): boolean {
+  return extraQualityEarned;
+}
+
 /** The current shared pixel ratio. Read once per frame; apply to renderer + composer when it moves. */
 export function getPixelRatio(): number {
   ensureInitialised();
@@ -414,6 +463,28 @@ export function sampleFrame(dtSeconds: number): void {
 
   const effectiveCeil = Math.min(ceil, softCeil);
 
+  // ── Has this machine earned an extra, on top of full quality? ──
+  if (!extraQualityEarned) {
+    if (fps >= EXTRA_QUALITY_FPS && pixelRatio >= effectiveCeil) {
+      extraQualityFor += dtSeconds;
+      if (extraQualityFor >= EXTRA_QUALITY_SECONDS) {
+        extraQualityEarned = true;
+        if (telemetryEnabled) {
+          console.log(
+            `%c[pixels] EARNED EXTRA QUALITY%c held ${fps.toFixed(0)} fps at ratio ` +
+              `${pixelRatio.toFixed(2)} (its ceiling) for ${EXTRA_QUALITY_SECONDS}s` +
+              `\n  anything optional may now be switched on — the resolution is already paid for.`,
+            'color:#5bd6a0;font-weight:700',
+            'color:#888',
+          );
+        }
+      }
+    } else {
+      // Any dip, or any resolution given up, and the clock restarts. This has to mean SUSTAINED.
+      extraQualityFor = 0;
+    }
+  }
+
   // ── Did the last step down actually buy anything? ──
   // If it did not, this frame is not fill-bound and every pixel given up from here is pure loss.
   if (awaitingStepDownVerdict && elapsed - lastStepDownAt >= STEP_DOWN_VERDICT_SECONDS) {
@@ -435,7 +506,16 @@ export function sampleFrame(dtSeconds: number): void {
     }
   }
 
-  if (fillBound && slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
+  // ⚠ `!awaitingStepDownVerdict` — ONE step at a time while a cut is on trial.
+  //
+  // Without it the controller reached the floor before it ever learned the lever does not work:
+  // `SETTLE_DOWN_SECONDS` (0.8) is shorter than `STEP_DOWN_VERDICT_SECONDS` (1.5), so the second cut
+  // fired first and reset the verdict clock onto itself. The measured result was 1.00 → 0.80 → 0.75
+  // with no verdict in between — every pixel given away, then judged.
+  //
+  // Now a cut is a single hypothesis: take one step, wait for the frame rate to answer, and either
+  // continue or put it back. At most one step of quality is ever on trial.
+  if (fillBound && !awaitingStepDownVerdict && slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
     // A drop this soon after a step-up means that higher level was too expensive — cap below it so we
     // don't climb straight back into it. This turns endless oscillation into a single detect-and-settle.
     const recap = elapsed - lastStepUpAt < RECENT_STEP_UP_SECONDS;
