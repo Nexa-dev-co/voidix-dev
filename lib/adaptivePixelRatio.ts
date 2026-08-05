@@ -130,6 +130,38 @@ let lastStepUpAt = -Infinity;
 let lastSoftCeilProbeAt = 0;
 
 /**
+ * ── ⚠ RESOLUTION IS ONLY A LEVER IF THE FRAME IS FILL-BOUND, AND OFTEN IT IS NOT ────────────────
+ *
+ * This controller's whole premise is that fewer pixels means more frames. That is true of a GPU
+ * saturated by fill, and false of a frame dominated by JavaScript, draw-call submission, or the
+ * compositor — and when it is false, every step down is quality given away for nothing.
+ *
+ * Measured on a 4K laptop, both steps taken within a few seconds of each other:
+ *
+ *     [pixels] STEPPED DOWN 1.00 → 0.80  (−36% pixels)  at ~32 fps
+ *     [pixels] STEPPED DOWN 0.80 → 0.75  (−12% pixels)  at ~26 fps
+ *
+ * A third of the pixels gone and the frame rate got WORSE. The controller then sat at the floor for
+ * the rest of the session, rendering at ~30 % of that panel's native density — which is what "the
+ * ships look low quality now" actually was.
+ *
+ * So a step down is now a HYPOTHESIS, and it gets checked. If the frame rate does not answer within
+ * `STEP_DOWN_VERDICT_SECONDS`, the pixels go back and this controller stops cutting them for the rest
+ * of the session. It cannot fix a frame that is not fill-bound, and the honest thing to do about a
+ * lever that does not work is to stop pulling it.
+ *
+ * A genuinely fill-bound machine sees the gain, keeps `fillBound` true, and behaves exactly as before.
+ */
+let fillBound = true;
+let awaitingStepDownVerdict = false;
+let lastStepDownAt = -Infinity;
+let fpsBeforeStepDown = 0;
+/** Long enough for the EMA to have absorbed the new resolution, short enough to not sit ugly. */
+const STEP_DOWN_VERDICT_SECONDS = 1.5;
+/** The frame rate has to improve by at least this much for the pixels to have been worth giving up. */
+const STEP_DOWN_MIN_GAIN = 1.08;
+
+/**
  * Say out loud when the site changes how many pixels it draws — development only.
  *
  * This is the quietest thing that happens on the whole site and one of the most consequential. It is
@@ -382,7 +414,28 @@ export function sampleFrame(dtSeconds: number): void {
 
   const effectiveCeil = Math.min(ceil, softCeil);
 
-  if (slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
+  // ── Did the last step down actually buy anything? ──
+  // If it did not, this frame is not fill-bound and every pixel given up from here is pure loss.
+  if (awaitingStepDownVerdict && elapsed - lastStepDownAt >= STEP_DOWN_VERDICT_SECONDS) {
+    awaitingStepDownVerdict = false;
+    if (fps < fpsBeforeStepDown * STEP_DOWN_MIN_GAIN) {
+      fillBound = false;
+      const from = pixelRatio;
+      pixelRatio = Math.min(effectiveCeil, pixelRatio + STEP);
+      logRatioChange(
+        'GAVE BACK',
+        from,
+        fps,
+        ` — cutting ${((1 - (from * from) / (pixelRatio * pixelRatio)) * -100).toFixed(0)}% of the` +
+          ` pixels changed nothing (${fpsBeforeStepDown.toFixed(0)} → ${fps.toFixed(0)} fps).` +
+          `\n  This frame is not fill-bound; resolution is not the lever. Holding here.`,
+      );
+      slowFor = 0;
+      fastFor = 0;
+    }
+  }
+
+  if (fillBound && slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
     // A drop this soon after a step-up means that higher level was too expensive — cap below it so we
     // don't climb straight back into it. This turns endless oscillation into a single detect-and-settle.
     const recap = elapsed - lastStepUpAt < RECENT_STEP_UP_SECONDS;
@@ -392,9 +445,13 @@ export function sampleFrame(dtSeconds: number): void {
     const from = pixelRatio;
     pixelRatio = Math.max(floor, pixelRatio - STEP);
     logRatioChange('STEPPED DOWN', from, fps, recap ? ` — and capped here (that level cost too much)` : '');
+    // Watch this one. If the frame rate does not answer, the next block puts the pixels back.
+    lastStepDownAt = elapsed;
+    fpsBeforeStepDown = fps;
+    awaitingStepDownVerdict = true;
     slowFor = 0;
     fastFor = 0;
-  } else if (fastFor >= SETTLE_UP_SECONDS && pixelRatio < effectiveCeil) {
+  } else if (fillBound && fastFor >= SETTLE_UP_SECONDS && pixelRatio < effectiveCeil) {
     const from = pixelRatio;
     pixelRatio = Math.min(effectiveCeil, pixelRatio + STEP);
     lastStepUpAt = elapsed;
