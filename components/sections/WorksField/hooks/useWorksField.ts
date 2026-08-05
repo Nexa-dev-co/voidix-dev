@@ -55,7 +55,7 @@ import {
   getPixelRatio,
   sampleFrame,
   reportProbedFrameCost,
-  getProbedAffordableRatio,
+  getProbedSpareCapacity,
 } from '@/lib/adaptivePixelRatio';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
 import { detectKtx2Support } from '@/lib/modelLoading';
@@ -408,18 +408,23 @@ const BLOOM_MSAA_SAMPLES_BY_TIER: Record<DeviceTier, number> = {
 const BLOOM_MSAA_SAMPLES_EARNED = 4;
 
 /**
- * How much measured headroom 4× has to be paid for out of.
+ * How much SPARE capacity 4× has to be paid for out of — what the resolution did not already take.
  *
- * `getProbedAffordableRatio()` is a ratio of RESOLUTION, and cost scales with its square — so 1.25
- * means "this machine measured able to draw ~56 % more pixels than it is being asked to". Going from
- * two samples to four adds roughly 24 MB/frame of resolve traffic on a 1512×982 panel, which sits
- * comfortably inside that.
+ * ⚠ Against `getProbedSpareCapacity()`, never against the raw affordable ratio. The probe's figure is
+ * spent the moment it lands: `adaptivePixelRatio` sets the pixel ratio TO the number it solves, so a
+ * machine measured at 1.32 is already rendering at 1.32 with nothing left. Checking the raw number
+ * spends the same headroom twice, and that is not a hypothetical — see the log quoted in
+ * `getProbedSpareCapacity`, where a laptop took its 1.32 as resolution, was granted 4× MSAA against
+ * the same 1.32, fell to 23 fps and gave the resolution back.
  *
- * ⚠ The probe measures a frame drawn at the FLOOR samples, with SMAA on. It therefore does not
- * include the cost of the thing it is being asked to authorise, which is the second reason for a
- * margin rather than a bare `>= 1`.
+ * `1.25` means "could have drawn ~56 % more pixels than it settled for, and still did not". The
+ * surplus is real when the PANEL is the binding constraint rather than the GPU — a 1× monitor caps the
+ * ratio at 1.5 however fast the card is, and that is the case this exists to spend.
+ *
+ * ⚠ The probe measures a frame drawn at the FLOOR samples. It therefore does not include the cost of
+ * the thing it is being asked to authorise, which is the second reason for a margin over a bare `>= 1`.
  */
-const MSAA_EARN_MIN_AFFORDABLE_RATIO = 1.25;
+const MSAA_EARN_MIN_SPARE_CAPACITY = 1.25;
 
 const MAX_FRAME_SECONDS = 0.05; // clamp dt so a tab-restore doesn't fling the animation
 
@@ -1858,11 +1863,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         //
         // `null` means the probe produced nothing believable, and that is read as "not earned" — the
         // floor stands. `potato` is a hard cap: `saveData` is an instruction, not a hint.
-        const affordableRatio = getProbedAffordableRatio();
+        const spareCapacity = getProbedSpareCapacity();
         const earnsMsaa =
           deviceTier !== 'potato' &&
-          affordableRatio !== null &&
-          affordableRatio >= MSAA_EARN_MIN_AFFORDABLE_RATIO;
+          spareCapacity !== null &&
+          spareCapacity >= MSAA_EARN_MIN_SPARE_CAPACITY;
         if (earnsMsaa && spaceBuffer.samples < BLOOM_MSAA_SAMPLES_EARNED) {
           // Both of them: `EffectComposer` clones the target it is handed, and the clone is a real
           // second buffer that the scene renders into on alternating frames.
@@ -1878,10 +1883,18 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           if (telemetryEnabled) {
             console.log(
               `[voidix] msaa: earned ${BLOOM_MSAA_SAMPLES_EARNED}× on the space stage ` +
-                `(measured affordable ${affordableRatio.toFixed(2)}, tier ${deviceTier})`,
+                `(spare capacity ${spareCapacity.toFixed(2)}× after resolution, tier ${deviceTier})`,
             );
           }
           drawWarmupFrame();
+        } else if (telemetryEnabled) {
+          // ⚠ Say so. An absent line is indistinguishable from "the warm-up never ran", which is the
+          // ambiguity that made the probe's own silent-failure path so expensive to diagnose.
+          console.log(
+            `[voidix] msaa: staying at ${spaceBuffer.samples}× on the space stage ` +
+              `(spare capacity ${spareCapacity === null ? 'unmeasured' : `${spareCapacity.toFixed(2)}×`}` +
+              `, tier ${deviceTier}) — the resolution has it`,
+          );
         }
 
         await nextWarmupFrame();

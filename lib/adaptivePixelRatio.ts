@@ -258,6 +258,33 @@ export function getProbedAffordableRatio(): number | null {
   return probedAffordableRatio;
 }
 
+/**
+ * What is left AFTER the resolution has taken its share — the number anything else must be paid from.
+ *
+ * ⚠ Read this, not `getProbedAffordableRatio`, before granting any extra. The probe's raw figure is
+ * spent the instant it arrives: `reportProbedFrameCost` LANDS on the ceiling it solves, so a machine
+ * that measured 1.32 is immediately rendering at 1.32 and has nothing spare. Comparing an extra
+ * against the raw number therefore spends the same headroom twice.
+ *
+ * That is not hypothetical — it shipped for an afternoon. A laptop measured `affordable 1.32`, took
+ * all of it as resolution, was then granted 4× MSAA against that same 1.32, fell to 23 fps and gave
+ * the resolution straight back:
+ *
+ *     gpu probe: affordable 1.32, ceiling 1.32
+ *     msaa: earned 4x
+ *     [pixels] STEPPED DOWN 1.32 -> 1.12 at ~25 fps
+ *     [pixels] STEPPED DOWN 1.12 -> 0.92 at ~23 fps
+ *
+ * Expressed as a multiple: `1` means "fully spent on pixels, nothing to give", `2.8` means "could
+ * have drawn nearly three times the pixels it settled for". The gap opens when the PANEL is the
+ * binding constraint rather than the GPU — a 1× monitor caps `ceil` at 1.5 however fast the card is,
+ * and that surplus is real and is exactly what an extra should be bought with.
+ */
+export function getProbedSpareCapacity(): number | null {
+  if (probedAffordableRatio === null || ceil <= 0) return null;
+  return probedAffordableRatio / ceil;
+}
+
 /** The current shared pixel ratio. Read once per frame; apply to renderer + composer when it moves. */
 export function getPixelRatio(): number {
   ensureInitialised();
