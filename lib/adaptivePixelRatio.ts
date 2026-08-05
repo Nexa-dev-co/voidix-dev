@@ -176,11 +176,39 @@ export function reportProbedFrameCost(
   probeRatio: number,
 ): void {
   ensureInitialised();
-  if (probed || milliseconds === null) return;
-  if (megapixels < MIN_PROBE_MEGAPIXELS || probeRatio <= 0) return;
+  if (probed) return;
+
+  // ── ⚠ A REFUSED PROBE HAS TO SAY SO ──
+  // Both of these used to be silent early returns, and that made the instrument useless on exactly
+  // the machines it exists for: a weak laptop reported nothing, and the console gave no way to tell
+  // "the warm-up never ran" apart from "it ran and the reading was thrown out". The only visible
+  // symptom was a `ceiling` that happened to equal the device pixel ratio — which is what the
+  // UNPROBED default also looks like.
+  //
+  // Silence is the one thing a diagnostic may never do when it fails.
+  const rejection =
+    milliseconds === null
+      ? 'unbelievable reading — see MIN/MAX_BELIEVABLE_MILLISECONDS in gpuProbe'
+      : megapixels < MIN_PROBE_MEGAPIXELS
+        ? `frame too small to mean anything (${megapixels.toFixed(3)} Mpx)`
+        : probeRatio <= 0
+          ? `nonsense probe ratio (${probeRatio})`
+          : null;
+
+  if (rejection !== null) {
+    if (telemetryEnabled) {
+      console.log(
+        `[voidix] gpu probe REFUSED: ${rejection}` +
+          `\n  native stands — ceiling ${ceil.toFixed(2)}, and nothing downstream may earn an upgrade.`,
+      );
+    }
+    return;
+  }
   probed = true;
 
-  const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / milliseconds);
+  // Narrowed by the rejection ladder above — `milliseconds === null` is the first case it catches.
+  const believableMilliseconds = milliseconds as number;
+  const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / believableMilliseconds);
   probedAffordableRatio = affordable;
   ceil = Math.min(hardwareCeil, Math.max(floor, affordable));
   softCeil = ceil;
@@ -195,8 +223,8 @@ export function reportProbedFrameCost(
   // build that frame is competing with an unminified bundle and StrictMode's second scene. A preview
   // is where the number means something — which is why the gate is `telemetryEnabled`.
   if (telemetryEnabled) {
-    console.debug(
-      `[voidix] gpu probe: ${milliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
+    console.log(
+      `[voidix] gpu probe: ${believableMilliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
         `at ratio ${probeRatio} → affordable ${affordable.toFixed(2)}, ` +
         `ceiling ${ceil.toFixed(2)} (floor ${floor}, hardware max ${hardwareCeil})`,
     );

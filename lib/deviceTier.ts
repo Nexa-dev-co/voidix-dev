@@ -135,7 +135,7 @@ function classify(): DeviceTier {
 }
 
 /**
- * Say what was decided and what it was decided from — development only, once per page.
+ * Say what was decided and what it was decided from — once per page, wherever telemetry is on.
  *
  * ⚠ This is the quietest decision on the site and it gates every allocation downstream of it: MSAA
  * floors, bloom strength, shard counts, icosphere detail, whether the accretion spiral exists.
@@ -151,7 +151,7 @@ function classify(): DeviceTier {
 function reportDecision(tier: DeviceTier): void {
   if (!telemetryEnabled || typeof window === 'undefined') return;
   const navigatorWithHints = navigator as NavigatorWithHints;
-  console.debug(
+  console.log(
     `[voidix] device tier: ${tier}` +
       `\n  pointer ${window.matchMedia('(pointer: coarse)').matches ? 'coarse' : 'fine'}` +
       `, width ${window.innerWidth}, dpr ${window.devicePixelRatio}` +

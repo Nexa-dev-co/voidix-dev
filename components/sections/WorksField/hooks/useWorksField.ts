@@ -1331,7 +1331,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // may well be invisible.
       if (telemetryEnabled) {
         const { buildMilliseconds, bufferBytes, perMarkBytes } = strategy.metrics;
-        console.debug(
+        console.log(
           `[voidix] mark build: ${buildMilliseconds.toFixed(0)} ms for ${marks.length} marks, ` +
             `${(bufferBytes / 1e6).toFixed(1)} MB of buffers ` +
             `(${(perMarkBytes / 1e6).toFixed(1)} MB each)`,
@@ -1876,7 +1876,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
             target.dispose();
           }
           if (telemetryEnabled) {
-            console.debug(
+            console.log(
               `[voidix] msaa: earned ${BLOOM_MSAA_SAMPLES_EARNED}× on the space stage ` +
                 `(measured affordable ${affordableRatio.toFixed(2)}, tier ${deviceTier})`,
             );
