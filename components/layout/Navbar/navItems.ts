@@ -20,7 +20,7 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'services', number: '01', label: 'Services', href: '/#services', enter: 'top'    },
   { key: 'work',     number: '02', label: 'Work',     href: '/#work',     enter: 'left'   },
-  { key: 'process',  number: '03', label: 'Process',  href: '/#process',  enter: 'right'  },
+  { key: 'faq',      number: '03', label: 'FAQ',      href: '/#faq',      enter: 'right'  },
   { key: 'contact',  number: '04', label: 'Contact',  href: '/#contact',  enter: 'bottom' },
 ];
 

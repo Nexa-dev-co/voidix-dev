@@ -62,14 +62,14 @@ export function useOrbitFan({ rootRef, fanRef, open, onClose }: OrbitFanRefs): v
       const timeline = gsap.timeline();
       timeline.fromTo(scrim, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.3, ease: 'power2.out' }, 0);
       // The swing. The container rotates about the pivot, so the whole fan unfolds from the mark that
-      // is being held rather than fading in where it will end up.
+      // was pressed rather than fading in where it will end up.
       timeline.fromTo(
         fan,
         { autoAlpha: 0, rotate: ENTRY_ROTATION },
         { autoAlpha: 1, rotate: 0, duration: OPEN_DURATION, ease: 'expo.out' },
         0,
       );
-      // Facets light in order, outward along the sweep — the direction the thumb travels.
+      // Facets light in order, outward along the sweep — the direction the arc is drawn in.
       timeline.fromTo(
         facets,
         { autoAlpha: 0 },

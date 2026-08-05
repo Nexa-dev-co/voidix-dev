@@ -346,7 +346,7 @@ const WORKS_SELECTOR = ".works-field";
 const WORKS_OVERLAY_SELECTOR = ".works-overlay";
 
 /** The full-black scene currently on screen — "fill" plus one name per carousel section. */
-type Stage = "fill" | "services" | "work" | "process" | "contact" | "loop";
+type Stage = "fill" | "services" | "work" | "faq" | "contact" | "loop";
 
 /** What a crossing owns, beyond the scroll length the layout needs. */
 interface CrossingSpec {
@@ -637,7 +637,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         },
       },
       {
-        key: "process",
+        key: "faq",
         stopCount: CHAMBER_STOP_COUNT,
         // Nothing to commit: the room, the tour and the hologram all run off the reveal landing, and the
         // input lock that covers the lot lives on the crossing (REVEAL_SETTLE_MS).
@@ -754,7 +754,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       fill: enterFill,
       services: enterServices,
       work: enterWorks,
-      process: enterChamber,
+      faq: enterChamber,
       contact: enterContact,
       loop: enterLoop,
     };

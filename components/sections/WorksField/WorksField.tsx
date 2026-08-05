@@ -6,7 +6,10 @@ import { WORKS_PROJECTS } from './worksProjects';
 import { useWorksTextTransition } from './hooks/useWorksTextTransition';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
+import { DISCIPLINES, buildEnquiryPrefill } from '@/lib/enquirySubjects';
 import Drawer from '@/components/ui/Drawer/Drawer';
+import EnquiryButton from '@/components/ui/EnquiryButton/EnquiryButton';
+import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
 
 // What comes to rest when a covered nav jump lands here: both head blocks line by line, then the
 // arrows. The mark itself needs nothing — the glide settled it on the way in.
@@ -24,6 +27,9 @@ const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
 
 // The field owns a WebGL context, so keep it out of the server graph.
 const FieldCanvas = dynamic(() => import('./FieldCanvas/FieldCanvas'), { ssr: false });
+
+/** Which panel is up. One at a time — two stacked sheets is not a state. */
+type OpenSheet = 'none' | 'details' | 'enquiry';
 
 interface WorksFieldProps {
   /** The focused project — driven by the hero pin's works stops. */
@@ -66,16 +72,22 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
   // the client, the paragraph and the tags into a drawer. The arrows go out to the frame's edges, with
   // the counter and the drawer's button stacked between them.
   const isNarrow = useIsNarrowViewport();
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [openSheet, setOpenSheet] = useState<OpenSheet>('none');
 
-  // The sheet describes one project, so it cannot outlive the selection. ⚠ Keyed off `activeIndex`, the
-  // COMMITTED project — not `displayedIndex`, which trails it while the copy shears out. Closing on the
-  // displayed one would leave the sheet up for the length of the text transition, showing the old
+  // Both panels describe one project, so neither can outlive the selection. ⚠ Keyed off `activeIndex`,
+  // the COMMITTED project — not `displayedIndex`, which trails it while the copy shears out. Closing on
+  // the displayed one would leave a panel up for the length of the text transition, showing the old
   // project's copy over the new project's mark.
-  useEffect(() => setIsDrawerOpen(false), [activeIndex]);
-  useEffect(() => {
-    if (!isNarrow) setIsDrawerOpen(false);
-  }, [isNarrow]);
+  useEffect(() => setOpenSheet('none'), [activeIndex]);
+  // ⚠ ANY width change, not just leaving the narrow layout — the enquiry swaps its whole shell across
+  // the breakpoint (sheet ↔ dialog), so an open panel is a different element on the other side of it.
+  useEffect(() => setOpenSheet('none'), [isNarrow]);
+
+  // The type key above the title, and the same word the enquiry arrives already knowing.
+  const discipline = DISCIPLINES[activeProject.discipline];
+  // Named, so the brief opens "in the orbit of Aphelion" rather than as a cold start — this CTA is
+  // pressed while looking at a specific piece of work, and that is the useful part of it.
+  const enquiryPrefill = buildEnquiryPrefill(activeProject.discipline, activeProject.title);
 
   return (
     <section id="work" className="works-field">
@@ -104,6 +116,11 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
           {/* Active-project detail. NOT keyed: GSAP owns the entrance now, so the nodes have to be
               stable — remounting them would tear the running tween off its targets mid-flight. */}
           <div className="works-detail" ref={detailRef}>
+            {/* The type key. It leads the block rather than joining the tag row below because it
+                answers a different question: the tags are what the work was made OF, this is what the
+                work WAS — and it is the one piece of the detail that survives onto a phone, where the
+                paragraph and the tags are both hidden. Same vocabulary the fleet sells in. */}
+            <p className="works-detail-type">{discipline.label}</p>
             <p className="works-detail-title font-display">{activeProject.title}</p>
             {/* The client is wrapped so a phone can drop it and keep the year — "name and date" is
                 what identifies the project at a glance; who it was for is drawer material. Split with
@@ -120,6 +137,29 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
                 <li key={tag} className="works-detail-tag">{tag}</li>
               ))}
             </ul>
+
+            {/* The actions, in the same wrapper and the same order the fleet uses — a visitor meets
+                this pairing twice and it should be one control, not two similar ones. ⚠ "Details" USED
+                TO LIVE IN THE NAV, under the counter; it moved here so both sections put their actions
+                with the copy they belong to, and so the nav row goes back to arrows-and-a-number. */}
+            <div className="detail-actions">
+              {isNarrow && (
+                <button
+                  type="button"
+                  className="drawer-open"
+                  onClick={() => setOpenSheet('details')}
+                >
+                  <span>Details</span>
+                  <ChevronUp />
+                </button>
+              )}
+
+              <EnquiryButton
+                // Shorter on a phone, where this shares a ~310px row with the Details button.
+                label={isNarrow ? 'Start a build' : 'Start one like this'}
+                onClick={() => setOpenSheet('enquiry')}
+              />
+            </div>
           </div>
         </header>
 
@@ -135,27 +175,15 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
             <ArrowGlyph direction="left" />
           </button>
 
-          {/* The counter, and — on a phone — the way into the rest of the project. Stacked in one
-              wrapper so the arrows can be pushed out to the frame's edges without the button drifting
-              away from the number it belongs to. On a wide screen this is an inert wrapper around the
-              counter exactly as before. */}
+          {/* Just the counter now — the "Details" button that used to be stacked under it moved up
+              into the detail block's action row, beside the CTA. The wrapper stays: it is what keeps
+              the number centred while the arrows are pushed out to the frame's edges on a phone. */}
           <span className="works-nav-centre">
             <span className="works-counter">
               <span className="works-counter-current">{activeProject.index}</span>
               <span className="works-counter-sep" aria-hidden="true">/</span>
               <span className="works-counter-total">{String(WORKS_PROJECTS.length).padStart(2, '0')}</span>
             </span>
-
-            {isNarrow && (
-              <button
-                type="button"
-                className="drawer-open works-nav-more"
-                onClick={() => setIsDrawerOpen(true)}
-              >
-                <span>Details</span>
-                <ChevronUp />
-              </button>
-            )}
           </span>
 
           <button
@@ -174,8 +202,8 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
           matches the copy and the mark that are actually on screen. */}
       {isNarrow && (
         <Drawer
-          open={isDrawerOpen}
-          onClose={() => setIsDrawerOpen(false)}
+          open={openSheet === 'details'}
+          onClose={() => setOpenSheet('none')}
           eyebrow={`${activeProject.index} — ${activeProject.year}`}
           title={activeProject.title}
         >
@@ -188,6 +216,16 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
           </ul>
         </Drawer>
       )}
+
+      {/* Mounted at every width, unlike the details sheet — this one has a shell for both (a dialog on
+          a wide screen, the same bottom sheet on a phone) and picks between them itself. */}
+      <EnquiryPanel
+        open={openSheet === 'enquiry'}
+        onClose={() => setOpenSheet('none')}
+        eyebrow={`${activeProject.index} — ${activeProject.title}`}
+        title="Start one like this"
+        prefill={enquiryPrefill}
+      />
     </section>
   );
 }

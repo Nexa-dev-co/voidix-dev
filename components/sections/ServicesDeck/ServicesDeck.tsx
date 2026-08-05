@@ -5,7 +5,10 @@ import { useEffect, useRef, useState } from 'react';
 import { DECK_SERVICES } from './deckServices';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
+import { buildEnquiryPrefill } from '@/lib/enquirySubjects';
 import Drawer from '@/components/ui/Drawer/Drawer';
+import EnquiryButton from '@/components/ui/EnquiryButton/EnquiryButton';
+import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
 
 // The viewer owns a WebGL context, so keep it out of the server graph.
 const DeckCanvas = dynamic(() => import('./DeckCanvas/DeckCanvas'), { ssr: false });
@@ -22,6 +25,9 @@ const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
   { selector: '.deck-detail > *', from: 'right' },
   { selector: '.deck-carousel, .deck-stepper', from: 'bottom' },
 ];
+
+/** Which sheet the narrow layout has up. One at a time — two stacked sheets is not a state. */
+type OpenSheet = 'none' | 'details' | 'enquiry';
 
 interface ServicesDeckProps {
   /** Craft currently on the pad — driven by the hero pin's carousel phase. */
@@ -54,19 +60,24 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
   // you are actually on) and the description moves into a drawer, leaving the capability keys and one
   // button on the screen itself.
   const isNarrow = useIsNarrowViewport();
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [openSheet, setOpenSheet] = useState<OpenSheet>('none');
 
-  // Changing craft while the sheet is up would leave you reading one service's copy under another
-  // one's name. Closing on the commit is the only honest option — the sheet describes a selection, so
-  // it cannot outlive it.
-  useEffect(() => setIsDrawerOpen(false), [activeIndex]);
-  // …and the layout swapping out from under an open sheet would leave it with no button to reopen it.
-  useEffect(() => {
-    if (!isNarrow) setIsDrawerOpen(false);
-  }, [isNarrow]);
+  // Changing craft while a panel is up would leave you reading one service's copy — or briefing one
+  // service's project — under another one's name. Closing on the commit is the only honest option: both
+  // panels describe a selection, so neither can outlive it.
+  useEffect(() => setOpenSheet('none'), [activeIndex]);
+  // ⚠ Closed on ANY width change, not just on leaving the narrow layout. The details sheet only exists
+  // when narrow, and the enquiry swaps its whole shell across the breakpoint (sheet ↔ dialog) — either
+  // way the open panel is a different element on the other side of a resize, and animating one out
+  // while mounting the other reads as a glitch.
+  useEffect(() => setOpenSheet('none'), [isNarrow]);
 
   const isFirst = activeIndex === 0;
   const isLast = activeIndex === DECK_SERVICES.length - 1;
+
+  // The enquiry arrives already knowing which craft it was opened from — the discipline picks the copy,
+  // and the visitor never has to restate a choice they made by clicking.
+  const enquiryPrefill = buildEnquiryPrefill(activeService.discipline);
 
   return (
     <section id="services" className="services-deck">
@@ -101,18 +112,32 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
               ))}
             </ul>
 
-            {/* Narrow only: the copy above is hidden by CSS at this width and lives in the sheet
-                instead, so the keys need something to lead on to. */}
-            {isNarrow && (
-              <button
-                type="button"
-                className="drawer-open deck-detail-more"
-                onClick={() => setIsDrawerOpen(true)}
-              >
-                <span>Details</span>
-                <ChevronUp />
-              </button>
-            )}
+            {/* The actions. One wrapper at every width, so the arrival stagger — which walks
+                `.deck-detail > *` — sees the same set of children on a phone and on a desktop.
+                ⚠ It deliberately does NOT re-enable pointer events itself: the overlay is
+                `pointer-events: none` and the buttons turn it back on individually, because a wrapper
+                with `auto` would also swallow the gaps between them, and those gaps are over a canvas
+                that accepts drag. */}
+            <div className="detail-actions">
+              {/* Narrow only: the copy above is hidden by CSS at this width and lives in the sheet
+                  instead, so the keys need something to lead on to. */}
+              {isNarrow && (
+                <button
+                  type="button"
+                  className="drawer-open"
+                  onClick={() => setOpenSheet('details')}
+                >
+                  <span>Details</span>
+                  <ChevronUp />
+                </button>
+              )}
+
+              <EnquiryButton
+                // Shorter on a phone, where this shares a ~310px row with the Details button.
+                label={isNarrow ? 'Start a build' : 'Start this build'}
+                onClick={() => setOpenSheet('enquiry')}
+              />
+            </div>
           </div>
         </header>
 
@@ -185,8 +210,8 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
           fewer portal and one fewer set of listeners on every desktop session. */}
       {isNarrow && (
         <Drawer
-          open={isDrawerOpen}
-          onClose={() => setIsDrawerOpen(false)}
+          open={openSheet === 'details'}
+          onClose={() => setOpenSheet('none')}
           eyebrow={`${activeService.index} — ${activeService.name}`}
           title={activeService.eyebrow}
         >
@@ -198,6 +223,16 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
           </ul>
         </Drawer>
       )}
+
+      {/* Mounted at every width, unlike the details sheet — this one has a shell for both (a dialog on
+          a wide screen, the same bottom sheet on a phone) and picks between them itself. */}
+      <EnquiryPanel
+        open={openSheet === 'enquiry'}
+        onClose={() => setOpenSheet('none')}
+        eyebrow={`${activeService.index} — ${activeService.name}`}
+        title="Start this build"
+        prefill={enquiryPrefill}
+      />
     </section>
   );
 }

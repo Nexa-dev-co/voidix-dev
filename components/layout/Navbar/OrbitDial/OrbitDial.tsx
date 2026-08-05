@@ -10,22 +10,21 @@ import { useOrbitFan } from './useOrbitFan';
  * The orbit fan — the phone's navigation, and a gesture rather than a menu.
  *
  * ── What it is ───────────────────────────────────────────────────────────────────────────────────
- * Hold the mark in the navbar and four facets swing out beneath it. Drag along one and it arms; let go
- * and you travel. Let go anywhere else and nothing happens at all.
+ * Tap the mark in the navbar and four facets swing out beneath it. Tap one and you travel; tap anywhere
+ * else, or press Escape, and it folds away.
  *
- *        ●  ← held
+ *        ●  ← tapped
  *         ╲
  *      ╲   ╲          each facet is one section
  *   ╲   ╲               the one you are IN glows amber
- *  ╲                    the one you are ARMING lights up
+ *  ╲                    the one under a POINTER lights up
  *
  * The shape is an octagon's language — flat facets, hard turns, ends that never close — rather than a
- * circle's, because a ring implies you can keep going round and this is a fan you sweep through.
+ * circle's, because a ring implies you can keep going round and this is a fan that opens.
  *
- * ── Why a gesture ────────────────────────────────────────────────────────────────────────────────
- * Every destination on this site is a scrubbed cinematic several seconds long. A mis-tap does not cost
- * a page load, it costs the journey — so the control is deliberately one that cannot be fired by
- * accident. Releasing off every facet navigates nowhere.
+ * ⚠ It was a hold-and-drag gesture until it met a real phone. `useOrbitDial`'s header has the three
+ * reasons it changed, and — more usefully — why the protection that gesture existed to provide is still
+ * intact under a tap. Read that before proposing either direction again.
  *
  * ── It portals to `body` ─────────────────────────────────────────────────────────────────────────
  * ScrollTrigger wraps the pin in a TRANSFORMED spacer, which turns `position: fixed` inside the hero
@@ -41,11 +40,13 @@ interface OrbitDialProps {
   activeIndex: number | null;
   /** The section the visitor is actually in — the one that glows. */
   currentIndex: number | null;
-  /** Pivot in viewport px, and the design-unit scale, both from the drag hook. */
+  /** Pivot in viewport px, and the design-unit scale, both from the dial hook. */
   pivotX: number;
   pivotY: number;
   scale: number;
   onSelect: (index: number) => void;
+  /** Reports which facet is under a pointer, or null. Nothing calls it on a touch screen. */
+  onArm: (index: number | null) => void;
   onClose: () => void;
 }
 
@@ -57,6 +58,7 @@ export default function OrbitDial({
   pivotY,
   scale,
   onSelect,
+  onArm,
   onClose,
 }: OrbitDialProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -131,11 +133,15 @@ export default function OrbitDial({
               type="button"
               className="orbit-station"
               // Both states are separate on purpose: `current` is where you ARE and glows constantly;
-              // `armed` is where you are POINTING and lights only while the finger is there. The
-              // section you are already in can be both at once, and it should look like it.
+              // `armed` is where you are POINTING and lights only while a pointer is on it. The section
+              // you are already in can be both at once, and it should look like it.
               data-current={index === currentIndex}
               data-armed={index === activeIndex}
               onClick={() => onSelect(index)}
+              // Hover, in effect — but written as pointer events so a mouse in a narrow window gets the
+              // highlight while a finger, which hovers over nothing, simply never fires them.
+              onPointerEnter={() => onArm(index)}
+              onPointerLeave={() => onArm(null)}
               style={
                 {
                   '--station-x': `${offset.x}`,

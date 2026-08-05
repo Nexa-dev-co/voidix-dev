@@ -272,7 +272,7 @@ of sections; `lib/carouselLayout.ts` derives everything else from it:
 const carouselSections = [
   { key: 'services', stopCount: craftCount,   setActiveStop: …, crossingAfter: { scrollVh: 180, apply: applyServicesToWorksHandoff } },
   { key: 'work',     stopCount: projectCount, setActiveStop: …, crossingAfter: { scrollVh: 140, apply: applyWorksToChamberReveal   } },
-  { key: 'process',  stopCount: 1, crossingAfter: { scrollVh: 140, apply: applyChamberToContactReturn } },
+  { key: 'faq',      stopCount: 1, crossingAfter: { scrollVh: 140, apply: applyChamberToContactReturn } },
   { key: 'contact',  stopCount: 1, crossingAfter: { scrollVh: 120, apply: applyContactToHeroLoop      } },
   { key: 'loop',     stopCount: 1 },   // a landing pad, never rested on — arriving IS the teleport
 ];
@@ -457,19 +457,24 @@ whatever scrolls under it); `.nav-accent` sits behind holding everything that mu
 (top line, orbital mark, the meters), so the blend never turns it blue.
 
 Each nav item has a cyan meter. **A section feeds its meter by setting `--nav-progress-<key>` on
-`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`, plus
+`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `faq`, plus
 **`total`**, which is the pin's own progress and therefore the whole circuit as one number.
 
-**On a phone the bar is the ORBIT FAN** (`Navbar/OrbitDial`), and it is a GESTURE, not a menu. The bar
-reads `Navigate ⊙`; hold it and one arc bows out beneath, four nodes on it, each running a leader line
-to its number and name. Drag along a row and let go. **Releasing off every station navigates nowhere** —
-deliberate, because every destination here is a scrubbed cinematic several seconds long and a mis-tap
-costs the journey, not a page load. A press that never *moved* latches the fan open instead of closing,
-which is the only thing that makes it operable without the gesture (mouse, keyboard, anyone who can't
-hold a drag steady); it still navigates nothing.
+**On a phone the bar is the ORBIT FAN** (`Navbar/OrbitDial`). The bar reads `Navigate ⊙`; tap it and one
+arc bows out beneath, four nodes on it, each running a leader line to its number and name. Tap a node and
+you travel; tap anywhere else, or press Escape, and it folds away.
 
-- **`orbitGeometry.ts` is the single source for the angles.** The drawing and the hit-testing both read
-  it; a copy in the stylesheet would be a selection that lands one facet off what you can see.
+⚠ **It was a hold-and-drag gesture until 2026-08-05, and the reversal is documented rather than
+forgotten** (`useOrbitDial`'s header). The gesture existed because every destination here is a scrubbed
+cinematic several seconds long and a mis-tap costs the journey, not a page load — but a hold competes
+with the platform's own long-press, nothing on screen says "hold me", and a sweep with no friction
+feedback reads as broken when it lands between two facets. **The protection is intact under a tap:** it
+still takes two deliberate acts to commit, and the second lands on a 44px target that only exists while
+the fan is up. Don't "restore" the drag, and don't collapse it to one tap either.
+
+- **`orbitGeometry.ts` is the single source for the angles**, and now the ONLY consumer of them is the
+  drawing — the pointer hit-testing (`stationFromPointer`, and the dead zone it needed) went with the
+  drag, because a facet is a real 44px `<button>` and the browser can hit-test it.
 - ⚠ The sweep is **51°, not 180°** — the pivot is the top-right corner, so half the circle is off-screen
   and more of it is above the bar. And it starts at **105°, not 90°**: near straight-down, y barely
   changes with angle and the first two labels landed on top of each other.
@@ -706,7 +711,7 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | | |
 |---|---|
 | **Contact** | **BUILT** — the star dies here, then the page loops back to the hero. Form + footer are front-end only: `handleSubmit` prevents default and posts nowhere, and every address, social handle and legal route in `contactContent.ts` is an invented placeholder. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
-| **Process content** | The `process` meter key is wired to the Chamber, whose content is an FAQ hologram. **Decided:** process steps will be revealed on the chamber's walls as the camera tours. |
+| **Process content** | **The section is now called FAQ** (renamed 2026-08-05, key and label both — it was `process` everywhere). The chamber's content was always the FAQ hologram, and a key that said `process` was describing an intention rather than the room. The hologram's list now ends in an **Ask us anything** control that opens the shared enquiry panel with no prefill. **Still open:** the decided-but-unbuilt idea that process steps appear on the chamber's walls as the camera tours. |
 | **The collapse finale** | **BUILT** — ported into `components/sections/Contact/singularityScene.ts`, a SECOND star living inside the works renderer (the hero sun's canvas has no compositor and nothing behind it for lensing to bend). Collapse, flash, black hole, accretion and lensing all ship. See `docs/contact-singularity-plan.md`. |
 | **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |

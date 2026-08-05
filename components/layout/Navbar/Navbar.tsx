@@ -5,7 +5,7 @@ import { useNavbarAnimation } from '@/lib/hooks/useNavbarAnimation';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import { originOfElement, requestSection } from '@/lib/sectionNavigation';
 import OrbitDial from './OrbitDial/OrbitDial';
-import { useOrbitDrag } from './OrbitDial/useOrbitDrag';
+import { useOrbitDial } from './OrbitDial/useOrbitDial';
 import { HOME_METER_KEY, NAV_ITEMS } from './navItems';
 
 const METER_KEYS = [HOME_METER_KEY, ...NAV_ITEMS.map((item) => item.key)];
@@ -47,8 +47,8 @@ export default function Navbar() {
 
   // ── The phone's bar ──
   // Four oversized editorial labels plus a bordered CTA need something like 480px of bar; a phone has
-  // ~310px between the padding. So the bar keeps the wordmark and hands the rest to the orbit fan —
-  // held, not tapped, and swept through rather than read. See OrbitDial.
+  // ~310px between the padding. So the bar keeps the wordmark and hands the rest to the orbit fan,
+  // which opens on a tap and puts the four sections on an arc. See OrbitDial.
   const isNarrow = useIsNarrowViewport();
   const toggleRef = useRef<HTMLButtonElement>(null);
 
@@ -81,9 +81,9 @@ export default function Navbar() {
     requestSection(key, originOfElement(origin));
   };
 
-  // Press, hold, drag, release. The fan owns its own open state because that state IS the gesture —
-  // see useOrbitDrag for why releasing off every facet deliberately navigates nowhere.
-  const fan = useOrbitDrag({ toggleRef, onSelect: handleStationSelect });
+  // Tap to open, tap a facet to travel. The fan owns its own open state — see useOrbitDial for why this
+  // is no longer the hold-and-drag gesture it was built as.
+  const fan = useOrbitDial({ toggleRef, onSelect: handleStationSelect });
 
   // "Start Project" goes where a start-a-project button should: the contact form at the end.
   const handleCtaClick = (event: React.MouseEvent) => {
@@ -165,12 +165,12 @@ export default function Navbar() {
             ref={toggleRef}
             className="nav-dial-toggle"
             type="button"
-            onPointerDown={fan.handleTogglePointerDown}
+            onClick={fan.toggle}
             aria-expanded={fan.isOpen}
             aria-haspopup="true"
-            // The visible word is "Navigate"; the label spells out the GESTURE, because holding is not
-            // something anyone tries on an unfamiliar control without being told.
-            aria-label="Navigate — hold and drag to a section"
+            // The visible word is "Navigate"; this says what pressing it produces. It no longer has to
+            // teach a gesture — `aria-expanded` and `aria-haspopup` already describe a tap-to-open.
+            aria-label="Navigate — open the section dial"
             data-open={fan.isOpen}
           >
             {/* ⚠ OUT OF FLOW, and that is the whole point of it being here.
@@ -239,6 +239,7 @@ export default function Navbar() {
           pivotY={fan.pivotY}
           scale={fan.scale}
           onSelect={fan.selectStation}
+          onArm={fan.armStation}
           onClose={fan.close}
         />
       )}

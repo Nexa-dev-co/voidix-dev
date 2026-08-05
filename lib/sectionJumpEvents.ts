@@ -17,7 +17,7 @@
  *     not — each listener hard-codes 0, which only works because the loop lands at the TOP. Making
  *     it general touches four scenes and fails intermittently when one is missed.
  *   · The chamber room and the contact star are built LAZILY, off handoff/chamber progress. A
- *     teleport never crosses those spans, so a jump from the hero to Process would arrive in a room
+ *     teleport never crosses those spans, so a jump from the hero to the FAQ would arrive in a room
  *     that was never created.
  *   · `currentStop`, `wasInFill`, `lastCommittedIndex` and `lastCrossingProgress` would all have to
  *     be re-derived for the destination.

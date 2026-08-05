@@ -11,11 +11,21 @@
 // exist the section reads as a logo test, and the "V" is extruded helvetiker rather than Syne —
 // `marks.ts` documents why that cannot be fixed without new tooling.
 
+import type { DisciplineId } from '@/lib/enquirySubjects';
+
 export interface WorksProject {
   /** Two-digit ordinal shown by the nav counter, e.g. "01". */
   index: string;
   /** Codename / display title of the project. */
   title: string;
+  /**
+   * What KIND of work this was — the highlighted key above the title, and what the section's CTA opens
+   * an enquiry about.
+   *
+   * The same vocabulary the fleet sells (`deckServices.ts` → `discipline`), which is the whole point:
+   * a project is one of the four services, already delivered. See lib/enquirySubjects.ts.
+   */
+  discipline: DisciplineId;
   /** Who it was built for (or the context). */
   client: string;
   /** Year shipped. */
@@ -38,6 +48,7 @@ export const WORKS_PROJECTS: WorksProject[] = [
   {
     index: '01',
     title: 'Aphelion',
+    discipline: 'enterprise',
     client: 'Private markets desk',
     year: '2026',
     description:
@@ -48,6 +59,7 @@ export const WORKS_PROJECTS: WorksProject[] = [
   {
     index: '02',
     title: 'Meridian',
+    discipline: 'mobile',
     client: 'Care network',
     year: '2025',
     description:
@@ -58,6 +70,7 @@ export const WORKS_PROJECTS: WorksProject[] = [
   {
     index: '03',
     title: 'Cinder',
+    discipline: 'web',
     client: 'Fashion house',
     year: '2025',
     description:
@@ -68,6 +81,7 @@ export const WORKS_PROJECTS: WorksProject[] = [
   {
     index: '04',
     title: 'Halcyon',
+    discipline: 'ai',
     client: 'Analytics platform',
     year: '2026',
     description:
