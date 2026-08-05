@@ -138,21 +138,6 @@ export default function FaqHologram() {
                     </li>
                   ))}
                 </ul>
-
-                {/* The way out of a fixed list. Seven answers cannot cover everything, and the room's
-                    whole premise is that it answers you — so the last row is the one that takes a
-                    question the room does not already hold. Carries `holo-stagger`, so it scans up with
-                    the rows rather than arriving as a separate object bolted to the bottom. */}
-                <button
-                  type="button"
-                  className="holo-ask holo-stagger"
-                  onClick={() => setIsAskOpen(true)}
-                >
-                  <span className="holo-ask-text">Not on the list? Ask us anything</span>
-                  <span className="holo-ask-arrow" aria-hidden="true">
-                    →
-                  </span>
-                </button>
               </div>
             )}
           </div>
@@ -160,6 +145,25 @@ export default function FaqHologram() {
       </div>
 
       <div className="holo-frame holo-frame-bottom" aria-hidden="true" />
+
+      {/* ── The question the room does not hold ──
+          Seven answers cannot cover everything, and the room's whole premise is that it answers you.
+
+          UNDER the slab rather than inside the list, deliberately: everything above this line is the
+          projection, and a row that leaves the projection entirely should not be dressed as one more
+          thing to open. Below the bottom bracket it reads as the console the projector is mounted on —
+          still lit by the same light, but a control rather than a frequency.
+
+          It is a sibling of the frames, so it inherits the panel's tracking transform and stays with the
+          hologram as the camera walks. Its own fade is CSS off `data-open` — the GSAP reveal only ever
+          walks `.holo-stagger` INSIDE the screen, and the delay is what keeps it from arriving before
+          the slab has finished parting. */}
+      <button type="button" className="holo-ask" onClick={() => setIsAskOpen(true)}>
+        <span className="holo-ask-text">Ask us anything</span>
+        <span className="holo-ask-arrow" aria-hidden="true">
+          →
+        </span>
+      </button>
 
       {/* ⚠ Rendered inside the panel but NOT laid out in it — the panel is placed by a transform that
           tracks the camera, and everything in here is scaled with it. The enquiry panel portals to

@@ -3914,33 +3914,53 @@ body {
 }
 
 /* ── The question the room does not hold ──
-   The last item in the list, and deliberately NOT another `.holo-row`: those are answers waiting to be
-   opened, this leaves the panel entirely. So it is boxed rather than ruled — the rows are separated by
-   hairlines and this one is a container, which is the difference between "more of the same" and "a way
-   out".
+   Sits UNDER the slab, outside the lit area — a sibling of the two brackets rather than a row inside the
+   screen. Everything above it is the projection; this leaves the projection entirely, so it is shaped
+   like a control (a pill, centred, free-standing) instead of like one more frequency to open.
 
    ⚠ Sized in px like everything else in here. The panel is laid out at a fixed design width and SCALED
    into the room by a transform (see useHologramTracking), so rem would be measured against the root
-   font size and then scaled again — the one place on this site where px is the correct unit. */
+   font size and then scaled again — the one place on this site where px is the correct unit.
+
+   `width: fit-content` + `margin: … auto` is what centres it: the frames overhang the panel by
+   `--holo-frame-inset` on BOTH sides, so the panel's own centre is still the slab's centre. */
 .holo-ask {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  width: 100%;
-  margin-top: 22px;
-  padding: 15px 16px;
-  border: 1px solid rgba(var(--holo-tint-rgb), 0.4);
-  border-radius: 10px;
-  background: rgba(var(--holo-tint-rgb), 0.08);
+  gap: 14px;
+  width: fit-content;
+  margin: 20px auto 0;
+  padding: 11px 20px;
+  border: 1px solid rgba(var(--holo-tint-rgb), 0.45);
+  border-radius: 999px;
+  background: rgba(var(--holo-panel-rgb), 0.72);
   color: rgba(var(--holo-ink-rgb), 0.9);
   font: inherit;
   font-size: 14px;
-  letter-spacing: 0.04em;
-  text-align: left;
+  letter-spacing: 0.06em;
   cursor: pointer;
   text-shadow: var(--holo-halo);
+  /* ⚠ SEALED, THE PANEL IS A BLACK BAR IN A DARK ROOM — and this would be a lit pill floating under it
+     with nothing above to explain it. The screen's height is what hides the rest of the hologram; this
+     is outside the screen, so it has to hide itself.
+
+     Fast out, slow and LATE in: the delay holds it back until the brackets have finished parting, so it
+     arrives after the thing it belongs to rather than alongside it. The open state overrides the whole
+     transition, which is what lets the two directions differ. */
+  opacity: 0;
+  pointer-events: none;
   transition:
+    opacity 0.18s ease,
+    background 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease;
+}
+
+.holo-panel[data-open='true'] .holo-ask {
+  opacity: 1;
+  pointer-events: auto;
+  transition:
+    opacity 0.45s ease 0.3s,
     background 0.25s ease,
     border-color 0.25s ease,
     color 0.25s ease;
@@ -3948,8 +3968,8 @@ body {
 
 .holo-ask:hover,
 .holo-ask:focus-visible {
-  background: rgba(var(--holo-tint-rgb), 0.2);
-  border-color: rgba(var(--holo-tint-rgb), 0.7);
+  background: rgba(var(--holo-tint-rgb), 0.22);
+  border-color: rgba(var(--holo-tint-rgb), 0.75);
   color: rgb(var(--holo-ink-rgb));
   outline: none;
 }
@@ -3962,6 +3982,14 @@ body {
 
 .holo-ask:hover .holo-ask-arrow {
   transform: translateX(4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .holo-ask,
+  .holo-panel[data-open='true'] .holo-ask,
+  .holo-ask-arrow {
+    transition: none;
+  }
 }
 
 /* ── The answer ── */
