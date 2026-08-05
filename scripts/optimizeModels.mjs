@@ -82,6 +82,26 @@ const MODEL_RECIPES = {
     join: false,
   },
 
+  "star_aventure_spaceship_starship_fighter.glb": {
+    // ⚠ THE ONE MODEL THAT SHIPPED WITHOUT EVER BEING PROCESSED. Until 2026-08-02 `public/models` held
+    // the raw Sketchfab export: 3.56 MB, generator "Sketchfab-16.95.0", no Draco, f32 attributes, u32
+    // indices, and a TEXCOORD_0 on materials that carry no textures at all. Its three sibling ships all
+    // read "glTF-Transform" with KHR_draco_mesh_compression; this one simply never went through here.
+    // It was 43% of the fleet's download for a vessel that is never full-screen. Draco alone takes it
+    // to ~0.38 MB.
+    //
+    // No `textureSizes` note because there is nothing to cap — every material on it is untextured, so
+    // the whole win is geometry.
+    //
+    // Hard-surface sci-fi: decimation would visibly chew the panel edges and fin silhouettes, and Draco
+    // is doing all the work regardless. Same call as every other hard-edged model in this file.
+    simplify: false,
+    // join/flatten/instance are left ON, unlike the podium and the sun. Nothing here needs its parts
+    // kept separate: the deck addresses meshes by positional id only through `hiddenParts`, and every
+    // ship's list is empty, so there are no ids for a renumber to orphan. Keeping the defaults also
+    // means the fleet's four hulls are all built the same way.
+  },
+
   "sci-fi_table.glb": {
     outputName: "table",
     // The mirror image of the podium: one small 1024×512 map, and ~10 MB of raw GEOMETRY across 33

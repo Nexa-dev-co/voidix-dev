@@ -59,6 +59,27 @@ export interface ChamberTuning {
   /** World height of the display. Its WIDTH follows the viewport's aspect — that's what makes the seam exact. */
   displayHeight: number;
 
+  /**
+   * The aspect of the black PANEL the picture is set into — i.e. how much of the tabletop the screen
+   * covers, independent of what shape the picture happens to be.
+   *
+   * ⚠ This exists because the display's width tracks the viewport's, and the table's does not. The
+   * table is stretched per-axis (`tableScaleX/Y/Z`) so its surface matches the render's shape, and it
+   * was stretched against a LANDSCAPE frame. Turn the same page portrait and the picture narrows to
+   * well under half the tabletop, leaving bare slate down both sides of it.
+   *
+   * The panel is not a second object — the display's own quad simply grows to this aspect and its
+   * shader paints everything outside the picture black (`uPictureSpan` in lib/spacePresentMaterial).
+   * A separate plane would be coplanar with a display that is laid FLAT into the table, and would
+   * z-fight against the tabletop for the whole reveal.
+   *
+   * The value is the aspect the room was authored on (a 1512×982 panel). It is a FLOOR, not a fixed
+   * size: at any aspect wider than this the picture is already wider than the panel and the quad just
+   * follows the picture, so every landscape viewport renders exactly as it did before this existed.
+   * Retune it only if the table's own scale changes.
+   */
+  displayPanelAspect: number;
+
   // ── Trimming the picture's edges ──
   // Each is a 0..1 inset into the space render, ramped in with the pull-back rather than applied flat: at
   // progress 0 the display must show the render 1:1 or the seam dies. Zero here — the render / table shapes
@@ -419,7 +440,7 @@ export interface ChamberTuning {
  * `returnKeyStart` marks where the way out begins. The first key is where the reveal LANDS, and the way
  * out's last key is where it re-enters the pull-back: both are the table pose, so neither hand-off seams.
  */
-export const SHOWCASE_KEYS: ShowcaseKey[] = [
+const SHOWCASE_KEYS: ShowcaseKey[] = [
   // ── The way IN: table → podium (keys 0–3) ──
   // 1. At the table, looking down at the screen you just backed out of.
   { x: -4.75, y: 1.77, z: 6.86, tx: -6.68, ty: -6.39, tz: 18.43, sx: -4.87, sy: 0.85, sz: 8.15, syaw: 180, spitch: 90, sroll: -10, sh: 0.95 },
@@ -451,6 +472,8 @@ const CHAMBER_TUNING: ChamberTuning = {
   rigRoll: -10,
 
   displayHeight: 0.95,
+  // 1512 / 982 — the panel the table's stretch was authored against. See the interface note.
+  displayPanelAspect: 1.54,
   cropLeft: 0,
   cropRight: 0,
   cropTop: 0,

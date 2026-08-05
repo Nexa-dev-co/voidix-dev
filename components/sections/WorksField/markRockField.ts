@@ -84,7 +84,7 @@ export function layeredLobeNoise(
 }
 
 /** Mean stretch, used to bring local-frame distances roughly back into world units. */
-export function meanStretch(field: RockField): number {
+function meanStretch(field: RockField): number {
   return (
     (Math.max(field.stretch.x, MIN_STRETCH) +
       Math.max(field.stretch.y, MIN_STRETCH) +
@@ -107,7 +107,7 @@ function toLocalFrame(
 }
 
 /** How far the rock's skin sits from its centre, in a given unit direction in the local frame. */
-export function rockRadiusInDirection(
+function rockRadiusInDirection(
   field: RockField,
   direction: THREE.Vector3,
 ): number {
@@ -145,7 +145,7 @@ export function rockSkinPoint(
  * This one number produces the crust mask, the growth delay and the cling. Nothing else in the geode
  * needs to know where the rock is.
  */
-export function signedDistanceToRock(field: RockField, point: THREE.Vector3): number {
+function signedDistanceToRock(field: RockField, point: THREE.Vector3): number {
   const local = toLocalFrame(field, point, new THREE.Vector3());
   const length = local.length();
   const scale = meanStretch(field);
@@ -155,33 +155,4 @@ export function signedDistanceToRock(field: RockField, point: THREE.Vector3): nu
 
   const direction = local.divideScalar(length);
   return (length - rockRadiusInDirection(field, direction)) * scale;
-}
-
-/**
- * Pull a point back onto the rock's skin, by `amount`, but only if it is outside.
- *
- * This is what makes the mark's outer face bulge like the rock it was carved from instead of reading
- * as a laser-cut slab. It is a radial pull, NOT a CSG intersection — the crease where the mark's own
- * surface meets the rock's skin is approximated across whatever triangles straddle it. Real CSG would
- * change topology per mark and destroy the morph, which is not a trade worth making; the surface carve
- * hides the soft crease. Documented so nobody "fixes" it later.
- */
-export function clingToRock(
-  field: RockField,
-  point: THREE.Vector3,
-  amount: number,
-  target: THREE.Vector3,
-): THREE.Vector3 {
-  target.copy(point);
-  if (amount <= 0) return target;
-
-  const local = toLocalFrame(field, point, new THREE.Vector3());
-  const length = local.length();
-  if (length < 1e-6) return target;
-
-  const direction = local.divideScalar(length);
-  if (length <= rockRadiusInDirection(field, direction)) return target;
-
-  const skin = rockSkinPoint(field, direction, new THREE.Vector3());
-  return target.lerp(skin, THREE.MathUtils.clamp(amount, 0, 1));
 }

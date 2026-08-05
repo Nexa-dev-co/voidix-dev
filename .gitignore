@@ -30,5 +30,10 @@ next-env.d.ts
 # Raw, pre-compression source models (optimized copies live in public/models)
 models-src/
 
+# Raw, lossless source textures (compressed copies live in public/textures).
+# Unlike models-src these WERE once committed, so if this directory is lost the originals are still
+# in git history — see scripts/optimizeTextures.mjs.
+textures-src/
+
 # Scratch space for raw model sources being inspected (see models-src for the kept copies)
 /temp

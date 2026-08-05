@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { SUN_BODY_FILL } from '@/components/effects/IntroSequence/gatherShader';
 import { createSunParticles, type SunParticles } from '@/lib/sunParticles';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
@@ -43,8 +43,11 @@ import {
 // so the camera moves it for free), no resize choreography, no demand-render gate. It opens already
 // collapsed and its only job is to die.
 
+// ⚠ The SAME file the hero sun loads, and it IS fetched twice — a second 1.31 MB off the wire, spent
+// mid-scroll during the chamber reveal. Sharing it via three's `Cache` was tried and reverted because
+// that flag breaks the works field outright; `lib/modelLoading.ts` has the full reason and the way to
+// reclaim it safely.
 const MODEL_PATH = '/models/fractured_sun.glb';
-const DRACO_DECODER_PATH = '/draco/';
 
 /** The fracture shards are the only children whose names start with this. Everything else is corona. */
 const SHARD_NAME_PREFIX = 'Sphere_0_cell';
@@ -263,7 +266,9 @@ const REDUCED_MOTION_FLASH_SCALE = 0.22;
 // ── The black hole ──
 // `black_hole.glb` is *"Black Hole"* by NestaEric, CC-BY-4.0. ⚠ THE CREDIT IS LEGALLY REQUIRED WHEREVER
 // THIS SHIPS and is still nowhere on the site — the contact footer is where it goes. See step 8.
-const BLACKHOLE_MODEL_PATH = '/models/black_hole.glb';
+// Exported for the same reason as TABLE_MODEL in chamberScene: the rung-3 prefetch needs this path
+// and must not hold a second copy of it. See lib/prefetchWhenAssetsReady.ts.
+export const BLACKHOLE_MODEL_PATH = '/models/black_hole.glb';
 /** The horizon opens from the middle, and only once the star is essentially gone. */
 const FINALE_HORIZON: readonly [number, number] = [0.4, 0.62];
 // The disc assembles only AFTER the hole is finished. There is a deliberate beat of just-a-black-hole
@@ -939,10 +944,11 @@ export function createSingularityScene({
     applyFinale();
   };
 
-  const dracoLoader = new DRACOLoader();
-  dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
   const gltfLoader = new GLTFLoader();
-  gltfLoader.setDRACOLoader(dracoLoader);
+  gltfLoader.setDRACOLoader(getSharedDracoLoader());
+  // Same as the chamber: drawn by the works field's renderer, never handed one, and detection has
+  // already happened there. See lib/modelLoading.ts.
+  gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
   gltfLoader.load(MODEL_PATH, (gltf) => {
     // The load is fired well before it is needed, so a visitor who leaves the page mid-glide can land
@@ -1247,7 +1253,7 @@ export function createSingularityScene({
     accretionMaterial.dispose();
     burstMesh.geometry.dispose();
     burstMaterial.dispose();
-    dracoLoader.dispose();
+    // No dracoLoader.dispose() — it is shared and page-lifetime (see lib/modelLoading.ts).
   };
 
   return {

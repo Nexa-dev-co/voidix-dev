@@ -1,7 +1,8 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
+import { createFrameTimer } from '@/lib/frameTimer';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -12,12 +13,21 @@ import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
+import { flightPullbackScale, flightRamp, portraitPullbackScale } from '@/lib/portraitPullback';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
-import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
+import {
+  reportAssetProgress,
+  reportWarmupDone,
+  isStageQuiet,
+  ASSETS_WARMUP_EVENT,
+} from '@/lib/assetLoadProgress';
+import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
 import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
+import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
+import { SLATE_600 } from '@/lib/coolPalette';
 import {
   createPortalGate,
   PORTAL_GATE_RADIUS_X,
@@ -37,10 +47,29 @@ const STAR_SIZE          = 0.16;
 const STAR_DRIFT         = 0.011; // radians/second of yaw drift — the "floating through space" feel
 
 // ── Fleet ───────────────────────────────────────────────────────────────
-const DRACO_DECODER_PATH = '/draco/';
 const TARGET_SIZE = 2.3;  // largest dimension every vessel is normalised to
 const BASE_YAW    = -0.6; // resting 3/4 view so hulls don't read flat-on
 const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the stage plane
+/**
+ * How far the craft drops, in world units, when the frame is taller than it is wide.
+ *
+ * ⚠ It is the SHIP that moves, never the camera and never the sun.
+ *
+ * ⚠ And the hull's screen position is NOT what its 2.3 normalisation suggests. Hulls are normalised on
+ * their LARGEST dimension, and on every craft in this fleet that is the LENGTH — so a ship is a long
+ * flat thing whose vertical extent is small and whose centre sits close to the stage plane, not a
+ * 2.3-tall tower standing on it. At rest that puts the hull's centre a little BELOW the camera's 0.75
+ * aim line, around 59% down the frame. (A first pass at this assumed the tower and dropped the ship
+ * nearly a full unit too far, straight through the capability keys.)
+ *
+ * −0.35 lands it around 66% down: below the headline, above the keys and the stepper. This is the
+ * number to retune if the framing wants adjusting — it is the only thing that moves the craft, and the
+ * frame is ~2.5 world units from centre to edge, so 0.1 here is about 13px on a 780px phone.
+ *
+ * It is faded out across the handoff on `flightRamp`, because the flight's ship path is authored in
+ * world coordinates: left standing, it would carry the sag all the way to the works field.
+ */
+const PORTRAIT_SHIP_DROP = -0.35;
 const FLOAT_AMPLITUDE = 0.1;   // vertical hover bob (up + down) on the centred craft
 const FLOAT_SPEED     = 1.1;
 const AUTO_ROTATE_SPEED = 0.35; // radians/sec — slow showroom turntable spin on the centred craft
@@ -59,7 +88,7 @@ const FLIGHT_WEAVE_SWAY_SPEED  = 0.45;
 // ── Lighting (shared stage rig; the centred craft is always powered) ──
 const KEY_LIGHT_COLOR      = 0xfff2e2; // warm key so the hull reads with its own colour, not washed cold
 const KEY_LIGHT_INTENSITY  = 2.4;      // directional → reveals the surface/normal detail
-const FILL_LIGHT_COLOR     = 0x9aa7bb; // neutral cool fill
+const FILL_LIGHT_COLOR     = SLATE_600; // neutral cool fill
 const FILL_LIGHT_INTENSITY = 0.5;
 const RIM_LIGHT_INTENSITY  = 0.8;      // a cyan-ish edge by default; recoloured per ship (see applyRimColor)
 const AMBIENT_INTENSITY    = 0.16;     // low so the directional key carves out contrast/texture
@@ -356,7 +385,15 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const tuning = getDeckTuning();
 
     // ── Renderer ──
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    // ⚠ `antialias: false` is deliberate and is NOT a quality cut. Everything here draws through an
+    // EffectComposer, and a composer's final pass is a fullscreen quad — so the multisampled default
+    // framebuffer that `antialias: true` allocates has no geometry edges to resolve. It costs memory
+    // and a resolve every frame to antialias a rectangle. The real AA is `samples` on the composer
+    // target (MSAA, where the geometry actually is) plus the SMAAPass below.
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
+    // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads —
+    // the loader throws rather than guessing. See lib/modelLoading.ts.
+    detectKtx2Support(renderer);
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES
@@ -860,18 +897,40 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
-    // Warm the shaders + bloom pipeline before the deck is ever shown, so its first visible frame at
-    // the services reveal doesn't stall on compilation. The intro fires ASSETS_WARMUP_EVENT once
-    // assets are in; we compile ASYNCHRONOUSLY (KHR_parallel_shader_compile where available) so the
-    // build runs on the driver's background threads instead of blocking the main thread — a
-    // synchronous compile here froze ~0.2s right as the reveal began. The deck isn't shown until the
-    // user scrolls to services, so there's ample time; the single composer.render() that warms the
-    // bloom passes lands after the promise resolves, while the deck is still hidden.
+    // ── Warm-up: build every program and allocate every buffer while the deck is off screen ──
+    //
+    // Two beats, ONE PER FRAME. `compileAsync` is not the free ride an earlier version of this comment
+    // claimed: it runs `renderer.compile()` SYNCHRONOUSLY before it awaits anything (three's own
+    // source), so program creation and uploads still block — only the wait for the driver to finish
+    // linking is offloaded. And the `composer.render()` after it is the more expensive half anyway,
+    // because that is where the composer's two full-resolution multisampled targets are ALLOCATED.
+    //
+    // Both are GPU-process work, and while the GPU process is busy the compositor cannot present
+    // anyone's frames — including the loader's worker-rendered dust. Given a frame each they are two
+    // short hitches rather than one long one. See `warmUpField` in useWorksField for the full note.
+    //
+    // ⚠ Run when the FLEET's own vessels are in (see emitStatus), not when the whole page has finished
+    // downloading. ASSETS_WARMUP_EVENT remains as a backstop; `warmupStarted` makes the two idempotent.
     let disposed = false;
-    const prewarmPipeline = () => {
+    let warmupStarted = false;
+    let warmupFrame = 0;
+    const nextWarmupFrame = () =>
+      new Promise<void>((resolve) => {
+        warmupFrame = requestAnimationFrame(() => resolve());
+      });
+    const prewarmPipeline = async () => {
+      if (warmupStarted || disposed) return;
+      warmupStarted = true;
       // Open the gates a crack first. `compileAsync` walks only VISIBLE objects, and a gate hides
       // itself at formation 0 (see PortalGate.update) — so without this the portal shader is not
       // built until the first swap, which is the exact stall this whole warm-up exists to prevent.
+      //
+      // ⚠ That premise no longer holds on three r184: `compile` gathers LIGHTS with `traverseVisible`
+      // but materials with plain `traverse`, so a hidden object is compiled regardless. Kept anyway —
+      // it costs nothing, it is correct on either behaviour, and it is not worth re-testing the deck to
+      // remove. Do NOT cite it as evidence that hiding an object defers its compile; the sun's corona
+      // freeze (see `warmStarMaterials` in SunModelCanvas) was a first-DRAW problem, not a visibility
+      // one, and needed an explicit `initTexture` pass that this does not do.
       // The deck is off screen throughout, and the render loop's own draw is gated off, so nothing
       // is on screen to see them. Cleared on every exit path below.
       portalState.formation = PORTAL_PREWARM_FORMATION;
@@ -882,29 +941,55 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       ships.forEach((ship) => {
         ship.stage.visible = true;
       });
-      const finishWarmup = () => {
+      try {
+        // Out of the caller's tick first — this is reached from inside a GLTFLoader `onLoad`, straight
+        // after a Draco decode and a full material re-skin. `compileAsync` runs `renderer.compile()`
+        // synchronously, so without this it stacks on top of that rather than getting its own frame.
+        await nextWarmupFrame();
+        if (disposed) return;
+
+        await renderer.compileAsync(scene, camera);
+        if (disposed) return;
+        await nextWarmupFrame();
+        if (disposed) return;
+        // Forces the bloom + SMAA passes to compile, and — the expensive part — allocates the
+        // composer's targets, so neither lands on the frame the fleet is first revealed.
+        composer.render();
+      } catch {
+        // A failed compile is not a reason to trap the loader; whatever failed compiles on first draw.
+      } finally {
         portalState.formation = 0;
         ships.forEach((ship) => applyOpacity(ship));
-        reportWarmupDone('deck'); // the intro holds the reveal until this fires
-      };
-      renderer
-        .compileAsync(scene, camera)
-        .then(() => {
-          if (disposed) return;
-          // Forces the bloom passes to compile too (this is the only part that can still block, and
-          // only on a GPU with no parallel-compile extension — during the intro hold, never at reveal).
-          composer.render();
-          finishWarmup();
-        })
-        .catch(() => { if (!disposed) finishWarmup(); });
+        if (!disposed) reportWarmupDone('deck'); // the intro holds the reveal until this fires
+      }
     };
-    window.addEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
+    // ── When it runs: BOTH the fleet's own vessels AND a quiet loader ──
+    // Own-assets-in keeps this off the tail of the page's last byte (see above). The quiet-stage half is
+    // what keeps it off the loader's wordmark: five Syne 800 glyphs at up to 256 px animating transform
+    // and opacity through an overshoot is the most expensive thing the loader draws, and a compile
+    // landing on it is visible. ASSETS_WARMUP_EVENT now fires once that animation has resolved.
+    //
+    // `stageQuiet` starts TRUE when no loader is on the page — under reduced motion the intro skips its
+    // timeline and never dispatches, so waiting on it would mean never warming. Read from the DOM
+    // because this hook is behind a dynamic import and mounts after INTRO_ACTIVE_EVENT has gone.
+    let vesselsIn = false;
+    // State as well as event, because this hook is dynamically imported and its chunk can land after
+    // the intro has already dispatched. See `isStageQuiet` for why an event alone is a race.
+    let stageQuiet =
+      isStageQuiet() || document.querySelector(INTRO_MARKER_SELECTOR) === null;
+    const warmWhenBothReady = () => {
+      if (vesselsIn && stageQuiet) void prewarmPipeline();
+    };
+    const onWarmupRequested = () => {
+      stageQuiet = true;
+      warmWhenBothReady();
+    };
+    window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
     // ── Model loading (Draco-compressed) ──
-    const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
     const gltfLoader = new GLTFLoader();
-    gltfLoader.setDRACOLoader(dracoLoader);
+    gltfLoader.setDRACOLoader(getSharedDracoLoader());
+    gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
     // ── Load the four vessels (Draco-compressed) ──
     const loadProgress = new Array(ships.length).fill(0);
@@ -916,10 +1001,43 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // the fleet to actually be in.
       reportAssetProgress('deck', fraction);
       onStatus({ isLoading: !isDone, percent: isDone ? 100 : Math.round(fraction * 100) });
+      // Arm the warm-up on THIS section's own vessels, rather than on the whole page. It still waits
+      // for the loader's stage to go quiet — see `warmWhenBothReady`.
+      if (isDone) {
+        vesselsIn = true;
+        warmWhenBothReady();
+      }
     };
     emitStatus();
 
-    DECK_SERVICES.forEach((service, index) => {
+    // ── The fleet yields the wire to the star ──
+    //
+    // The four vessels are 5.3 MB and are not needed until the visitor scrolls to services, which is
+    // tens of seconds away. `fractured_sun.glb` is 1.3 MB and is needed NOW — it is the subject of the
+    // hero and the loader's own finale flies its ten shards in.
+    //
+    // Started together, they simply share the pipe: a browser opens all of these streams at once and
+    // the bandwidth splits roughly evenly across them, so on a slow connection the star finishes at
+    // about the same FRACTION of the total download as the ships do — i.e. right at the end. That is
+    // the whole of the reported bug: the site would open with no sun and the star would fade in
+    // 30–60 s later. Nothing was broken in the sun's code; it was queued behind cargo.
+    //
+    // Holding the fleet costs a fast connection nothing (the star lands in a fraction of a second) and
+    // on a slow one it takes the star from ~70 % of the download to ~17 % of it. Total bytes are
+    // unchanged; only the order is.
+    let vesselsStarted = false;
+    const startVesselLoads = () => {
+      if (vesselsStarted || disposed) return;
+      vesselsStarted = true;
+      DECK_SERVICES.forEach(loadVessel);
+    };
+    // Held until the star is in, stalls, or fails — see lib/yieldToStarDownload.ts, which also
+    // covers the already-cached case and why this is a stall detector rather than the flat 6 s
+    // deadline it replaces (that deadline expired mid-download on exactly the connections it
+    // existed to protect, and the fleet then starved the star the rest of the way).
+    const stopYieldingToStar = yieldToStarDownload(startVesselLoads);
+
+    function loadVessel(service: (typeof DECK_SERVICES)[number], index: number) {
       gltfLoader.load(
         service.modelPath,
         (gltf) => {
@@ -976,7 +1094,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           emitStatus();
         },
       );
-    });
+    }
 
     // ── Drag-to-rotate + flick ──
     // Pointer down on the canvas grabs the centred craft. Dragging rotates it; on release a big
@@ -1044,6 +1162,14 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // whenever the adaptive controller shifts the ratio. Defined before the render loop so the loop
     // can call it without a forward reference.
     let appliedPixelRatio = getPixelRatio();
+    // How far the flight's camera pulls back on a narrow frame, at its far end. Held here beside the
+    // aspect it is derived from rather than recomputed in the loop, so the two can't disagree — and
+    // read ONLY by the handoff below. The fleet's own resting shot is deliberately not touched by it
+    // (see the flight branch for why the ramp has to start at exactly 1).
+    let portraitScale = 1;
+    // The craft's portrait drop, in world units — 0 on any landscape frame, so nothing below it costs
+    // a desktop anything. See PORTRAIT_SHIP_DROP.
+    let portraitShipDrop = 0;
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -1051,6 +1177,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const ratio = getPixelRatio();
       appliedPixelRatio = ratio;
       camera.aspect = width / height;
+      portraitScale = portraitPullbackScale(camera.aspect);
+      portraitShipDrop = camera.aspect < 1 ? PORTRAIT_SHIP_DROP : 0;
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
@@ -1059,7 +1187,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
 
     // ── Render loop ──
-    const clock = new THREE.Clock();
+    // Unclamped, which is what this loop has always had. ⚠ It is the only one of the three without a
+    // max delta, so a tab-restore integrates the whole gap in a single step here. Left as-is rather
+    // than quietly changed — see lib/frameTimer.ts.
+    const frameTimer = createFrameTimer();
     let frameId = 0;
     // 0..1 inside a departure window, clamped flat outside it — keeps each beat in sequence.
     const departWindow = (curveWindow: [number, number], value: number) =>
@@ -1068,10 +1199,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
 
-      // getDelta() advances the clock and updates elapsedTime, so read elapsedTime directly after
-      // (calling getElapsedTime() too would double-advance the delta).
-      const deltaSeconds = clock.getDelta();
-      const elapsed = clock.elapsedTime;
+      const deltaSeconds = frameTimer.tick();
+      const elapsed = frameTimer.elapsed();
       starfield.rotation.y = elapsed * STAR_DRIFT;
 
       // ── Push the authored stage onto the scene ──
@@ -1116,12 +1245,17 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const departGrip = THREE.MathUtils.clamp(departure / DEPART_GRIP_SPAN, 0, 1);
 
       const centred = activeIndexRef.current;
+      // The portrait drop, released across the handoff so the flight's authored world path arrives
+      // exactly where it was written to (see PORTRAIT_SHIP_DROP). Computed once per frame rather than
+      // per ship — every craft shares one stage and one frame.
+      const shipDrop = portraitShipDrop * (1 - flightRamp(departure));
       ships.forEach((ship, index) => {
         const isCentred = index === centred;
         // Only the centred craft animates; the rest rest flat off-stage.
         const animateCentred = isCentred && !reduceMotion;
-        // 1. Float / hover bob — drifts up and down.
-        ship.lift.position.y = SHIP_HOVER + (animateCentred ? Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE : 0);
+        // 1. Float / hover bob — drifts up and down, about the (possibly dropped) resting height.
+        ship.lift.position.y =
+          SHIP_HOVER + shipDrop + (animateCentred ? Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE : 0);
         // 2. Slow turntable spin — paused while dragging so manual rotation stays precise, and
         //    wound down as the departure takes its grip so the craft can hold a heading.
         //    A swap grips it too: the craft has to hold the heading it just turned onto, and the
@@ -1203,7 +1337,22 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
         // Drive the shared camera: holds through the launch, then tracks the ship left, then frames
         // the meteor.
-        camera.position.copy(flightPose.cameraPosition);
+        //
+        // The portrait pull-back rides on top, off the SAME shared function the works field uses (see
+        // lib/portraitPullback.ts). It is here for the field's benefit, not the deck's: the field's
+        // browsing camera has always pulled back on a narrow frame, and until this existed the flight
+        // handed it a camera at landscape distance — so the mark landed big and snapped small. The
+        // deck has to apply the identical scale or the ship and the debris it is flying through stop
+        // being in the same place, which is the one thing this crossing cannot survive.
+        //
+        // The ramp is exactly 1 until progress 0.3, which is where `CAMERA_POSITION_KEYS` stops
+        // holding — so the fleet's resting shot, and the whole launch off the pad, are untouched at
+        // every viewport size.
+        camera.position
+          .copy(flightPose.cameraPosition)
+          .sub(flightPose.cameraTarget)
+          .multiplyScalar(flightPullbackScale(portraitScale, departure))
+          .add(flightPose.cameraTarget);
         camera.lookAt(flightPose.cameraTarget);
         if (Math.abs(camera.fov - flightPose.cameraFov) > 0.001) {
           camera.fov = flightPose.cameraFov;
@@ -1275,7 +1424,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       window.removeEventListener(DECK_REVEAL_EVENT, replayEntrance);
       window.removeEventListener(DECK_REVEAL_EVENT, showDeck);
       window.removeEventListener(DECK_HIDE_EVENT, hideDeck);
-      window.removeEventListener(ASSETS_WARMUP_EVENT, prewarmPipeline);
+      window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
+      cancelAnimationFrame(warmupFrame);
+      stopYieldingToStar();
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       // Stop any running tweens, then dispose every loaded hull's geometry + materials.
       ships.forEach((ship) => {
@@ -1297,7 +1448,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       gsap.killTweensOf(keyLight.color);
       gsap.killTweensOf(keyLight);
       gsap.killTweensOf(fillLight.color);
-      dracoLoader.dispose();
+      // No dracoLoader.dispose() — it is shared and page-lifetime (see lib/modelLoading.ts).
       starfield.geometry.dispose();
       starfieldMaterial.dispose();
       swapTimeline?.kill();

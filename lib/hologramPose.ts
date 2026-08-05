@@ -45,15 +45,57 @@ export interface HologramPose {
 export const HOLOGRAM_DESIGN_WIDTH = 640;
 
 /**
+ * ── The phone's design width, and why a SECOND one is the fix ────────────────────────────────────
+ * The panel's on-screen size is `scale = onScreenWidth / designWidth`, and on a phone the on-screen
+ * width is pinned to the viewport (~359px on a 390px screen). Against a 640px design that is a scale
+ * of 0.56 — so every size authored inside the panel renders at 56%, and 15px type arrives as 8px.
+ * Nothing inside the panel can fix that, because everything inside the panel is multiplied by it.
+ *
+ * Laying the phone's panel out at a narrower design width is the one lever that does: the same 359px
+ * of screen against a 460px design is a scale of 0.78, which is ~39% more type for no more pixels.
+ * The content simply reflows to a narrower measure first — which is what you would have done by hand.
+ */
+export const HOLOGRAM_DESIGN_WIDTH_NARROW = 460;
+
+/** Viewport width at or below which the narrow design applies. */
+const NARROW_VIEWPORT_MAX_PX = 540;
+
+/**
+ * How much taller the narrow panel may grow before its content starts scrolling instead.
+ *
+ * ⚠ It needs its own number: the max height is authored in WORLD units, and the design width cancels
+ * clean out of the conversion (`(h / holoWidth) × designWidth × onScreenWidth / designWidth`). So
+ * narrowing the design makes the type bigger and leaves the panel exactly as short as it was — which,
+ * with the content now reflowing to a narrower measure, is strictly worse. This is the other half.
+ */
+const NARROW_HEIGHT_GAIN = 1.5;
+
+const isNarrowViewport = () =>
+  typeof window !== 'undefined' && window.innerWidth <= NARROW_VIEWPORT_MAX_PX;
+
+/** The design width in force for the current viewport. */
+export function hologramDesignWidth(): number {
+  return isNarrowViewport() ? HOLOGRAM_DESIGN_WIDTH_NARROW : HOLOGRAM_DESIGN_WIDTH;
+}
+
+/** Multiplier on the tuning's `holoMaxHeight` for the current viewport. See NARROW_HEIGHT_GAIN. */
+export function hologramMaxHeightGain(): number {
+  return isNarrowViewport() ? NARROW_HEIGHT_GAIN : 1;
+}
+
+/**
  * Convert one of the tuning's world-unit sizes into the panel's design pixels.
  *
  * Everything about the panel is authored in world units so it belongs to the room. Inside the panel,
  * what matters is the PROPORTION — a frame that is a twentieth of the panel's width stays a twentieth of
  * it whether the panel is 300px or 700px on screen. So the ratio is taken against `holoWidth`, and the
  * pixel clamps (which only change the panel's on-screen size, never its proportions) don't enter into it.
+ *
+ * ⚠ Reads the live design width, so this is viewport-dependent and must only be called on the client.
+ * Every caller is inside a `useEffect`, which is the only place it makes sense anyway.
  */
 export function toDesignPx(worldValue: number, holoWidth: number): number {
-  return (worldValue / Math.max(holoWidth, 0.001)) * HOLOGRAM_DESIGN_WIDTH;
+  return (worldValue / Math.max(holoWidth, 0.001)) * hologramDesignWidth();
 }
 
 const pose: HologramPose = {

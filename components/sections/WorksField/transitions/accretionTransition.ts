@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createMeteorMaterial } from '../meteorBody';
+import { SLATE_600 } from '@/lib/coolPalette';
 import { lobeAt, type RockField } from '../markRockField';
 import { buildAccretionChunks, type AccretionChunks } from './accretionChunks';
 import { createCrystalGeometry, placeAccretionCrystals } from './accretionCrystals';
@@ -26,7 +27,7 @@ import {
  * Crucially the two are SEQUENTIAL, not simultaneous: the body is whole all the way up, and only once
  * the mark has landed do the points grow on the edges.
  *
- * The body's surface is the geode itself (`geode-druse.png`) rather than the crust around it. It was
+ * The body's surface is the geode itself (`geode-druse.webp`) rather than the crust around it. It was
  * basalt, on the reading that the mark is stone until the very end — but that made the points arrive as
  * decoration on an unrelated material. Growing them out of a body that is already visibly geode makes
  * them the finish of something rather than an addition to it.
@@ -72,8 +73,9 @@ const CORE_RADIUS_FRACTION = 0.24;
  *                 a SUBJECT, and a subject tiled across a surface stops being legible as itself.
  *   black-stone   angular facets, no bright channel at all. The body can finally be a body.
  *
- * Already registered in `markChunkMaterial`'s `CHUNK_TEXTURES` as "Black stone", and it is the same
- * image the geode crust spec uses — so the crust and this are literally the same rock.
+ * ⚠ Still a JPEG, and the only live texture NOT built from `textures-src`. At 70 KB it was never worth
+ * the round trip, but that also means it is the one surface here nobody can re-encode — add it to
+ * `textures-src` if it ever needs to change.
  */
 // Typed as `string` rather than left as a literal: these two are meant to be repointed while authoring,
 // and the loader below compares them. Narrowed to literals, that comparison is provably false and the
@@ -86,7 +88,7 @@ const STONE_TEXTURE_PATH: string = '/textures/meteor/black-stone-background-mate
  * briefly matched the surface, which made a cavity a scale change rather than a reveal; against black
  * stone the druse does the job it was picked for.
  */
-const CAVITY_TEXTURE_PATH: string = '/textures/geode/geode-druse.png';
+const CAVITY_TEXTURE_PATH: string = '/textures/geode/geode-druse.webp';
 /** Tiles across the core's diameter. The mark's own repeat is authored — see `stoneTextureRepeat`. */
 const CORE_TEXTURE_REPEAT = 2;
 
@@ -116,16 +118,21 @@ const CORE_TEXTURE_REPEAT = 2;
  * the facets that are the whole reason this texture was chosen. So it is near-neutral now, and slightly
  * blue — the field's debris runs a cool slate (`meteorMaterial.ts`) for the same reason, which is that
  * a cold body is what makes the amber in the cavities read as heat rather than as the general colour of
- * everything.
+ * everything. That cross-reference is now a shared value rather than two files agreeing by comment:
+ * both pull from `lib/coolPalette`.
  *
  * `stoneAlbedo` scales it, and is the knob to reach for rather than editing this.
+ *
+ * ⚠ The grading survives the consolidation: SLATE_600 is ~2% darker than the `#aab2bd` it replaces and
+ * its peak channel is scaled by `stoneAlbedo` at 0.2, so it lands nowhere near the ~0.75 linear ceiling
+ * the note above sets. If that albedo is ever raised, re-check the peak against that ceiling.
  *
  * ⚠ It reaches the albedo ONLY. `createMeteorMaterial` points `emissiveMap` at the same texture, and the
  * emissive path is `emissive × emissiveIntensity × emissiveMap` — the material's tint is not in it.
  * That mattered enormously with a lava texture; with this one the emissive channel has almost nothing
  * bright to multiply, which is exactly why the body can now be trusted to stay dark.
  */
-const STONE_TINT = '#aab2bd';
+const STONE_TINT = SLATE_600;
 
 /** Scratch for the stone's albedo scale, so a per-frame tint costs no allocation. */
 const STONE_BASE_COLOR = new THREE.Color(STONE_TINT);
@@ -416,6 +423,31 @@ interface MarkLayer {
   bytes: number;
 }
 
+/**
+ * Longest a sliced build will wait for its next frame before pressing on regardless.
+ *
+ * rAF is the right yield here — handing the frame to the RENDERER is the entire point — but it is
+ * throttled to a near stop in a background tab, and this runs during the loader. Someone who switches
+ * tabs mid-load has to come back to a finished page, not to a build that stopped on its second mark.
+ */
+const BUILD_YIELD_TIMEOUT_MS = 100;
+
+/** Give the browser a frame to paint in. Resolves on the next frame, or on the timeout above. */
+function yieldToNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    let timer = 0;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    timer = window.setTimeout(settle, BUILD_YIELD_TIMEOUT_MS);
+    requestAnimationFrame(settle);
+  });
+}
+
 class AccretionTransition implements MarkTransitionStrategy {
   readonly object = new THREE.Group();
   metrics: { buildMilliseconds: number; bufferBytes: number; perMarkBytes: number };
@@ -424,12 +456,26 @@ class AccretionTransition implements MarkTransitionStrategy {
   private readonly options: MarkTransitionBuildOptions;
 
   private readonly stoneTexture: THREE.Texture | null;
+  /**
+   * The stone surface at the authored repeat, cloned ONCE and shared by every mark.
+   *
+   * ⚠ It used to be cloned per mark, inside the build loop, with identical arguments every time.
+   * `Texture.clone()` shares the `.image` but takes a fresh uuid, and three keys its GPU uploads by
+   * uuid — so four marks meant four uploads of the same 1254² image with mips, about 24 MB of VRAM
+   * for nothing. The repeat is the only thing a clone was buying, and all four wanted the same one.
+   *
+   * If a mark ever needs its own repeat, this goes back in the loop — and the disposal below has to
+   * go with it.
+   */
+  private readonly sharedStoneMap: THREE.Texture | null;
   private readonly cavityTexture: THREE.Texture | null;
   private readonly crystalGeometry: THREE.BufferGeometry;
   private readonly core: THREE.Mesh;
   private readonly coreRadius: number;
 
   private layers: MarkLayer[] = [];
+  /** Set by `dispose`, checked by `build` after every yield — the build outlives a fast unmount. */
+  private disposed = false;
 
   constructor(
     marks: PreparedMark[],
@@ -440,6 +486,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     this.marks = marks;
     this.options = options;
     this.stoneTexture = stoneTexture;
+    this.sharedStoneMap = stoneTexture
+      ? cloneRepeated(stoneTexture, ACCRETION_TUNING.stoneTextureRepeat)
+      : null;
     this.cavityTexture = cavityTexture;
     this.crystalGeometry = createCrystalGeometry();
 
@@ -466,8 +515,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     this.core.frustumCulled = false;
     this.object.add(this.core);
 
+    // Zeroed rather than measured: cutting the marks is NOT done here — it is sliced across frames, and
+    // `createAccretionMark` awaits `build()` before handing the strategy over. See the note on `build`.
     this.metrics = { buildMilliseconds: 0, bufferBytes: 0, perMarkBytes: 0 };
-    this.rebuild();
   }
 
   /** The core, as the field every stone is seeded from. Rebuilt per call so a knob can move it. */
@@ -481,13 +531,38 @@ class AccretionTransition implements MarkTransitionStrategy {
     };
   }
 
-  private rebuild(): void {
-    const startedAt = performance.now();
+  /**
+   * Cut every mark. One mark per frame.
+   *
+   * ⚠ The slicing is the point, not an implementation detail. This is the longest uninterrupted block
+   * on the loader and it runs MID-DOWNLOAD, while the wordmark and the sun are on screen and expected to
+   * be moving — and triangulating four marks back to back froze all of it at once. Yielding does not
+   * make the work cheaper; it turns one visible stop into a stutter, which is the best available
+   * without moving the geometry off the main thread altogether.
+   *
+   * Separate from the constructor for the same reason: it has to be awaited, and `createAccretionMark`
+   * does that before handing the strategy over — so nothing outside this module ever sees a half-cut
+   * mark, and `setTransition` never has to defend against one.
+   */
+  async build(): Promise<void> {
+    // ⚠ Accumulated per mark, NOT wall clock across the whole loop. The loop yields a frame between
+    // marks on purpose (see the note above), so elapsed time here would include ~16 ms of deliberate
+    // waiting per mark and report the cut as far more expensive than it is. This is the question the
+    // number exists to answer: how long does CUTTING cost. Wall clock is this plus one frame per mark,
+    // and the caller can work that out.
+    let workMilliseconds = 0;
     this.disposeLayers();
 
     const baseRock = this.coreField();
 
-    this.layers = this.marks.map((mark, markIndex) => {
+    for (let markIndex = 0; markIndex < this.marks.length; markIndex += 1) {
+      // Between marks, never before the first: the caller is already awaiting us, so an opening yield
+      // would spend a frame buying nothing.
+      if (markIndex > 0) await yieldToNextFrame();
+      if (this.disposed) return;
+
+      const markStartedAt = performance.now();
+      const mark = this.marks[markIndex];
       const chunks = buildAccretionChunks(mark.shapes, mark.flipY, {
         targetSize: this.options.targetSize,
         depth: this.options.depth,
@@ -508,9 +583,7 @@ class AccretionTransition implements MarkTransitionStrategy {
       });
 
       const stoneMaterial = createMeteorMaterial(
-        this.stoneTexture
-          ? cloneRepeated(this.stoneTexture, ACCRETION_TUNING.stoneTextureRepeat)
-          : new THREE.Texture(),
+        this.sharedStoneMap ?? new THREE.Texture(),
         false,
       );
       // The throwaway above stands in when the surface failed to load. BOTH channels have to be cleared:
@@ -534,23 +607,27 @@ class AccretionTransition implements MarkTransitionStrategy {
 
       const { crystal, crystalUniforms, crystalBytes } = this.buildCrystalLayer(chunks, markIndex);
 
-      return {
+      // Pushed as each mark finishes rather than assigned in one go at the end: a build abandoned
+      // part-way through has to leave its finished layers reachable, or `dispose` cannot free their
+      // buffers. Nothing is ever left half-built across a yield — the yield is between marks, and one
+      // mark is cut start to finish inside a single iteration.
+      this.layers.push({
         stone,
         stoneUniforms,
         crystal,
         crystalUniforms,
         chunks,
         bytes: measureGeometryBytes(chunks.geometry) + crystalBytes,
-      };
-    });
+      });
+      workMilliseconds += performance.now() - markStartedAt;
+    }
 
-    const buildMilliseconds = performance.now() - startedAt;
     const bufferBytes =
       this.layers.reduce((total, layer) => total + layer.bytes, 0) +
       measureGeometryBytes(this.crystalGeometry) +
       measureGeometryBytes(this.core.geometry);
     this.metrics = {
-      buildMilliseconds,
+      buildMilliseconds: workMilliseconds,
       bufferBytes,
       perMarkBytes: Math.round(bufferBytes / Math.max(1, this.layers.length)),
     };
@@ -637,9 +714,10 @@ class AccretionTransition implements MarkTransitionStrategy {
     this.layers.forEach((layer) => {
       this.object.remove(layer.stone);
       layer.chunks.geometry.dispose();
-      const stoneMaterial = layer.stone.material as THREE.MeshStandardMaterial;
-      stoneMaterial.map?.dispose();
-      stoneMaterial.dispose();
+      // NOT `stoneMaterial.map?.dispose()` — the map is `sharedStoneMap`, one texture behind every
+      // layer. Freeing it here would pull it out from under the other three materials still using it.
+      // It belongs to the strategy's own lifetime; `dispose()` releases it.
+      (layer.stone.material as THREE.MeshStandardMaterial).dispose();
 
       if (!layer.crystal) return;
       this.object.remove(layer.crystal);
@@ -695,10 +773,9 @@ class AccretionTransition implements MarkTransitionStrategy {
     stoneMaterial.roughness = ACCRETION_TUNING.stoneRoughness;
     stoneMaterial.metalness = ACCRETION_TUNING.stoneMetalness;
     stoneMaterial.color.copy(STONE_BASE_COLOR).multiplyScalar(ACCRETION_TUNING.stoneAlbedo);
-    // `map` and `emissiveMap` are the same clone, so one assignment retiles both. A repeat is folded
-    // into the uv transform each frame anyway (`matrixAutoUpdate`), so this costs no upload — which is
-    // why the basalt scale can be a live knob rather than a rebuilding one.
-    stoneMaterial.map?.repeat.setScalar(ACCRETION_TUNING.stoneTextureRepeat);
+    // The repeat is NOT re-applied here any more. It was a live knob when a panel could drag it; now
+    // it is a constant, baked into `sharedStoneMap` once at construction. Re-writing it every frame
+    // would also mean four layers writing the same value to one shared texture.
 
     const crystal = layer.crystalUniforms;
     if (!crystal || !layer.crystal) return;
@@ -783,12 +860,18 @@ class AccretionTransition implements MarkTransitionStrategy {
   }
 
   dispose(): void {
+    // Stops a sliced `build()` at its next yield. Whatever it finished before then is in `this.layers`
+    // already and is freed by the call below.
+    this.disposed = true;
     this.disposeLayers();
     this.crystalGeometry.dispose();
     this.core.geometry.dispose();
     const coreMaterial = this.core.material as THREE.MeshStandardMaterial;
     coreMaterial.map?.dispose();
     coreMaterial.dispose();
+    // The one shared across every layer — see `sharedStoneMap`. Freed here rather than in
+    // `disposeLayers`, because it outlives any single rebuild of them.
+    this.sharedStoneMap?.dispose();
     this.stoneTexture?.dispose();
     // Guarded, because the two roles normally share one image — disposing it twice would free a texture
     // the second reference still thinks it owns.
@@ -813,5 +896,9 @@ export async function createAccretionMark(
   const sharesOneImage = STONE_TEXTURE_PATH === CAVITY_TEXTURE_PATH;
   const stoneTexture = await loadTexture(STONE_TEXTURE_PATH);
   const cavityTexture = sharesOneImage ? stoneTexture : await loadTexture(CAVITY_TEXTURE_PATH);
-  return new AccretionTransition(marks, options, stoneTexture, cavityTexture);
+  const strategy = new AccretionTransition(marks, options, stoneTexture, cavityTexture);
+  // Cutting the marks is sliced across frames, so it is awaited here rather than done in the
+  // constructor. Callers get a strategy that is already whole.
+  await strategy.build();
+  return strategy;
 }

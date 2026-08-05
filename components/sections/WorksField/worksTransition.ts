@@ -102,5 +102,3 @@ export const MARK_CHANGE_SECONDS = 4;
  */
 export const TEXT_IN_AT_SECONDS = 1.4;
 
-/** Total length of the transition. The change owns the whole span now, so these are the same number. */
-export const TRANSITION_TOTAL_SECONDS = MARK_CHANGE_SECONDS;

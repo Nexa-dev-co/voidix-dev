@@ -74,6 +74,14 @@ export interface FluidSimulation {
   frame(deltaSeconds: number, elapsedSeconds: number): void;
   /** Re-sync framebuffers to the current canvas backing-store size. */
   resize(): void;
+  /**
+   * Zero the dye and velocity fields and the canvas, immediately.
+   *
+   * Dissipation is the normal way ink leaves — but it is a per-STEP decay, so it only finishes if the
+   * loop keeps stepping. The caller stops stepping when the trail is no longer wanted, and without
+   * this the last frame drawn stays on the canvas indefinitely (a WebGL canvas keeps its contents).
+   */
+  clear(): void;
   /** Release all GL resources. */
   dispose(): void;
 }
@@ -409,6 +417,21 @@ export function createFluidSimulation(
     },
     resize() {
       initFramebuffers();
+    },
+    clear() {
+      // Both halves of each double buffer: `swap()` alternates which one is read, so zeroing only the
+      // current one leaves the other holding a full frame of ink to swap back in on the next step.
+      [dye.read, dye.write, velocity.read, velocity.write].forEach((target) => {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+        gl.viewport(0, 0, target.width, target.height);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      });
+      // …and the canvas itself, which is what is actually on screen.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
     },
     dispose() {
       trackedFramebuffers.forEach((fbo) => gl.deleteFramebuffer(fbo));

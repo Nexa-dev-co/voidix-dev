@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SLATE_200 } from '@/lib/coolPalette';
 
 // The debris treatment: the shared rock texture, cool-tinted and matte, so the chunks drifting past
 // read as cold stone against the one lit rock at the centre.
@@ -8,7 +9,7 @@ import * as THREE from 'three';
 // both cheaper and more convincing than the procedural flame it replaced.
 
 // ── Stone (inactive) ──────────────────────────────────────────────────
-const STONE_TINT       = 0x2a3340; // cool slate the rock albedo is multiplied by
+const STONE_TINT       = SLATE_200; // cool slate the rock albedo is multiplied by
 const STONE_METALNESS  = 0.15;
 const STONE_ROUGHNESS  = 0.85;
 const STONE_NORMAL_SCALE = 0.8;

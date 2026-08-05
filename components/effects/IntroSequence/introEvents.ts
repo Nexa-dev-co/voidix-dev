@@ -12,8 +12,30 @@ export const REVEAL_EVENT = 'voidix:reveal';
  * The hero listens so it can extend its own reveal-fallback: if this never fires the intro is absent
  * or crashed on mount, so the hero recovers fast; if it does, the hero trusts the intro and only
  * keeps a long ultimate safety net.
+ *
+ * ⚠ Fired on mount AND repeated as a HEARTBEAT while the loader's gate is waiting on the star (see
+ * `tickGate`). It has to be: the gate no longer gives up after a fixed 12 s, it waits for as long as
+ * the star keeps arriving — which at 20 KB/s is well over a minute — and the hero's ultimate net is a
+ * fixed 20 s. Without the repeat, a legitimately slow load would trip that net and the hero would
+ * reveal itself BEHIND the loader's veil, with the pin built while scroll is still locked
+ * (Contract 2). Re-asserting "the intro is alive" is exactly what the hero's handler wants, so no
+ * second event was needed; it clears and re-arms the timer each time.
+ *
+ * The hero is its only listener. Everything else deliberately reads the DOM (see below), so the
+ * repeat cannot reach anything that expected a one-shot.
  */
 export const INTRO_ACTIVE_EVENT = 'voidix:intro-active';
+
+/**
+ * An element only the loader renders, so anything that mounts LATE can still ask "is there an intro?".
+ *
+ * `INTRO_ACTIVE_EVENT` is fired once, synchronously, on the intro's mount — which is fine for the hero
+ * (its effect runs first) and useless to everything behind a `next/dynamic` import, because those mount
+ * well after the event has been and gone. Those check the DOM instead. `SunModelCanvas` established
+ * this; the two heavy scene hooks need the same answer, so the selector lives here rather than being
+ * spelled out in three files.
+ */
+export const INTRO_MARKER_SELECTOR = '.intro-o-slot';
 
 /**
  * Fired when the load reaches 100%, cueing the sun's fracture shards to sweep in from off-frame.
@@ -33,6 +55,21 @@ export const SUN_ASSEMBLE_EVENT = 'voidix:sun-assemble';
  * assembly is on screen.
  */
 export const SUN_ASSEMBLED_EVENT = 'voidix:sun-assembled';
+
+/**
+ * Fired ONCE, on the frame the star actually lights inside its closing shell — the assembly's midpoint,
+ * not its cue.
+ *
+ * It exists because the gathering field has to pull back from around the star before the last shards
+ * dock, and "when should it pull back" turned out to have a wrong obvious answer. Keying that off
+ * `SUN_ASSEMBLE_EVENT` looked right and was not: the cue is the intro ASKING, and on a slow load the
+ * sun has no model yet and cannot answer — so the dust withdrew, left a hole around an empty "o", and
+ * held it there for however long the download had left to run. The loader's own field disappearing
+ * while nothing arrived to replace it.
+ *
+ * This fires from inside the flight, so it cannot happen unless there is a star to make room for.
+ */
+export const SUN_FORMING_EVENT = 'voidix:sun-forming';
 
 /**
  * Fired at the start of the handoff, telling the loader's gathering field to ignite — the last rush of

@@ -104,14 +104,19 @@ export const DECK_SERVICES: DeckService[] = [
       'Bespoke platforms engineered from the metal up — no templates, no compromise. Every interaction is hand-tuned until the product moves like it has its own momentum.',
     capabilities: ['Next.js', 'WebGL / GLSL', 'Realtime', 'Design Systems'],
     modelPath: WEB_VESSEL,
-    // Ember Noir — a full-black hull lit almost neutrally; only a faint dark-red rim catch remains as a
-    // nod to the red. Predominantly black. Matte, low-reflectance.
+    // Ember Noir — a full-black hull lit almost neutrally; only a faint rim catch remains as a nod to
+    // the heat. Predominantly black. Matte, low-reflectance.
+    //
+    // The catch was a crimson (#a01824 / #4a0f13) sitting ~7° off the heat ramp's hue — close enough
+    // to look intentional, far enough to read as a second red. These are the ramp's own stops at the
+    // same luminance (heat-300 / heat-100), so the rim now reads as the hull glowing rather than as
+    // paint on it.
     profile: {
       shadow: '#040404',
       hull: '#060606',
       highlight: '#0c0c0c',
-      accent: '#a01824',
-      rim: '#4a0f13',
+      accent: '#a82600',
+      rim: '#3d1503',
       metalness: 0.25,
       roughness: 0.72,
       clearcoat: 0.04,
@@ -152,7 +157,9 @@ export const DECK_SERVICES: DeckService[] = [
       emitStrength: 1.5,
       envIntensity: 0.4,
     },
-    light: { color: '#ff5e47', intensity: 1.9 },
+    // The key was #ff5e47 — a coral about 7° off the ramp. Nudged onto it; the warm/cool contrast the
+    // note above describes is what carries this ship, and it is untouched by the hue shift.
+    light: { color: '#ff5e2a', intensity: 1.9 },
   },
   {
     index: '03',
@@ -192,6 +199,10 @@ export const DECK_SERVICES: DeckService[] = [
     modelPath: AI_VESSEL,
     // Pre-overhaul original look (restored on request): a flat two-tone tint — purple body fading
     // to cyan at the edges. Keeps the model's native metalness/roughness; no graded palette.
+    //
+    // ⚠ THE ONE DELIBERATE EXCEPTION TO THE HEAT RAMP, and it was confirmed as such when the ramp was
+    // introduced. This is the only saturated purple and the only saturated cyan left on the site — the
+    // fleet is allowed exactly one alien, and this is it. Don't "fix" it to match the others.
     profile: {
       kind: 'legacy',
       colorCore: '#7a4ad0',

@@ -63,7 +63,19 @@ export interface FluidConfig {
 export const FLUID_CONFIG: FluidConfig = {
   // Both are texture sizes in pixels-per-side (powers of two), left at the library defaults.
   simulationResolution: 128, // 128×128 physics grid — coarse is fine; the blob has no fine detail to resolve
-  dyeResolution: 1024, // 1024×1024 ink texture — 8× finer than the physics, so the ink edges stay crisp
+  /**
+   * 512×512 ink texture — 4× finer than the physics, which is what keeps the ink's edge from reading
+   * as blocky.
+   *
+   * ⚠ Was 1024, the source library's default, and that default exists for a fluid you FLING — long
+   * smeared streaks whose edges you follow across the screen. This one is the opposite: the
+   * `densityDissipation` two lines down is pushed ~10× past the library's, so the ink is killed almost
+   * the moment it is laid and never forms an edge worth resolving at 1024. It was costing four times
+   * the advection and splat bandwidth, every frame, on the first screen a visitor sees.
+   *
+   * If the blob ever reads soft or stepped at the rim, this is the one number to put back.
+   */
+  dyeResolution: 512,
 
   // Dissipation = a per-frame decay rate; bigger number → fades faster. Both are pushed WAY up.
   densityDissipation: 10.2, // ink fades ~3× faster than default → no lingering tail   (reference default: 1)
@@ -75,15 +87,20 @@ export const FLUID_CONFIG: FluidConfig = {
   splatForce: 1600, // shove per pointer move, ~¼ the default → a soft nudge    (reference: 6000)
 };
 
-// ── Blob size, mapped from cursor speed ────────────────────────────────
-// The blob isn't a fixed size: it's small when the cursor is still or ambling, and swells toward
-// the max only when you whip the pointer — so a fast flick feels more energetic than a slow drift.
-export const MIN_BLOB_RADIUS_PX = 30; // radius at rest / slow movement — the resting blob size
-export const MAX_BLOB_RADIUS_PX = 30; // radius when the cursor is moving flat-out
-// The cursor speed at which the blob reaches its MAX radius, measured in screen-heights per second
-// (so it feels the same on any screen size). Lower → the blob grows big with gentle movement;
-// higher → you have to move very fast before it maxes out.
-export const SPEED_FOR_MAX_RADIUS = 10;
+// ── Blob size ──────────────────────────────────────────────────────────
+/**
+ * Radius of each splat, in screen pixels. One number — the blob is the same size however fast the
+ * cursor is moving.
+ *
+ * It used to be a range mapped from pointer speed (`MIN_BLOB_RADIUS_PX` / `MAX_BLOB_RADIUS_PX` /
+ * `SPEED_FOR_MAX_RADIUS`), on the reasoning that a fast flick should feel more energetic than a slow
+ * drift. Some later tuning pass settled both ends on 30 and left the machinery in place, so the hook
+ * was measuring pointer velocity every mousemove to interpolate between a number and itself. The
+ * energy in a flick already comes from `splatForce`, which does vary with the motion; this does not
+ * need to as well. Reinstate the range here if the swell is ever wanted back — the hook would need
+ * its `lastPointerTime` bookkeeping back with it.
+ */
+export const BLOB_RADIUS_PX = 30;
 
 // ── Ink appearance ─────────────────────────────────────────────────────
 // The ink colour as RGB, each channel 0–1. Near-black with the faintest cool-blue tint so it reads

@@ -30,9 +30,19 @@ import {
 // so the panel can update sixty times a second and never touch React.
 
 const BYTES_PER_MEGABYTE = 1024 * 1024;
-/** How fast the meter chases real progress. Progress lands in jumps as each source finishes. */
-const METER_EASE_PER_SECOND = 2.4;
-const MAX_FRAME_SECONDS = 0.05;
+/**
+ * How long the meter takes to glide to a newly reported progress value.
+ *
+ * ⚠ This is a CSS transition, not a per-frame ease, and the difference is the whole reason it changed.
+ * Progress lands in jumps as each source finishes, so the bar has to interpolate — but it used to do so
+ * in this hook's rAF loop, on the main thread, which is precisely the thread that the mark build and the
+ * two shader compiles BLOCK. The one element on the loader whose job is to show that something is still
+ * happening was freezing whenever something actually was. Handing the interpolation to the compositor
+ * means it keeps gliding straight through a block. `.loader-dot`'s pulse always worked this way.
+ *
+ * Roughly matches the old exponential chase (2.4/s ≈ a 420ms time constant), so it reads the same.
+ */
+const METER_GLIDE_MS = 420;
 
 /** The sun is not one of the tracked asset sources, so its row is driven by its own two events. */
 type ShellPhase = 'dormant' | 'forming' | 'online';
@@ -94,11 +104,22 @@ export function useLoaderTelemetry(rootRef: RefObject<HTMLElement | null>): void
     window.addEventListener(SUN_ASSEMBLE_EVENT, onShellStart);
     window.addEventListener(SUN_ASSEMBLED_EVENT, onShellDone);
 
+    // ── The meter, driven by progress reports rather than by frames ──
+    // Set on each report and left to the compositor to interpolate. A reduced-motion visitor gets the
+    // value with no glide at all — a progress bar is information, so it still moves, it just doesn't
+    // animate.
+    if (meterFill) {
+      meterFill.style.transition = quiet ? 'none' : `transform ${METER_GLIDE_MS}ms linear`;
+    }
+    const paintMeter = () => {
+      if (meterFill) meterFill.style.transform = `scaleX(${getAssetProgress()})`;
+    };
+    paintMeter();
+
     // ── Throughput, differentiated from real progress ──
     let lastSampleSeconds = performance.now() / 1000;
     let lastSampleProgress = getAssetProgress();
     let smoothedMegabytesPerSecond = 0;
-    let easedProgress = getAssetProgress();
     let lastPaintMs = 0;
 
     const stateFor = (feed: ModuleFeed): ModuleState => {
@@ -144,18 +165,12 @@ export function useLoaderTelemetry(rootRef: RefObject<HTMLElement | null>): void
       });
     };
 
+    // Only the throttled text readouts run per frame now; the meter is driven by progress reports.
     let animationFrame = 0;
-    let lastFrameMs = performance.now();
     const tick = () => {
       animationFrame = requestAnimationFrame(tick);
       const nowMs = performance.now();
-      const delta = Math.min((nowMs - lastFrameMs) / 1000, MAX_FRAME_SECONDS);
-      lastFrameMs = nowMs;
-
-      // The meter runs every frame — it is one transform, and a stepped bar would undo the point of it.
       const progress = getAssetProgress();
-      easedProgress += (progress - easedProgress) * Math.min(1, METER_EASE_PER_SECOND * delta);
-      if (meterFill) meterFill.style.transform = `scaleX(${easedProgress})`;
 
       // Text repaints are throttled: they cost layout, and past a few times a second nobody can read them
       // anyway. A scrambling row is exempt, or the shuffle would be a stutter instead of a blur.
@@ -184,9 +199,12 @@ export function useLoaderTelemetry(rootRef: RefObject<HTMLElement | null>): void
     };
     tick();
 
-    // Progress can land while the tab is backgrounded and rAF is paused; repaint on the next report so
-    // the panel is never showing a stale state when the user comes back.
-    const stopListening = onAssetProgress(() => paintRows(performance.now()));
+    // The meter's only driver. Also repaints the rows: progress can land while the tab is backgrounded
+    // and rAF is paused, so the panel would otherwise show a stale state when the user comes back.
+    const stopListening = onAssetProgress(() => {
+      paintMeter();
+      paintRows(performance.now());
+    });
 
     return () => {
       cancelAnimationFrame(animationFrame);

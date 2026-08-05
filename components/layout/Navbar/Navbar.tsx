@@ -2,7 +2,10 @@
 
 import { useRef, type CSSProperties } from 'react';
 import { useNavbarAnimation } from '@/lib/hooks/useNavbarAnimation';
+import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import { originOfElement, requestSection } from '@/lib/sectionNavigation';
+import OrbitDial from './OrbitDial/OrbitDial';
+import { useOrbitDrag } from './OrbitDial/useOrbitDrag';
 import { HOME_METER_KEY, NAV_ITEMS } from './navItems';
 
 const METER_KEYS = [HOME_METER_KEY, ...NAV_ITEMS.map((item) => item.key)];
@@ -42,7 +45,14 @@ export default function Navbar() {
   const accentRef = useRef<HTMLDivElement>(null);
   const metersRef = useRef<HTMLDivElement>(null);
 
-  useNavbarAnimation({ navRef, accentRef, metersRef });
+  // ── The phone's bar ──
+  // Four oversized editorial labels plus a bordered CTA need something like 480px of bar; a phone has
+  // ~310px between the padding. So the bar keeps the wordmark and hands the rest to the orbit fan —
+  // held, not tapped, and swept through rather than read. See OrbitDial.
+  const isNarrow = useIsNarrowViewport();
+  const toggleRef = useRef<HTMLButtonElement>(null);
+
+  useNavbarAnimation({ navRef, accentRef, metersRef, isNarrow });
 
   // On the homepage EVERY item drives the pin, because none of these sections is a place you can jump
   // to: they are overlays inside one pinned ScrollTrigger, so the href would land on the hero whichever
@@ -58,6 +68,22 @@ export default function Navbar() {
     event.preventDefault();
     requestSection(key, originOfElement(event.currentTarget));
   };
+
+  // A facet on the fan. Same journey as a nav link, but the ORIGIN passed to the jump is the TOGGLE —
+  // so a covered jump's black grows out of the mark still under the visitor's thumb, rather than out of
+  // a facet that is already folding away. See lib/sectionJumpEvents.ts.
+  const handleStationSelect = (index: number, origin: HTMLElement) => {
+    const key = NAV_ITEMS[index].key;
+    if (!isHomepage()) {
+      window.location.href = `/#${key}`;
+      return;
+    }
+    requestSection(key, originOfElement(origin));
+  };
+
+  // Press, hold, drag, release. The fan owns its own open state because that state IS the gesture —
+  // see useOrbitDrag for why releasing off every facet deliberately navigates nowhere.
+  const fan = useOrbitDrag({ toggleRef, onSelect: handleStationSelect });
 
   // "Start Project" goes where a start-a-project button should: the contact form at the end.
   const handleCtaClick = (event: React.MouseEvent) => {
@@ -85,6 +111,25 @@ export default function Navbar() {
           <span className="nav-wordmark nav-ghost">VOIDIX</span>
         </div>
 
+        {/* ── The dial's own mark, phone only ──
+            A miniature of the ring the dial opens into, with the journey's travelled arc drawn on it
+            and the node sitting where you are. It is telemetry AND the affordance: the thing you press
+            already shows you what pressing it is about.
+
+            It lives HERE, in the un-blended accent layer, for the same reason the logo's orbital mark
+            does — amber inside `.nav-root` would be inverted to blue by its difference blend. The
+            control that actually takes the press is a transparent button of the same size in the bar
+            above, exactly as `.nav-mark-spacer` stands in for this mark. */}
+        {/* No ghost twin, unlike `.nav-accent-logo` — the button's word is out of flow, so the button's
+            box is exactly this mark's size and the two line up with nothing to reserve. */}
+        <span className="nav-dial-mark" data-open={fan.isOpen}>
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <circle className="nav-dial-track" cx="50" cy="50" r="42" />
+            <circle className="nav-dial-arc" cx="50" cy="50" r="42" />
+          </svg>
+          <span className="nav-dial-node" />
+        </span>
+
         {/* One meter per section + one for the logo (home). JS sets each meter's
             left/width to sit under its item; the fill scales to --nav-progress-<key>. */}
         <div ref={metersRef} className="nav-meters">
@@ -109,45 +154,94 @@ export default function Navbar() {
           <span className="nav-wordmark">VOIDIX</span>
         </a>
 
-        <nav aria-label="Main navigation">
-          <ul className="nav-items">
-            {NAV_ITEMS.map((navItem) => (
-              <li key={navItem.href} className="nav-item" data-enter={navItem.enter}>
-                <a
-                  href={navItem.href}
-                  className="nav-link"
-                  data-key={navItem.key}
-                  onClick={(event) => handleNavClick(event, navItem.key)}
-                >
-                  <span className="nav-link-text">
-                    <span className="nav-link-label">{navItem.label}</span>
-                    <span className="nav-link-number">{navItem.number}</span>
-                  </span>
-                  <LinkArrow />
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
+        {/* One of these, never both — the meters measure `.nav-link` labels, and two sets of them in
+            the document would have it position every meter over whichever it found first. */}
+        {isNarrow ? (
+          /* The press target for the accent layer's mini-orbit. Transparent and exactly its size — the
+             same stand-in arrangement `.nav-mark-spacer` uses for the logo's mark, and for the same
+             reason: the amber has to live outside the difference blend, but the click has to live
+             inside it. */
+          <button
+            ref={toggleRef}
+            className="nav-dial-toggle"
+            type="button"
+            onPointerDown={fan.handleTogglePointerDown}
+            aria-expanded={fan.isOpen}
+            aria-haspopup="true"
+            // The visible word is "Navigate"; the label spells out the GESTURE, because holding is not
+            // something anyone tries on an unfamiliar control without being told.
+            aria-label="Navigate — hold and drag to a section"
+            data-open={fan.isOpen}
+          >
+            {/* ⚠ OUT OF FLOW, and that is the whole point of it being here.
+                As a flex sibling the word became part of the control's box: the button grew to
+                ~95px, its centre moved off the mark, and since the glow ring and the pivot are both
+                measured from that box, the highlight sat beside the orbit instead of around it and the
+                fan swung out of thin air. Absolutely positioned, it takes no part in the box — the
+                button stays exactly the mark's 1.75rem, so `getBoundingClientRect` still returns the
+                mark's own centre — while still rendering beside it and still taking the press, because
+                an absolutely positioned child is a child. It also removes the need for the ghost twin
+                the accent layer used to carry to reserve the same width. */}
+            <span className="nav-dial-label">Navigate</span>
+          </button>
+        ) : (
+          <>
+            <nav aria-label="Main navigation">
+              <ul className="nav-items">
+                {NAV_ITEMS.map((navItem) => (
+                  <li key={navItem.href} className="nav-item" data-enter={navItem.enter}>
+                    <a
+                      href={navItem.href}
+                      className="nav-link"
+                      data-key={navItem.key}
+                      onClick={(event) => handleNavClick(event, navItem.key)}
+                    >
+                      <span className="nav-link-text">
+                        <span className="nav-link-label">{navItem.label}</span>
+                        <span className="nav-link-number">{navItem.number}</span>
+                      </span>
+                      <LinkArrow />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
 
-        <button className="nav-cta" type="button" onClick={handleCtaClick}>
-          <span>Start Project</span>
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-            <path
-              d="M1 10L10 1M10 1H3.5M10 1V7.5"
-              stroke="currentColor"
-              strokeWidth="1.25"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-          <span className="cta-corner cta-tl" aria-hidden="true" />
-          <span className="cta-corner cta-tr" aria-hidden="true" />
-          <span className="cta-corner cta-bl" aria-hidden="true" />
-          <span className="cta-corner cta-br" aria-hidden="true" />
-        </button>
+            <button className="nav-cta" type="button" onClick={handleCtaClick}>
+              <span>Start Project</span>
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+                <path
+                  d="M1 10L10 1M10 1H3.5M10 1V7.5"
+                  stroke="currentColor"
+                  strokeWidth="1.25"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <span className="cta-corner cta-tl" aria-hidden="true" />
+              <span className="cta-corner cta-tr" aria-hidden="true" />
+              <span className="cta-corner cta-bl" aria-hidden="true" />
+              <span className="cta-corner cta-br" aria-hidden="true" />
+            </button>
+          </>
+        )}
 
       </header>
+
+      {/* The phone's navigation. Mounted only at narrow widths — nothing can open it otherwise, and an
+          unmounted fan is one fewer portal on every desktop session. */}
+      {isNarrow && (
+        <OrbitDial
+          open={fan.isOpen}
+          activeIndex={fan.activeIndex}
+          currentIndex={fan.currentIndex}
+          pivotX={fan.pivotX}
+          pivotY={fan.pivotY}
+          scale={fan.scale}
+          onSelect={fan.selectStation}
+          onClose={fan.close}
+        />
+      )}
     </>
   );
 }

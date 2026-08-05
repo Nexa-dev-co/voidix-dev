@@ -87,7 +87,7 @@ export function extractShapeLoops(
 }
 
 /** Measure a polyline once, so it can be sampled by arc length afterwards. */
-export function createClosedLoop(points: THREE.Vector2[]): ClosedLoop {
+function createClosedLoop(points: THREE.Vector2[]): ClosedLoop {
   // A path that ends where it started would contribute a zero-length segment and a duplicate sample.
   const source = points.slice();
   while (

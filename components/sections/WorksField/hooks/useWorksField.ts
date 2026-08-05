@@ -12,6 +12,7 @@ import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/lib/handoffFlightPath';
+import { flightPullbackScale, portraitPullbackScale } from '@/lib/portraitPullback';
 import { createStoneMaterial } from '../meteorMaterial';
 import { getWorksTuning } from '../worksTuning';
 import { WORKS_PROJECTS } from '../worksProjects';
@@ -25,27 +26,46 @@ import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents
 import { LOOP_PROGRESS_EVENT, LOOP_RESET_EVENT, readLoopProgress } from '@/lib/loopEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
-import { createChamberScene, type ChamberScene } from '@/components/sections/Chamber/chamberScene';
+import {
+  createChamberScene,
+  TABLE_MODEL,
+  type ChamberScene,
+} from '@/components/sections/Chamber/chamberScene';
 // Hosted here for the same reason the chamber is: it has to be drawn by THIS renderer. The chamber
 // because a GPU texture cannot cross a context; the star because lensing can only bend what is already
 // in this framebuffer. See docs/contact-singularity-plan.md §3.
 import {
   createSingularityScene,
   CONTACT_BLOOM_STRENGTH,
+  BLACKHOLE_MODEL_PATH,
   type SingularityScene,
 } from '@/components/sections/Contact/singularityScene';
+import { prefetchWhenAssetsReady } from '@/lib/prefetchWhenAssetsReady';
+import { createFrameTimer } from '@/lib/frameTimer';
 import { hideHologram } from '@/lib/hologramPose';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { createWorksHud } from '../worksHud';
-import { reportAssetProgress, reportWarmupDone, ASSETS_WARMUP_EVENT } from '@/lib/assetLoadProgress';
-import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
+import {
+  reportAssetProgress,
+  reportWarmupDone,
+  isStageQuiet,
+  ASSETS_WARMUP_EVENT,
+} from '@/lib/assetLoadProgress';
+import { getPixelRatio, sampleFrame, reportProbedFrameCost } from '@/lib/adaptivePixelRatio';
+import { measureGpuFrameCost } from '@/lib/gpuProbe';
+import { detectKtx2Support } from '@/lib/modelLoading';
+import { telemetryEnabled } from '@/lib/telemetryEnabled';
+import { warmSceneMaterials } from '@/lib/warmScene';
+import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
+import { SLATE_200, SLATE_400, SLATE_800 } from '@/lib/coolPalette';
 
 // ── Textures ────────────────────────────────────────────────────────────
 // The DEBRIS texture: dark basalt shot through with glowing lava veins, worn as plain rock by the
 // ambient shards. It used to clothe the section's body too, as both albedo and emissive map — the
 // mark loads its own pair instead (cold black stone, opening onto geode druse), because that look is
 // a pairing chosen together rather than one image doing two jobs. See accretionTransition.ts.
-const TEXTURE_SURFACE = '/textures/meteor/basalt-magma.png';
+// Built from textures-src by `npm run optimize:textures` — never edit the file in public/ directly.
+const TEXTURE_SURFACE = '/textures/meteor/basalt-magma.webp';
 
 // ── Camera / framing ────────────────────────────────────────────────────
 // The fallback field of view. Every authored key carries its own (see worksTuning), so this is only
@@ -287,7 +307,7 @@ const SHARD_Z_CENTER    = -16; // pushed BEHIND the body (which sits at the orig
 const SHARD_MIN_SCALE   = 0.05;
 const SHARD_MAX_SCALE   = 0.28; // capped so a chunk never reads as a giant boulder
 const SHARD_DRIFT_SPEED = 0.012; // rad/s slow yaw drift on the whole debris field
-const SHARD_TINT        = 0x1c2530; // darker than the body so the mark reads as the subject
+const SHARD_TINT        = SLATE_200; // darker than the body so the mark reads as the subject
 // Debris keeps clear of a sphere around every pose the camera can hold, so a chunk never spawns right
 // on top of the lens and blows up huge in perspective when you arrive at a stop.
 const SHARD_CAMERA_KEEPOUT  = 5;
@@ -314,10 +334,11 @@ const STAR_OPACITY      = 0.85;
 const STAR_DRIFT        = 0.008;
 
 // ── Lighting ─────────────────────────────────────────────────────────────
-const KEY_LIGHT_COLOR      = 0xdfe7ff; // cool key so the stone reads blue-grey, not warm — this is
-                                       // what makes the mark's amber geode read as heat
+const KEY_LIGHT_COLOR      = SLATE_800; // the coldest key on the site, so the stone reads blue-grey,
+                                        // not warm — this is what makes the mark's amber geode read
+                                        // as heat rather than as paint
 const KEY_LIGHT_INTENSITY  = 2.1;
-const FILL_LIGHT_COLOR     = 0x2a3550;
+const FILL_LIGHT_COLOR     = SLATE_400;
 const FILL_LIGHT_INTENSITY = 0.6;
 const AMBIENT_INTENSITY    = 0.18;
 const TONE_MAPPING_EXPOSURE = 1.15;
@@ -339,6 +360,9 @@ const BLOOM_THRESHOLD    = 0.6;
 const BLOOM_MSAA_SAMPLES = 4;
 
 const MAX_FRAME_SECONDS = 0.05; // clamp dt so a tab-restore doesn't fling the animation
+
+/** Labels each run of the effect in the development trace. See `effectRun` in the hook. */
+let effectRunCounter = 0;
 const LOW_POWER_MAX_WIDTH = 760;
 
 export interface FieldStatus {
@@ -558,7 +582,17 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
 
     // ── Renderer ──
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    // ⚠ `antialias: false` is deliberate and is NOT a quality cut — see the same note on the fleet's
+    // renderer. Every pixel here reaches the canvas through `screenComposer`, whose last pass is a
+    // fullscreen quad, so a multisampled default framebuffer would be resolving a rectangle. The AA
+    // that matters is `samples` on the two composer targets and the SMAAPass below.
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
+    // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads, and
+    // it covers the two scenes hosted in this renderer as well as this one: `chamberScene` and
+    // `singularityScene` load models but are never handed a renderer, deliberately — see
+    // lib/modelLoading.ts. They are constructed further down this same effect, so by the time either
+    // can ask for the transcoder this has already run.
+    detectKtx2Support(renderer);
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
     renderer.toneMapping = THREE.NeutralToneMapping;
@@ -653,21 +687,30 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const presentGeometry = new THREE.PlaneGeometry(2, 2);
     presentScene.add(new THREE.Mesh(presentGeometry, presentMaterial));
 
-    // Stage 2 — the screen. Tone mapping and AA happen here, once, on whatever is being shown.
-    const screenTarget = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.HalfFloatType,
-      samples: lowPower ? 0 : BLOOM_MSAA_SAMPLES,
-    });
+    // Stage 2 — the screen. Tone mapping happens here, once, on whatever is being shown.
+    //
+    // ⚠ NO MSAA, and that is not a quality cut — it is the removal of one. For the whole works section
+    // this stage draws exactly ONE pixel-aligned fullscreen quad carrying the space texture, which
+    // stage 1 has already resolved. There is not a single interior edge in it for multisampling to
+    // find, so `samples: 4` here was allocating two more full-resolution multisampled HalfFloat
+    // buffers (EffectComposer CLONES the target it is handed, and `RenderTarget.copy` carries `samples`
+    // across — so every composer pays for its samples twice) and resolving them every frame to
+    // antialias a rectangle. On a 1512×982 panel at ratio 1 that is ~166 MB of render target and
+    // ~95 MB/frame of resolve traffic, for nothing. Stage 1 keeps its MSAA, where the geometry is.
+    const screenTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
     const screenComposer = new EffectComposer(renderer, screenTarget);
-    // The scene this draws is swapped for the chamber once the reveal engages; today it is always the
+    // The scene this draws is swapped for the chamber once the reveal engages; until then it is the
     // full-bleed quad.
     const screenRenderPass = new RenderPass(presentScene, presentCamera);
     screenComposer.addPass(screenRenderPass);
     screenComposer.addPass(new OutputPass());
-    // Smooth the meteor / shard edges the bloom pipeline leaves rough — a composer ignores the
-    // renderer's own `antialias` flag, so this is the only geometry AA on the final image. Runs last,
-    // on the LDR result after tone mapping. Sized by the composer, so it follows the adaptive resolution.
+    // Geometry AA for the ROOM, and only for the room — see `smaaPass.enabled` in the render loop.
+    // The chamber is the one thing this stage ever draws that has edges of its own (the display's
+    // rectangle, seen at an angle, is the shot the whole reveal is built on). Over the works quad the
+    // same pass was re-detecting edges in an already-resolved 1:1 copy and softening them again, which
+    // is three fullscreen passes spent making the picture very slightly worse.
     const smaaPass = new SMAAPass();
+    smaaPass.enabled = false;
     screenComposer.addPass(smaaPass);
 
     // ── Starfield (dots + warp streaks) ──
@@ -1096,6 +1139,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // section was torn down while it was awaiting — otherwise a fast unmount leaves an orphaned
     // strategy holding GPU buffers with nothing to dispose it.
     let disposed = false;
+    // Which run of this effect we are. StrictMode double-invokes in development, and the two runs are
+    // indistinguishable in a log without this — which is exactly the question the trace below has to
+    // answer: did the SECOND one ever arm its loader, or is the discarded first one all there was?
+    effectRunCounter += 1;
+    const effectRun = effectRunCounter;
     const markRigs: MarkRig[] = [];
     let shardMeshes: THREE.InstancedMesh[] = [];
     const shardGeometries: THREE.BufferGeometry[] = [];
@@ -1162,6 +1210,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     loadingManager.onError = (url) => {
       console.error(`Works field asset failed to load: ${url}`);
       reportAssetProgress('works', 1);
+      // Arm the warm-up too, or a failed texture would leave this source reporting ready for the
+      // download but never warm — and the gate waits on BOTH, so it would sit out its full cap.
+      assetsIn = true;
+      warmWhenBothReady();
     };
 
     /**
@@ -1177,8 +1229,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      * is gone, so the values are simply constants now and there is nothing to pass.
      */
     const buildMark = async () => {
+      traceBuild('prepareMarks: start');
       const marks = await prepareMarks();
-      if (disposed || marks.length === 0) return;
+      traceBuild(`prepareMarks: done (${marks.length} marks)`);
+      if (disposed || marks.length === 0) {
+        traceBuild(`buildMark: bailing (disposed=${disposed}, marks=${marks.length})`);
+        return;
+      }
       reportAssetProgress('works', WORKS_OUTLINES_DONE);
 
       markIndexOfProject = WORKS_PROJECTS.map((project) => {
@@ -1186,15 +1243,38 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         return found >= 0 ? found : 0;
       });
 
+      traceBuild('createAccretionMark: start (loads 2 textures, then cuts every mark)');
       const strategy = await createAccretionMark(marks, {
         targetSize: tuning.markTargetSize,
         depth: tuning.markDepth,
         performanceTier: lowPower ? 'low' : 'high',
       });
+      traceBuild('createAccretionMark: done');
       if (disposed) {
         strategy.dispose();
         return;
       }
+
+      // ── What the mark actually cost, in development ──
+      // `ACCRETION_TUNING.capEdgeFraction` sits at 0.008 — the floor of the slider it was authored on —
+      // with `capSubdivisions: 2`, and each subdivision QUADRUPLES the triangle count. Its own comment
+      // says to watch the rig's triangle and build-time readouts before carrying it into the section,
+      // and the rig was deleted before anyone did. The strategy has measured itself since the day it was
+      // written and nothing has ever read the result.
+      //
+      // These two numbers answer the only open performance question left on this site: whether cutting
+      // four marks at this density is a rounding error or the longest block on the loader. Under ~60 ms
+      // total there is nothing here to chase; if it is hundreds, `capSubdivisions: 1` is a 4× cut and
+      // may well be invisible.
+      if (telemetryEnabled) {
+        const { buildMilliseconds, bufferBytes, perMarkBytes } = strategy.metrics;
+        console.debug(
+          `[voidix] mark build: ${buildMilliseconds.toFixed(0)} ms for ${marks.length} marks, ` +
+            `${(bufferBytes / 1e6).toFixed(1)} MB of buffers ` +
+            `(${(perMarkBytes / 1e6).toFixed(1)} MB each)`,
+        );
+      }
+
 
       // Every material under the strategy, for the arrival fade. `transparent` is set ONCE, here —
       // toggling it per frame invalidates the program and recompiles the shader, which is a stutter at
@@ -1236,9 +1316,32 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // Nothing on this site changes the mark's geometry at runtime, so there is no rebuild path here —
     // the mark is cut once, from `ACCRETION_TUNING`, and lives until the section is disposed.
 
+    /**
+     * Where the field's build got to — development only.
+     *
+     * "Charting the field · 100%" is shown by `FieldCanvas` for as long as `status.isLoading` holds,
+     * and the percentage comes from the LoadingManager, which only ever tracked the one debris
+     * texture. So it reaches 100 the moment that texture lands and then sits there for the whole
+     * asynchronous build behind it — the outlines, the typeface, two more surfaces and the cutting of
+     * every mark. A build that stops anywhere in there looks exactly like a build that finished.
+     * These lines are what tell the two apart.
+     */
+    const traceBuild = (stage: string) => {
+      if (process.env.NODE_ENV !== 'development') return;
+      console.log(`%c[works #${effectRun}] ${stage}`, 'color:#8ab4ff;font-weight:600');
+    };
+    traceBuild('effect: setup');
+
     const buildField = async () => {
+      traceBuild('buildField: start');
       await buildMark();
-      if (disposed) return;
+      if (disposed) {
+        // Ordinary under StrictMode's double-mount: this is the discarded first pass, and the second
+        // one owns the overlay. Logged because if it ever happens to the SURVIVING mount the section
+        // stays behind its loading label forever, and that is otherwise invisible.
+        traceBuild('buildField: bailing after buildMark (disposed)');
+        return;
+      }
 
       // Ambient shard debris — two irregular base shapes, each instanced across the field.
       const totalShards = lowPower ? SHARD_COUNT_LOW : SHARD_COUNT;
@@ -1296,11 +1399,15 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
       // Land on the focused project immediately (no transition on first build).
       applyFocus(activeIndexRef.current, true);
+      traceBuild('buildField: done — clearing the loading label');
       onStatus({ isLoading: false, percent: 100 });
-      // Fully built → mark the field ready for the intro's loader gate. The shader warm-up itself is
-      // deferred to ASSETS_WARMUP_EVENT (fired during the intro's static pre-reveal hold) so the
-      // compile stall never lands mid loading-animation.
+      // Fully built → mark the field ready for the intro's loader gate…
       reportAssetProgress('works', 1);
+      // …and arm the warm-up, which runs once the loader's stage is also quiet. Safe to reach forward
+      // to a const declared further down the effect: everything on this path is async, so the effect
+      // body has long since finished running.
+      assetsIn = true;
+      warmWhenBothReady();
     };
 
     // The debris texture is what the manager is waiting on; the mark then fetches its own outlines,
@@ -1311,10 +1418,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // leave `reportAssetProgress('works', …)` capped at 0.99 forever, which hangs the intro on a
     // loader that never reaches 100%. Report ready and let the section degrade instead.
     loadingManager.onLoad = () => {
+      traceBuild('loadingManager.onLoad — the debris texture is in, starting the build');
       buildField().catch((cause: unknown) => {
         console.error('Works field failed to build:', cause);
         onStatus({ isLoading: false, percent: 100 });
         reportAssetProgress('works', 1);
+        assetsIn = true;
+        warmWhenBothReady();
       });
     };
 
@@ -1460,6 +1570,21 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
+    // ── Warming a lazily-built scene ──
+    // Both scenes below are fetched on the way to the section that needs them, deliberately, so they
+    // stay off the intro's asset gate. But being off the gate is not the same as being ready: a scene
+    // that has been BUILT but never DRAWN still has every program and every map waiting, and they all
+    // land on the frame it first appears — which for both of these is inside a scrubbed crossing, the
+    // worst place on the site to spend one. So each is warmed on the next idle frame after it lands.
+    // See lib/warmScene.ts, which is the sun's corona fix generalised.
+    let lazyWarmupFrame = 0;
+    const warmWhenIdle = (target: THREE.Object3D, targetCamera: THREE.Camera) => {
+      lazyWarmupFrame = requestAnimationFrame(() => {
+        if (disposed) return;
+        warmSceneMaterials(renderer, target, targetCamera);
+      });
+    };
+
     // ── The chamber (built lazily; see ensureChamber) ──
     let chamber: ChamberScene | null = null;
     let chamberReady = false;
@@ -1469,6 +1594,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         environment: scene.environment,
         onReady: () => {
           chamberReady = true;
+          // The room's walls, ground grid, plinth, display shader and the table's maps — none of which
+          // exist on the GPU until something draws them, and the first thing that does is the reveal.
+          if (chamber) warmWhenIdle(chamber.scene, chamber.camera);
         },
       });
     };
@@ -1485,6 +1613,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       singularity = createSingularityScene({
         pixelRatio: renderer.getPixelRatio(),
         lowPower,
+        // The star, its rings, the accretion spiral and `black_hole.glb`'s maps all come into existence
+        // hidden and stay that way until the return fades them up — so without this they would compile
+        // and upload on the frame the camera swings back onto the star, which is the frame the whole
+        // finale is built to deliver. Warmed through the SPACE scene, because that is where the group
+        // now lives; recompiling the rest of it is cached and costs nothing.
+        onReady: () => warmWhenIdle(scene, camera),
       });
       scene.add(singularity.group);
     };
@@ -1501,6 +1635,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       ensureSingularity();
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+
+    // ── Rung 3: warm the cache for the two models nobody waits for ──
+    // `ensureChamber` and `ensureSingularity` above still fetch these exactly when they always did —
+    // this only means the bytes are usually already here by then. Both are fetched mid-scroll on a
+    // first visit (the black hole is 2.94 MB, the largest asset on the site), which is most of why the
+    // first lap is rougher than every lap after it. Starts only once every gated source has reported
+    // in, so it competes with neither the star nor the fleet. See lib/prefetchWhenAssetsReady.ts.
+    const stopLatePrefetch = prefetchWhenAssetsReady([TABLE_MODEL, BLACKHOLE_MODEL_PATH]);
 
     // The return: the same room, walked back out of. It only ever UNDOES the reveal (see
     // combineChamberTarget), so it never engages the chamber on its own — arriving here without the
@@ -1573,26 +1715,132 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
 
-    // Warm the meteor / fire / shard materials + bloom pipeline before the field is shown. Compiled
-    // ASYNCHRONOUSLY (background threads, where the GPU supports it) so it doesn't block the main
-    // thread — a synchronous compile at the intro's warm-up beat froze ~0.2s right before the reveal.
-    // The field isn't shown until the handoff, so there's time; the bloom-warming composer.render()
-    // lands after the promise resolves, while the field is still hidden.
-    const warmUpField = () => {
-      renderer
-        .compileAsync(scene, camera)
-        .then(() => {
-          if (disposed) return;
-          // Forces the bloom + present passes to compile too (the only part that can still block, and
-          // only on a GPU with no parallel-compile extension — during the intro hold, never at the reveal).
-          spaceComposer.render();
-          presentUniforms.uSpace.value = spaceTexture();
-          screenComposer.render();
-          reportWarmupDone('works'); // the intro holds the reveal until this fires
-        })
-        .catch(() => { if (!disposed) reportWarmupDone('works'); });
+    // ── Warm-up: build every program and allocate every buffer while nothing is watching ──
+    //
+    // Four beats, ONE PER FRAME, and the spacing is the whole design. Every one of these is GPU-process
+    // work, and while the GPU process is busy the compositor cannot present ANYONE's frames — including
+    // the loader's dust, which renders in a worker and is otherwise immune to anything the main thread
+    // does. That is the discriminator `docs/loader-freeze-plan.md` §7 established, and it is why "the
+    // dust froze too" ruled out every main-thread explanation. Run back to back, these four are one long
+    // stall on exactly the beat the loader is trying to deliver its finale. Given a frame each, they are
+    // four short ones.
+    //
+    //   1 · compileAsync   — programs. ⚠ Runs `renderer.compile()` SYNCHRONOUSLY before it awaits
+    //                        anything (three's own source); only the wait for linking is offloaded.
+    //   2 · first draw     — by far the most expensive, and the least obvious: this is where both
+    //                        composers ALLOCATE, and a full-resolution HalfFloat target with MSAA is
+    //                        tens of megabytes each. It also compiles the bloom, present, HUD and SMAA
+    //                        passes, none of which `compileAsync` can reach (they are not in the scene).
+    //   3 · the probe      — the same draw again, drained and timed. See lib/gpuProbe.ts.
+    //   4 · re-size        — only if the probe changed the pixel ratio, so the reallocation that implies
+    //                        happens HERE rather than on the first frame of the works section.
+    //
+    // SMAA is force-enabled across the warm-up and put back afterwards: it is off for the whole works
+    // section by design (see where the pass is built), so without this its three programs would compile
+    // on the frame the chamber first appears — mid-reveal, in a scrubbed crossing, which is the worst
+    // place on the site to spend a frame.
+    let warmupFrame = 0;
+    const nextWarmupFrame = () =>
+      new Promise<void>((resolve) => {
+        warmupFrame = requestAnimationFrame(() => resolve());
+      });
+    const drawWarmupFrame = () => {
+      spaceComposer.render();
+      presentUniforms.uSpace.value = spaceTexture();
+      screenComposer.render();
     };
-    window.addEventListener(ASSETS_WARMUP_EVENT, warmUpField);
+
+    let warmupStarted = false;
+    const warmUpField = async () => {
+      if (warmupStarted || disposed) return;
+      warmupStarted = true;
+      // Restored in `finally`, not inline, so an early return on teardown or a throw mid-probe cannot
+      // leave the works section running a pass it is supposed to have off.
+      const smaaWasEnabled = smaaPass.enabled;
+      try {
+        // Out of the caller's tick first. Both entry points land inside asset work — `buildField` has
+        // just finished cutting four marks and notifying the loader's listeners, and the backstop
+        // event is dispatched from inside the intro's own progress callback. `compileAsync` runs
+        // `renderer.compile()` synchronously, so without this it blocks on top of whatever is already
+        // on that tick instead of getting a frame of its own.
+        await nextWarmupFrame();
+        if (disposed) return;
+
+        await renderer.compileAsync(scene, camera);
+        if (disposed) return;
+        await nextWarmupFrame();
+        if (disposed) return;
+
+        smaaPass.enabled = true;
+        drawWarmupFrame();
+
+        await nextWarmupFrame();
+        if (disposed) return;
+        // Measured on the SECOND draw — the first is carrying the allocations above, and timing those
+        // would report every machine as far slower than it is.
+        //
+        // Measured with SMAA ON, deliberately, even though works itself runs without it: the chamber
+        // does run it, and the chamber is the heaviest thing this pipeline ever draws. Sizing the
+        // session against the worst frame rather than the common one is the conservative direction.
+        const cost = measureGpuFrameCost(renderer, drawWarmupFrame);
+        // The only measurement the site takes, and it decides the resolution every heavy scene runs at
+        // for the session. Taken here because this is the heaviest pipeline on the page, at its real
+        // size, on a render that had to happen anyway.
+        reportProbedFrameCost(cost.milliseconds, cost.megapixels, renderer.getPixelRatio());
+
+        await nextWarmupFrame();
+        if (disposed) return;
+        if (getPixelRatio() !== appliedPixelRatio) {
+          // The probe moved us. Resize and draw once more, so the buffers the works section will
+          // actually use are allocated now rather than on the frame it first appears.
+          applyRendererSize();
+          drawWarmupFrame();
+        }
+      } catch {
+        // A failed compile is not a reason to trap the loader — the section degrades to compiling
+        // whatever failed on first draw, exactly as it did before any of this existed.
+      } finally {
+        smaaPass.enabled = smaaWasEnabled;
+        if (!disposed) reportWarmupDone('works'); // the intro holds the reveal until this fires
+      }
+    };
+
+    // ── When it runs ──
+    // As soon as THIS section's own assets are in — not when the whole page's are.
+    //
+    // The two sources finish at very different times (the fleet is ~5.3 MB of vessels against this
+    // section's ~0.95 MB of surfaces), and the gate used to hold both warm-ups until the LAST byte on
+    // the page had landed, then run them one after the other. That stacked two compiles and two first
+    // allocations into a two-frame window at exactly 100 % — immediately before the shard flight, which
+    // is the one thing the whole loader is built to deliver. Starting here instead spends this
+    // section's warm-up inside the fleet's download, where the GPU is otherwise idle, and leaves only
+    // one scene's worth of work on the tail.
+    //
+    // ⚠ But own-assets-in is only HALF the condition, and shipping it alone made the loader's wordmark
+    // stutter. The other half is that the loader has finished animating: five Syne 800 glyphs at up to
+    // 256 px, moving transform AND opacity through a `back.out` overshoot, are the most expensive thing
+    // the loader ever draws — and on a fast connection this section's assets land right on top of them.
+    // ASSETS_WARMUP_EVENT is now dispatched when the wordmark has resolved and the stage is still, so
+    // the compile goes where nothing is moving except the dust, which is in a worker and cannot stutter.
+    let assetsIn = false;
+    // Starts TRUE when there is no loader on the page. Under reduced motion the intro bypasses its
+    // timeline entirely and never dispatches, so waiting on the event would mean never warming at all.
+    // Read from the DOM rather than from INTRO_ACTIVE_EVENT because this hook is behind a dynamic
+    // import and mounts long after that event has been and gone — the same reason SunModelCanvas does it.
+    // Three ways to already be quiet, and all three are needed. The STATE covers a scene whose chunk
+    // arrived after the intro had already dispatched (this hook is dynamically imported, so on a slow
+    // connection that ordering is real). The DOM check covers reduced motion and any page with no
+    // loader on it. The event covers the ordinary case.
+    let stageQuiet =
+      isStageQuiet() || document.querySelector(INTRO_MARKER_SELECTOR) === null;
+    const warmWhenBothReady = () => {
+      if (assetsIn && stageQuiet) void warmUpField();
+    };
+    const onWarmupRequested = () => {
+      stageQuiet = true;
+      warmWhenBothReady();
+    };
+    window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
     // ── Meteor arrival (driven by handoff progress; fully reversible) ──
     // 0 = hidden/far, 1 = landed. Recomputed each frame in the render loop from the eased flight
@@ -1663,7 +1911,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
       // Portrait → pull the camera back so the meteor doesn't overflow the narrow frame.
-      distanceScale = aspect < 1 ? THREE.MathUtils.clamp(1 / aspect, 1, 1.9) : 1;
+      // ⚠ The flight reads this too (see the handoff branch in the render loop). It used to be an
+      // inline expression here and nowhere else, which is precisely how the arrival came to pop.
+      distanceScale = portraitPullbackScale(aspect);
       renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
       // Both stages follow the adaptive resolution. The composers resize their own buffers in place;
@@ -1675,7 +1925,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
 
     // ── Render loop ──
-    const clock = new THREE.Clock();
+    const frameTimer = createFrameTimer(MAX_FRAME_SECONDS);
     let frameId = 0;
     // Warp state — read from the camera's own speed each frame so the streaks + FOV follow the exact
     // launch/arrive curve of the travel tween (longer hops naturally streak harder).
@@ -1685,8 +1935,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     let warp = 0;
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
-      const deltaSeconds = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
-      const elapsed = clock.elapsedTime;
+      const deltaSeconds = frameTimer.tick();
+      const elapsed = frameTimer.elapsed();
 
       // The debris and the starfield keep their slow ambient drift and nothing else. They used to
       // counter-rotate against the body during a change, so the two rates would add into the apparent
@@ -1797,8 +2047,27 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // Same shared pose the deck reads, shifted so the field's origin (meteor 01) lands on the
         // shared meteor spot — so the ship (deck canvas) and this field composite as one space.
         computeFlightPose(flightState.current, flightPose);
-        camera.position.copy(flightPose.cameraPosition).sub(meteorOffset);
         flightLookTarget.copy(flightPose.cameraTarget).sub(meteorOffset);
+        camera.position.copy(flightPose.cameraPosition).sub(meteorOffset);
+        // ── The portrait pull-back, ramped across the crossing ──
+        // The flight's landing pose IS stop 0 (worksTuning's FLIGHT_LANDING_KEY says so, and says it
+        // must never be hand-edited away from it). But `updateCamera` then multiplies that pose's
+        // offset by `distanceScale`, and on a phone that is 1.9 — so the identity the seam depends on
+        // held only on a landscape screen. The mark arrived filling the frame and shrank by nearly
+        // half the moment browsing took the camera. Applying the same scale HERE, ramped to exactly 1
+        // at progress 0 and exactly `distanceScale` at 1, makes both ends identities again and turns
+        // the pop into part of the dolly.
+        //
+        // ⚠ The deck's own camera does the same thing off the same shared function. If you change one,
+        // change both — they are one continuous space photographed by two renderers, and they only
+        // composite because they agree on where the camera is.
+        //
+        // Scaled about the AIM POINT, never about the world origin: this pushes the camera away from
+        // what it is looking at, which is the whole intent. Scaling the position would slide the shot.
+        camera.position
+          .sub(flightLookTarget)
+          .multiplyScalar(flightPullbackScale(distanceScale, flightState.current))
+          .add(flightLookTarget);
         camera.lookAt(flightLookTarget);
         if (Math.abs(camera.fov - flightPose.cameraFov) > 0.001) {
           camera.fov = flightPose.cameraFov;
@@ -1978,6 +2247,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
       const isDrawing = worksShouldRender && !document.hidden;
       if (isDrawing) {
+        // Geometry AA follows the room, because the room is the only thing stage 2 ever draws that has
+        // geometry. Toggling `enabled` is all this needs: EffectComposer recomputes which pass is the
+        // last ENABLED one on every render, so `OutputPass` takes over drawing to the canvas by itself
+        // whenever this is off. See the note where the pass is built.
+        smaaPass.enabled = revealing;
+
         // Stage 1 into the texture, stage 2 out to the canvas. Never one without the other — the
         // screen pipeline paints whatever the space pipeline last produced.
         spaceComposer.render();
@@ -2044,7 +2319,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
-      window.removeEventListener(ASSETS_WARMUP_EVENT, warmUpField);
+      traceBuild('effect: TEARDOWN — disposed is now true for this run');
+      window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
+      stopLatePrefetch();
+      cancelAnimationFrame(warmupFrame);
+      cancelAnimationFrame(lazyWarmupFrame);
       chamber?.dispose();
       singularity?.dispose();
       hud.dispose();

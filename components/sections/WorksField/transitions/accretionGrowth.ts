@@ -168,7 +168,7 @@ export interface StoneGrowthUniforms {
   /**
    * Scales the cavity texture's albedo, and it is NOT optional.
    *
-   * `geode-druse.png` is a blazing fire-geode — its cores are near white. The stone it replaces has
+   * `geode-druse.webp` is a blazing fire-geode — its cores are near white. The stone it replaces has
    * already been multiplied down to roughly a tenth by the material's tint, so mixing the cavity in raw
    * put an eleven-fold albedo jump on whichever stones happened to open. That is not a cavity catching
    * light, it is a hole cut through to a brighter scene.

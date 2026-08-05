@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { createGroundGrid } from './groundGrid';
 import { createChamberWalls } from './chamberWalls';
 import { createChamberPlinth } from './chamberPlinth';
 import { applySurfaceLighting } from './chamberSurfaceLighting';
 import { hideHologram, publishHologramPose } from '@/lib/hologramPose';
+import { SLATE_600, SLATE_800 } from '@/lib/coolPalette';
 import {
   CHAMBER_HOLOGRAM_EVENT,
   type ChamberHologramDetail,
@@ -49,8 +50,9 @@ import {
 // The podium and its ring portal are gone on purpose: the hologram no longer floats over a plinth
 // across the room, it sits with the table. What fills the space behind it is the ground (below), which
 // costs no download at all.
-const TABLE_MODEL = '/models/table.glb';
-const DRACO_DECODER_PATH = '/draco/';
+// Exported so the rung-3 prefetch has ONE source for this path rather than a copy that can drift —
+// see lib/prefetchWhenAssetsReady.ts.
+export const TABLE_MODEL = '/models/table.glb';
 
 const FOV = 45;
 
@@ -61,10 +63,19 @@ const FOV = 45;
 // The environment matters more than it looks. The scene shares the works field's PMREM, which is a
 // RoomEnvironment — a bright studio box — and these props are metal. At any real intensity that turns a
 // dim room into a chrome showroom. So it's dialled right down by default and left on a knob.
-const SCREEN_LIGHT_COLOR = 0x6fd9ff;
+/**
+ * The light the display throws back into the room. It was a saturated cyan (0x6fd9ff), which is
+ * physically honest for a screen showing a starfield — but it is only showing a starfield some of
+ * the time. Through the reveal the thing on that screen is the mark, which is amber, and a cyan
+ * bounce off an amber screen reads as a bug rather than as physics.
+ *
+ * SLATE_800 keeps it unmistakably cold against the room's warm fittings without being a hue that
+ * appears nowhere else on the site.
+ */
+const SCREEN_LIGHT_COLOR = SLATE_800;
 const SCREEN_LIGHT_DISTANCE = 9;
 const SCREEN_LIGHT_OFFSET = 0.6; // sits in front of the display, throwing light back into the room
-const KEY_LIGHT_COLOR = 0x9fb6d4;
+const KEY_LIGHT_COLOR = SLATE_600;
 
 // The dark of space has to stop reading as transparency and start reading as an unlit panel — and the
 // pinned sun (a fixed DOM billboard behind the canvas) has to leave with it, or it would hang in the
@@ -291,10 +302,12 @@ export function createChamberScene({
   };
 
   // ── Loading ──
-  const dracoLoader = new DRACOLoader();
-  dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
   const gltfLoader = new GLTFLoader();
-  gltfLoader.setDRACOLoader(dracoLoader);
+  gltfLoader.setDRACOLoader(getSharedDracoLoader());
+  // No `detectKtx2Support` here: this scene has no renderer and never gets one (a GPU texture cannot
+  // cross a context, which is why the works field draws this room). `useWorksField` — which builds
+  // this — has already detected against the renderer these models will be drawn by.
+  gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
   let tableGroup: THREE.Group | null = null;
   let tablePivot: THREE.Group | null = null;
@@ -828,16 +841,35 @@ export function createChamberScene({
     const cropBottom = tuning.cropBottom * eased;
     displayUniforms.uCrop.value.set(cropLeft, cropRight, cropTop, cropBottom);
 
-    // The quad shrinks along with the trim, so the picture is CROPPED rather than squashed into a
-    // smaller frame. With no crop this is the full viewport aspect — which is what keeps `coverDistance`
-    // exact at progress 0.
+    // The picture shrinks along with the trim, so it is CROPPED rather than squashed into a smaller
+    // frame. With no crop this is the full viewport aspect — which is what keeps `coverDistance` exact
+    // at progress 0.
     const keptWidth = Math.max(1 - cropLeft - cropRight, 0.001);
     const keptHeight = Math.max(1 - cropTop - cropBottom, 0.001);
-    display.scale.set(
-      screenHeight * aspect * keptWidth,
-      screenHeight * keptHeight,
-      1,
-    );
+    const pictureWidth = screenHeight * aspect * keptWidth;
+    const pictureHeight = screenHeight * keptHeight;
+
+    // ── The black panel the picture sits in ──
+    // The QUAD is at least as wide as the tabletop the screen is set into, whatever shape the picture
+    // is; the shader paints the surplus solid black (`uPictureSpan`). On a portrait phone the picture
+    // is barely a third of the tabletop's width, and without this the bare slate showed down both
+    // sides of it.
+    //
+    // Only the width can ever need it: `screenHeight` is authored, so the picture's HEIGHT is fixed
+    // and only its width moves with the aspect.
+    //
+    // ⚠ This must never touch the picture's own size or position. `coverDistance` is derived from
+    // `displayHeight` alone and the seam at progress 0 is the picture covering the frustum exactly —
+    // so the quad is free to overhang the frame there (it does, and it is off-screen), but the picture
+    // is not free to move. A `max` rather than an assignment is what guarantees that: at any landscape
+    // aspect the picture is already the wider of the two and the panel adds literally nothing.
+    //
+    // The divisor is floored because `screenHeight` is TOUR-DRIVEN (`playhead.sh`) rather than a
+    // constant — a key authored at zero height would otherwise hand the shader a NaN span, and a NaN
+    // vertex position doesn't render a small display, it renders nothing at all.
+    const panelWidth = Math.max(pictureWidth, screenHeight * tuning.displayPanelAspect);
+    display.scale.set(panelWidth, pictureHeight, 1);
+    displayUniforms.uPictureSpan.value.set(panelWidth / Math.max(pictureWidth, 1e-6), 1);
     display.position.copy(rigPosition);
     display.rotation.copy(rigRotation);
 
@@ -1144,7 +1176,7 @@ export function createChamberScene({
           }
         }),
       );
-      dracoLoader.dispose();
+      // No dracoLoader.dispose() — it is shared and page-lifetime (see lib/modelLoading.ts).
     },
   };
 

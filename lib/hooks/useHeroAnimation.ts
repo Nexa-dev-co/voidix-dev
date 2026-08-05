@@ -284,8 +284,15 @@ const FULL_CLIP = "inset(0% 0 0 0)";
 const EMPTY_CLIP = "inset(100% 0 0 0)";
 // If the intro never fires its reveal, reveal anyway. Two nets: a SHORT one for when the intro is
 // absent / crashed on mount (recover fast), swapped for a LONG ultimate one the moment the intro
-// signals it's alive (INTRO_ACTIVE_EVENT) — because a running intro legitimately holds its reveal
-// until assets load (its own ASSET_WAIT_TIMEOUT_MS), so the net must clear that worst case.
+// signals it's alive (INTRO_ACTIVE_EVENT).
+//
+// ⚠ The long net is no longer sized against anything the intro can be measured against, and it must
+// not be. A running intro legitimately holds its reveal until the STAR has downloaded, with no upper
+// bound — at 20 KB/s that is well over a minute — so no fixed number here could both cover a crashed
+// intro quickly and outlast a slow one. `INTRO_ACTIVE_EVENT` is therefore repeated as a heartbeat
+// while the intro's gate is waiting, and the handler below re-arms this timer on every one. So what
+// this value really means is "how long after the intro STOPS reporting do we take over", and 20 s is
+// generous for that.
 const REVEAL_FALLBACK_NO_INTRO_MS = 7000;
 const REVEAL_FALLBACK_WITH_INTRO_MS = 20000;
 
@@ -1102,6 +1109,11 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             const progress = self.progress;
             // The "home" meter tracks the fill phase only.
             setNavMeter("home", Math.min(progress / fillFraction, 1));
+            // The WHOLE circuit as one number, for the orbit dial (see Navbar/OrbitDial). Every other
+            // meter answers "how far through THIS section"; the dial's travelling node needs "how far
+            // around the whole journey", which is the pin's own progress and nothing else — there is
+            // exactly one pin, so this is not an approximation of the journey, it IS the journey.
+            setNavMeter("total", progress);
             // Deliberately ABOVE the fill's early return — this span's whole job is inside the fill, and
             // a jump past it still has to land the sun fully open.
             applyHeroServicesProgress(progress);
@@ -1180,6 +1192,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
 
       // Phase 1 — the square expands to fill the viewport while the sun rises + grows.
       // Function-based values so invalidateOnRefresh recomputes them from fresh geometry.
+      //
+      // ⚠ Transforms ONLY, and `borderRadius: 0` is deliberately not among them any more. Nothing gives
+      // `.hero-sun-card` a radius — check globals.css, there is no rule — so that tween was
+      // interpolating 0px to 0px. Not free, though: `border-radius` is a PAINT property, and GSAP wrote
+      // it every frame of the fill on an element that by the end of the span covers the whole viewport,
+      // so every one of those frames invalidated a full-screen repaint underneath whatever else was
+      // drawing. Transforms composite; keeping this list to transforms is what makes the fill cheap.
       scrollTimeline.to(
         heroCardElement,
         {
@@ -1187,7 +1206,6 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           y: () => geometry.translateY,
           scaleX: () => geometry.scaleX,
           scaleY: () => geometry.scaleY,
-          borderRadius: 0,
           ease: "power1.inOut",
           duration: fillFraction,
         },

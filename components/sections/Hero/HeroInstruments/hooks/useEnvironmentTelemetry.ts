@@ -2,8 +2,8 @@ import { useEffect, type RefObject } from 'react';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
-import { SPEED_FOR_MAX_RADIUS } from '@/components/effects/FluidCursor/fluidConfig';
 import {
+  POINTER_SPEED_REFERENCE,
   GRAVITY_STATES,
   GRAVITY_INTENSIFY_ENTER,
   GRAVITY_INTENSIFY_EXIT,
@@ -183,7 +183,7 @@ export function useEnvironmentTelemetry({ panelRef }: EnvironmentTelemetryRefs) 
       // Shared per-frame scalars — cursor speed (sim-normalized) and orb proximity.
       const pixelSpeed = travelledSinceFrame / deltaSeconds;
       travelledSinceFrame = 0;
-      const velocityRatio = clamp01(pixelSpeed / window.innerHeight / SPEED_FOR_MAX_RADIUS);
+      const velocityRatio = clamp01(pixelSpeed / window.innerHeight / POINTER_SPEED_REFERENCE);
 
       const maxDistance = INFLUENCE_MAX_DISTANCE_VMIN * Math.min(window.innerWidth, window.innerHeight);
       const distance = hasPointer ? Math.hypot(pointerX - orbCenterX, pointerY - orbCenterY) : maxDistance;

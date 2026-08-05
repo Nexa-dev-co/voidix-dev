@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, type RefObject } from 'react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
-import { toDesignPx } from '@/lib/hologramPose';
+import { hologramMaxHeightGain, toDesignPx } from '@/lib/hologramPose';
 import { getChamberTuning } from '@/lib/chamberTuning';
 
 /**
@@ -84,7 +84,14 @@ export function useHologramReveal({
 
       // Content-determined — up to a point. Past `holoMaxHeight` the panel stops growing and the answer
       // scrolls inside it instead, so a long answer can never swallow the room.
-      const maxHeight = toDesignPx(tuning.holoMaxHeight, tuning.holoWidth);
+      //
+      // The gain is 1 on anything but a phone. There it lets the panel run taller, because the narrow
+      // design width reflows the same copy to a longer column — without it, a bigger typeface would
+      // just mean less of the answer visible before it started scrolling. See hologramMaxHeightGain.
+      const maxHeight = toDesignPx(
+        tuning.holoMaxHeight * hologramMaxHeightGain(),
+        tuning.holoWidth,
+      );
       gsap.to(screen, {
         height: Math.min(content.offsetHeight, maxHeight),
         duration: seconds,

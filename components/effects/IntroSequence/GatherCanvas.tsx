@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { getAssetProgress } from "@/lib/assetLoadProgress";
+import { getSourceProgress, isSourceLoaded } from "@/lib/assetLoadProgress";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
+import { createDownloadEtaEstimator } from "./downloadEta";
 import { GatherRenderer } from "./gatherRenderer";
 import { SUN_IN_O_RATIO, SUN_BODY_FILL, SUN_FRAMING_NUDGE_X } from "./gatherShader";
 import type { GatherMessage } from "./gatherMessages";
-import { IGNITE_EVENT, SUN_ASSEMBLE_EVENT, SUN_ASSEMBLED_EVENT } from "./introEvents";
+import { IGNITE_EVENT, SUN_FORMING_EVENT, SUN_ASSEMBLED_EVENT } from "./introEvents";
 
 // The loader's gathering field — matter falling together into the star the page opens on.
 //
@@ -42,6 +43,33 @@ const POST_INTERVAL_MS = 100;
  * into it.
  */
 const SUN_RADIUS_PER_GLYPH = (SUN_IN_O_RATIO * SUN_BODY_FILL) / 2;
+
+/**
+ * Longest the dust will stay withdrawn from around the star waiting for an assembly to finish.
+ *
+ * Only the SECOND HALF of the flight is spent withdrawn now (the withdrawal starts at
+ * `SUN_FORMING_EVENT`, the assembly's midpoint), so this only has to cover ~1.1 s of
+ * `ASSEMBLY_SECONDS` plus room for slow frames.
+ *
+ * Belt-and-braces rather than load-bearing: keyed to the forming event there is a star by construction,
+ * so `SUN_ASSEMBLED_EVENT` is genuinely coming. It stays because a hole left open in the loader's own
+ * field is a bad enough failure to be worth two lines. See `onSunForming`.
+ */
+const CLEARING_MAX_MS = 3000;
+
+/**
+ * How far away the star has to look before the dust starts gathering into forms.
+ *
+ * The loader now waits for the star for as long as the star keeps arriving rather than giving up on a
+ * deadline (see IntroSequence's gate), which on a weak connection means a minute or more on screen.
+ * The stream alone cannot carry that — it is the same picture at second 3 and second 70 — so past this
+ * estimate the field starts holding shapes instead.
+ *
+ * ⚠ Checked against the ESTIMATE, not against elapsed time, and that is the whole point of measuring:
+ * a fast connection is already finished by the time a stopwatch would have fired, so it never sees a
+ * form at all and its loader is exactly what it was.
+ */
+const SHAPE_ONSET_ETA_SECONDS = 10;
 
 /**
  * Workers already attached to a canvas, so a re-run of the effect reuses one instead of transferring
@@ -137,9 +165,41 @@ export default function GatherCanvas() {
       loop();
     }
 
+    // ── Does this wait need filling? ──
+    // Owned here rather than driven from the intro's gate, because everything the decision needs is
+    // already in this file: the field, its inputs, and the star's progress. One estimator, sampled on
+    // the same tick that posts progress.
+    //
+    // Releases on the star LANDING rather than on the assembly cue, so the dust is back in its stream
+    // through the warm-up beat and well before the shards fly — the finale is the flow's, not a shape's.
+    const starEta = createDownloadEtaEstimator("sun");
+    let shapeHold = 0;
+    const resolveShapeHold = () => {
+      starEta.sample();
+      if (isSourceLoaded("sun")) {
+        shapeHold = 0;
+        return;
+      }
+      // Latched: once the wait has been judged long, it stays long. Without this the estimate
+      // wobbling either side of the threshold would gather and release the whole field repeatedly.
+      if (shapeHold === 0) {
+        const remaining = starEta.secondsRemaining();
+        if (remaining !== null && remaining >= SHAPE_ONSET_ETA_SECONDS) shapeHold = 1;
+      }
+    };
+
+    // The field's density tracks the STAR, like the loader's counter — it is what the gate waits for,
+    // so it is what the loader should be reporting. Using the whole page's weighted total would leave
+    // the field thin at the very moment the star lands and the assembly plays.
     const sendUpdate = () => {
+      resolveShapeHold();
       const measured = measureTarget();
-      const update = { type: "update" as const, progress: getAssetProgress(), ...measured };
+      const update = {
+        type: "update" as const,
+        progress: getSourceProgress("sun"),
+        shapeHold,
+        ...measured,
+      };
       if (worker) post(update);
       else fallback?.update(update);
     };
@@ -159,7 +219,8 @@ export default function GatherCanvas() {
 
     // Progress is cheap to read, so it goes often. Measuring the "o" forces a layout, so it goes rarely.
     const sendProgress = () => {
-      const update = { type: "update" as const, progress: getAssetProgress() };
+      resolveShapeHold();
+      const update = { type: "update" as const, progress: getSourceProgress("sun"), shapeHold };
       if (worker) post(update);
       else fallback?.update(update);
     };
@@ -182,9 +243,26 @@ export default function GatherCanvas() {
       if (worker) post(update);
       else fallback?.update(update);
     };
-    const onAssembleStart = () => setClearing(1);
-    const onAssembleEnd = () => setClearing(0);
-    window.addEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
+    // ⚠ Keyed to SUN_FORMING, not to SUN_ASSEMBLE. The cue is the intro ASKING for the assembly; the
+    // forming event is the star actually lighting inside its shell, halfway through the flight. Keying
+    // the withdrawal to the cue meant that on a slow load — where the gate gives up on assets and asks
+    // for an assembly the sun has no model to perform — the dust pulled back from around an empty "o"
+    // and stayed pulled back for the whole remaining download. The field's own hole, with nothing
+    // arriving to fill it.
+    //
+    // On the forming event there is a star there by construction, and the dust has been streaming
+    // uninterrupted for the entire wait and the whole first half of the flight.
+    let clearingFallback = 0;
+    const onSunForming = () => {
+      setClearing(1);
+      window.clearTimeout(clearingFallback);
+      clearingFallback = window.setTimeout(() => setClearing(0), CLEARING_MAX_MS);
+    };
+    const onAssembleEnd = () => {
+      window.clearTimeout(clearingFallback);
+      setClearing(0);
+    };
+    window.addEventListener(SUN_FORMING_EVENT, onSunForming);
     window.addEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
 
     return () => {
@@ -192,8 +270,9 @@ export default function GatherCanvas() {
       window.clearInterval(measureTimer);
       window.removeEventListener("resize", resize);
       window.removeEventListener(IGNITE_EVENT, onIgnite);
-      window.removeEventListener(SUN_ASSEMBLE_EVENT, onAssembleStart);
+      window.removeEventListener(SUN_FORMING_EVENT, onSunForming);
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
+      window.clearTimeout(clearingFallback);
       // Deferred so a StrictMode re-mount (which runs in the same commit) can cancel it and adopt the
       // worker. A real unmount has nothing to cancel it, so the worker is genuinely torn down.
       const entry = WORKERS_BY_CANVAS.get(canvas);

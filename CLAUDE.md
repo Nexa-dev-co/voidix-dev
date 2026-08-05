@@ -84,8 +84,12 @@ strengthen the Voidix identity? Could it appear on Awwwards? If not — build so
 | `three` ^0.184 | All WebGL. Four independent scenes — see below. Always dynamically imported (`ssr: false`). |
 | `gsap` + `ScrollTrigger` + `ScrollToPlugin` | Used **directly**. No `@gsap/react`, no `useGSAP`. |
 
-There is **no** shadcn/ui, no Framer Motion, no form library, no validation library, and **no
-smooth-scroll layer** — scroll is native. (`lenis`, `ogl` and `@gsap/react` were dependencies that
+There is **no** shadcn/ui, no Radix, no Framer Motion, no form library, no validation library, and **no
+smooth-scroll layer** — scroll is native. (The bottom sheet in `components/ui/Drawer` is hand-rolled for
+exactly this reason. It is worth keeping that way beyond dogma: the one thing an off-the-shelf sheet
+could not know is that this site's carousel steps on `wheel`/`touchmove` bound to **`window`**, so a
+drag inside the sheet would also advance the section behind it. `useDrawerSheet` swallows the gesture
+before it reaches window — the same trick `useScrollGuard` uses for the FAQ panel.) (`lenis`, `ogl` and `@gsap/react` were dependencies that
 nothing imported; removed 2026-07-28. If you want smooth scroll, wire it deliberately and re-sync
 ScrollTrigger to it.)
 
@@ -95,30 +99,55 @@ Defined in `app/globals.css` `:root`, exposed to Tailwind in `tailwind.config.ts
 a colour.**
 
 ```css
---bg: #060606;                        /* near-black page background */
---fg: #ebe8e0;                        /* warm off-white text        */
---muted: rgba(235, 232, 224, 0.38);   /* secondary / metadata       */
---accent: var(--sun-accent);          /* the sun's amber, #ff8a1a   */
---border: rgba(235, 232, 224, 0.08);  /* hairlines                  */
---card: #0d0d0d;                      /* elevated surfaces          */
+--bg: #060606;                          /* near-black page background */
+--fg: #ebe8e0;                          /* warm off-white text        */
+--muted: rgba(235, 232, 224, 0.38);     /* secondary / metadata       */
+--accent: var(--sun-accent);            /* → --heat-600, the sun's amber #ff8a1a */
+--accent-deep: #8f4400;                 /* the anchor, for the CREAM  */
+--border: rgb(var(--heat-600-rgb)/0.1); /* hairlines — warm, on dark surfaces only */
+--card: #0d0d0d;                        /* elevated surfaces          */
 ```
 
 Non-token colours that matter: the hero's cream `#e2dfd2` and `--hero-invert-text: #c0c0c0`.
 
-**The accent IS the sun.** `--accent` used to be an electric cyan held deliberately apart from the star;
-that split is gone and it now aliases `--sun-accent`. Retune the star and the navbar, the meters, the
-CTA, the contact form and the footer all follow.
+### The heat ramp (added 2026-08-04)
 
-⚠ **Amber on a light background needs deepening, and two places already do it.** The raw `#ff8a1a`
-manages 1.77:1 on the hero's cream and 2.36:1 on the chamber's white room — nowhere near the 4.5:1 small
-text needs. `--hud-accent` (`#8f4400`) and `chamberTuning`'s `holoTint` (`#a85400`) are the deepened
-versions. Check any retune of those against their own background, not against black.
+**There is one colour scale, `--heat-000 … --heat-999`, and it is a TEMPERATURE scale, not a tint
+scale** — the hue rotates 11° → 46° as luminance climbs, because that is what hot matter does.
+Luminance is strictly monotonic; keep it that way, several consumers were graded against a stop's
+value rather than its hue.
+
+Nine of its twelve stops were values already authored by hand in separate files (`portalGate`,
+`accretionGrowth`, `gatherShader`, `chamberTuning`, `SunModelCanvas`, deck 03). The ramp did not
+invent a palette — it named the one that had already converged. Full audit and rationale in
+`docs/amber-color-system.md`.
+
+`--accent` → `--sun-accent` → `--heat-600`, aliased all the way down. Retune `--heat-600` and the
+navbar, the meters, the CTA, the contact form and the footer all follow.
+
+⚠ **The bottom half of the ramp is not for type.** `--heat-400` and below fail 4.5:1 even on the page
+black (`#d92a05` is 4.13:1). Those stops are light, geometry and glow. The floor for small text on
+black is `--heat-500` (7.80:1).
+
+⚠ **Amber on a light background needs deepening — pick the accent by SUBSTRATE.** The raw `#ff8a1a`
+manages 1.77:1 on the hero's cream, nowhere near the 4.5:1 small text needs. `--accent-deep`
+(`#8f4400`, 5.93:1 on the cream) exists for exactly this and `--hud-accent` now aliases it. Check any
+retune against the cream, not against black. (`chamberTuning`'s `holoTint` was the other deepened
+value, at `#a85400` for the WHITE room; that room is dark now and it is back to the raw `#ff8a1a`.)
+
+**The cool axis is the counterweight, and it has a rule.** `--slate-200/400/600/800`, mirrored for
+the WebGL scenes in `lib/coolPalette.ts` — amber only reads as heat if something in frame is cold.
+Every scene knew this and each picked its own blue; there were eight and three were the same colour
+under different names. **It is lighting and substrate ONLY — never brand, type or UI.**
+
+**The one deliberate exception** is the deck's AI ship (`deckServices` 04), a purple→cyan that is
+kept on purpose. The fleet is allowed one alien. Don't "fix" it.
 
 **Type:** `--font-syne` (Syne, 700/800) for display via `.font-display`; `--font-dm-sans` (DM Sans,
 300/400/500) is the `<body>` default. `.eyebrow` is the uppercased kicker helper. A fluid scale
 (`--fs-micro … --fs-mark`) drives sizing — use it rather than fixed px.
 
-**All CSS lives in `app/globals.css`** (~1,900 lines, class-based). There are no CSS Modules.
+**All CSS lives in `app/globals.css`** (~2,700 lines, class-based). There are no CSS Modules.
 
 ## Responsiveness — non-negotiable
 
@@ -126,15 +155,45 @@ Everything ships working from ~360px phones to large desktops **in the same chan
 
 - **Fluid by default** — `clamp()` / viewport units and the `--fs-*` tokens, not fixed px. Reach for
   a breakpoint only when fluid scaling genuinely can't fix the layout.
-- **The breakpoint is `@media (max-width: 51.25em)`** (≈820px). Reuse it.
+- **There are two breakpoints, and they mean different things.** `@media (max-width: 51.25em)`
+  (≈820px) is the main one — reuse it for anything that is simply "narrow", and most things only need
+  this. `@media (max-width: 30em)` (480px) is the TRUE PHONE, added 2026-08-04 for the contact
+  section: a 390px portrait phone and an 800px landscape tablet are not the same problem, and the
+  contact footer's three link columns are correct at 800px and wrong at 390px. Don't reach for 30em
+  when 51.25em would do.
+- **Full-height boxes use `100svh`, with a `100vh` line above it as the fallback.** On mobile browsers
+  `100vh` is the LARGE viewport — the height the page would have with the chrome hidden — so anything
+  pinned to the bottom of a `100vh` box (the fleet's carousel strip, the works arrows, the contact
+  footer) sits under the toolbar. `svh` is the small viewport and, unlike `dvh`, never changes as you
+  scroll, so it can't reflow mid-gesture. Applies to `.hero-section`, `.deck-overlay`, `.works-overlay`.
 - **3D scenes reframe, not stretch** — update camera aspect on resize, keep subjects framed at
-  portrait, clamp DPR.
+  portrait, clamp DPR. ⚠ **The portrait pull-back lives in `lib/portraitPullback.ts` and BOTH the deck
+  and the works field read it from there.** It used to be one inline expression in `useWorksField`'s
+  resize handler, which was fine until you remember that the services→works flight hands one camera
+  between two renderers: the field pulled back on a phone, the flight did not, and the mark arrived
+  filling the frame and shrank by 1.9× the instant browsing took over. The flight now ramps between
+  the two framings, exactly 1 at progress 0 (the fleet's resting shot) and exactly the browsing scale
+  at 1 (`FLIGHT_LANDING_KEY`). Change one scene's use of it and you must change the other's.
 - **Scrubbed animation must survive resize** — `invalidateOnRefresh` + function-based tween values,
   measure with `measureUntransformedRect` (never a transformed `getBoundingClientRect`), and
   `ScrollTrigger.config({ ignoreMobileResize: true })` so a mobile address bar doesn't re-pin.
 - **Phones don't mount the optional hero effects at all** — `useIsLowPowerViewport` unmounts
   `FluidCursor` and `HeroInstruments` below 760px / on coarse pointers. Hiding with CSS leaves the
   rAF loops running, which is the opposite of the point.
+- **⚠ `useIsLowPowerViewport` and `useIsNarrowViewport` are different questions.** The first is *how
+  much work can this device do* (coarse pointer or <760px) and gates WebGL. The second is *how much
+  room is there* (the 51.25em query, mirrored from the CSS) and gates LAYOUT. A phone answers yes to
+  both; a narrow window on a fast desktop wants the narrow layout and the full effects.
+- **Copy that doesn't fit goes in the drawer, not in the bin.** `components/ui/Drawer` is the phone's
+  bottom sheet: services, works, contact and the navbar all use it. Every section past the hero is one
+  pinned viewport with a live scene behind it, so on a phone the screen keeps only what NAMES the thing
+  you're looking at and everything else is a tap away. ⚠ It portals to `body` — ScrollTrigger wraps the
+  pin in a *transformed* spacer, which turns `position: fixed` inside the hero into something that
+  behaves like `absolute` (the same reason `FaqHologram` lives in `page.tsx`).
+- **⚠ A hard `<br/>` in a headline is a desktop instruction.** On a 360px screen it compounds with the
+  natural wrap — the fleet's title came out as *"One craft at / a time. / Bring it / online."* Wrap each
+  sentence in a span, drop the `<br/>`, and let `text-wrap: balance` even the lines. Not
+  `text-align: justify`: at a ~310px measure it opens rivers rather than closing the rag.
 
 ## Project structure
 
@@ -155,6 +214,8 @@ components/
     IntroSequence/  # loader: GatherCanvas, gather.worker, LoaderTelemetry/
     FluidCursor/    # hero ink trail (hand-rolled WebGL fluid sim)
     ConstellationFrame/
+  ui/
+    Drawer/         # the phone's bottom sheet — shared by services, works, contact and the navbar
 
 lib/                # shared: the pin's layout maths, events, perf systems, tuning constants
 scripts/optimizeModels.mjs   # `npm run optimize:models` — per-model gltf-transform recipes
@@ -254,9 +315,32 @@ field, driven by **real asset progress** — not a timer.
 - **`GatherCanvas` + `gather.worker.ts`** render dust streaming in from off-screen. The render loop
   runs in a **Web Worker on an `OffscreenCanvas`** so it keeps painting while the main thread is
   blocked parsing glTF and compiling shaders. A main-thread fallback exists for older Safari.
-- **The sun assembles.** At 100% the ten fracture shards of `fractured_sun.glb` sweep in from
-  outside the frame and lock together; the star lights inside the closing shell. The intro holds
-  its handoff on `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
+- **The ten shards WAIT ON SCREEN, then assemble.** For the whole download the fracture shards of
+  `fractured_sun.glb` drift and turn among the dust — the largest, hottest debris in the same flow —
+  then sweep in and lock together, and the star lights inside the closing shell. The intro holds its
+  handoff on `SUN_ASSEMBLED_EVENT`, so the reveal can never land on a half-built star.
+  ⚠ They used to wait CLIPPED off-frame (`ASSEMBLY_ENTRY_MARGIN_*` above 1) so that "you never catch a
+  piece appearing". On a slow load that left the loader with nothing on it but dust for a minute, and
+  the star arriving from nowhere at the end. The margins now straddle the frame edge and
+  `positionShards` is driven every frame while it waits — the drift and tumble were always written,
+  nothing was advancing their clock.
+- ⚠ **The gate's waits are SERIAL, and that is load-bearing.** 100% does not cue the shards — the
+  assembly starts only once both scenes report warm. They used to fire on the same tick, and the
+  flight is delta-timed with a clamp, so it stuck mid-air rather than catching up.
+- ⚠ **But each scene warms ITSELF, when its OWN assets land — not at the global 100%.**
+  `ASSETS_WARMUP_EVENT` is now only a backstop for a section whose build failed. The shared wait was
+  stacking two compiles and both scenes' first-ever composer render into a two-frame window at exactly
+  100%, immediately before the flight. Self-warming spends the field's share inside the fleet's
+  download, where the GPU is idle. **Each warm-up is one operation per frame** for the same reason.
+- ⚠ **The stall is in the GPU PROCESS, not on the main thread**, and the discriminator is cheap: *does
+  the worker-rendered dust freeze with it?* If yes, stop looking at JavaScript — the compositor cannot
+  present anyone's frames while the GPU process is busy, worker canvases included. Both a first draw
+  (allocation + upload) and a first compile land there. See `docs/loader-freeze-plan.md` §7 and
+  `docs/lag-and-freeze-diagnosis.md` §6.
+- **Anything built lazily and drawn later must be warmed** — `lib/warmScene.ts`, on an idle frame.
+  The sun's corona, the chamber and the contact star all had the same shape: built, hidden, then
+  compiling and uploading every map on the single frame they first appeared, which for two of them was
+  inside a scrubbed crossing.
 - Then the sun **flies from the wordmark's "o" into the hero square** and `REVEAL_EVENT` fires.
 
 ### Contract 1 — scroll is locked for the whole intro
@@ -341,6 +425,7 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:reveal` | `REVEAL_EVENT` | IntroSequence | **The** intro→site handoff. Hero pin, navbar entrance, sun z-index all wait on it. |
 | `voidix:intro-active` | `INTRO_ACTIVE_EVENT` | IntroSequence | Intro is up. |
 | `voidix:sun-assemble` / `-assembled` | `SUN_ASSEMBLE_EVENT` / `SUN_ASSEMBLED_EVENT` | IntroSequence ↔ SunModelCanvas | Cue and completion of the shard assembly. The intro holds on the latter. |
+| `voidix:sun-forming` | `SUN_FORMING_EVENT` | SunModelCanvas | The star has lit inside its closing shell — the assembly's MIDPOINT (`CORONA_APPEAR`), not its cue. The gather field withdraws from around the star on this. ⚠ It must not key off the *cue*: the cue is only the intro asking, and on a slow load the sun has no model to answer with — so the dust pulled back from an empty "o" and stayed pulled back for the rest of the download. Fired from inside the flight, so a star exists by construction. |
 | `voidix:intro-ignite` | `IGNITE_EVENT` | IntroSequence | The gather field's final rush. |
 | `voidix:assets-warmup` | `ASSETS_WARMUP_EVENT` | IntroSequence | Asks each scene to compile shaders during a still beat, so the stall is invisible. |
 | `deck:reveal` / `deck:hide` | `DECK_REVEAL_EVENT` / `DECK_HIDE_EVENT` | useHeroAnimation | **The fleet itself** enters/leaves — replay the craft's entrance. Nothing else. |
@@ -368,7 +453,33 @@ whatever scrolls under it); `.nav-accent` sits behind holding everything that mu
 (top line, orbital mark, the meters), so the blend never turns it blue.
 
 Each nav item has a cyan meter. **A section feeds its meter by setting `--nav-progress-<key>` on
-`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`.
+`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`, plus
+**`total`**, which is the pin's own progress and therefore the whole circuit as one number.
+
+**On a phone the bar is the ORBIT FAN** (`Navbar/OrbitDial`), and it is a GESTURE, not a menu. The bar
+reads `Navigate ⊙`; hold it and one arc bows out beneath, four nodes on it, each running a leader line
+to its number and name. Drag along a row and let go. **Releasing off every station navigates nowhere** —
+deliberate, because every destination here is a scrubbed cinematic several seconds long and a mis-tap
+costs the journey, not a page load. A press that never *moved* latches the fan open instead of closing,
+which is the only thing that makes it operable without the gesture (mouse, keyboard, anyone who can't
+hold a drag steady); it still navigates nothing.
+
+- **`orbitGeometry.ts` is the single source for the angles.** The drawing and the hit-testing both read
+  it; a copy in the stylesheet would be a selection that lands one facet off what you can see.
+- ⚠ The sweep is **51°, not 180°** — the pivot is the top-right corner, so half the circle is off-screen
+  and more of it is above the bar. And it starts at **105°, not 90°**: near straight-down, y barely
+  changes with angle and the first two labels landed on top of each other.
+- ⚠ The **radius is sized by the labels**, not by taste. Rows hang LEFT of their node (the pivot is the
+  top-right corner), and the topmost node is furthest left, so `nodeX(top) − rowWidth > 0` binds. Raise
+  it for a grander arc and CONTACT walks off the side.
+- ⚠ A station's `transform` is what **places** it on the arc, so GSAP may only tween its `autoAlpha`.
+  The swing lives on the container, which owns no layout.
+- ⚠ The amber lives in `.nav-accent` with a transparent press target in `.nav-root` — the same split
+  `.orbital-mark` / `.nav-mark-spacer` uses, because `.nav-root`'s difference blend turns amber blue.
+  `.nav-accent` is a *preceding* sibling, so no combinator reaches back to it: Navbar writes the open
+  state onto both.
+- ⚠ The scrim's first gradient stop is **transparent**. It's z 10000 over a 9999 navbar, so without a
+  hole it would black out the very mark being held.
 `useNavbarAnimation` positions each meter by measuring live layout (re-run on resize and once fonts
 are ready), so a new section's meter works with zero navbar changes. Entrance plays on
 `REVEAL_EVENT`, items converging from the four directions in their `data-enter`.
@@ -379,16 +490,43 @@ These exist and are load-bearing — don't reinvent them:
 
 | `lib/` | Job |
 |---|---|
-| `adaptivePixelRatio.ts` | Measures real frame times and trades resolution for smoothness. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. |
-| `performanceTier.ts` | `'low' \| 'high'` from measured frame times; picks which texture tier to fetch. |
-| `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size.** |
-| `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones. |
+| `gpuProbe.ts` | Times **one real frame** of a real pipeline with a GPU drain either side of it. Used once, on the works field's warm-up render — a render that had to happen anyway, so the measurement is nearly free. |
+| `adaptivePixelRatio.ts` | The shared resolution. **Native by default; above native has to be EARNED** by the probe. Also runs a live controller on real frame times for the rest of the session. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. |
+| `warmScene.ts` | Compiles a scene's programs **and uploads its maps** on an idle frame. Both halves are needed: `compile()` builds programs only, and three uploads a texture on first *draw*. |
+| `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size — shrinking one invalidates them exactly as much as growing one.** |
+| `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones — **and is the sole source of the `lowPower` flag** the heavy scenes branch on. |
+
+⚠ **The site DOES pick quality from a measurement now, and it is new** (2026-08-03). An earlier
+revision of this file said the opposite, correctly at the time: a `performanceTier.ts` had classified
+`'low' | 'high'` off `adaptivePixelRatio`'s own samples, was imported by nobody, and was deleted with
+`getPerformanceSnapshot()` on 2026-08-02. **What exists now is not that design.** `performanceTier`
+read the live controller's samples, which is circular — the controller had already acted on them.
+`gpuProbe` takes ONE independent measurement before the first visible frame, and
+`reportProbedFrameCost` solves a ratio from it (`probeRatio × √(budget ÷ measured)`). `lowPower` is
+still a **viewport and pointer check** decided once at mount, and is a separate thing.
+
+**The default is native.** Rendering above it costs 2.25× the pixels *and* 2.25× the render-target
+memory through bloom and post; a machine has to measure fast enough to be allowed it. Guessing upward
+and clawing back does not work, because the claw-back only happens after the expensive configuration
+has already been allocated on the machine that could not afford it.
 
 **Only one heavy 3D scene ever draws at a time past the hero** — the deck and the works field gate
-each other off, and both stop on tab-hidden. Preserve that.
+each other off, and both stop on tab-hidden. Preserve that. ⚠ **The sun is the exception and always
+has been:** it is demand-rendered but `covered` only goes true at the chamber reveal, so it draws
+alongside the deck through services and alongside the field through works. Deliberate — the star
+breathes and collapses across those spans, and the works backdrop is transparent behind it.
+
+⚠ **`samples` on a composer target is paid TWICE.** `EffectComposer` clones the target it is handed
+(`renderTarget2 = renderTarget.clone()`) and `RenderTarget.copy` carries `samples` across. A
+full-resolution 4× MSAA HalfFloat target is ~83 MB on a 1512×982 panel at ratio 1, so a two-composer
+scene at `samples: 4` is ~330 MB before anything else. Count them before adding one. The works field's
+**screen** stage runs at `samples: 0` for exactly this reason: for the whole of works it draws one
+pixel-aligned fullscreen quad carrying an already-resolved texture, and its `SMAAPass` is likewise
+enabled only while the chamber is on screen.
 
 Costs, roughly: WorksField + Chamber ●●●●● > ServicesDeck ●●●●○ ≈ FluidCursor ●●●●○ > sun ●●●○○.
-`UnrealBloom` is the recurring expensive pass. Full breakdown in `docs/performance-ratings.md`.
+`UnrealBloom` is the recurring expensive pass. Diagnosis of what actually made a laptop crawl — with
+the numbers — is in `docs/lag-and-freeze-diagnosis.md`.
 
 ## Nothing is configurable at runtime
 

@@ -136,6 +136,8 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
   uniform float uSize;
   uniform float uOpacity;
   uniform float uPixelRatio;
+  uniform float uShapeHold;      // 0..1 — how far the field has left the flow for a held form
+  uniform float uShapePhase;     // advances 1.0 per form; the fraction is the morph into the next
 
   varying float vAlpha;
   varying float vHeat;
@@ -151,8 +153,22 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
   const float DEPTH_NEAR = 22.0;
   const float DEPTH_FAR = 54.0;
 
-  /** Fraction of the field alive at zero progress — enough to read as a field, sparse enough to grow. */
-  const float MIN_DENSITY = 0.18;
+  /**
+   * Fraction of the field alive at zero progress.
+   *
+   * ⚠ Was 0.18, and 0.18 is where "the field reports the truth" stopped being a virtue. Do the sum for
+   * a stalled load: 18% of the grains alive, spread over the WHOLE viewport rather than a band, each
+   * one far enough out that \`scale\` is ~0.15-0.28 — which puts its alpha at ~0.3 and its point size
+   * under one pixel, so it clamps to SIZE_MIN_PIXELS. A screen of one-pixel dots at a third alpha on
+   * near-black, drifting at 0.16 trips per second, is not a thin trickle from deep space. It is an
+   * empty screen, and that is exactly what it was reported as.
+   *
+   * Half the field is the floor now. Progress still reads — density climbs to double this, and the
+   * FLOW RATE (gatherRenderer) doubles with it, which is the cue that actually carries — but the
+   * loader can no longer look switched off while it is working. The honest number the field cannot
+   * give you is on the counter and the telemetry meter anyway.
+   */
+  const float MIN_DENSITY = 0.5;
   /**
    * How much brighter a particle burns in the instant it is absorbed at the rim, and how narrow that
    * window is. Kept narrow on purpose: everything converges at the rim, so a wide flare window means a
@@ -172,6 +188,107 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
   // screen, which is the "hide all the dust during the assembly" reading of the same idea.
   const float CLEAR_INNER = 2.6;
   const float CLEAR_OUTER = 4.2;
+
+  // ══ THE HELD FORMS ══════════════════════════════════════════════════════════════════════════════
+  //
+  // On a slow connection the loader is on screen for a minute or more, and the flow alone cannot carry
+  // that: it is the same picture at second 3 and second 70. So when the wait is long enough to be worth
+  // it (GatherCanvas decides, from a measured ETA) the same 60k grains leave the stream and gather into
+  // a form, hold it, and dissolve into the next one. Nothing else is added to the loader and no model
+  // is downloaded to do it — these are the dust it already has.
+  //
+  // ⚠ THEY MUST NEVER BE STILL. This file's own rule is that a loading screen cannot animate on
+  // position, because a stalled load then means a stationary pose. Every form below therefore turns on
+  // its own axis and is built so the turn is legible: a sphere shows it through the depth ramp, the
+  // disc and the spiral through shear. A frozen form would be the exact failure the flow exists to
+  // prevent, just prettier.
+  //
+  // Each is a closed-form function of the particle's own seed, so there are no target buffers, no extra
+  // attributes and no CPU work per frame — one uniform says which form, another how far into it.
+  //
+  // Sizes are in SUN RADII, like everything else here. The frame's half-height is about 19 of them, so
+  // a form of radius 12-20 fills a good part of the screen. ⚠ These are the first knobs to reach for:
+  // they were written to the geometry, not tuned against the real loader.
+  const float SHAPE_COUNT = 3.0;
+  // Pushes each form far enough back that nothing crosses the lens. ⚠ It has to clear the deepest
+  // point any form reaches toward the camera (the star's shell, at its radius) or the perspective
+  // divide runs away — at this offset the nearest grain sits at about 1.3x and the furthest at 0.3x,
+  // which is a real depth ramp without anything degenerate at either end.
+  const float SHAPE_DEPTH_OFFSET = 10.0;
+  const float TAU = 6.2831853;
+
+  // Form 0 — the star. A shell, not a disc, so the depth ramp does the reading.
+  const float STAR_SHAPE_RADIUS = 12.0;
+  const float STAR_SPIN = 0.16;
+  // Form 1 — the black hole. An accretion annulus with a genuinely empty core, seen at a tilt.
+  const float HOLE_INNER = 6.0;
+  const float HOLE_OUTER = 20.0;
+  const float HOLE_THICKNESS = 1.1;
+  const float HOLE_TILT = 1.05;
+  const float HOLE_SPIN = 1.5;
+  // Form 2 — the galaxy. Log-spiral arms, flattened, tilted a little further than the disc.
+  const float GALAXY_ARMS = 3.0;
+  const float GALAXY_INNER = 1.5;
+  const float GALAXY_OUTER = 22.0;
+  const float GALAXY_TURNS = 0.62;
+  const float GALAXY_SCATTER = 3.4;
+  const float GALAXY_FLATTEN = 1.3;
+  const float GALAXY_TILT = 1.18;
+  const float GALAXY_SPIN = 0.2;
+
+  /** Fraction of a form's cycle spent HOLDING it; the rest morphs into the next. */
+  const float SHAPE_HOLD_FRACTION = 0.62;
+
+  float hash(float x) {
+    return fract(sin(x) * 43758.5453123);
+  }
+
+  vec3 rotateX(vec3 p, float angle) {
+    float s = sin(angle);
+    float c = cos(angle);
+    return vec3(p.x, p.y * c - p.z * s, p.y * s + p.z * c);
+  }
+
+  vec3 formPosition(float form, float seed, float t) {
+    float a = hash(seed * 12.9898);
+    float b = hash(seed * 78.2330);
+    float c = hash(seed * 37.7190);
+    float d = hash(seed * 93.9898);
+
+    if (form < 0.5) {
+      // ── The star ──
+      // Uniform on a sphere: the vertical coordinate has to be the one distributed evenly, or the
+      // grains bunch at the poles.
+      float y = a * 2.0 - 1.0;
+      float ring = sqrt(max(0.0, 1.0 - y * y));
+      float phi = b * TAU + t * STAR_SPIN;
+      return vec3(ring * cos(phi), y, ring * sin(phi)) * STAR_SHAPE_RADIUS;
+    }
+
+    if (form < 1.5) {
+      // ── The black hole ──
+      // sqrt on the radial pick spreads grains evenly over the ANNULUS rather than over its radius,
+      // which would pile them against the inner edge. The sweep is Keplerian, so the disc shears the
+      // way the site's finale does.
+      float radius = mix(HOLE_INNER, HOLE_OUTER, sqrt(a));
+      float sweep = t * HOLE_SPIN * pow(HOLE_INNER / radius, 1.5);
+      float angle = b * TAU + sweep;
+      float height = (c - 0.5) * HOLE_THICKNESS;
+      return rotateX(vec3(cos(angle) * radius, height, sin(angle) * radius), HOLE_TILT);
+    }
+
+    // ── The galaxy ──
+    // Arms are a log spiral: the angle grows with the radius, so the arm trails. Scatter widens with
+    // radius, which is what keeps the core tight and the outskirts loose.
+    float arm = floor(a * GALAXY_ARMS);
+    float along = b;
+    float radius = mix(GALAXY_INNER, GALAXY_OUTER, along);
+    float angle =
+      (arm / GALAXY_ARMS) * TAU + along * GALAXY_TURNS * TAU + t * GALAXY_SPIN;
+    vec3 point = vec3(cos(angle) * radius, (c - 0.5) * GALAXY_FLATTEN, sin(angle) * radius);
+    point.xz += vec2(cos(angle + 1.5708), sin(angle + 1.5708)) * (d - 0.5) * GALAXY_SCATTER * along;
+    return rotateX(point, GALAXY_TILT);
+  }
 
   void main() {
     float phaseOffset = aParticle.z;
@@ -224,6 +341,36 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
     screenRadius *= 1.0 - uIgnite * uIgnite;
 
     vec2 aspectPosition = uTarget + vec2(cos(angle), sin(angle)) * screenRadius;
+
+    // ── Leaving the stream for a held form ──
+    // Staggered per particle so the field gathers over a beat instead of snapping: each grain starts
+    // its own crossing at a different point in uShapeHold, and the smoothstep gives it an ease.
+    float holdStagger = clamp(uShapeHold * 1.45 - seed * 0.45, 0.0, 1.0);
+    float hold = smoothstep(0.0, 1.0, holdStagger);
+
+    if (hold > 0.001) {
+      // Which form, and how far into the next. The hold fraction is what makes it a SEQUENCE — sit on
+      // one shape, dissolve, sit on the next — rather than a continuous unresolved churn.
+      float cycle = floor(uShapePhase);
+      float morph = smoothstep(SHAPE_HOLD_FRACTION, 1.0, fract(uShapePhase));
+      float formFrom = mod(cycle, SHAPE_COUNT);
+      float formTo = mod(cycle + 1.0, SHAPE_COUNT);
+
+      vec3 formPoint = mix(
+        formPosition(formFrom, seed, uTime),
+        formPosition(formTo, seed, uTime),
+        morph
+      );
+
+      // Through the SAME pinhole the flow uses, so a grain that leaves the stream keeps its depth cues
+      // and the two states are one space rather than two effects sharing a screen.
+      float formScale = uCameraDistance / (uCameraDistance + SHAPE_DEPTH_OFFSET + formPoint.z);
+      vec2 formAspect = uTarget + formPoint.xy * formScale * uSunRadius;
+
+      aspectPosition = mix(aspectPosition, formAspect, hold);
+      scale = mix(scale, formScale, hold);
+    }
+
     // Aspect units back to clip space.
     gl_Position = vec4(aspectPosition.x / uAspect, aspectPosition.y, 0.0, 1.0);
 
@@ -241,13 +388,32 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
     float absorbed = smoothstep(ABSORB_START, ABSORB_PEAK, phase);
     float extinguish = 1.0 - smoothstep(0.92, 1.0, phase);
 
+    // The flow's whole birth → absorb → die cycle is a function of PHASE, which keeps running while a
+    // form is held — so left alone it would make the shape twinkle and dissolve at exactly the moment
+    // it is meant to be a solid object. Faded out with the crossing, so the form holds steady and the
+    // stream gets its lifecycle back on the way out.
+    float lifecycle = born * extinguish * (1.0 + absorbed * ABSORB_FLARE);
+    lifecycle = mix(lifecycle, 1.0, hold);
+
     // Heat is DEPTH, not progress: cold in the void, starlight at the surface. That is what makes the
-    // stream read as travelling rather than as a field changing colour over time.
-    vHeat = scale;
+    // stream read as travelling rather than as a field changing colour over time — and inside a form
+    // it is what makes the near face read as nearer.
+
+    // ⚠ CLAMPED, and it must be. In the flow the scale cannot exceed 1 — it is interpolated toward
+    // the rim — but a form's near face sits closer than the sun does, so it goes above 1. Both uses
+    // below are mix() endpoints, and mix EXTRAPOLATES past t=1: unclamped, the grains nearest the
+    // camera come out hotter than starlight and brighter than the absorption flare, which additive
+    // blending turns into white blobs. gl_PointSize deliberately keeps the raw value — nearer really
+    // is bigger.
+    //
+    // (And no backticks in here, ever. This file's own header says so and this comment is where it
+    // bit for the third time — a backtick closes the template literal the shader source lives in.)
+    float shade = clamp(scale, 0.0, 1.0);
+
+    vHeat = shade;
     vAlpha =
-      uOpacity * alive * born * extinguish *
-      mix(0.18, 0.8, scale) *
-      (1.0 + absorbed * ABSORB_FLARE) *
+      uOpacity * alive * lifecycle *
+      mix(0.18, 0.8, shade) *
       (1.0 - uClearing * nearStar) *
       (1.0 - smoothstep(0.55, 1.0, uIgnite));
 

@@ -3,12 +3,15 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
+import { createFrameTimer } from '@/lib/frameTimer';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
+  SUN_FORMING_EVENT,
+  INTRO_MARKER_SELECTOR,
 } from '@/components/effects/IntroSequence/introEvents';
 import {
   SUN_FRAMING_NUDGE_X,
@@ -30,6 +33,13 @@ import {
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
+import { warmSceneMaterials } from '@/lib/warmScene';
+import { SLATE_400 } from '@/lib/coolPalette';
+import {
+  reportAssetProgress,
+  reportWarmupDone,
+  reportSourceActivity,
+} from '@/lib/assetLoadProgress';
 
 // The shared sun — the real fractured_sun model, replacing the procedural plasma shader.
 //
@@ -42,7 +52,6 @@ import { createSunParticles } from '@/lib/sunParticles';
 // only then does the intro hand over. See the assembly section below.
 
 const MODEL_PATH = '/models/fractured_sun.glb';
-const DRACO_DECODER_PATH = '/draco/';
 
 // ── The "Peaceful" stage ──
 const MODEL_ROTATION = { x: 5, y: 106, z: -59 };
@@ -65,7 +74,8 @@ const EXPOSURE = 1.42;
 const ENV_INTENSITY = 1.77;
 const KEY_COLOR = 0xfff4e0;
 const KEY_INTENSITY = 2.7;
-const FILL_COLOR = 0x2a3550;
+/** The shared cool fill — the same sky the fleet and the works field are lit by. */
+const FILL_COLOR = SLATE_400;
 const FILL_INTENSITY = 0.5;
 const AMBIENT_INTENSITY = 0.25;
 const CAMERA_FOV = 45;
@@ -107,20 +117,29 @@ const ASSEMBLY_DEPTH = 23;
 /** Extra depth variation, so they are not all on one plane. */
 const ASSEMBLY_DEPTH_SPREAD = 20;
 /**
- * How far outside the visible frame the shards begin, as a multiple of the frame's own half-height at
- * their depth.
+ * How far out the shards wait, as a multiple of the frame's own half-height at their depth.
  *
- * Above 1 they start CLIPPED, which is the whole point: you never catch a piece appearing, it is simply
- * already sweeping in when it crosses the edge. Above ~1.42 clears the frame's corners too, so a shard
- * entering on a diagonal is hidden as reliably as one entering on an axis.
+ * ⚠ These were 1.45 / 2.6 — deliberately OUTSIDE the frame, on the reasoning that "you never catch a
+ * piece appearing, it is simply already sweeping in when it crosses the edge". That was a good idea for
+ * a fast load and the wrong one for a slow one: it meant the ten shards spent the entire download
+ * clipped off-screen, so the loader had nothing on it but dust, and the star arrived from nowhere at
+ * the very end.
+ *
+ * They now WAIT IN FRAME, drifting and turning among the dust (see `driftShards`) — the largest pieces
+ * of the same flow, visibly present for as long as the load takes. The band still straddles the edge:
+ * the near ones sit comfortably inside it, the far ones hang just past the corner and swim in and out.
+ *
+ * The cost of this is real and worth naming: a piece is no longer hidden until it is moving, so the
+ * flight begins from something the visitor has already been looking at. That is the trade — the star
+ * assembling out of debris you have been watching, instead of out of nothing.
  */
-const ASSEMBLY_ENTRY_MARGIN_MIN = 1.45;
+const ASSEMBLY_ENTRY_MARGIN_MIN = 0.55;
 /**
- * The furthest out any shard starts. Spreading the margin across a range staggers the entries — the
- * nearest piece edges into frame early, the furthest arrives last — instead of ten pieces crossing the
- * border on the same frame.
+ * The furthest out any shard waits. Spreading the margin across a range staggers the entries — the
+ * nearest piece is well inside the frame, the furthest is past its corner — instead of ten pieces
+ * sitting on one ring.
  */
-const ASSEMBLY_ENTRY_MARGIN_MAX = 2.6;
+const ASSEMBLY_ENTRY_MARGIN_MAX = 1.35;
 
 /**
  * When the star itself appears, as a fraction of the assembly.
@@ -136,6 +155,21 @@ const ASSEMBLY_SPREAD = 1.4;
 /** Drift amplitude while they are still travelling — the "floating" part. Fades to 0 as they land. */
 const ASSEMBLY_FLOAT = 0.55;
 const ASSEMBLY_FLOAT_SPEED = 0.55;
+/**
+ * How fast a waiting shard turns on its own axis, in degrees per second.
+ *
+ * The drift above moves them through space; this turns them. Without it the pieces held one fixed
+ * orientation for the whole wait and read as painted on rather than as floating — the tumble
+ * quaternion is a START pose, and slerping it toward home by an `arrival` that is still 0 leaves it
+ * exactly where it began.
+ *
+ * Slow, and each piece gets its own axis and its own rate (scaled by its phase), because ten rocks
+ * turning at one speed is a carousel. Faded out as the assembly takes over — a piece that is docking
+ * has to be settling into its true orientation, not still spinning.
+ */
+const IDLE_TUMBLE_DEGREES_PER_SECOND = 11;
+/** Slow orbit of the whole waiting field about the star, so the group circles rather than just bobbing. */
+const IDLE_ORBIT_DEGREES_PER_SECOND = 4;
 /**
  * How much hotter the magma runs while the pieces are still falling in, as a multiple of its resting
  * emissive. Infalling matter is hot and cools as it settles — but the real job is legibility: at the far
@@ -158,15 +192,28 @@ const ASSEMBLY_SECONDS = 2.2;
 /** If the hero reveals while parts are still inbound, hurry them rather than snapping them into place. */
 const ASSEMBLY_REVEAL_SPEEDUP = 3;
 /**
- * When to start on our own if no cue ever arrives — measured from PAGE LOAD, not from mount.
+ * When to start on our own if no cue ever arrives — measured from THE MODEL LANDING, not page load.
  *
- * Only a backstop for an intro that never reaches its gate. It sits past the intro's own 12s asset
- * timeout so the two can't race; the normal no-intro case is handled immediately by INTRO_MARKER_SELECTOR
- * instead of by waiting this out.
+ * Only a backstop for an intro that never reaches its gate. It has to sit past the intro's LAST possible
+ * cue or the two race: losing that race starts the shard flight in the middle of a compile, which is the
+ * exact freeze the serial gate exists to prevent.
+ *
+ * ⚠ It used to be measured from page load (18500), derived by adding up the gate's three serial caps —
+ * 12s to give up on assets + 3.5s for the warm-up + 1s of lead. That arithmetic could not survive the
+ * gate it described. The intro now waits on the star for as long as the star keeps arriving instead of
+ * giving up on a deadline, so its "last possible cue" is a function of the visitor's BANDWIDTH and has
+ * no upper bound at all — at 20 KB/s the star lands around 78s, and any fixed number from page load is
+ * either far too small or an arbitrary guess at how slow a connection can get.
+ *
+ * Measured from the landing, the question becomes local and answerable: the model is here, so the only
+ * thing still owed is the intro's remaining gate — WARMUP_WAIT_MAX_MS (3.5s) plus ASSEMBLY_LEAD_MS (1s).
+ * This sits past that with room to spare, and it no longer has to be revised when anything upstream of
+ * the download changes. Before the model lands there is nothing to assemble, so there is nothing for
+ * this to be late for.
+ *
+ * The normal no-intro case is handled immediately by INTRO_MARKER_SELECTOR instead of by waiting this out.
  */
-const ASSEMBLE_CUE_FALLBACK_MS = 14000;
-/** An element only the loader renders — its presence means a cue is coming, so wait for it. */
-const INTRO_MARKER_SELECTOR = '.intro-o-slot';
+const ASSEMBLE_CUE_FALLBACK_MS = 8000;
 
 // ── The hero → services state ramp ──
 // What carries the sun from Peaceful into Cracks. It is a pure function of SCROLL (the pin's
@@ -321,6 +368,8 @@ interface Shard {
   tumble: THREE.Quaternion;
   /** Per-shard phase so they drift out of step rather than bobbing in unison. */
   phase: number;
+  /** Its own axis of rotation while it waits — see IDLE_TUMBLE_DEGREES_PER_SECOND. */
+  spinAxis: THREE.Vector3;
 }
 
 /** Everything that is not a shard — the star's body and its corona, which grow in as the shell closes. */
@@ -355,6 +404,9 @@ export default function SunModelCanvas() {
       preserveDrawingBuffer: true,
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_DEVICE_PIXEL_RATIO));
+    // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads —
+    // the loader throws rather than guessing. See lib/modelLoading.ts.
+    detectKtx2Support(renderer);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = EXPOSURE;
 
@@ -420,6 +472,8 @@ export default function SunModelCanvas() {
     const heatedMaterials: THREE.MeshStandardMaterial[] = [];
     const flareSpins: FlareSpin[] = [];
     const scratchSpin = new THREE.Quaternion();
+    /** Scratch for a waiting shard's spun tumble pose, so the per-frame drift allocates nothing. */
+    const idleTumble = new THREE.Quaternion();
 
     // ── Sizing ──
     let forceRender = true;
@@ -533,7 +587,9 @@ export default function SunModelCanvas() {
       // pace and is actually watched.
       forceAssembled = false;
       assemblyCued = true;
-      positionShards(0, clock.getElapsedTime());
+      // Reads only — this used to be `getElapsedTime()`, which advanced the clock from OUTSIDE the
+      // render loop and so stole the next frame's delta. See lib/frameTimer.ts.
+      positionShards(0, frameTimer.elapsed());
       forceRender = true;
     };
     window.addEventListener(SUN_REGATHER_EVENT, onRegather);
@@ -559,12 +615,10 @@ export default function SunModelCanvas() {
     // and mounts well after the intro has already announced itself — the event would be long gone.
     const introOnPage = document.querySelector(INTRO_MARKER_SELECTOR) !== null;
     if (!introOnPage) cueAssembly();
-    // Ultimate safety net: an intro that is on the page but never reaches its gate (a stalled asset it
-    // gives up on at 12s) must not leave the sun in pieces forever.
-    const cueFallbackTimer = window.setTimeout(
-      cueAssembly,
-      Math.max(0, ASSEMBLE_CUE_FALLBACK_MS - performance.now()),
-    );
+    // Ultimate safety net: an intro that is on the page but never reaches its gate must not leave the
+    // sun in pieces forever. Armed from the model's landing (see ASSEMBLE_CUE_FALLBACK_MS) — until
+    // then there is nothing to assemble and nothing this could be late for.
+    let cueFallbackTimer = 0;
     const onReveal = () => {
       forceAssembled = true;
       cueAssembly(); // past the point of waiting for a cue that clearly is not coming
@@ -603,19 +657,45 @@ export default function SunModelCanvas() {
         object.scale.copy(homeScale).multiplyScalar(coronaGrowth);
       });
 
-      shards.forEach(({ object, home, homeQuaternion, far, depth, tumble, phase }) => {
+      // The whole waiting field circles the star slowly, and stops circling as it docks. One angle for
+      // every piece, so they hold their formation while they orbit rather than scattering.
+      const orbit = THREE.MathUtils.degToRad(IDLE_ORBIT_DEGREES_PER_SECOND) * time * receding;
+      const orbitCos = Math.cos(orbit);
+      const orbitSin = Math.sin(orbit);
+
+      shards.forEach(({ object, home, homeQuaternion, far, depth, tumble, phase, spinAxis }) => {
         const distance =
           1 / THREE.MathUtils.lerp(1 / (cameraDistance + depth), 1 / cameraDistance, arrival);
         const travelling = (distance - cameraDistance) / depth;
         // Drift and tumble stay on the eased clock, not on `travelling` — `travelling` collapses early
         // by design now, and hanging the float off it would stop the pieces moving well before they land.
         const drift = receding * ASSEMBLY_FLOAT * shardRadius;
+        // The offset from home, orbited about the view axis. Rotating the OFFSET rather than the world
+        // position is what keeps the star's own centre fixed while the debris goes round it.
+        const offsetX = far.x * travelling;
+        const offsetY = far.y * travelling;
         object.position.set(
-          home.x + far.x * travelling + Math.sin(time * ASSEMBLY_FLOAT_SPEED + phase) * drift,
-          home.y + far.y * travelling + Math.cos(time * ASSEMBLY_FLOAT_SPEED * 0.8 + phase) * drift,
+          home.x + offsetX * orbitCos - offsetY * orbitSin +
+            Math.sin(time * ASSEMBLY_FLOAT_SPEED + phase) * drift,
+          home.y + offsetX * orbitSin + offsetY * orbitCos +
+            Math.cos(time * ASSEMBLY_FLOAT_SPEED * 0.8 + phase) * drift,
           home.z + far.z * travelling + Math.sin(time * ASSEMBLY_FLOAT_SPEED * 1.2 + phase) * drift,
         );
-        object.quaternion.slerpQuaternions(tumble, homeQuaternion, arrival);
+        // Turning on its own axis while it waits, settling into its true orientation as it docks.
+        //
+        // ⚠ The spin is applied to the TUMBLE pose and then the whole thing is slerped home, rather
+        // than being added after — so at arrival 1 the result is exactly `homeQuaternion`, with no
+        // residue. A spin applied on top would leave every shard a few degrees off its authored seat,
+        // and the fracture only looks like a fracture when the ten pieces line up exactly.
+        scratchSpin.setFromAxisAngle(
+          spinAxis,
+          THREE.MathUtils.degToRad(IDLE_TUMBLE_DEGREES_PER_SECOND) *
+            time *
+            (0.6 + phase / TWO_PI) *
+            receding,
+        );
+        idleTumble.copy(tumble).multiply(scratchSpin);
+        object.quaternion.slerpQuaternions(idleTumble, homeQuaternion, arrival);
       });
     };
 
@@ -666,14 +746,36 @@ export default function SunModelCanvas() {
     };
     document.addEventListener('visibilitychange', onVisibility);
 
+    /**
+     * Build the star's programs and upload its maps while nothing is watching.
+     *
+     * ⚠ THIS IS THE ONE THAT FROZE THE LOADER. The cause is `positionShards`: everything in
+     * `coronaParts` — the core sphere, the outer glow, the flares and the twenty corona planes — sits
+     * `visible = false` for the whole download, because the star is meant to light INSIDE the closing
+     * shell (see CORONA_APPEAR). three builds a program the first time an object is actually DRAWN, so
+     * none of those ~23 programs existed and none of their maps had been uploaded until the single
+     * frame at arrival 0.55 when they all turned visible at once. Every compile and every upload
+     * landed on that one frame, in the middle of the finale.
+     *
+     * Done here instead, right after the model lands — a beat already stalled by the glTF parse, where
+     * one more pause hides in noise the visitor cannot avoid anyway.
+     *
+     * The mechanism moved to `lib/warmScene.ts` when it turned out the sun was not special: the room
+     * and the contact star have exactly the same shape (built lazily, drawn much later) and were
+     * paying exactly the same stall. Read its header for why the maps have to be uploaded separately
+     * from the compile, and for the GPU-process reasoning that found this in the first place.
+     */
+    const warmStarMaterials = () => warmSceneMaterials(renderer, scene, camera);
+
     // ── Load ──
-    const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
     const gltfLoader = new GLTFLoader();
-    gltfLoader.setDRACOLoader(dracoLoader);
+    gltfLoader.setDRACOLoader(getSharedDracoLoader());
+    gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
     let disposed = false;
-    gltfLoader.load(MODEL_PATH, (gltf) => {
+    gltfLoader.load(
+      MODEL_PATH,
+      (gltf) => {
       if (disposed) return;
       modelRoot = gltf.scene;
       modelBaseScale.copy(modelRoot.scale);
@@ -847,6 +949,12 @@ export default function SunModelCanvas() {
             depth,
             tumble,
             phase: Math.random() * Math.PI * 2,
+            // A random unit axis, so no two pieces turn about the same one.
+            spinAxis: new THREE.Vector3(
+              Math.random() * 2 - 1,
+              Math.random() * 2 - 1,
+              Math.random() * 2 - 1,
+            ).normalize(),
           });
         });
       }
@@ -875,13 +983,57 @@ export default function SunModelCanvas() {
       } else {
         positionShards(0, 0); // parked off-frame, so the parts visibly travel in
       }
+      warmStarMaterials();
       modelReady = true; // the one-shot assembly starts on the next frame after the cue
+      // There is now something to assemble, so the backstop starts counting. See
+      // ASSEMBLE_CUE_FALLBACK_MS for why this is armed here rather than at page load.
+      cueFallbackTimer = window.setTimeout(cueAssembly, ASSEMBLE_CUE_FALLBACK_MS);
       applySize();
       forceRender = true;
-    });
+      reportAssetProgress('sun', 1);
+      // ⚠ The star is one of EXPECTED_SOURCES, so `areWarmupsDone()` counts it — and until now
+      // nothing ever reported it, which meant that gate could never close. The intro's fast path
+      // (`checkWarm`) was therefore dead on every load and `cueAssembly` only ever fired from its
+      // 3.5s safety cap, so EVERY visitor — cached, fast machine, both scenes already warm — sat at
+      // 100% for WARMUP_WAIT_MAX_MS before the shards moved. Reported HERE, next to the corona
+      // compile it stands for: `warmStarMaterials` is the one warm-up that matters to the flight
+      // that is about to run, because it is that flight's own materials.
+      reportWarmupDone('sun');
+      },
+      // ── The loader's gate waits on this, and until 2026-08-03 it did not ──
+      // The star is the hero's subject and the loader's whole finale is its ten shards flying in, but
+      // it was invisible to `assetLoadProgress`: the counter reached 100 % on the fleet and the field
+      // alone and handed off. On a slow connection that revealed a hero with nothing in it, and the sun
+      // faded in half a minute later when its 1.3 MB finally arrived behind 5.3 MB of vessels the
+      // visitor would not reach for another minute. See EXPECTED_SOURCES.
+      //
+      // `total` is 0 when the server sends no Content-Length (chunked / gzipped), in which case there
+      // is nothing honest to report and the source simply jumps to 1 on completion.
+      (progressEvent) => {
+        // Unconditional, and before the total check. The loader's gate now waits on this star for as
+        // long as it keeps moving instead of giving up on a fixed deadline, so it needs to know the
+        // difference between a slow download and a dead one — and on a server that sends no
+        // `Content-Length` the fraction below never moves off 0 no matter how healthy the transfer
+        // is. Bytes arriving is the honest signal; the fraction is only the presentable one.
+        reportSourceActivity('sun');
+        if (progressEvent.total > 0) {
+          reportAssetProgress('sun', progressEvent.loaded / progressEvent.total);
+        }
+      },
+      (error) => {
+        console.error(`Sun model failed to load: ${MODEL_PATH}`, error);
+        // Report ready anyway. A source that never reaches 1 holds the intro's gate until its timeout,
+        // so a missing star would cost every visitor twelve seconds on top of losing the star.
+        reportAssetProgress('sun', 1);
+        // Same reasoning one stage further down the gate: there is no model, so there is nothing to
+        // warm and nothing this star can still be waiting for. Without this a 404 would clear the
+        // asset wait and then hold the WARM wait to its own cap instead.
+        reportWarmupDone('sun');
+      },
+    );
 
     // ── Render loop ──
-    const clock = new THREE.Clock();
+    const frameTimer = createFrameTimer(MAX_FRAME_SECONDS);
     // The Cracks ramp — 0 on the hero, 1 on services. Every difference between the star's two states
     // is a function of this one value, so the transition reverses for free. `ringForm` is the same
     // idea on its own window of the same scroll.
@@ -894,7 +1046,7 @@ export default function SunModelCanvas() {
     let animationFrame = 0;
     const animate = () => {
       animationFrame = requestAnimationFrame(animate);
-      const delta = Math.min(clock.getDelta(), MAX_FRAME_SECONDS);
+      const delta = frameTimer.tick();
 
       // Ease our own copy of the scrubbed targets, so the choreography can't be outrun by a fast
       // flick and never steps between the pin's ticks and our own frames.
@@ -903,20 +1055,43 @@ export default function SunModelCanvas() {
       ringForm += (targetRingForm - ringForm) * stateEase;
       ringWorksForm += (targetRingWorks - ringWorksForm) * stateEase;
       collapse += (targetCollapse - collapse) * stateEase;
-      const elapsed = clock.getElapsedTime();
+      const elapsed = frameTimer.elapsed();
       // The star always turns; it only stops once the works field has covered it completely.
     const moving = !covered;
 
+      // ── Waiting: the pieces drift, and they are ON SCREEN while they do it ──
+      //
+      // This branch is new and it is the whole of "the shards should be flying around until the load
+      // finishes". `positionShards` used to be called exactly once, at model-land, with a fixed time of
+      // 0 — so the ten pieces were placed off-frame and then held that single pose, motionless and
+      // clipped, for the entire download. The drift and tumble in `positionShards` were already written
+      // and simply never ran; nothing was advancing their clock.
+      //
+      // Now it runs every frame until the cue, at arrival 0 — where `receding` is 1, so the orbit, the
+      // float and the per-shard spin are all at full strength and the magma is at full ASSEMBLY_HEAT.
+      // The pieces read as the largest, hottest debris in the same flow the dust belongs to.
+      let assembling = false;
+      if (modelReady && !assemblyCued && !reduceMotion) {
+        positionShards(0, elapsed);
+        assembling = true; // keep drawing: something on this canvas is moving
+      }
+
       // Assembly: a one-shot flight in from deep space, run once the model is here AND the intro has
       // put the "o" on screen — whichever of those two lands last.
-      let assembling = false;
       if (modelReady && assemblyCued && assembly < 1) {
         const rate = (forceAssembled ? ASSEMBLY_REVEAL_SPEEDUP : 1) / ASSEMBLY_SECONDS;
         // Checked before the increment, so the frame that reaches exactly 1 still places the pieces —
         // they land on their true home rather than a fraction short of it.
+        const wasBeforeForming = assembly < CORONA_APPEAR;
         assembly = Math.min(1, assembly + delta * rate);
         positionShards(assembly, elapsed);
         assembling = true;
+        // The star has just lit inside the shell. The gathering field withdraws from around it on this,
+        // rather than on the CUE — the cue is only the intro asking, and on a slow load the model may
+        // not have arrived to answer it. See SUN_FORMING_EVENT.
+        if (wasBeforeForming && assembly >= CORONA_APPEAR) {
+          window.dispatchEvent(new Event(SUN_FORMING_EVENT));
+        }
         // The intro is holding its handoff on this. Fired from here rather than from a timer so it is the
         // frame the last shard actually lands, however long the flight ended up taking.
         if (assembly >= 1) window.dispatchEvent(new Event(SUN_ASSEMBLED_EVENT));
@@ -1057,7 +1232,9 @@ export default function SunModelCanvas() {
       bloom.dispose();
       environmentTexture.dispose();
       pmrem.dispose();
-      dracoLoader.dispose();
+      // The Draco loader is shared and page-lifetime now — disposing it here would terminate the
+      // decoder workers the fleet, the chamber and the contact star are still using. See
+      // lib/modelLoading.ts.
       renderer.dispose();
     };
   }, []);

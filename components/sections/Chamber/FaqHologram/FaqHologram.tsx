@@ -6,7 +6,7 @@ import { SECTION_ARRIVE_EVENT, readSectionArriveKey } from '@/lib/sectionJumpEve
 import { FAQ_ENTRIES } from '@/components/sections/Chamber/faqEntries';
 import { useHologramTracking } from './hooks/useHologramTracking';
 import { useHologramReveal } from './hooks/useHologramReveal';
-import { useHologramScrollGuard } from './hooks/useHologramScrollGuard';
+import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
 
 /**
  * The FAQ hologram — the room's answer to you, floating above the podium's plinth.
@@ -69,7 +69,7 @@ export default function FaqHologram() {
   }, []);
 
   useHologramTracking(panelRef);
-  useHologramScrollGuard(scrollRef);
+  useScrollGuard(scrollRef);
   const { openQuestion, goBack } = useHologramReveal({
     screenRef,
     contentRef,

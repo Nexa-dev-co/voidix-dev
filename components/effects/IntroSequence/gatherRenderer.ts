@@ -32,6 +32,13 @@ export interface GatherFrameInput {
   sunRadius?: number;
   /** 1 while the shards are docking, 0 otherwise. Eased internally into the withdrawal. */
   clearing?: number;
+  /**
+   * 1 to gather the field into held forms, 0 to return it to the stream. Eased internally.
+   *
+   * Only worth engaging when the wait is genuinely long — see GatherCanvas, which decides from a
+   * measured download ETA rather than from a stopwatch.
+   */
+  shapeHold?: number;
 }
 
 const MAX_FRAME_SECONDS = 0.05;
@@ -43,7 +50,12 @@ const IGNITE_SECONDS = 0.55;
 // Trips per second: how fast a particle falls from the far edge of the stream to the sun's rim. This is
 // where real progress is spent — a cold start is a slow trickle from deep space, a finished load is a
 // torrent — so the field reports the truth while never once holding a still pose.
-const FLOW_TRIPS_PER_SECOND_IDLE = 0.16; // ~6s per trip
+// ⚠ IDLE was 0.16 — one trip every SIX SECONDS. Against a grain clamped to a single pixel (see
+// SIZE_MIN_PIXELS), six seconds of travel is not slow motion, it is stillness: nothing on screen
+// visibly moves, which is the one thing this field exists to guarantee during a long wait. 0.3 is
+// ~3.3s per trip, which reads as a current. The ratio to FULL is still 1:1.7, so the stream visibly
+// quickens as the load completes and progress remains legible without a number.
+const FLOW_TRIPS_PER_SECOND_IDLE = 0.3; //  ~3.3s per trip
 const FLOW_TRIPS_PER_SECOND_FULL = 0.5; //  ~2s per trip
 /** Ignition dumps whatever is left into the star, so the stream surges as the sun lights. */
 const FLOW_IGNITE_SURGE = 3;
@@ -64,6 +76,24 @@ const PARTICLE_STRIDE = 4;
 const CLEAR_OUT_PER_SECOND = 2.4;
 const CLEAR_IN_PER_SECOND = 1.1;
 
+// ── The held forms ──
+/**
+ * How long one form lasts, cue to cue: it holds for SHAPE_HOLD_FRACTION of this and spends the rest
+ * dissolving into the next. Slow on purpose — this exists to fill a minute, and a shape that arrives
+ * and leaves in three seconds reads as a slideshow rather than as something forming out of the dust.
+ */
+const SHAPE_CYCLE_SECONDS = 9;
+/**
+ * How fast the field crosses between the stream and a form.
+ *
+ * Asymmetric, for the same reason the clearing is: it gathers unhurriedly because that crossing IS
+ * the effect, and it releases briskly because the only thing that ever releases it is the star having
+ * landed — at which point the loader has a finale to get to and the dust should already be back in
+ * its stream.
+ */
+const SHAPE_GATHER_PER_SECOND = 0.42;
+const SHAPE_RELEASE_PER_SECOND = 1.3;
+
 type GL = WebGLRenderingContext | WebGL2RenderingContext;
 
 const UNIFORM_NAMES = [
@@ -82,6 +112,8 @@ const UNIFORM_NAMES = [
   "uPixelRatio",
   "uColorCool",
   "uColorHot",
+  "uShapeHold",
+  "uShapePhase",
 ] as const;
 type UniformName = (typeof UNIFORM_NAMES)[number];
 
@@ -115,6 +147,18 @@ export class GatherRenderer {
   private sunRadius = DEFAULT_SUN_RADIUS;
   private clearing = 0;
   private targetClearing = 0;
+  /** 0 = streaming, 1 = fully gathered into a held form. Eased; the caller posts a raw target. */
+  private shapeHold = 0;
+  private targetShapeHold = 0;
+  /**
+   * Which form, and how far into the next — advanced HERE rather than posted.
+   *
+   * The main thread posts roughly ten times a second, which is fine for a value the shader eases but
+   * would make a morph visibly stair-step. The worker owns the render loop and its own clock, so the
+   * sequence runs off delta time and stays smooth even while the main thread is blocked parsing glTF —
+   * which is the whole reason the field lives out here.
+   */
+  private shapePhase = 0;
   /** Accumulated trips. Only ever increases, so the stream can never stutter or reverse. */
   private flow = 0;
   private lastFrameMs = 0;
@@ -213,6 +257,7 @@ export class GatherRenderer {
     if (input.targetY !== undefined) this.targetY = input.targetY;
     if (input.sunRadius !== undefined) this.sunRadius = input.sunRadius;
     if (input.clearing !== undefined) this.targetClearing = input.clearing;
+    if (input.shapeHold !== undefined) this.targetShapeHold = input.shapeHold;
   }
 
   ignite(): void {
@@ -256,9 +301,22 @@ export class GatherRenderer {
       Math.sign(this.targetClearing - this.clearing) *
       Math.min(clearStep, Math.abs(this.targetClearing - this.clearing));
 
+    const shapeRate =
+      this.targetShapeHold > this.shapeHold ? SHAPE_GATHER_PER_SECOND : SHAPE_RELEASE_PER_SECOND;
+    const shapeStep = shapeRate * delta;
+    this.shapeHold +=
+      Math.sign(this.targetShapeHold - this.shapeHold) *
+      Math.min(shapeStep, Math.abs(this.targetShapeHold - this.shapeHold));
+
+    // Only runs while a form is actually on screen, so the sequence always begins at the first one
+    // rather than wherever a free-running clock happened to be when the field was asked to gather.
+    if (this.shapeHold > 0) this.shapePhase += delta / SHAPE_CYCLE_SECONDS;
+
     gl.useProgram(this.program);
     gl.uniform1f(this.uniforms.uFlow, this.flow);
     gl.uniform1f(this.uniforms.uClearing, this.clearing);
+    gl.uniform1f(this.uniforms.uShapeHold, this.shapeHold);
+    gl.uniform1f(this.uniforms.uShapePhase, this.shapePhase);
     gl.uniform1f(this.uniforms.uProgress, this.easedProgress);
     gl.uniform1f(this.uniforms.uTime, (nowMs - this.startedMs) / 1000);
     gl.uniform1f(this.uniforms.uIgnite, this.igniteProgress);
