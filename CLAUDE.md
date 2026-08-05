@@ -84,8 +84,12 @@ strengthen the Voidix identity? Could it appear on Awwwards? If not — build so
 | `three` ^0.184 | All WebGL. Four independent scenes — see below. Always dynamically imported (`ssr: false`). |
 | `gsap` + `ScrollTrigger` + `ScrollToPlugin` | Used **directly**. No `@gsap/react`, no `useGSAP`. |
 
-There is **no** shadcn/ui, no Framer Motion, no form library, no validation library, and **no
-smooth-scroll layer** — scroll is native. (`lenis`, `ogl` and `@gsap/react` were dependencies that
+There is **no** shadcn/ui, no Radix, no Framer Motion, no form library, no validation library, and **no
+smooth-scroll layer** — scroll is native. (The bottom sheet in `components/ui/Drawer` is hand-rolled for
+exactly this reason. It is worth keeping that way beyond dogma: the one thing an off-the-shelf sheet
+could not know is that this site's carousel steps on `wheel`/`touchmove` bound to **`window`**, so a
+drag inside the sheet would also advance the section behind it. `useDrawerSheet` swallows the gesture
+before it reaches window — the same trick `useScrollGuard` uses for the FAQ panel.) (`lenis`, `ogl` and `@gsap/react` were dependencies that
 nothing imported; removed 2026-07-28. If you want smooth scroll, wire it deliberately and re-sync
 ScrollTrigger to it.)
 
@@ -176,6 +180,20 @@ Everything ships working from ~360px phones to large desktops **in the same chan
 - **Phones don't mount the optional hero effects at all** — `useIsLowPowerViewport` unmounts
   `FluidCursor` and `HeroInstruments` below 760px / on coarse pointers. Hiding with CSS leaves the
   rAF loops running, which is the opposite of the point.
+- **⚠ `useIsLowPowerViewport` and `useIsNarrowViewport` are different questions.** The first is *how
+  much work can this device do* (coarse pointer or <760px) and gates WebGL. The second is *how much
+  room is there* (the 51.25em query, mirrored from the CSS) and gates LAYOUT. A phone answers yes to
+  both; a narrow window on a fast desktop wants the narrow layout and the full effects.
+- **Copy that doesn't fit goes in the drawer, not in the bin.** `components/ui/Drawer` is the phone's
+  bottom sheet: services, works, contact and the navbar all use it. Every section past the hero is one
+  pinned viewport with a live scene behind it, so on a phone the screen keeps only what NAMES the thing
+  you're looking at and everything else is a tap away. ⚠ It portals to `body` — ScrollTrigger wraps the
+  pin in a *transformed* spacer, which turns `position: fixed` inside the hero into something that
+  behaves like `absolute` (the same reason `FaqHologram` lives in `page.tsx`).
+- **⚠ A hard `<br/>` in a headline is a desktop instruction.** On a 360px screen it compounds with the
+  natural wrap — the fleet's title came out as *"One craft at / a time. / Bring it / online."* Wrap each
+  sentence in a span, drop the `<br/>`, and let `text-wrap: balance` even the lines. Not
+  `text-align: justify`: at a ~310px measure it opens rivers rather than closing the rag.
 
 ## Project structure
 
@@ -196,6 +214,8 @@ components/
     IntroSequence/  # loader: GatherCanvas, gather.worker, LoaderTelemetry/
     FluidCursor/    # hero ink trail (hand-rolled WebGL fluid sim)
     ConstellationFrame/
+  ui/
+    Drawer/         # the phone's bottom sheet — shared by services, works, contact and the navbar
 
 lib/                # shared: the pin's layout maths, events, perf systems, tuning constants
 scripts/optimizeModels.mjs   # `npm run optimize:models` — per-model gltf-transform recipes
@@ -433,7 +453,33 @@ whatever scrolls under it); `.nav-accent` sits behind holding everything that mu
 (top line, orbital mark, the meters), so the blend never turns it blue.
 
 Each nav item has a cyan meter. **A section feeds its meter by setting `--nav-progress-<key>` on
-`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`.
+`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`, plus
+**`total`**, which is the pin's own progress and therefore the whole circuit as one number.
+
+**On a phone the bar is the ORBIT FAN** (`Navbar/OrbitDial`), and it is a GESTURE, not a menu. The bar
+reads `Navigate ⊙`; hold it and one arc bows out beneath, four nodes on it, each running a leader line
+to its number and name. Drag along a row and let go. **Releasing off every station navigates nowhere** —
+deliberate, because every destination here is a scrubbed cinematic several seconds long and a mis-tap
+costs the journey, not a page load. A press that never *moved* latches the fan open instead of closing,
+which is the only thing that makes it operable without the gesture (mouse, keyboard, anyone who can't
+hold a drag steady); it still navigates nothing.
+
+- **`orbitGeometry.ts` is the single source for the angles.** The drawing and the hit-testing both read
+  it; a copy in the stylesheet would be a selection that lands one facet off what you can see.
+- ⚠ The sweep is **51°, not 180°** — the pivot is the top-right corner, so half the circle is off-screen
+  and more of it is above the bar. And it starts at **105°, not 90°**: near straight-down, y barely
+  changes with angle and the first two labels landed on top of each other.
+- ⚠ The **radius is sized by the labels**, not by taste. Rows hang LEFT of their node (the pivot is the
+  top-right corner), and the topmost node is furthest left, so `nodeX(top) − rowWidth > 0` binds. Raise
+  it for a grander arc and CONTACT walks off the side.
+- ⚠ A station's `transform` is what **places** it on the arc, so GSAP may only tween its `autoAlpha`.
+  The swing lives on the container, which owns no layout.
+- ⚠ The amber lives in `.nav-accent` with a transparent press target in `.nav-root` — the same split
+  `.orbital-mark` / `.nav-mark-spacer` uses, because `.nav-root`'s difference blend turns amber blue.
+  `.nav-accent` is a *preceding* sibling, so no combinator reaches back to it: Navbar writes the open
+  state onto both.
+- ⚠ The scrim's first gradient stop is **transparent**. It's z 10000 over a 9999 navbar, so without a
+  hole it would black out the very mark being held.
 `useNavbarAnimation` positions each meter by measuring live layout (re-run on resize and once fonts
 are ready), so a new section's meter works with zero navbar changes. Entrance plays on
 `REVEAL_EVENT`, items converging from the four directions in their `data-enter`.

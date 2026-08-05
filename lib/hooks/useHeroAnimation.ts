@@ -1109,6 +1109,11 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             const progress = self.progress;
             // The "home" meter tracks the fill phase only.
             setNavMeter("home", Math.min(progress / fillFraction, 1));
+            // The WHOLE circuit as one number, for the orbit dial (see Navbar/OrbitDial). Every other
+            // meter answers "how far through THIS section"; the dial's travelling node needs "how far
+            // around the whole journey", which is the pin's own progress and nothing else — there is
+            // exactly one pin, so this is not an approximation of the journey, it IS the journey.
+            setNavMeter("total", progress);
             // Deliberately ABOVE the fill's early return — this span's whole job is inside the fill, and
             // a jump past it still has to land the sun fully open.
             applyHeroServicesProgress(progress);

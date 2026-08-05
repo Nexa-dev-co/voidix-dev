@@ -2,7 +2,7 @@ import { useEffect, type RefObject } from 'react';
 import {
   getHologramPose,
   toDesignPx,
-  HOLOGRAM_DESIGN_WIDTH,
+  hologramDesignWidth,
 } from '@/lib/hologramPose';
 import { getChamberTuning, type ChamberTuning } from '@/lib/chamberTuning';
 
@@ -31,6 +31,10 @@ function toRgbTriplet(hex: string): string {
 
 function applyTuningVariables(panel: HTMLElement, tuning: ChamberTuning): void {
   const style = panel.style;
+  // The width the panel LAYS OUT at, which the CSS reads. Narrower on a phone so the scale below comes
+  // out bigger and the type with it — see hologramDesignWidth. Written here rather than hard-coded in
+  // the stylesheet so there is one source for it.
+  style.setProperty('--holo-design-width', `${hologramDesignWidth()}px`);
   style.setProperty('--holo-ink-rgb', toRgbTriplet(tuning.holoInk));
   style.setProperty('--holo-tint-rgb', toRgbTriplet(tuning.holoTint));
   style.setProperty('--holo-panel-rgb', toRgbTriplet(tuning.holoPanelColor));
@@ -59,6 +63,10 @@ export function useHologramTracking(
     if (!panel) return;
 
     applyTuningVariables(panel, getChamberTuning());
+    // The design width depends on the viewport, so a rotation or a resize past the narrow threshold has
+    // to re-derive it — and the frame sizes with it, since those are expressed in design pixels.
+    const handleResize = () => applyTuningVariables(panel, getChamberTuning());
+    window.addEventListener('resize', handleResize);
 
     let frameId = 0;
     // Only touch the DOM when the answer actually changes — this runs every frame.
@@ -86,7 +94,7 @@ export function useHologramTracking(
         Math.max(tuning.holoWidth * pose.pixelsPerUnit, tuning.holoMinWidthPx),
         maxWidth,
       );
-      const scale = width / HOLOGRAM_DESIGN_WIDTH;
+      const scale = width / hologramDesignWidth();
 
       // Read right-to-left: centre the panel on its own origin, scale it about that point, then put it
       // where the room says. The centring comes FIRST so the scale can't drag it off the anchor, and the
@@ -98,6 +106,7 @@ export function useHologramTracking(
 
     return () => {
       cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', handleResize);
     };
   }, [panelRef]);
 }

@@ -65,6 +65,22 @@ export function portraitPullbackScale(aspect: number): number {
 }
 
 /**
+ * How far through the flight's MOVING part we are — 0 for the whole of the camera's authored hold,
+ * then smoothly to 1 at the landing.
+ *
+ * Anything that is true of the fleet's resting shot but must not survive into the works framing rides
+ * this: the portrait pull-back below, and the deck's own portrait ship drop. Exact at both ends, so a
+ * value faded out on it is exactly present at progress 0 and exactly gone at 1.
+ *
+ * Smoothstep rather than a straight lerp: this joins a camera that is standing still to one that is
+ * already moving, and a linear start would put a corner in the motion exactly where the hold ends.
+ */
+export function flightRamp(progress: number): number {
+  const t = clamp((progress - RAMP_START) / (RAMP_END - RAMP_START), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
  * The pull-back part-way through the services → works flight.
  *
  * `portraitScale` is what {@link portraitPullbackScale} returned for the current frame; pass the same
@@ -72,9 +88,5 @@ export function portraitPullbackScale(aspect: number): number {
  * come apart from the debris it is flying through.
  */
 export function flightPullbackScale(portraitScale: number, progress: number): number {
-  // Smoothstep rather than a straight lerp: the ramp joins a camera that is standing still to one
-  // that is already moving, and a linear start would put a corner in the dolly exactly where the
-  // hold ends.
-  const t = clamp((progress - RAMP_START) / (RAMP_END - RAMP_START), 0, 1);
-  return 1 + (portraitScale - 1) * (t * t * (3 - 2 * t));
+  return 1 + (portraitScale - 1) * flightRamp(progress);
 }

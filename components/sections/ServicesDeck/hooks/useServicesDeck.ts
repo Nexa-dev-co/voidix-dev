@@ -13,7 +13,7 @@ import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
-import { flightPullbackScale, portraitPullbackScale } from '@/lib/portraitPullback';
+import { flightPullbackScale, flightRamp, portraitPullbackScale } from '@/lib/portraitPullback';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
@@ -50,6 +50,26 @@ const STAR_DRIFT         = 0.011; // radians/second of yaw drift — the "floati
 const TARGET_SIZE = 2.3;  // largest dimension every vessel is normalised to
 const BASE_YAW    = -0.6; // resting 3/4 view so hulls don't read flat-on
 const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the stage plane
+/**
+ * How far the craft drops, in world units, when the frame is taller than it is wide.
+ *
+ * ⚠ It is the SHIP that moves, never the camera and never the sun.
+ *
+ * ⚠ And the hull's screen position is NOT what its 2.3 normalisation suggests. Hulls are normalised on
+ * their LARGEST dimension, and on every craft in this fleet that is the LENGTH — so a ship is a long
+ * flat thing whose vertical extent is small and whose centre sits close to the stage plane, not a
+ * 2.3-tall tower standing on it. At rest that puts the hull's centre a little BELOW the camera's 0.75
+ * aim line, around 59% down the frame. (A first pass at this assumed the tower and dropped the ship
+ * nearly a full unit too far, straight through the capability keys.)
+ *
+ * −0.35 lands it around 66% down: below the headline, above the keys and the stepper. This is the
+ * number to retune if the framing wants adjusting — it is the only thing that moves the craft, and the
+ * frame is ~2.5 world units from centre to edge, so 0.1 here is about 13px on a 780px phone.
+ *
+ * It is faded out across the handoff on `flightRamp`, because the flight's ship path is authored in
+ * world coordinates: left standing, it would carry the sag all the way to the works field.
+ */
+const PORTRAIT_SHIP_DROP = -0.35;
 const FLOAT_AMPLITUDE = 0.1;   // vertical hover bob (up + down) on the centred craft
 const FLOAT_SPEED     = 1.1;
 const AUTO_ROTATE_SPEED = 0.35; // radians/sec — slow showroom turntable spin on the centred craft
@@ -1147,6 +1167,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // read ONLY by the handoff below. The fleet's own resting shot is deliberately not touched by it
     // (see the flight branch for why the ramp has to start at exactly 1).
     let portraitScale = 1;
+    // The craft's portrait drop, in world units — 0 on any landscape frame, so nothing below it costs
+    // a desktop anything. See PORTRAIT_SHIP_DROP.
+    let portraitShipDrop = 0;
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -1155,6 +1178,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       appliedPixelRatio = ratio;
       camera.aspect = width / height;
       portraitScale = portraitPullbackScale(camera.aspect);
+      portraitShipDrop = camera.aspect < 1 ? PORTRAIT_SHIP_DROP : 0;
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
@@ -1221,12 +1245,17 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const departGrip = THREE.MathUtils.clamp(departure / DEPART_GRIP_SPAN, 0, 1);
 
       const centred = activeIndexRef.current;
+      // The portrait drop, released across the handoff so the flight's authored world path arrives
+      // exactly where it was written to (see PORTRAIT_SHIP_DROP). Computed once per frame rather than
+      // per ship — every craft shares one stage and one frame.
+      const shipDrop = portraitShipDrop * (1 - flightRamp(departure));
       ships.forEach((ship, index) => {
         const isCentred = index === centred;
         // Only the centred craft animates; the rest rest flat off-stage.
         const animateCentred = isCentred && !reduceMotion;
-        // 1. Float / hover bob — drifts up and down.
-        ship.lift.position.y = SHIP_HOVER + (animateCentred ? Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE : 0);
+        // 1. Float / hover bob — drifts up and down, about the (possibly dropped) resting height.
+        ship.lift.position.y =
+          SHIP_HOVER + shipDrop + (animateCentred ? Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE : 0);
         // 2. Slow turntable spin — paused while dragging so manual rotation stays precise, and
         //    wound down as the departure takes its grip so the craft can hold a heading.
         //    A swap grips it too: the craft has to hold the heading it just turned onto, and the
