@@ -118,7 +118,29 @@ const BLOOM_STRENGTH       = 0.85;
 const BLOOM_STRENGTH_LOW   = 0.5;  // gentler on low-power devices
 const BLOOM_RADIUS         = 0.5;
 const BLOOM_THRESHOLD      = 0.7;
-const BLOOM_MSAA_SAMPLES   = 4;    // MSAA on the composer target (antialias:true is ignored once a composer renders)
+/**
+ * ⚠ NO MSAA ON THIS COMPOSER — because `SMAAPass` below is already doing the job.
+ *
+ * This was `4`, justified by a comment reading "antialias:true is ignored once a composer renders, so
+ * SMAA is the only geometry AA on the final image". The first half is true. The conclusion was not:
+ * the composer's TARGET carried `samples: 4`, three resolves a multisampled target automatically on
+ * read, and the deck was therefore running true geometric MSAA **and then** a post-process edge pass
+ * over the resolved result. Two antialiasers on one image, the second re-detecting edges the first had
+ * already smoothed.
+ *
+ * That is the same fault `docs/lag-and-freeze-diagnosis.md` §2 found on the works field's screen stage,
+ * in the other scene, hidden behind a comment that asserted the opposite.
+ *
+ * Dropping the samples rather than the SMAA pass, because the memory is where the problem is.
+ * `EffectComposer` CLONES the target it is handed and `RenderTarget.copy` carries `samples` across, so
+ * every sample count is paid TWICE. On a 1512×982 panel at ratio 1:
+ *
+ *     samples 4   11.9 MB resolved + 47.5 MB MSAA colour + 23.8 MB MSAA depth  =  83 MB  × 2 targets
+ *     samples 0   11.9 MB resolved                                             =  12 MB  × 2 targets
+ *
+ * ~142 MB back, and the edges are still antialiased — by the pass that was always there.
+ */
+const BLOOM_MSAA_SAMPLES   = 0;
 
 // ── The portal swap ──
 // Two gates form; the craft turns to face one, flies through it, and its replacement comes out of the
@@ -442,11 +464,13 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
 
     // ── Post-processing: selective bloom ──
-    // A HalfFloat + MSAA target keeps the bloom precise and the edges clean; the bloom threshold
-    // means only the bright accents/highlights bleed, so it reads as glowing engines, not a haze.
+    // HalfFloat keeps the bloom precise — it must bleed on HDR values, before the tone curve compresses
+    // them — and the bloom threshold means only the bright accents/highlights bleed, so it reads as
+    // glowing engines rather than a haze. No MSAA: see BLOOM_MSAA_SAMPLES for why the SMAA pass at the
+    // end of this chain makes it redundant, and what it was costing.
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
-      samples: lowPower ? 0 : BLOOM_MSAA_SAMPLES,
+      samples: BLOOM_MSAA_SAMPLES,
     });
     const composer = new EffectComposer(renderer, composerTarget);
     composer.addPass(new RenderPass(scene, camera));
@@ -459,9 +483,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     bloomPass.enabled = BLOOM_ENABLED;
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
-    // Smooth the hull edges the bloom pipeline leaves rough — a composer ignores the renderer's own
-    // `antialias` flag, so this is the only geometry AA on the final image. Runs last, on the LDR
-    // result after tone mapping. Sized by the composer, so it follows the adaptive resolution.
+    // Smooth the hull edges the bloom pipeline leaves rough. A composer ignores the renderer's own
+    // `antialias` flag, so once the target stopped carrying `samples` (see BLOOM_MSAA_SAMPLES) this
+    // genuinely IS the only geometry AA on the final image — which it was previously claimed to be
+    // while 4× MSAA was quietly running underneath it. Runs last, on the LDR result after tone
+    // mapping. Sized by the composer, so it follows the adaptive resolution.
     const smaaPass = new SMAAPass();
     composer.addPass(smaaPass);
 

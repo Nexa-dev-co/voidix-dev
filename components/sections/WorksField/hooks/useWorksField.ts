@@ -357,7 +357,27 @@ const BLOOM_STRENGTH     = 0.48;
 const BLOOM_STRENGTH_LOW = 0.3;
 const BLOOM_RADIUS       = 0.55;
 const BLOOM_THRESHOLD    = 0.6;
-const BLOOM_MSAA_SAMPLES = 4;
+/**
+ * MSAA on the SPACE stage — 2, not 4.
+ *
+ * Unlike the deck's composer, this one has no SMAA behind it: stage 2's `SMAAPass` is enabled only
+ * while the chamber is on screen, so for the whole of works this is the only antialiasing the marks,
+ * the debris and the starfield get. It cannot go to 0. But `EffectComposer` clones the target it is
+ * handed and `RenderTarget.copy` carries `samples` across, so every sample is paid TWICE — and the
+ * cost is not linear in quality. On a 1512×982 panel at ratio 1:
+ *
+ *     samples 4   11.9 resolved + 47.5 colour + 23.8 depth  =  83 MB  × 2 targets  = 166 MB
+ *     samples 2   11.9 resolved + 23.8 colour + 11.9 depth  =  48 MB  × 2 targets  =  95 MB
+ *
+ * 4× buys a modest improvement over 2× on the edges that already have two samples; the step from 0 to
+ * 2 is the one that does the work. ~71 MB for that difference, on a scene that also runs a bloom
+ * pyramid and hands its output to a second composer, is the wrong side of the trade.
+ *
+ * ⚠ It is also ~24 MB/frame less resolve traffic. An MSAA resolve reads every sample and writes one,
+ * and integrated graphics have 30–50 GB/s of TOTAL bandwidth to spend
+ * (`docs/lag-and-freeze-diagnosis.md` §1).
+ */
+const BLOOM_MSAA_SAMPLES = 2;
 
 const MAX_FRAME_SECONDS = 0.05; // clamp dt so a tab-restore doesn't fling the animation
 
