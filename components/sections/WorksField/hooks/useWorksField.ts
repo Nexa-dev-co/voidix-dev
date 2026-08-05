@@ -426,6 +426,45 @@ const BLOOM_MSAA_SAMPLES_EARNED = 4;
  */
 const MSAA_EARN_MIN_SPARE_CAPACITY = 1.25;
 
+/**
+ * A hard ceiling on what the space composer's two buffers may cost, in bytes.
+ *
+ * ⚠ SPARE CAPACITY ALONE IS NOT ENOUGH, and the reason is subtle enough that it shipped broken. On a
+ * dpr-2.5 laptop the probe measured `affordable 3.87`, the pixel ratio was capped at 2.0 by
+ * `MAX_PIXEL_RATIO`, and `3.87 ÷ 2.0 = 1.94` looked like healthy leftover — so 4× MSAA was granted.
+ * But that cap is a MEMORY cap. The "spare" was exactly the amount it was withholding, and spending it
+ * on samples handed back what the cap had just protected:
+ *
+ *     at ratio 2.0, 5.26 Mpx      resolved 42 MB + MSAA colour 168 MB + MSAA depth 84 MB
+ *                                 = 294 MB, doubled by the composer's clone   = 588 MB
+ *                                 …for ONE composer, before the screen stage or the deck.
+ *
+ * The laptop went to 20 fps and the controller spent the next several seconds walking the resolution
+ * back down — the exact "allocate first, claw back after" failure this whole system exists to avoid,
+ * reached by a different road.
+ *
+ * A ratio cannot express this, because the same ratio costs wildly different amounts on different
+ * panels. Bytes can. 256 MB is roughly what the space stage costs at ratio 1.5 with 4× samples on a
+ * 1512×982 panel — comfortable on a discrete GPU, and the point past which an integrated one starts
+ * evicting.
+ */
+const SPACE_COMPOSER_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
+
+/** Bytes for both of a composer's ping-pong buffers at a given size and sample count. */
+function estimateComposerBytes(
+  widthPixels: number,
+  heightPixels: number,
+  samples: number,
+): number {
+  const HALF_FLOAT_RGBA_BYTES = 8;
+  const DEPTH_BYTES = 4;
+  const COMPOSER_BUFFERS = 2; // EffectComposer clones the target it is handed.
+  const pixels = widthPixels * heightPixels;
+  const resolved = pixels * HALF_FLOAT_RGBA_BYTES;
+  const multisampled = samples > 0 ? pixels * (HALF_FLOAT_RGBA_BYTES + DEPTH_BYTES) * samples : 0;
+  return (resolved + multisampled) * COMPOSER_BUFFERS;
+}
+
 const MAX_FRAME_SECONDS = 0.05; // clamp dt so a tab-restore doesn't fling the animation
 
 /** Labels each run of the effect in the development trace. See `effectRun` in the hook. */
@@ -1864,10 +1903,20 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // `null` means the probe produced nothing believable, and that is read as "not earned" — the
         // floor stands. `potato` is a hard cap: `saveData` is an instruction, not a hint.
         const spareCapacity = getProbedSpareCapacity();
+        // What 4× would actually cost at the resolution that was just settled — see
+        // SPACE_COMPOSER_MEMORY_BUDGET_BYTES for why the spare-capacity ratio cannot answer this.
+        const drawingContext = renderer.getContext();
+        const projectedBytes = estimateComposerBytes(
+          drawingContext.drawingBufferWidth,
+          drawingContext.drawingBufferHeight,
+          BLOOM_MSAA_SAMPLES_EARNED,
+        );
+        const withinMemoryBudget = projectedBytes <= SPACE_COMPOSER_MEMORY_BUDGET_BYTES;
         const earnsMsaa =
           deviceTier !== 'potato' &&
           spareCapacity !== null &&
-          spareCapacity >= MSAA_EARN_MIN_SPARE_CAPACITY;
+          spareCapacity >= MSAA_EARN_MIN_SPARE_CAPACITY &&
+          withinMemoryBudget;
         if (earnsMsaa && spaceBuffer.samples < BLOOM_MSAA_SAMPLES_EARNED) {
           // Both of them: `EffectComposer` clones the target it is handed, and the clone is a real
           // second buffer that the scene renders into on alternating frames.
@@ -1890,10 +1939,15 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         } else if (telemetryEnabled) {
           // ⚠ Say so. An absent line is indistinguishable from "the warm-up never ran", which is the
           // ambiguity that made the probe's own silent-failure path so expensive to diagnose.
+          const reason = !withinMemoryBudget
+            ? `4× would cost ${(projectedBytes / 1048576).toFixed(0)} MB of render target, over the ` +
+              `${SPACE_COMPOSER_MEMORY_BUDGET_BYTES / 1048576} MB budget`
+            : spareCapacity === null
+              ? 'nothing was measured'
+              : `spare capacity ${spareCapacity.toFixed(2)}× — the resolution has it`;
           console.log(
             `[voidix] msaa: staying at ${spaceBuffer.samples}× on the space stage ` +
-              `(spare capacity ${spareCapacity === null ? 'unmeasured' : `${spareCapacity.toFixed(2)}×`}` +
-              `, tier ${deviceTier}) — the resolution has it`,
+              `(tier ${deviceTier}) — ${reason}`,
           );
         }
 

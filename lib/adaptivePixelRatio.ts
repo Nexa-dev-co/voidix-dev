@@ -76,6 +76,31 @@ const PIPELINE_FRAME_BUDGET_MS = 9;
  */
 const MIN_PROBE_MEGAPIXELS = 0.05;
 
+/**
+ * The most pixels the heavy scenes may ever be asked to draw into, whatever the ratio works out as.
+ *
+ * ⚠ THE RATIO IS NOT THE COST. THE PIXEL COUNT IS. Everything else in this module reasons in ratios,
+ * and a ratio means nothing without a panel behind it:
+ *
+ *     ratio 1.5 on a 1080p panel     →  3.1 Mpx
+ *     ratio 2.0 on a 4K laptop       →  5.3 Mpx      ← 70 % more work, from a smaller-looking number
+ *
+ * `hardwareCeil` is `min(2, max(devicePixelRatio, 1.5))`, so a dense panel RAISES the ceiling — which
+ * is exactly backwards. A 4K screen is a reason to render at a lower ratio, not a licence to render at
+ * a higher one, because the CSS viewport is small and every ratio point costs four times what it costs
+ * on a 1× panel.
+ *
+ * This was found on a 4K laptop at 250 % scaling: dpr 2.5, a 1528 px CSS viewport, `affordable 3.87`
+ * from the probe, ceiling clamped to 2.0 — and a 5.26 Mpx drawing buffer that put the render targets
+ * over 700 MB and the frame rate at 20 fps. The probe was not wrong about the GPU. It was answering a
+ * question about ratios while the machine was failing on pixels.
+ *
+ * 3 Mpx is a little over a 1080p frame at 1.2×, and it keeps the site's render targets near 290 MB —
+ * roughly where an integrated GPU stops evicting. It is a ceiling, not a target: a small window on the
+ * same machine still renders at whatever ratio the probe allows.
+ */
+const MAX_DRAWING_BUFFER_MEGAPIXELS = 3;
+
 let initialised = false;
 let ceil = 1;
 let floor = MIN_PIXEL_RATIO; // lowest density we'll drop to
@@ -210,7 +235,15 @@ export function reportProbedFrameCost(
   const believableMilliseconds = milliseconds as number;
   const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / believableMilliseconds);
   probedAffordableRatio = affordable;
-  ceil = Math.min(hardwareCeil, Math.max(floor, affordable));
+
+  // ── The pixel ceiling, which no ratio can express ──
+  // The probe reports the area it drew AND the ratio it drew at, so the CSS-pixel area falls out —
+  // and from that, the ratio at which this particular viewport hits the buffer budget. On a 4K panel
+  // that lands well below `hardwareCeil`; on a 1080p one it never binds at all.
+  const cssMegapixels = megapixels / (probeRatio * probeRatio);
+  const pixelBudgetRatio = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / cssMegapixels);
+
+  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetRatio, affordable));
   softCeil = ceil;
 
   // ── Say what was decided ──
@@ -225,14 +258,48 @@ export function reportProbedFrameCost(
   if (telemetryEnabled) {
     console.log(
       `[voidix] gpu probe: ${believableMilliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
-        `at ratio ${probeRatio} → affordable ${affordable.toFixed(2)}, ` +
-        `ceiling ${ceil.toFixed(2)} (floor ${floor}, hardware max ${hardwareCeil})`,
+        `at ratio ${probeRatio} → affordable ${affordable.toFixed(2)}, ceiling ${ceil.toFixed(2)}` +
+        `\n  bound by ${
+          ceil === floor
+            ? 'the floor'
+            : pixelBudgetRatio < Math.min(hardwareCeil, affordable)
+              ? `the ${MAX_DRAWING_BUFFER_MEGAPIXELS} Mpx buffer budget (this viewport hits it at ${pixelBudgetRatio.toFixed(2)})`
+              : hardwareCeil < affordable
+                ? `the panel (hardware max ${hardwareCeil})`
+                : 'the measurement'
+        }` +
+        `\n  drawing buffer at the ceiling: ${(cssMegapixels * ceil * ceil).toFixed(2)} Mpx` +
+        ` (floor ${floor}, hardware max ${hardwareCeil})`,
     );
   }
-  // Land on it rather than climb to it. A step-up reallocates every composer on the site, and paying
-  // that stall to reach a level we have just MEASURED as affordable is a stall for nothing. A machine
-  // measured as not capable starts low, which is the entire reason to measure before the first frame.
-  pixelRatio = ceil;
+  // ── ⚠ NEVER START ABOVE NATIVE. The ceiling is a CAP, not a destination. ────────────────────────
+  //
+  // This was `pixelRatio = ceil` — land on the measurement rather than climb to it — justified on the
+  // grounds that a step-up reallocates every composer and paying that stall to reach a level we had
+  // just MEASURED as affordable was a stall for nothing.
+  //
+  // The measurement is not that good, and every log said so. The probe times ONE works-field frame on
+  // a quiet stage; the real frame also carries the sun's own canvas and bloom, the compositor, and the
+  // blend layers over the top. `PIPELINE_FRAME_BUDGET_MS` assumes all of that fits in the ~7.7 ms it
+  // leaves spare, and on a 4K laptop it was out by roughly six times. So landing on the ceiling meant
+  // the controller walked it straight back down, on essentially every load:
+  //
+  //     gpu probe: 0.6 ms → affordable 3.87, ceiling 2.00
+  //     [pixels] STEPPED DOWN 2.00 → 1.80 at ~20 fps
+  //     [pixels] STEPPED DOWN 1.80 → 1.60 at ~22 fps
+  //
+  // Which is precisely what this module's own header says does not work — *"the claw-back only happens
+  // after the expensive configuration has already been allocated on the machine that could not afford
+  // it"*. Landing on an optimistic number IS guessing upward; it just has a number attached.
+  //
+  // So: start at native or at the ceiling, whichever is LOWER, and let the live controller climb into
+  // anything above it. The reallocation the old comment wanted to avoid happens either way — the
+  // difference is its direction. Climbing reads as the site sharpening; walking down reads as it
+  // giving up, which is the thing that was actually being reported.
+  //
+  // ⚠ A machine measured as NOT capable still starts low, which is the whole reason to measure before
+  // the first frame — `Math.min` keeps a sub-native ceiling intact.
+  pixelRatio = Math.min(ceil, 1);
 }
 
 /**

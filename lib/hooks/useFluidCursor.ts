@@ -123,6 +123,37 @@ export function useFluidCursor(
       invertContext.clearRect(0, 0, invertCanvas.width, invertCanvas.height);
     };
 
+    /**
+     * Take both canvases out of the compositor for the dark half of the site.
+     *
+     * ⚠ CLEARING THEM IS NOT ENOUGH, and that was the bug. A cleared canvas is still a LAYER: the
+     * browser composites it every frame regardless of what is drawn in it, and the invert canvas
+     * carries `mix-blend-mode: difference`, which forces the compositor to read the backdrop and blend
+     * it. On a 4K laptop at 250 % scaling those two layers measured 4.27 and 1.07 megapixels — the ink
+     * canvas alone being nearly TWICE the works field it was being blended over:
+     *
+     *     fluid ink       3056 × 1396   4.27 Mpx    ← composited through the whole dark site
+     *     fluid invert    1528 ×  698   1.07 Mpx    ← …and blended, per frame
+     *     field-canvas    2236 × 1021   2.28 Mpx    ← the actual 3D scene
+     *
+     * So the section that had its render targets carefully budgeted was being composited underneath
+     * 5.3 Mpx of blank blend layers that could not, by construction, ever show anything: `inVoid`
+     * refuses every splat and `clearTrail` has already wiped them.
+     *
+     * ⚠ `visibility`, NOT `display: none`. A display-none canvas reports `clientWidth/clientHeight` of
+     * 0, and `syncCanvasSize` reads exactly those to size the drawing buffers — so it would resize the
+     * sim to nothing on the way out and back again on the way in. Hidden keeps the box, drops the
+     * paint.
+     *
+     * Invisible either way at the moment it flips: `.hero-sun-fill` is fully black over both canvases
+     * when the stage changes, which is the same reason `clearTrail` can wipe them there.
+     */
+    const setTrailComposited = (composited: boolean) => {
+      const visibility = composited ? '' : 'hidden';
+      inkCanvas.style.visibility = visibility;
+      invertCanvas.style.visibility = visibility;
+    };
+
     // The trail is the hero's alone. While the fleet is up (the hero stays pinned, so the
     // IntersectionObserver still reports "visible") we stop splatting, so no new ink is laid.
     // ⚠ The BLACK STAGE, not the deck's reveal. The deck's event only fires when the fleet itself is
@@ -142,6 +173,7 @@ export function useFluidCursor(
     let inVoid = false;
     const onBlackStage = (event: Event) => {
       inVoid = readBlackStageActive(event);
+      setTrailComposited(!inVoid);
       if (inVoid) clearTrail();
     };
     window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
