@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LOOP_REQUEST_EVENT } from '@/lib/loopEvents';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import Drawer from '@/components/ui/Drawer/Drawer';
+import EnquiryForm from '@/components/ui/EnquiryForm/EnquiryForm';
 import {
   CONTACT_FOOTER_GROUPS,
   CONTACT_LEAD,
@@ -40,8 +41,9 @@ const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
  *
  * ⚠ FRONT END ONLY. The form validates (natively — this project has no validation library and that is
  * deliberate) but submits nowhere. `docs/contact-black-hole-plan.md` §7b has the open question about
- * where it should post; until that is answered `handleSubmit` deliberately does nothing rather than
- * faking a success state the visitor would believe.
+ * where it should post; until that is answered submission is deliberately prevented rather than faking
+ * a success state the visitor would believe. The form itself now lives in `components/ui/EnquiryForm`,
+ * shared with the CTA that every service and every project opens — see its header.
  */
 export default function ContactSection() {
   const sectionRef = useRef<HTMLElement>(null);
@@ -77,12 +79,6 @@ export default function ContactSection() {
     if (!isNarrow) setIsFormOpen(false);
   }, [isNarrow]);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    // No endpoint yet, and no backend in this project to give it one. Prevented rather than left to
-    // navigate, so the page cannot be thrown out of the pin by a stray Enter key.
-    event.preventDefault();
-  };
-
   /** Ask the pin to fall into the black hole and come back out at the hero. See lib/loopEvents.ts. */
   const requestLoop = () => {
     window.dispatchEvent(new Event(LOOP_REQUEST_EVENT));
@@ -111,7 +107,7 @@ export default function ContactSection() {
             action row with the loop button rather than up here on its own. */}
         {!isNarrow && (
           <div className="contact-panel">
-            <ContactForm onSubmit={handleSubmit} />
+            <EnquiryForm />
           </div>
         )}
       </div>
@@ -197,87 +193,9 @@ export default function ContactSection() {
           eyebrow="04 — Start a project"
           title={CONTACT_TITLE}
         >
-          <ContactForm onSubmit={handleSubmit} />
+          <EnquiryForm />
         </Drawer>
       )}
     </section>
-  );
-}
-
-/**
- * The form itself, so the panel and the sheet render exactly the same fields.
- *
- * ⚠ Only ever ONE of the two is mounted (see the `isNarrow` branch). The ids below are document-global,
- * and a `<label for>` pointing at two elements resolves to whichever came first — so rendering both
- * layouts at once and hiding one with CSS would silently give every label on the phone the desktop
- * form's field.
- *
- * Native constraint validation only — `required` and `type="email"` do the work. This project has no
- * validation library and CLAUDE.md is explicit that this is deliberate.
- */
-function ContactForm({ onSubmit }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return (
-    <form className="contact-form" onSubmit={onSubmit}>
-      <div className="contact-field">
-        <label className="contact-label" htmlFor="contact-name">
-          Name
-        </label>
-        <input
-          id="contact-name"
-          name="name"
-          type="text"
-          className="contact-input"
-          autoComplete="name"
-          required
-        />
-      </div>
-
-      <div className="contact-field">
-        <label className="contact-label" htmlFor="contact-email">
-          Email
-        </label>
-        <input
-          id="contact-email"
-          name="email"
-          type="email"
-          className="contact-input"
-          autoComplete="email"
-          required
-        />
-      </div>
-
-      <div className="contact-field">
-        <label className="contact-label" htmlFor="contact-brief">
-          What you are building
-        </label>
-        <textarea
-          id="contact-brief"
-          name="brief"
-          className="contact-input contact-textarea"
-          rows={3}
-          required
-        />
-      </div>
-
-      <button type="submit" className="contact-send">
-        Send it
-      </button>
-    </form>
-  );
-}
-
-function ChevronUp() {
-  return (
-    <span className="drawer-open-glyph" aria-hidden="true">
-      <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-        <path
-          d="M2 7l3.5-3.5L9 7"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </span>
   );
 }

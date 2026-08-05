@@ -104,20 +104,6 @@ export function stationOffset(index: number): { x: number; y: number } {
 }
 
 /**
- * The angle each station subtends AT THE MARK, which is what the drag hit-tests against.
- *
- * ⚠ Not the same as its angle on the circle, and it must be derived rather than assumed. It happens to
- * come out very evenly — about 129°, 116.6°, 104° and 91.6° for stations 0…3, so 12.5° apart and
- * DESCENDING — but that is a consequence of the construction above, not something chosen. Change the
- * centre offset or the running order and these move with it, which is exactly why the selection reads
- * them from the same function that places the nodes.
- */
-function stationPointerAngle(index: number): number {
-  const offset = stationOffset(index);
-  return (Math.atan2(offset.y, offset.x) * 180) / Math.PI;
-}
-
-/**
  * The arc, as an SVG path in design units with the mark at the origin.
  *
  * Constant, so a resize scales the SVG and never rebuilds the string. `0 0` is the mark itself — the
@@ -144,53 +130,6 @@ export function arcPath(): string {
 
 /** The SVG's viewBox in design units, sized to hold the arc and its glow with room to spare. */
 export const ARC_VIEW_BOX = { x: -170, y: -40, width: 260, height: 640 } as const;
-
-/**
- * Inside this many px of the mark the pointer has not committed to anything yet.
- *
- * Without it, the tiniest tremor during a press would resolve to whatever angle it happened to be at
- * and arm a jump the visitor never asked for.
- */
-const DEAD_ZONE_PX = 44;
-
-/**
- * Which station the pointer is over, or `null` for none.
- *
- * By ANGLE at the mark, not by proximity to the node — anywhere along a station's ray counts, at any
- * distance past the dead zone. That is what makes a 10px node a comfortable target: the real target is
- * a ~12.5° wedge running the height of the screen, and it covers the row's whole label on the way.
- */
-export function stationFromPointer(
-  deltaX: number,
-  deltaY: number,
-  scale: number,
-): number | null {
-  if (Math.hypot(deltaX, deltaY) < DEAD_ZONE_PX * scale) return null;
-
-  // atan2 with y measured DOWNWARD gives degrees clockwise from +x, the convention used throughout.
-  const angle = (Math.atan2(deltaY, deltaX) * 180) / Math.PI;
-
-  const lastIndex = NAV_ITEMS.length - 1;
-  const first = stationPointerAngle(0);
-  const last = stationPointerAngle(lastIndex);
-  const halfStep = Math.abs(last - first) / lastIndex / 2;
-  if (angle < Math.min(first, last) - halfStep || angle > Math.max(first, last) + halfStep) {
-    return null;
-  }
-
-  // Nearest by angle. A loop rather than arithmetic because the angles are derived and only
-  // approximately evenly spaced — rounding against an assumed step would drift at the ends.
-  let nearest = 0;
-  let nearestDistance = Infinity;
-  for (let index = 0; index <= lastIndex; index += 1) {
-    const distance = Math.abs(angle - stationPointerAngle(index));
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearest = index;
-    }
-  }
-  return nearest;
-}
 
 /**
  * Which section the visitor is currently in, as an index into `NAV_ITEMS`, or `null` in the hero.

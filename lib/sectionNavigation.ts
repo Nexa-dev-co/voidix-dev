@@ -21,7 +21,7 @@
 export const GOTO_SECTION_EVENT = 'voidix:goto-section';
 
 export interface GotoSectionDetail {
-  /** A carousel section key: 'services' | 'work' | 'process' | 'contact'. */
+  /** A carousel section key: 'services' | 'work' | 'faq' | 'contact'. */
   key: string;
   /**
    * Viewport point the request came FROM — the centre of the control that was clicked.

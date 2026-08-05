@@ -7,6 +7,7 @@ import { FAQ_ENTRIES } from '@/components/sections/Chamber/faqEntries';
 import { useHologramTracking } from './hooks/useHologramTracking';
 import { useHologramReveal } from './hooks/useHologramReveal';
 import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
+import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
 
 /**
  * The FAQ hologram — the room's answer to you, floating above the podium's plinth.
@@ -25,8 +26,8 @@ import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
  *
  * The two black frames are flex siblings of the lit area, so the content parts them by simply existing.
  */
-/** The navbar/carousel key the chamber answers to — the room is what "Process" means on this site. */
-const CHAMBER_SECTION_KEY = 'process';
+/** The navbar/carousel key the chamber answers to — the room is what "FAQ" means on this site. */
+const CHAMBER_SECTION_KEY = 'faq';
 
 export default function FaqHologram() {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -36,6 +37,7 @@ export default function FaqHologram() {
 
   const [isOpen, setIsOpen] = useState(false);
   const [openEntry, setOpenEntry] = useState<number | null>(null);
+  const [isAskOpen, setIsAskOpen] = useState(false);
 
   // The SCENE owns whether the panel is open, not the scroll — it unseals the moment the showcase tour
   // finishes walking you up to the podium, which is the end of a timeline rather than a scroll position.
@@ -47,9 +49,12 @@ export default function FaqHologram() {
   }, []);
 
   // Re-sealing always returns to the list, so re-opening it never lands you mid-answer in a panel you
-  // last saw closed.
+  // last saw closed. The ask sheet goes with it: it was opened FROM this panel, and leaving it standing
+  // over a room the visitor has already scrolled out of would be a dialog with nothing behind it.
   useEffect(() => {
-    if (!isOpen) setOpenEntry(null);
+    if (isOpen) return;
+    setOpenEntry(null);
+    setIsAskOpen(false);
   }, [isOpen]);
 
   // ── Arriving here by a covered nav jump ──
@@ -140,6 +145,38 @@ export default function FaqHologram() {
       </div>
 
       <div className="holo-frame holo-frame-bottom" aria-hidden="true" />
+
+      {/* ── The question the room does not hold ──
+          Seven answers cannot cover everything, and the room's whole premise is that it answers you.
+
+          UNDER the slab rather than inside the list, deliberately: everything above this line is the
+          projection, and a row that leaves the projection entirely should not be dressed as one more
+          thing to open. Below the bottom bracket it reads as the console the projector is mounted on —
+          still lit by the same light, but a control rather than a frequency.
+
+          It is a sibling of the frames, so it inherits the panel's tracking transform and stays with the
+          hologram as the camera walks. Its own fade is CSS off `data-open` — the GSAP reveal only ever
+          walks `.holo-stagger` INSIDE the screen, and the delay is what keeps it from arriving before
+          the slab has finished parting. */}
+      <button type="button" className="holo-ask" onClick={() => setIsAskOpen(true)}>
+        <span className="holo-ask-text">Ask us anything</span>
+        <span className="holo-ask-arrow" aria-hidden="true">
+          →
+        </span>
+      </button>
+
+      {/* ⚠ Rendered inside the panel but NOT laid out in it — the panel is placed by a transform that
+          tracks the camera, and everything in here is scaled with it. The enquiry panel portals to
+          `body`, so it escapes that transform and lands on the glass at its own size, above this
+          panel's z 9600. No prefill: what the visitor is about to type IS the subject. */}
+      <EnquiryPanel
+        open={isAskOpen}
+        onClose={() => setIsAskOpen(false)}
+        eyebrow="03 — The chamber"
+        title="Ask us anything"
+        briefLabel="Your question"
+        submitLabel="Send the question"
+      />
     </div>
   );
 }

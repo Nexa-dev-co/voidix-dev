@@ -49,7 +49,7 @@ export const JUMP_DESTINATIONS: Record<string, JumpDestination> = {
       { label: 'Transit', value: 'Accretion' },
     ],
   },
-  process: {
+  faq: {
     headline: 'The room answers.',
     rows: [
       { label: 'Chamber', value: `${padded(FAQ_ENTRIES.length)} frequencies` },

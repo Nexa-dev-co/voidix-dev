@@ -86,6 +86,17 @@ let pixelRatio = 1;
 let hardwareCeil = 1;
 /** True once a believable measurement has been acted on, so a second scene's probe cannot re-decide. */
 let probed = false;
+/**
+ * The ratio the probe solved this machine could afford — BEFORE it was clamped to the panel's own
+ * density or to the floor.
+ *
+ * Kept separately from `ceil` because the two answer different questions and the clamps destroy the
+ * one we need here. A desktop that measured able to afford 2.4× is capped to `ceil = 1` by its 1×
+ * panel, and reading `ceil` back would say "native, same as everyone" about a machine with 5× the
+ * headroom of the laptop next to it. The unclamped number is the only honest capability signal the
+ * site takes, and it is what decides whether MSAA is affordable — see `getProbedAffordableRatio`.
+ */
+let probedAffordableRatio: number | null = null;
 let emaFrameSeconds = 1 / 60;
 let slowFor = 0;
 let fastFor = 0;
@@ -165,11 +176,40 @@ export function reportProbedFrameCost(
   probeRatio: number,
 ): void {
   ensureInitialised();
-  if (probed || milliseconds === null) return;
-  if (megapixels < MIN_PROBE_MEGAPIXELS || probeRatio <= 0) return;
+  if (probed) return;
+
+  // ── ⚠ A REFUSED PROBE HAS TO SAY SO ──
+  // Both of these used to be silent early returns, and that made the instrument useless on exactly
+  // the machines it exists for: a weak laptop reported nothing, and the console gave no way to tell
+  // "the warm-up never ran" apart from "it ran and the reading was thrown out". The only visible
+  // symptom was a `ceiling` that happened to equal the device pixel ratio — which is what the
+  // UNPROBED default also looks like.
+  //
+  // Silence is the one thing a diagnostic may never do when it fails.
+  const rejection =
+    milliseconds === null
+      ? 'unbelievable reading — see MIN/MAX_BELIEVABLE_MILLISECONDS in gpuProbe'
+      : megapixels < MIN_PROBE_MEGAPIXELS
+        ? `frame too small to mean anything (${megapixels.toFixed(3)} Mpx)`
+        : probeRatio <= 0
+          ? `nonsense probe ratio (${probeRatio})`
+          : null;
+
+  if (rejection !== null) {
+    if (telemetryEnabled) {
+      console.log(
+        `[voidix] gpu probe REFUSED: ${rejection}` +
+          `\n  native stands — ceiling ${ceil.toFixed(2)}, and nothing downstream may earn an upgrade.`,
+      );
+    }
+    return;
+  }
   probed = true;
 
-  const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / milliseconds);
+  // Narrowed by the rejection ladder above — `milliseconds === null` is the first case it catches.
+  const believableMilliseconds = milliseconds as number;
+  const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / believableMilliseconds);
+  probedAffordableRatio = affordable;
   ceil = Math.min(hardwareCeil, Math.max(floor, affordable));
   softCeil = ceil;
 
@@ -183,8 +223,8 @@ export function reportProbedFrameCost(
   // build that frame is competing with an unminified bundle and StrictMode's second scene. A preview
   // is where the number means something — which is why the gate is `telemetryEnabled`.
   if (telemetryEnabled) {
-    console.debug(
-      `[voidix] gpu probe: ${milliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
+    console.log(
+      `[voidix] gpu probe: ${believableMilliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
         `at ratio ${probeRatio} → affordable ${affordable.toFixed(2)}, ` +
         `ceiling ${ceil.toFixed(2)} (floor ${floor}, hardware max ${hardwareCeil})`,
     );
@@ -193,6 +233,56 @@ export function reportProbedFrameCost(
   // that stall to reach a level we have just MEASURED as affordable is a stall for nothing. A machine
   // measured as not capable starts low, which is the entire reason to measure before the first frame.
   pixelRatio = ceil;
+}
+
+/**
+ * What the probe found this machine could afford, unclamped — or `null` if it never produced a
+ * believable reading (see `gpuProbe`, which returns null rather than a number it does not trust).
+ *
+ * ⚠ This is a CAPABILITY figure, not a resolution. `1.0` means "this machine can hold the heaviest
+ * pipeline at native and has nothing spare"; `1.4` means it has roughly twice the pixel budget it is
+ * using. It is deliberately not clamped to the panel, because a 1× monitor caps what is worth
+ * RENDERING without saying anything about what the GPU can afford — and MSAA is bought out of that
+ * headroom rather than out of the resolution.
+ *
+ * **Resolution is the priority; samples are the leftover.** Rendering below native softens the whole
+ * frame — type, textures, every edge — while dropping MSAA only stair-steps geometric silhouettes,
+ * and SMAA covers much of that for a fraction of the memory. So nothing on this site may trade
+ * resolution away to keep samples, and the way that is enforced is that samples are only ever raised
+ * from a measurement taken AFTER the ratio has been settled.
+ *
+ * `null` must be read as "not earned". A machine we could not measure is not a machine we may guess
+ * about — the whole reason this module stopped guessing upward is in the header.
+ */
+export function getProbedAffordableRatio(): number | null {
+  return probedAffordableRatio;
+}
+
+/**
+ * What is left AFTER the resolution has taken its share — the number anything else must be paid from.
+ *
+ * ⚠ Read this, not `getProbedAffordableRatio`, before granting any extra. The probe's raw figure is
+ * spent the instant it arrives: `reportProbedFrameCost` LANDS on the ceiling it solves, so a machine
+ * that measured 1.32 is immediately rendering at 1.32 and has nothing spare. Comparing an extra
+ * against the raw number therefore spends the same headroom twice.
+ *
+ * That is not hypothetical — it shipped for an afternoon. A laptop measured `affordable 1.32`, took
+ * all of it as resolution, was then granted 4× MSAA against that same 1.32, fell to 23 fps and gave
+ * the resolution straight back:
+ *
+ *     gpu probe: affordable 1.32, ceiling 1.32
+ *     msaa: earned 4x
+ *     [pixels] STEPPED DOWN 1.32 -> 1.12 at ~25 fps
+ *     [pixels] STEPPED DOWN 1.12 -> 0.92 at ~23 fps
+ *
+ * Expressed as a multiple: `1` means "fully spent on pixels, nothing to give", `2.8` means "could
+ * have drawn nearly three times the pixels it settled for". The gap opens when the PANEL is the
+ * binding constraint rather than the GPU — a 1× monitor caps `ceil` at 1.5 however fast the card is,
+ * and that surplus is real and is exactly what an extra should be bought with.
+ */
+export function getProbedSpareCapacity(): number | null {
+  if (probedAffordableRatio === null || ceil <= 0) return null;
+  return probedAffordableRatio / ceil;
 }
 
 /** The current shared pixel ratio. Read once per frame; apply to renderer + composer when it moves. */

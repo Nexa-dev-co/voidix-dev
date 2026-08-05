@@ -11,9 +11,11 @@ import { useEffect, useState } from 'react';
  * stops its render loop — which is the entire point on a phone.
  */
 
-// Matches LOW_POWER_MAX_WIDTH in the two scene hooks. Kept in step with them by hand: they read it at
-// scene-construction time to pick a render path, this reacts to resize, so they can't share one source
-// without one of them lying about when it was measured.
+// Matches PHONE_MAX_WIDTH in `lib/deviceTier.ts`. Still two copies, and still deliberately: that one is
+// LATCHED — it decides what gets allocated, so it must not change when a window is dragged — while this
+// one has to react to resize, because unmounting an effect is cheap and reversible in a way that
+// reallocating a composer is not. Same number, two different questions. The scene hooks no longer have
+// their own copy; they read the tier.
 const LOW_POWER_MAX_WIDTH = 760;
 
 const isLowPowerNow = () =>

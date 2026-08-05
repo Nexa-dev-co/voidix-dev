@@ -5,6 +5,8 @@
 // plus the richer eyebrow / description / capability detail surfaced when active —
 // and for each ship's full visual identity (its `profile`).
 
+import type { DisciplineId } from '@/lib/enquirySubjects';
+
 // Model → service assignment. Each ship is one line — swap a path to reassign a
 // vessel. The carousel shows one craft at a time, so every bay gets a distinct hull.
 const WEB_VESSEL        = '/models/spaceship.glb';
@@ -80,6 +82,15 @@ export interface DeckService {
   index: string;
   /** Short display name shown on the deck. */
   name: string;
+  /**
+   * Which discipline this craft sells — what the CTA's enquiry arrives already knowing.
+   *
+   * Separate from `name` on purpose: the name is the brand talking ("Web Experiences"), the discipline
+   * is the plain thing a visitor would write in an email ("Web Development"). `worksProjects.ts` points
+   * at the same vocabulary, which is what lets a project's type key and a service's button mean the
+   * same thing. See lib/enquirySubjects.ts.
+   */
+  discipline: DisciplineId;
   /** Poetic kicker revealed above the description when the service is active. */
   eyebrow: string;
   description: string;
@@ -99,6 +110,7 @@ export const DECK_SERVICES: DeckService[] = [
   {
     index: '01',
     name: 'Web Experiences',
+    discipline: 'web',
     eyebrow: 'Interfaces with escape velocity',
     description:
       'Bespoke platforms engineered from the metal up — no templates, no compromise. Every interaction is hand-tuned until the product moves like it has its own momentum.',
@@ -133,6 +145,7 @@ export const DECK_SERVICES: DeckService[] = [
   {
     index: '02',
     name: 'Mobile Systems',
+    discipline: 'mobile',
     eyebrow: 'Native, in every dimension',
     description:
       'Apps that feel like an extension of the device, not a website in a frame. Sixty frames a second, offline-first, and tactile in the hand.',
@@ -164,6 +177,7 @@ export const DECK_SERVICES: DeckService[] = [
   {
     index: '03',
     name: 'Enterprise Platforms',
+    discipline: 'enterprise',
     eyebrow: 'Gravity for your pipeline',
     description:
       'Operational cores that pull every signal into one orbit. We model the way your business actually works, then make the software disappear into the workflow.',
@@ -192,6 +206,7 @@ export const DECK_SERVICES: DeckService[] = [
   {
     index: '04',
     name: 'Artificial Intelligence',
+    discipline: 'ai',
     eyebrow: 'Intelligence in orbit',
     description:
       'Models wired into real products, not demos. Retrieval, agents, and inference pipelines designed around your data — useful on day one, smarter every week.',

@@ -218,7 +218,11 @@ components/
     Drawer/         # the phone's bottom sheet — shared by services, works, contact and the navbar
 
 lib/                # shared: the pin's layout maths, events, perf systems, tuning constants
-scripts/optimizeModels.mjs   # `npm run optimize:models` — per-model gltf-transform recipes
+scripts/
+  optimizeModels.mjs    # `npm run optimize:models` — the road in from a RAW Sketchfab export
+  buildModels.mjs       # `npm run build:models`   — the road from a shipped GLB to a better one
+  compareModels.mjs     #                            the invariants both of the above must not break
+  optimizeTextures.mjs  # `npm run optimize:textures` — the standalone maps, which no GLB contains
 docs/               # living design + state docs
 ```
 
@@ -268,7 +272,7 @@ of sections; `lib/carouselLayout.ts` derives everything else from it:
 const carouselSections = [
   { key: 'services', stopCount: craftCount,   setActiveStop: …, crossingAfter: { scrollVh: 180, apply: applyServicesToWorksHandoff } },
   { key: 'work',     stopCount: projectCount, setActiveStop: …, crossingAfter: { scrollVh: 140, apply: applyWorksToChamberReveal   } },
-  { key: 'process',  stopCount: 1, crossingAfter: { scrollVh: 140, apply: applyChamberToContactReturn } },
+  { key: 'faq',      stopCount: 1, crossingAfter: { scrollVh: 140, apply: applyChamberToContactReturn } },
   { key: 'contact',  stopCount: 1, crossingAfter: { scrollVh: 120, apply: applyContactToHeroLoop      } },
   { key: 'loop',     stopCount: 1 },   // a landing pad, never rested on — arriving IS the teleport
 ];
@@ -453,19 +457,24 @@ whatever scrolls under it); `.nav-accent` sits behind holding everything that mu
 (top line, orbital mark, the meters), so the blend never turns it blue.
 
 Each nav item has a cyan meter. **A section feeds its meter by setting `--nav-progress-<key>` on
-`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `process`, plus
+`document.documentElement`** — the hero pin publishes `home`, `services`, `work`, `faq`, plus
 **`total`**, which is the pin's own progress and therefore the whole circuit as one number.
 
-**On a phone the bar is the ORBIT FAN** (`Navbar/OrbitDial`), and it is a GESTURE, not a menu. The bar
-reads `Navigate ⊙`; hold it and one arc bows out beneath, four nodes on it, each running a leader line
-to its number and name. Drag along a row and let go. **Releasing off every station navigates nowhere** —
-deliberate, because every destination here is a scrubbed cinematic several seconds long and a mis-tap
-costs the journey, not a page load. A press that never *moved* latches the fan open instead of closing,
-which is the only thing that makes it operable without the gesture (mouse, keyboard, anyone who can't
-hold a drag steady); it still navigates nothing.
+**On a phone the bar is the ORBIT FAN** (`Navbar/OrbitDial`). The bar reads `Navigate ⊙`; tap it and one
+arc bows out beneath, four nodes on it, each running a leader line to its number and name. Tap a node and
+you travel; tap anywhere else, or press Escape, and it folds away.
 
-- **`orbitGeometry.ts` is the single source for the angles.** The drawing and the hit-testing both read
-  it; a copy in the stylesheet would be a selection that lands one facet off what you can see.
+⚠ **It was a hold-and-drag gesture until 2026-08-05, and the reversal is documented rather than
+forgotten** (`useOrbitDial`'s header). The gesture existed because every destination here is a scrubbed
+cinematic several seconds long and a mis-tap costs the journey, not a page load — but a hold competes
+with the platform's own long-press, nothing on screen says "hold me", and a sweep with no friction
+feedback reads as broken when it lands between two facets. **The protection is intact under a tap:** it
+still takes two deliberate acts to commit, and the second lands on a 44px target that only exists while
+the fan is up. Don't "restore" the drag, and don't collapse it to one tap either.
+
+- **`orbitGeometry.ts` is the single source for the angles**, and now the ONLY consumer of them is the
+  drawing — the pointer hit-testing (`stationFromPointer`, and the dead zone it needed) went with the
+  drag, because a facet is a real 44px `<button>` and the browser can hit-test it.
 - ⚠ The sweep is **51°, not 180°** — the pivot is the top-right corner, so half the circle is off-screen
   and more of it is above the bar. And it starts at **105°, not 90°**: near straight-down, y barely
   changes with angle and the first two labels landed on top of each other.
@@ -494,7 +503,16 @@ These exist and are load-bearing — don't reinvent them:
 | `adaptivePixelRatio.ts` | The shared resolution. **Native by default; above native has to be EARNED** by the probe. Also runs a live controller on real frame times for the rest of the session. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. |
 | `warmScene.ts` | Compiles a scene's programs **and uploads its maps** on an idle frame. Both halves are needed: `compile()` builds programs only, and three uploads a texture on first *draw*. |
 | `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size — shrinking one invalidates them exactly as much as growing one.** |
-| `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones — **and is the sole source of the `lowPower` flag** the heavy scenes branch on. |
+| `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones, and **reacts to resize** — unmounting an effect is cheap and reversible. It is no longer the source of `lowPower`. |
+| `deviceTier.ts` | **The one quality authority: `potato \| low \| mid \| high`, decided once at first ask and LATCHED.** Everything downstream of it allocates, so it must not change when a window is dragged. `isLowPowerDevice()` is the old `lowPower` boolean expressed in terms of it — the two scene hooks no longer compute their own. ⚠ It does not measure: `gpuProbe` runs during the works warm-up, long after every composer is allocated, so it cannot answer a question asked at construction. |
+| `modelLoading.ts` | The page's ONE Draco decoder and ONE KTX2 transcoder. Both are shared because each instance fetches its own ~250/585 KB decoder and spins its own worker pool, and **neither is ever disposed** — `dispose()` terminates those workers, so whichever scene unmounted first would break decoding for every scene still alive. ⚠ `detectKtx2Support(renderer)` is separate and mandatory: `KTX2Loader.load()` throws if it has never seen a renderer, and two of the four model loaders (`chamberScene`, `singularityScene`) deliberately never get one. ⚠ `THREE.Cache` must stay OFF — the header says what it breaks. |
+
+**Every texture in every model is KTX2 (ETC1S)** as of 2026-08-04 — GPU-compressed, so it stays
+compressed in VRAM instead of expanding to RGBA. ~169 MB of texture became ~38 MB at unchanged
+resolution, and the download went *down* 5%. ⚠ **Not UASTC, even for normal maps**, which is the
+textbook answer and costs ~970 KB per 1024² map against ~140 KB for ETC1S — unaffordable on a page
+whose loader gate waits on a download. `scripts/buildModels.mjs` has the per-model escape hatch and
+`docs/adaptive-asset-tier-plan.md` §10c has the four ways the encode failed silently first.
 
 ⚠ **The site DOES pick quality from a measurement now, and it is new** (2026-08-03). An earlier
 revision of this file said the opposite, correctly at the time: a `performanceTier.ts` had classified
@@ -519,10 +537,44 @@ breathes and collapses across those spans, and the works backdrop is transparent
 ⚠ **`samples` on a composer target is paid TWICE.** `EffectComposer` clones the target it is handed
 (`renderTarget2 = renderTarget.clone()`) and `RenderTarget.copy` carries `samples` across. A
 full-resolution 4× MSAA HalfFloat target is ~83 MB on a 1512×982 panel at ratio 1, so a two-composer
-scene at `samples: 4` is ~330 MB before anything else. Count them before adding one. The works field's
-**screen** stage runs at `samples: 0` for exactly this reason: for the whole of works it draws one
-pixel-aligned fullscreen quad carrying an already-resolved texture, and its `SMAAPass` is likewise
-enabled only while the chamber is on screen.
+scene at `samples: 4` is ~330 MB before anything else. Count them before adding one.
+
+**Antialiasing, as it stands** (2026-08-04, `docs/lag-and-freeze-diagnosis.md` §8c):
+
+| composer | potato | low / mid / high | earned |
+|---|---|---|---|
+| works · **space** | 0 | 2 | **4**, from the probe |
+| works · **screen** | 0 | 0 | — |
+| deck | 0 + SMAA | 0 + SMAA | — |
+
+⚠ **RESOLUTION IS THE PRIORITY; SAMPLES ARE THE LEFTOVER.** Below native the whole frame softens —
+type, textures, every edge. Dropping MSAA only stair-steps geometric silhouettes, and SMAA covers much
+of that for a fraction of the memory. **Nothing may trade resolution away to keep samples.**
+
+That is enforced by *when* each is decided, not by a comment: `deviceTier` sets a floor that does not
+include 4×, and the works field raises to 4 only in its warm-up, **after** `gpuProbe` has run and
+`adaptivePixelRatio` has settled the ratio — so the samples come out of measured leftover headroom
+(`getProbedAffordableRatio() >= 1.25`). An earlier cut had `high: 4` at construction; a machine that
+*looked* strong then allocated ~166 MB on a guess and paid for it by dropping resolution. That is the
+same failure `adaptivePixelRatio`'s header records being rewritten to stop making.
+
+- **works · screen is always 0.** For the whole of works it draws one pixel-aligned fullscreen quad
+  carrying an already-resolved texture. Its `SMAAPass` is likewise enabled only for the chamber.
+- **works · space can never be 0 above `potato`** — stage 2's SMAA is gated to the chamber, so this is
+  the only AA the marks, debris and starfield get.
+- **The deck never earns MSAA**, deliberately: the probe is taken once, in the works hook, and reading
+  it from here would usually work and occasionally not (on a cached reload both scenes warm on the same
+  signal and the order is whichever effect registered first). AA that differs between two loads of the
+  same page is worse than not having it. If it is ever wanted, give the deck its **own** probe — its
+  warm-up already draws a real frame, which is what made the works one nearly free.
+
+⚠ **A composer target with `samples` AND an `SMAAPass` is always a bug.** Both scenes had it; both hid
+it in a comment claiming SMAA was "the only geometry AA on the final image". The **target** carried
+the samples, not the renderer, which is why a grep never found it.
+
+⚠ **`setSize` will not rebuild a target for a new sample count** — it only disposes when the DIMENSIONS
+change. `samples` is read in `setupRenderTarget`, so raising it means `dispose()` on **both** of a
+composer's ping-pong buffers.
 
 Costs, roughly: WorksField + Chamber ●●●●● > ServicesDeck ●●●●○ ≈ FluidCursor ●●●●○ > sun ●●●○○.
 `UnrealBloom` is the recurring expensive pass. Diagnosis of what actually made a laptop crawl — with
@@ -659,7 +711,7 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | | |
 |---|---|
 | **Contact** | **BUILT** — the star dies here, then the page loops back to the hero. Form + footer are front-end only: `handleSubmit` prevents default and posts nowhere, and every address, social handle and legal route in `contactContent.ts` is an invented placeholder. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
-| **Process content** | The `process` meter key is wired to the Chamber, whose content is an FAQ hologram. **Decided:** process steps will be revealed on the chamber's walls as the camera tours. |
+| **Process content** | **The section is now called FAQ** (renamed 2026-08-05, key and label both — it was `process` everywhere). The chamber's content was always the FAQ hologram, and a key that said `process` was describing an intention rather than the room. The hologram's list now ends in an **Ask us anything** control that opens the shared enquiry panel with no prefill. **Still open:** the decided-but-unbuilt idea that process steps appear on the chamber's walls as the camera tours. |
 | **The collapse finale** | **BUILT** — ported into `components/sections/Contact/singularityScene.ts`, a SECOND star living inside the works renderer (the hero sun's canvas has no compositor and nothing behind it for lensing to bend). Collapse, flash, black hole, accretion and lensing all ship. See `docs/contact-singularity-plan.md`. |
 | **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
