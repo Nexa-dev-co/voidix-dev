@@ -2,6 +2,7 @@ import { useEffect, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
+import { isLowPowerDevice } from '@/lib/deviceTier';
 import { createFrameTimer } from '@/lib/frameTimer';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -139,8 +140,27 @@ const BLOOM_THRESHOLD      = 0.7;
  *     samples 0   11.9 MB resolved                                             =  12 MB  × 2 targets
  *
  * ~142 MB back, and the edges are still antialiased — by the pass that was always there.
+ *
+ * ── Why this is 0 for EVERYONE, when the works field earns 4× ────────────────────────────────────
+ * The works field raises its samples from a real measurement — `gpuProbe` runs inside its warm-up, so
+ * by the time it decides, it knows. This hook has no such number: the probe is taken once, in that
+ * hook, and `reportProbedFrameCost` deliberately ignores second callers so two scenes cannot argue.
+ *
+ * Reading the works field's answer from here would work *usually* — its assets are ~0.95 MB against
+ * this fleet's ~5.15 MB, and `yieldToStarDownload` holds the vessels behind the star, so works almost
+ * always warms first. But on a fully cached reload both scenes warm on the same stage-quiet signal and
+ * the order is whichever effect registered first. That would make the fleet's antialiasing differ
+ * between two loads of the same page on the same machine, which is worse than not having it.
+ *
+ * SMAA is genuine antialiasing and costs ~12 MB of lookup textures rather than ~142 MB of buffers, so
+ * the fleet is not going without. If MSAA is ever wanted here, the honest way is to give this hook its
+ * OWN probe — its warm-up already draws a real frame, which is the whole reason the works one was
+ * nearly free — not to read a number that may or may not have arrived.
+ *
+ * ⚠ Whatever happens, this and the `SMAAPass` below must never both be on. That is the bug the top of
+ * this comment is about.
  */
-const BLOOM_MSAA_SAMPLES   = 0;
+const BLOOM_MSAA_SAMPLES = 0;
 
 // ── The portal swap ──
 // Two gates form; the craft turns to face one, flies through it, and its replacement comes out of the
@@ -274,9 +294,6 @@ const DRAG_PITCH_CLAMP       = 0.45;
 const SPRING_DURATION        = 0.9;   // ease back to the resting view on release
 const FLICK_DISTANCE_PX      = 110;   // horizontal travel past this (and horizontally dominant) = a switch
 
-// Coarse pointer or a small viewport → the lighter render path (no clearcoat/iridescence, softer bloom).
-const LOW_POWER_MAX_WIDTH = 760;
-
 export interface DeckStatus {
   isLoading: boolean;
   /** 0–100 while loading, 100 when the fleet is in. */
@@ -398,10 +415,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     if (!canvas) return;
 
     const reduceMotion = prefersReducedMotion();
-    // The lighter path: coarse pointer (touch) or a narrow viewport. Keeps clearcoat/iridescence +
-    // strong bloom + MSAA off the devices least able to afford them.
-    const lowPower =
-      window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
+    // The lighter path: keeps clearcoat/iridescence and strong bloom off the devices least able to
+    // afford them. One authority for it now, rather than a viewport test copied into two scene hooks —
+    // see lib/deviceTier.ts.
+    const lowPower = isLowPowerDevice();
 
     // The authored stage: camera, rig intensities, and where each hull sits.
     const tuning = getDeckTuning();
@@ -466,8 +483,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // ── Post-processing: selective bloom ──
     // HalfFloat keeps the bloom precise — it must bleed on HDR values, before the tone curve compresses
     // them — and the bloom threshold means only the bright accents/highlights bleed, so it reads as
-    // glowing engines rather than a haze. No MSAA: see BLOOM_MSAA_SAMPLES for why the SMAA pass at the
-    // end of this chain makes it redundant, and what it was costing.
+    // glowing engines rather than a haze. No MSAA: the SMAA pass at the end of this chain is the
+    // antialiasing, and running both is the bug BLOOM_MSAA_SAMPLES describes.
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       samples: BLOOM_MSAA_SAMPLES,
@@ -484,10 +501,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
     // Smooth the hull edges the bloom pipeline leaves rough. A composer ignores the renderer's own
-    // `antialias` flag, so once the target stopped carrying `samples` (see BLOOM_MSAA_SAMPLES) this
-    // genuinely IS the only geometry AA on the final image — which it was previously claimed to be
-    // while 4× MSAA was quietly running underneath it. Runs last, on the LDR result after tone
-    // mapping. Sized by the composer, so it follows the adaptive resolution.
+    // `antialias` flag, so now that the target carries no samples this genuinely IS the only geometry
+    // AA on the final image — which it was previously claimed to be while 4x MSAA ran underneath it.
+    // Runs last, on the LDR result after tone mapping. Sized by the composer, so it follows the
+    // adaptive resolution.
     const smaaPass = new SMAAPass();
     composer.addPass(smaaPass);
 

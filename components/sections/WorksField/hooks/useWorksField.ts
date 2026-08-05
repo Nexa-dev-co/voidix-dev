@@ -51,9 +51,15 @@ import {
   isStageQuiet,
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
-import { getPixelRatio, sampleFrame, reportProbedFrameCost } from '@/lib/adaptivePixelRatio';
+import {
+  getPixelRatio,
+  sampleFrame,
+  reportProbedFrameCost,
+  getProbedAffordableRatio,
+} from '@/lib/adaptivePixelRatio';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
 import { detectKtx2Support } from '@/lib/modelLoading';
+import { getDeviceTier, isLowPowerDevice, type DeviceTier } from '@/lib/deviceTier';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { warmSceneMaterials } from '@/lib/warmScene';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
@@ -358,32 +364,67 @@ const BLOOM_STRENGTH_LOW = 0.3;
 const BLOOM_RADIUS       = 0.55;
 const BLOOM_THRESHOLD    = 0.6;
 /**
- * MSAA on the SPACE stage — 2, not 4.
+ * MSAA on the SPACE stage, by device tier.
  *
  * Unlike the deck's composer, this one has no SMAA behind it: stage 2's `SMAAPass` is enabled only
  * while the chamber is on screen, so for the whole of works this is the only antialiasing the marks,
- * the debris and the starfield get. It cannot go to 0. But `EffectComposer` clones the target it is
- * handed and `RenderTarget.copy` carries `samples` across, so every sample is paid TWICE — and the
- * cost is not linear in quality. On a 1512×982 panel at ratio 1:
+ * the debris and the starfield get. That is why even the weakest tier here is not automatically 0 —
+ * and why 4 has to be earned rather than assumed.
+ *
+ * `EffectComposer` clones the target it is handed and `RenderTarget.copy` carries `samples` across, so
+ * every sample is paid TWICE. On a 1512×982 panel at ratio 1:
  *
  *     samples 4   11.9 resolved + 47.5 colour + 23.8 depth  =  83 MB  × 2 targets  = 166 MB
  *     samples 2   11.9 resolved + 23.8 colour + 11.9 depth  =  48 MB  × 2 targets  =  95 MB
+ *     samples 0   11.9 resolved                             =  12 MB  × 2 targets  =  24 MB
  *
- * 4× buys a modest improvement over 2× on the edges that already have two samples; the step from 0 to
- * 2 is the one that does the work. ~71 MB for that difference, on a scene that also runs a bloom
- * pyramid and hands its output to a second composer, is the wrong side of the trade.
+ * The step from 0 to 2 does most of the perceptual work; 2 to 4 refines edges that already have two
+ * samples.
  *
- * ⚠ It is also ~24 MB/frame less resolve traffic. An MSAA resolve reads every sample and writes one,
- * and integrated graphics have 30–50 GB/s of TOTAL bandwidth to spend
+ * ⚠ Samples are also per-frame bandwidth, not just memory. An MSAA resolve reads every sample and
+ * writes one, and integrated graphics have 30–50 GB/s of TOTAL bandwidth
  * (`docs/lag-and-freeze-diagnosis.md` §1).
+ *
+ * ── ⚠ THIS IS A FLOOR. 4× IS NOT ON IT, AND THAT IS THE POINT ────────────────────────────────────
+ * `deviceTier` is a classification from `navigator` hints — a guess, taken before anything has been
+ * measured. An earlier cut of this had `high: 4` here, which meant a machine that *looked* strong
+ * allocated ~166 MB of multisampled targets and then, when the probe found it slow, paid for that
+ * guess by dropping its RESOLUTION to compensate. That is the trade backwards: it sacrifices the
+ * thing that softens the entire frame to protect the thing that only touches silhouettes.
+ *
+ * It is also the exact mistake `adaptivePixelRatio`'s own header records having been rewritten to
+ * stop making — *"the claw-back only happens after the composers have already been reallocated at the
+ * larger size, on precisely the machine that could not afford it"*. So the tier sets the floor, and
+ * 4 is EARNED from a real measurement — see `earnedMsaaSamples` in the warm-up.
  */
-const BLOOM_MSAA_SAMPLES = 2;
+const BLOOM_MSAA_SAMPLES_BY_TIER: Record<DeviceTier, number> = {
+  potato: 0,
+  low: 2,
+  mid: 2,
+  high: 2,
+};
+
+/** What a machine that has demonstrated the headroom gets instead. */
+const BLOOM_MSAA_SAMPLES_EARNED = 4;
+
+/**
+ * How much measured headroom 4× has to be paid for out of.
+ *
+ * `getProbedAffordableRatio()` is a ratio of RESOLUTION, and cost scales with its square — so 1.25
+ * means "this machine measured able to draw ~56 % more pixels than it is being asked to". Going from
+ * two samples to four adds roughly 24 MB/frame of resolve traffic on a 1512×982 panel, which sits
+ * comfortably inside that.
+ *
+ * ⚠ The probe measures a frame drawn at the FLOOR samples, with SMAA on. It therefore does not
+ * include the cost of the thing it is being asked to authorise, which is the second reason for a
+ * margin rather than a bare `>= 1`.
+ */
+const MSAA_EARN_MIN_AFFORDABLE_RATIO = 1.25;
 
 const MAX_FRAME_SECONDS = 0.05; // clamp dt so a tab-restore doesn't fling the animation
 
 /** Labels each run of the effect in the development trace. See `effectRun` in the hook. */
 let effectRunCounter = 0;
-const LOW_POWER_MAX_WIDTH = 760;
 
 export interface FieldStatus {
   isLoading: boolean;
@@ -598,8 +639,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     if (!canvas) return;
 
     const reduceMotion = prefersReducedMotion();
-    const lowPower =
-      window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
+    // One authority for both, decided once — see lib/deviceTier.ts for why this stopped being an
+    // inline viewport test copied into two scene hooks.
+    const deviceTier = getDeviceTier();
+    const lowPower = isLowPowerDevice();
 
     // ── Renderer ──
     // ⚠ `antialias: false` is deliberate and is NOT a quality cut — see the same note on the fleet's
@@ -660,7 +703,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // transparent, so the field renders as an empty void. Always read the output back off the composer.
     const spaceBuffer = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
-      samples: lowPower ? 0 : BLOOM_MSAA_SAMPLES,
+      samples: BLOOM_MSAA_SAMPLES_BY_TIER[deviceTier],
     });
     const spaceComposer = new EffectComposer(renderer, spaceBuffer);
     spaceComposer.renderToScreen = false;
@@ -1807,6 +1850,39 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // for the session. Taken here because this is the heaviest pipeline on the page, at its real
         // size, on a render that had to happen anyway.
         reportProbedFrameCost(cost.milliseconds, cost.megapixels, renderer.getPixelRatio());
+
+        // ── Now, and only now, is 4× MSAA allowed to be considered ──
+        // The resolution has just been settled from the same measurement, so anything spent here comes
+        // out of headroom that is genuinely left over rather than out of the frame's sharpness. See
+        // BLOOM_MSAA_SAMPLES_BY_TIER for why this is not decided at construction.
+        //
+        // `null` means the probe produced nothing believable, and that is read as "not earned" — the
+        // floor stands. `potato` is a hard cap: `saveData` is an instruction, not a hint.
+        const affordableRatio = getProbedAffordableRatio();
+        const earnsMsaa =
+          deviceTier !== 'potato' &&
+          affordableRatio !== null &&
+          affordableRatio >= MSAA_EARN_MIN_AFFORDABLE_RATIO;
+        if (earnsMsaa && spaceBuffer.samples < BLOOM_MSAA_SAMPLES_EARNED) {
+          // Both of them: `EffectComposer` clones the target it is handed, and the clone is a real
+          // second buffer that the scene renders into on alternating frames.
+          //
+          // ⚠ `setSize` will NOT rebuild these — it only disposes when the DIMENSIONS change, and they
+          // have not. `samples` is read in `setupRenderTarget`, so the framebuffers have to be thrown
+          // away explicitly for the new count to take. Three rebuilds them on the next draw, which is
+          // the one immediately below.
+          for (const target of [spaceComposer.renderTarget1, spaceComposer.renderTarget2]) {
+            target.samples = BLOOM_MSAA_SAMPLES_EARNED;
+            target.dispose();
+          }
+          if (telemetryEnabled) {
+            console.debug(
+              `[voidix] msaa: earned ${BLOOM_MSAA_SAMPLES_EARNED}× on the space stage ` +
+                `(measured affordable ${affordableRatio.toFixed(2)}, tier ${deviceTier})`,
+            );
+          }
+          drawWarmupFrame();
+        }
 
         await nextWarmupFrame();
         if (disposed) return;

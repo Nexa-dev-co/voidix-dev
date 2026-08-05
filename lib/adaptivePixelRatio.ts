@@ -86,6 +86,17 @@ let pixelRatio = 1;
 let hardwareCeil = 1;
 /** True once a believable measurement has been acted on, so a second scene's probe cannot re-decide. */
 let probed = false;
+/**
+ * The ratio the probe solved this machine could afford — BEFORE it was clamped to the panel's own
+ * density or to the floor.
+ *
+ * Kept separately from `ceil` because the two answer different questions and the clamps destroy the
+ * one we need here. A desktop that measured able to afford 2.4× is capped to `ceil = 1` by its 1×
+ * panel, and reading `ceil` back would say "native, same as everyone" about a machine with 5× the
+ * headroom of the laptop next to it. The unclamped number is the only honest capability signal the
+ * site takes, and it is what decides whether MSAA is affordable — see `getProbedAffordableRatio`.
+ */
+let probedAffordableRatio: number | null = null;
 let emaFrameSeconds = 1 / 60;
 let slowFor = 0;
 let fastFor = 0;
@@ -170,6 +181,7 @@ export function reportProbedFrameCost(
   probed = true;
 
   const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / milliseconds);
+  probedAffordableRatio = affordable;
   ceil = Math.min(hardwareCeil, Math.max(floor, affordable));
   softCeil = ceil;
 
@@ -193,6 +205,29 @@ export function reportProbedFrameCost(
   // that stall to reach a level we have just MEASURED as affordable is a stall for nothing. A machine
   // measured as not capable starts low, which is the entire reason to measure before the first frame.
   pixelRatio = ceil;
+}
+
+/**
+ * What the probe found this machine could afford, unclamped — or `null` if it never produced a
+ * believable reading (see `gpuProbe`, which returns null rather than a number it does not trust).
+ *
+ * ⚠ This is a CAPABILITY figure, not a resolution. `1.0` means "this machine can hold the heaviest
+ * pipeline at native and has nothing spare"; `1.4` means it has roughly twice the pixel budget it is
+ * using. It is deliberately not clamped to the panel, because a 1× monitor caps what is worth
+ * RENDERING without saying anything about what the GPU can afford — and MSAA is bought out of that
+ * headroom rather than out of the resolution.
+ *
+ * **Resolution is the priority; samples are the leftover.** Rendering below native softens the whole
+ * frame — type, textures, every edge — while dropping MSAA only stair-steps geometric silhouettes,
+ * and SMAA covers much of that for a fraction of the memory. So nothing on this site may trade
+ * resolution away to keep samples, and the way that is enforced is that samples are only ever raised
+ * from a measurement taken AFTER the ratio has been settled.
+ *
+ * `null` must be read as "not earned". A machine we could not measure is not a machine we may guess
+ * about — the whole reason this module stopped guessing upward is in the header.
+ */
+export function getProbedAffordableRatio(): number | null {
+  return probedAffordableRatio;
 }
 
 /** The current shared pixel ratio. Read once per frame; apply to renderer + composer when it moves. */
