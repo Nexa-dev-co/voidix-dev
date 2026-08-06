@@ -586,9 +586,20 @@ export default function SunModelCanvas() {
     const applyCovered = () => {
       const wasCovered = covered;
       covered = revealProgress >= SUN_COVERED_CHAMBER_PROGRESS;
+      if (wasCovered === covered) return;
       // Uncovering has to draw again: the sun stopped redrawing while it was hidden, so without this
       // scrolling back out of the room would reveal the stale frame it froze on.
-      if (wasCovered && !covered) forceRender = true;
+      if (!covered) forceRender = true;
+      // ── …and stop COMPOSITING it, not just drawing it ──
+      // `covered` already stops the render. It does nothing about the layer: the reveal fades this
+      // canvas to `opacity: 0`, and a zero-opacity canvas is still rasterized and blended every frame
+      // — a full-screen layer, at device resolution, for the whole of the chamber and contact, showing
+      // a star that has been deliberately faded out. Same trap `useFluidCursor` documents for its two
+      // canvases, and the same fix.
+      //
+      // ⚠ `visibility`, not `display: none`. `applySize` reads `clientWidth/clientHeight` off this
+      // element; display-none reports zero and would resize the drawing buffer to nothing.
+      canvas.classList.toggle('is-uncomposited', covered);
     };
     const onChamberProgress = (event: Event) => {
       revealProgress = readChamberProgress(event);

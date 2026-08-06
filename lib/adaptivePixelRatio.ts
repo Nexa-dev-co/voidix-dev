@@ -40,6 +40,23 @@ import { telemetryEnabled } from '@/lib/telemetryEnabled';
 // which is the state this module spent its whole life in. 0.75 is ~44% fewer pixels; visibly softer,
 // and the only thing left to give on the machines that reach it.
 const MIN_PIXEL_RATIO = 0.75;
+/**
+ * The most the browser may be asked to blow the render up when it composites it.
+ *
+ * ⚠ THE FLOOR HAS TO BE RELATIVE TO THE PANEL, and `MIN_PIXEL_RATIO` alone is not. 0.75 is 75 % of a
+ * 1× display's density — softer, but honest. On a dpr 2.5 laptop it is 30 %, which the compositor then
+ * scales up 3.3×, and that is not "softer", that is smeared. The same constant means two completely
+ * different pictures.
+ *
+ * It never mattered while the controller could not see below 20 fps, because nothing ever reached the
+ * floor. The moment the clamped-delta bug was fixed, a real machine walked 1.68 → 1.48 → 1.28 → 1.08
+ * → 0.88 → 0.75 in 28 seconds and sat there.
+ *
+ * Capping the upscale at 2× keeps the meaning constant across displays: dpr 2.5 floors at 1.25,
+ * dpr 2 at 1.0, and dpr 1 still floors at 0.75 — so the sub-native move this module's header wanted
+ * on weak 1× machines survives, and only the dense panels are protected from it.
+ */
+const MAX_COMPOSITE_UPSCALE = 2;
 const SUPERSAMPLE_CEIL = 1.5;  // the most a 1× panel may ever be allowed — and only if PROBED able
 const MAX_PIXEL_RATIO = 2;     // hard cap (retina native)
 const STEP = 0.2;               // how far the ratio moves per adjustment
@@ -257,6 +274,10 @@ let dropNextSample = false;
 let lastStepDownAt = -Infinity;
 /** Real time the current trial began — the only clock that keeps running when sampling stops. */
 let stepDownStartedAtMs = 0;
+/** A cut has been decided but the scene has not re-allocated yet, so the trial has not begun. */
+let stepDownAwaitingApply = false;
+/** Consecutive cuts that were never measured. See MAX_UNVERIFIED_STEP_DOWNS. */
+let unverifiedStepDowns = 0;
 let fpsBeforeStepDown = 0;
 /** Long enough for the EMA to have absorbed the new resolution, short enough to not sit ugly. */
 const STEP_DOWN_VERDICT_SECONDS = 1.5;
@@ -278,7 +299,24 @@ const STEP_DOWN_VERDICT_SECONDS = 1.5;
  * `fillBound` alone, so the next step down gets a fresh trial; concluding from it is how we got two
  * days of confidently wrong answers.
  */
-const STEP_DOWN_TRIAL_ABANDON_MS = 4000;
+const STEP_DOWN_TRIAL_ABANDON_MS = 6000;
+/**
+ * How many cuts may be made without a single one being measured, before the controller stops.
+ *
+ * ⚠ THIS IS THE STOP. An abandoned trial used to mean "conclude nothing and carry on", which sounds
+ * cautious and is not: it is permission to keep cutting forever on no evidence. Observed doing exactly
+ * that — five steps to the floor in 28 seconds, every trial abandoned, not one measurement taken:
+ *
+ *     26.0s  STEPPED DOWN 1.68 → 1.48      31.6s  trial abandoned
+ *     32.6s  STEPPED DOWN 1.48 → 1.28      39.8s  trial abandoned
+ *     40.6s  STEPPED DOWN 1.28 → 1.08
+ *     48.6s  STEPPED DOWN 1.08 → 0.88      52.9s  trial abandoned
+ *     53.8s  STEPPED DOWN 0.88 → 0.75      61.8s  trial abandoned
+ *
+ * Two blind cuts is a reasonable amount of benefit of the doubt. After that the controller holds
+ * until some trial actually completes, and a completed verdict — either way — resets the count.
+ */
+const MAX_UNVERIFIED_STEP_DOWNS = 2;
 /** The frame rate has to improve by at least this much for the pixels to have been worth giving up. */
 const STEP_DOWN_MIN_GAIN = 1.08;
 
@@ -359,7 +397,7 @@ function ensureInitialised(): void {
   // The most this panel could ever justify: its own density, or a little super-sampling on a 1× panel
   // — but ONLY as a bound the probe is allowed to reach, never as a starting assumption.
   hardwareCeil = Math.min(MAX_PIXEL_RATIO, Math.max(deviceRatio, SUPERSAMPLE_CEIL));
-  floor = MIN_PIXEL_RATIO;
+  floor = Math.max(MIN_PIXEL_RATIO, deviceRatio / MAX_COMPOSITE_UPSCALE);
   // Until something is measured, native is the answer. Rendering above native is a real cost paid for
   // a subtle gain and nothing yet says this machine can afford it; rendering below it is a real
   // quality loss and nothing yet says it is needed.
@@ -368,7 +406,8 @@ function ensureInitialised(): void {
   // report a device ratio under the floor — otherwise the controller would have a range it cannot sit in.
   ceil = Math.max(floor, Math.min(MAX_PIXEL_RATIO, deviceRatio));
   softCeil = ceil;
-  pixelRatio = Math.min(ceil, 1);
+  // Native-by-default, but never under the floor — on a dense panel the floor is now above 1.
+  pixelRatio = Math.min(ceil, Math.max(floor, 1));
 }
 
 /**
@@ -530,6 +569,18 @@ export function reportProbedFrameCost(
  */
 export function noteRatioApplied(): void {
   dropNextSample = true;
+
+  // ⚠ THE TRIAL STARTS HERE, not at the decision — this is the fix for every trial being abandoned.
+  // A cut is decided, and then the scene waits for an idle frame or up to RATIO_APPLY_GRACE_SECONDS
+  // before it re-allocates; sampling is off for all of that. Starting the clock at the decision meant
+  // the trial spent its first 1.5 s unable to measure anything, needed 1.5 s of sampling after that,
+  // and blew its wall-clock budget on nearly every attempt. Anchored to the apply, the whole budget
+  // is available for the measurement it exists to take.
+  if (stepDownAwaitingApply) {
+    stepDownAwaitingApply = false;
+    lastStepDownAt = elapsed;
+    stepDownStartedAtMs = performance.now();
+  }
 }
 
 /**
@@ -689,6 +740,9 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
     performance.now() - stepDownStartedAtMs > STEP_DOWN_TRIAL_ABANDON_MS
   ) {
     awaitingStepDownVerdict = false;
+    // Also covers the never-applied case: a stray apply later must not resurrect a dead trial.
+    stepDownAwaitingApply = false;
+    unverifiedStepDowns += 1;
     // ⚠ And make the NEXT cut earn its own evidence. `slowFor` has been accumulating throughout the
     // abandoned trial, so leaving it charged means the following step down fires on the very next
     // frame — cuts would chain every four seconds with nothing ever measured, straight to the floor.
@@ -697,7 +751,11 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
       console.log(
         `%c[pixels] trial abandoned%c — the step down to ${pixelRatio.toFixed(2)} could not be judged` +
           ` within ${STEP_DOWN_TRIAL_ABANDON_MS / 1000}s of real time (sampling kept pausing).` +
-          `\n  Keeping the cut and concluding nothing. See STEP_DOWN_TRIAL_ABANDON_MS.`,
+          `\n  Keeping the cut, concluding nothing — ${unverifiedStepDowns}/${MAX_UNVERIFIED_STEP_DOWNS}` +
+          ` unmeasured cuts` +
+          (unverifiedStepDowns >= MAX_UNVERIFIED_STEP_DOWNS
+            ? `. HOLDING HERE until a trial completes.`
+            : `.`),
         'color:#e0b341;font-weight:700',
         'color:#888',
       );
@@ -706,8 +764,14 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
 
   // ── Did the last step down actually buy anything? ──
   // If it did not, this frame is not fill-bound and every pixel given up from here is pure loss.
-  if (awaitingStepDownVerdict && elapsed - lastStepDownAt >= STEP_DOWN_VERDICT_SECONDS) {
+  if (
+    awaitingStepDownVerdict &&
+    !stepDownAwaitingApply &&
+    elapsed - lastStepDownAt >= STEP_DOWN_VERDICT_SECONDS
+  ) {
     awaitingStepDownVerdict = false;
+    // A real measurement, whichever way it went — the benefit of the doubt is restored.
+    unverifiedStepDowns = 0;
     if (fps < fpsBeforeStepDown * STEP_DOWN_MIN_GAIN) {
       fillBound = false;
       if (activePipeline) fillBoundByPipeline.set(activePipeline, false);
@@ -762,7 +826,15 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   //
   // Now a cut is a single hypothesis: take one step, wait for the frame rate to answer, and either
   // continue or put it back. At most one step of quality is ever on trial.
-  if (fillBound && !awaitingStepDownVerdict && slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
+  if (
+    fillBound &&
+    !awaitingStepDownVerdict &&
+    // ⚠ The stop. Two cuts on faith is the limit; see MAX_UNVERIFIED_STEP_DOWNS for the run to the
+    // floor this prevents.
+    unverifiedStepDowns < MAX_UNVERIFIED_STEP_DOWNS &&
+    slowFor >= SETTLE_DOWN_SECONDS &&
+    pixelRatio > floor
+  ) {
     // A drop this soon after a step-up means that higher level was too expensive — cap below it so we
     // don't climb straight back into it. This turns endless oscillation into a single detect-and-settle.
     const recap = elapsed - lastStepUpAt < RECENT_STEP_UP_SECONDS;
@@ -773,10 +845,14 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
     pixelRatio = Math.max(floor, pixelRatio - STEP);
     logRatioChange('STEPPED DOWN', from, fps, recap ? ` — and capped here (that level cost too much)` : '');
     // Watch this one. If the frame rate does not answer, the next block puts the pixels back.
-    lastStepDownAt = elapsed;
+    // ⚠ Set here as a DEADLINE and reset by `noteRatioApplied` as a START. If the scene applies
+    // promptly the trial gets its full budget from that moment; if it somehow never applies at all,
+    // this is what eventually retires the trial instead of leaving the controller waiting forever on
+    // a verdict that can no longer come — which would silently stop it adapting for the session.
     stepDownStartedAtMs = performance.now();
     fpsBeforeStepDown = fps;
     awaitingStepDownVerdict = true;
+    stepDownAwaitingApply = true;
     slowFor = 0;
     fastFor = 0;
   } else if (fillBound && fastFor >= SETTLE_UP_SECONDS && pixelRatio < effectiveCeil) {
