@@ -2014,6 +2014,15 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     let appliedPixelRatio = getPixelRatio();
     /** How long the controller's ratio has differed from the one actually allocated. */
     let ratioPendingSeconds = 0;
+    /**
+     * Mirrors the `.is-uncomposited` class. Starts `false` to match the DOM, which carries no class
+     * yet — the first frame then applies the real state.
+     *
+     * ⚠ `visibility: hidden` and not `display: none`: a hidden element keeps its layout box, so
+     * `canvas.clientWidth/Height` still read correctly and the warm-up render still sizes itself. It
+     * also does not stop WebGL drawing, which is exactly right — the warm-up has to happen off screen.
+     */
+    let canvasUncomposited = false;
     // The canvas's CSS size, which the chamber needs in full — not just as an aspect. Its display wears
     // the aspect (that's what makes the cover distance exact), and its hologram's anchor is projected
     // into these pixels (see lib/hologramPose.ts). Measured here rather than read off `window` on the
@@ -2372,6 +2381,17 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         chamberState.engaged && roomRaw > CHAMBER_ENGAGE_EPSILON && roomRaw < CHAMBER_SCRUB_END;
 
       const isDrawing = worksShouldRender && !document.hidden;
+
+      // ── Stop paying the compositor for a canvas nobody can see ──
+      // `worksShouldRender` is the section's own gate — false through the hero and the whole fleet,
+      // where this canvas is `opacity: 0` and therefore still being composited at full size for
+      // nothing. It goes true early in the handoff, before the field is needed. `document.hidden` is
+      // deliberately excluded: a backgrounded tab composites nothing anyway. See `.is-uncomposited`.
+      const shouldUncomposite = !worksShouldRender;
+      if (shouldUncomposite !== canvasUncomposited) {
+        canvasUncomposited = shouldUncomposite;
+        canvas.classList.toggle('is-uncomposited', shouldUncomposite);
+      }
       if (isDrawing) {
         // Geometry AA follows the room, because the room is the only thing stage 2 ever draws that has
         // geometry. Toggling `enabled` is all this needs: EffectComposer recomputes which pass is the

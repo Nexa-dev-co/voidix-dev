@@ -1607,6 +1607,18 @@ body {
   height: 100%;
 }
 
+/* ⚠ `visibility`, NOT `opacity` — and that distinction is the whole point of this class.
+   `.services-deck` and `.works-field` are both `opacity: 0` when off screen, which stops them being
+   SEEN and does nothing whatsoever about their cost: an element at zero opacity is still rasterized
+   and still composited, just multiplied by nothing. On a dpr 2.5 panel each of these canvases is a
+   3820×1745 layer the compositor blends every frame while the scene inside it is deliberately not
+   drawing. `visibility: hidden` is what actually takes it out.
+   Measured symptom: `unaccounted` sitting at 60–90 ms a frame with 143 draw calls, an idle main
+   thread, and a resolution the controller had proven changes nothing. */
+.is-uncomposited {
+  visibility: hidden;
+}
+
 .deck-canvas:active {
   cursor: grabbing;
 }

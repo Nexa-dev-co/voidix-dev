@@ -1219,6 +1219,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     let appliedPixelRatio = getPixelRatio();
     /** How long the controller's ratio has differed from the one actually allocated. */
     let ratioPendingSeconds = 0;
+    /** Mirrors the `.is-uncomposited` class, so the DOM is touched only when it changes. */
+    let canvasUncomposited = false;
     // How far the flight's camera pulls back on a narrow frame, at its far end. Held here beside the
     // aspect it is derived from rather than recomputed in the loop, so the two can't disagree — and
     // read ONLY by the handoff below. The fleet's own resting shot is deliberately not touched by it
@@ -1446,6 +1448,16 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       if (isDrawing) {
         profileMeasure('deck · render', () => composer.render(), true);
         profileGauge('deck draws', renderer.info.render.calls);
+      }
+
+      // ── Stop paying the compositor for a canvas nobody can see ──
+      // Only while PARKED behind works, which is the longest span on the site (works → chamber →
+      // contact) and the one case where this canvas is provably covered rather than merely faded.
+      // Deliberately not tied to `isDrawing`: that also goes false on a hidden tab and during the
+      // fill, where the deck is mid-reveal and must stay composited. See `.is-uncomposited`.
+      if (parkedAtWorks !== canvasUncomposited) {
+        canvasUncomposited = parkedAtWorks;
+        canvas.classList.toggle('is-uncomposited', parkedAtWorks);
       }
 
       // ── Adaptive resolution: only ever re-sized while this scene is NOT being drawn ──
