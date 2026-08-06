@@ -170,11 +170,13 @@ const BURN_IN_TARGET_SAMPLES = 12;
 /** Below this the reading is thrown away and the runtime calibration handles it instead. */
 const BURN_IN_MIN_SAMPLES = 6;
 /**
- * ⚠ A HARD CEILING IN TIME, and it is not decoration. The whole warm-up is capped by
- * `WARMUP_WAIT_MAX_MS` (3.5 s) in IntroSequence, and past that the gate stops waiting and cues the
- * shard assembly regardless. A burn-in bounded only by a frame count would, on a 5 fps machine, still
- * be rendering works frames while the loader's finale played — which is the exact thing the assembly
- * is given a quiet GPU to avoid.
+ * ⚠ A HARD CEILING IN TIME, and it is not decoration. This stage is capped by `BURN_IN_WAIT_MAX_MS`
+ * (2.5 s) in IntroSequence, and past that the gate stops waiting and moves on regardless. A burn-in
+ * bounded only by a frame count would, on a 5 fps machine, still be rendering works frames while the
+ * loader's finale played — which is the exact thing the finale is given a quiet GPU to avoid.
+ *
+ * (An earlier version of this comment cited `WARMUP_WAIT_MAX_MS` at 3.5 s. That constant is 5000 and
+ * it caps the stage BEFORE this one — the burn-in got its own cap when it became its own stage.)
  */
 const BURN_IN_MAX_MS = 1500;
 /** Belt and braces on the loop itself, so a pathological rAF cadence cannot spin it. */
