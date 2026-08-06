@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Syne, DM_Sans } from 'next/font/google';
 import Navbar from '@/components/layout/Navbar/Navbar';
+import TelemetryConsole from '@/components/effects/TelemetryConsole/TelemetryConsole';
 import './globals.css';
 
 const syne = Syne({
@@ -131,6 +132,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             ⚠ The preload tags above fire on every route, including the two that never load a model —
             about 2.1 MB of star, Draco and Basis spent for nothing on a document page. Known and
             accepted for now; `docs/about-careers-plan.md` §1e has the fix and why it was deferred. */}
+        {/* Renders nothing. First in the body so the console capture installs before any scene can
+            log — see TelemetryConsole. Inert in production. */}
+        <TelemetryConsole />
         <Navbar />
         {children}
       </body>
