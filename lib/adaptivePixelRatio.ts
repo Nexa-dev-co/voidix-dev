@@ -61,11 +61,31 @@ const MIN_PIXEL_RATIO = 0.75;
  * scales up 3.3×, and that is not "softer", that is smeared. The same constant means two completely
  * different pictures.
  *
- * Capping the upscale keeps the meaning constant across displays: dpr 2.5 floors at 1.0, dpr 2 at 0.8,
- * and dpr 1 still floors at 0.75 — so the sub-native move weak 1× machines need survives, and dense
- * panels are protected from the smear.
+ * Capping the upscale keeps the meaning constant across displays, so the sub-native move weak 1×
+ * machines need survives while dense panels are protected from the smear.
+ *
+ * ── ⚠ TIGHTENED 2.5 → 2.17 ON 2026-08-06, AS A DELIBERATE QUALITY PURCHASE ──────────────────────
+ *
+ * This is the ONLY dial that can raise quality on a machine whose burn-in lands under the floor, and
+ * on a 4K laptop at 250 % scaling that is every machine. Measured there: the burn-in solved 0.64 and
+ * was clamped up to a floor of exactly 1.00, so the site rendered at 40 % of the panel's density —
+ * and `RESOLUTION_PRIORITY` was completely inert, because all three of its settings solve below 1.00
+ * too. Making the frame cheaper would not have helped either: the solve would still land under the
+ * floor and still clamp to it.
+ *
+ *     dpr 2.5   floor 1.00 → 1.15      dpr 3   floor 1.20 → 1.38
+ *     dpr 2     floor 0.80 → 0.92      dpr 1   floor 0.75 (unchanged, held by MIN_PIXEL_RATIO)
+ *
+ * ⚠ IT COSTS +32 % PIXELS, because cost is the square of the ratio. That was funded rather than
+ * simply spent — `BLOOM_MSAA_SAMPLES_BY_TIER` in `useWorksField` went to 0 and the fluid cursor's ink
+ * canvas came down to 1.25 in the same change. See `docs/performance-cost-inventory.md` §6.
+ *
+ * ⚠ IT RAISES THE FLOOR ON PHONES TOO, by the same proportion, and phones can least afford it — a
+ * dpr 3 handset goes 1.20 → 1.38. That is not scoped away here on purpose: one constant, one meaning.
+ * If it bites, the fix is to read `isLowPowerDevice()` when computing the floor rather than to move
+ * this number back, or the desktop purchase goes with it.
  */
-const MAX_COMPOSITE_UPSCALE = 2.5;
+const MAX_COMPOSITE_UPSCALE = 2.17;
 
 const SUPERSAMPLE_CEIL = 1.5; // the most a 1× panel may ever be allowed — and only if PROBED able
 const MAX_PIXEL_RATIO = 2;    // hard cap (retina native)

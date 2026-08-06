@@ -440,11 +440,36 @@ const BLOOM_THRESHOLD    = 0.6;
  * larger size, on precisely the machine that could not afford it"*. So the tier sets the floor, and
  * 4 is EARNED from a real measurement — see `earnedMsaaSamples` in the warm-up.
  */
+/**
+ * ── ⚠ ALL ZERO SINCE 2026-08-06, AND THIS OVERRIDES A RULE IN CLAUDE.md ──────────────────────────
+ *
+ * That rule read: *"works · space can never be 0 above `potato` — stage 2's SMAA is gated to the
+ * chamber, so this is the only AA the marks, debris and starfield get."* It was true and it has been
+ * traded away deliberately, to buy a 15 % resolution increase (`MAX_COMPOSITE_UPSCALE`, 2.5 → 2.17).
+ *
+ * The same file states the priority that decides it: *"RESOLUTION IS THE PRIORITY; SAMPLES ARE THE
+ * LEFTOVER... Nothing may trade resolution away to keep samples."* Spending samples to BUY resolution
+ * is that rule read forwards. Resolution softens every pixel in the frame — type, textures, every
+ * edge; MSAA only touches geometric silhouettes, and a 15 % finer pixel shrinks the stair-stepping it
+ * was hiding anyway.
+ *
+ * On the machine this was measured against (dpr 2.5, tier `mid`, 1536×704) it returns 52 MB of
+ * multisample buffers at the old ratio, 22 MB at the new one, plus ~26 MB per frame of resolve
+ * bandwidth on a GPU with 30–50 GB/s of total budget.
+ *
+ * ⚠ What this costs, plainly: through the works BROWSING span the marks, debris and starfield now
+ * have no geometric antialiasing at all. The chamber still has its `SMAAPass`. If the marks' silhouettes
+ * read as harsh, the honest fix is to un-gate `smaaPass` for the browsing span too (~12 MB of lookup
+ * textures, no per-sample bandwidth) rather than to put these samples back.
+ *
+ * 4× is still reachable and is still EARNED, not granted — see `raiseMsaaIfEarned`, which the burn-in
+ * now calls during the loader. A machine with measured surplus gets it before the first visible frame.
+ */
 const BLOOM_MSAA_SAMPLES_BY_TIER: Record<DeviceTier, number> = {
   potato: 0,
-  low: 2,
-  mid: 2,
-  high: 2,
+  low: 0,
+  mid: 0,
+  high: 0,
 };
 
 /** What a machine that has demonstrated the headroom gets instead. */

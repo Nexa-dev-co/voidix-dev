@@ -9,7 +9,9 @@
 > - **UNVERIFIED** — I believe it costs something and I have not measured it. Treated as a suspect,
 >   never as a finding.
 >
-> ⚠ Nothing here has been acted on. No code was changed to produce it.
+> ⚠ Nothing here had been acted on when it was written. **Three items were taken on 2026-08-06** —
+> see §9 at the bottom for what was spent and what it bought. Everything above §9 is left as it was
+> measured, so the before/after stays legible.
 
 ---
 
@@ -255,3 +257,64 @@ moves, §4d is the answer and most of this document's Tier 2 becomes unnecessary
 both shipped correct-sounding GPU reductions on a machine whose actual constraint was elsewhere, and
 the net result was worse quality at an identical frame rate. That failure is recorded in
 `docs/lag-and-freeze-diagnosis.md` §8d and it is the one worth not repeating.
+
+---
+
+## 9 · What was taken — 2026-08-06
+
+A funded 15 % resolution increase. **Two payments and one purchase, landed together**, because the
+purchase alone would have cost ~3 fps on a machine already at 25.
+
+| | change | file |
+|---|---|---|
+| **purchase** | `MAX_COMPOSITE_UPSCALE` 2.5 → **2.17** → floor 1.00 → **1.15** | `lib/adaptivePixelRatio.ts` |
+| payment A | fluid ink canvas `min(dpr, 2)` → **`min(dpr, 1.25)`** | `lib/hooks/useFluidCursor.ts` |
+| payment B | `BLOOM_MSAA_SAMPLES_BY_TIER` all → **0** | `useWorksField.ts` |
+
+### What it buys
+
+Every pixel on the site is 15 % finer, linearly — type, textures, hull edges, mark facets, the lot.
+On this machine that is the **only** available route: the burn-in solves 0.64, so nothing it could
+measure would ever lift the ratio above the floor, and `RESOLUTION_PRIORITY` is inert at every setting.
+
+### What it costs
+
+```
+   ratio 1.00 → 1.15   =   +32 % pixels   (cost is the square)
+
+   drawing buffer          1.08 Mpx  →  1.43 Mpx
+   works · space targets   69.2 MB   →  0 MB      ← payment B removes this entirely
+   all render targets      ~190 MB   →  ~150 MB   ← net DOWN, despite the larger buffer
+```
+
+- **The works browsing span now has no geometric antialiasing.** The chamber keeps its `SMAAPass`.
+  ⚠ If the marks read as harsh, un-gate `smaaPass` for the browsing span (~12 MB of lookup textures,
+  no per-sample bandwidth) — do **not** put the samples back, or the purchase goes with them.
+- **The fluid blob is softer.** Its edge was already a multi-pixel gradient. Not below 1.25 — the
+  stars are point-like and start to shimmer.
+- ⚠ **Phones pay too.** The floor is proportional, so a dpr 3 handset goes 1.20 → 1.38 — the same
+  +32 %, on the devices least able to afford it, and they get no benefit from payment A (the fluid
+  cursor is unmounted below 760 px). If that bites, read `isLowPowerDevice()` when computing the floor
+  rather than moving the constant back.
+
+### ⚠ This overrides a rule in CLAUDE.md, on purpose
+
+> *"works · space can never be 0 above `potato` — stage 2's SMAA is gated to the chamber, so this is
+> the only AA the marks, debris and starfield get."*
+
+Decided against the rule directly above it in the same file: *"RESOLUTION IS THE PRIORITY; SAMPLES ARE
+THE LEFTOVER. Nothing may trade resolution away to keep samples."* Spending samples to **buy**
+resolution is that rule read forwards — resolution softens every pixel in the frame, MSAA only touches
+silhouettes, and a 15 % finer pixel shrinks the stair-stepping it was hiding. Both files now record the
+reversal rather than quietly disagreeing.
+
+### The number to check on the next capture
+
+```
+[pixels] BURN-IN 1.15 → 1.15 — bound by the floor
+```
+
+If it still reads `1.00`, the constant did not take effect. If the frame time has not moved much from
+40 ms, §1's conclusion holds — the frame is compositor-bound, the extra pixels are close to free, and
+there is more resolution available for the asking. **If the frame got much worse, that is the
+counter-evidence to §1 and it is worth more than this purchase** — say so and take it back.

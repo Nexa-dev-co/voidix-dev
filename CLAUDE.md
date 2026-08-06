@@ -576,29 +576,45 @@ breathes and collapses across those spans, and the works backdrop is transparent
 full-resolution 4× MSAA HalfFloat target is ~83 MB on a 1512×982 panel at ratio 1, so a two-composer
 scene at `samples: 4` is ~330 MB before anything else. Count them before adding one.
 
-**Antialiasing, as it stands** (2026-08-04, `docs/lag-and-freeze-diagnosis.md` §8c):
+**Antialiasing, as it stands** (revised 2026-08-06; `docs/performance-cost-inventory.md` §6):
 
 | composer | potato | low / mid / high | earned |
 |---|---|---|---|
-| works · **space** | 0 | 2 | **4**, from the probe |
+| works · **space** | 0 | **0** | **4**, from the burn-in |
 | works · **screen** | 0 | 0 | — |
 | deck | 0 + SMAA | 0 + SMAA | — |
+
+⚠ **`low`/`mid`/`high` went 2 → 0 on 2026-08-06, and it was a PURCHASE, not a saving.** It paid for
+`MAX_COMPOSITE_UPSCALE` 2.5 → 2.17, which raises the resolution floor 15 % — the only dial that can
+lift quality on a machine whose burn-in lands under the floor, which on a 4K laptop at 250 % scaling
+is every machine. See the rule immediately below, which this reverses.
+
+⚠ **The `earned` column is now decided in the LOADER**, not four seconds into the fleet. It used to
+require `hasEarnedExtraQuality()` — 50 fps held for four seconds — which by construction cannot be
+satisfied before the first visible frame, so the raise was always a mid-session `dispose()` and
+reallocation of both ping-pong targets on the first lap and never again. `reportBurnIn` now grants the
+licence from its own measured surplus (`solved ÷ spent >= 1.25`).
 
 ⚠ **RESOLUTION IS THE PRIORITY; SAMPLES ARE THE LEFTOVER.** Below native the whole frame softens —
 type, textures, every edge. Dropping MSAA only stair-steps geometric silhouettes, and SMAA covers much
 of that for a fraction of the memory. **Nothing may trade resolution away to keep samples.**
 
 That is enforced by *when* each is decided, not by a comment: `deviceTier` sets a floor that does not
-include 4×, and the works field raises to 4 only in its warm-up, **after** `gpuProbe` has run and
-`adaptivePixelRatio` has settled the ratio — so the samples come out of measured leftover headroom
-(`getProbedAffordableRatio() >= 1.25`). An earlier cut had `high: 4` at construction; a machine that
+include 4×, and the works field raises to 4 only once the **burn-in** has run and `adaptivePixelRatio`
+has settled the ratio — so the samples come out of measured leftover headroom (the burn-in's own
+surplus, `solved ÷ spent >= 1.25`). An earlier cut had `high: 4` at construction; a machine that
 *looked* strong then allocated ~166 MB on a guess and paid for it by dropping resolution. That is the
 same failure `adaptivePixelRatio`'s header records being rewritten to stop making.
 
 - **works · screen is always 0.** For the whole of works it draws one pixel-aligned fullscreen quad
   carrying an already-resolved texture. Its `SMAAPass` is likewise enabled only for the chamber.
-- **works · space can never be 0 above `potato`** — stage 2's SMAA is gated to the chamber, so this is
-  the only AA the marks, debris and starfield get.
+- ⚠ **works · space USED to say "can never be 0 above `potato`"** — because stage 2's SMAA is gated to
+  the chamber, so this was the only AA the marks, debris and starfield got. **That is now 0 anyway**,
+  deliberately, and the rule above it is what decides between them: spending samples to BUY resolution
+  is *"resolution is the priority"* read forwards. What it costs is real and should be named — through
+  the works BROWSING span the marks and debris have no geometric antialiasing at all. If that reads as
+  harsh, **un-gate `smaaPass` for the browsing span** (~12 MB of lookup textures, no per-sample
+  bandwidth) rather than putting the samples back.
 - **The deck never earns MSAA**, deliberately: the probe is taken once, in the works hook, and reading
   it from here would usually work and occasionally not (on a cached reload both scenes warm on the same
   signal and the order is whichever effect registered first). AA that differs between two loads of the
