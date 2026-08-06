@@ -245,7 +245,8 @@ export default function Navbar() {
                 stroke="currentColor"
                 strokeWidth="1.25"
                 strokeLinecap="round"
-                strokeLinejoin="round"
+                strokeLinejoin="round" 
+                
               />
             </svg>
             <span className="cta-corner cta-tl" aria-hidden="true" />
