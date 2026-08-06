@@ -119,11 +119,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
-        {/* ⚠ `.nav-root` is fixed, full width, 4.5rem tall, at z-9999, and carries no
-            `pointer-events: none` — a transparent box still hit-tests. That is harmless while the
-            homepage is the only route, because the bar is really there and its own links want the
-            clicks. Add a second route and it becomes an invisible strip eating every click across the
-            top of it, which is exactly what used to happen on the lab pages. */}
+        {/* ⚠ This bar is on EVERY route, and two of them are ordinary scrolling documents now
+            (`/about`, `/careers`). Three things follow, all handled rather than outstanding:
+            · `.nav-root` is `pointer-events: none` with its controls taking their own clicks back —
+              a fixed full-width transparent strip at z-9999 otherwise eats every click along the top
+              of any page whose content scrolls under it (this file used to carry that as a warning).
+            · Its entrance no longer waits on `REVEAL_EVENT` off the homepage; nothing there fires it.
+            · The progress meters are homepage-only — the hero pin is their only writer.
+            See `Navbar.tsx` and `useNavbarAnimation.ts`.
+
+            ⚠ The preload tags above fire on every route, including the two that never load a model —
+            about 2.1 MB of star, Draco and Basis spent for nothing on a document page. Known and
+            accepted for now; `docs/about-careers-plan.md` §1e has the fix and why it was deferred. */}
         <Navbar />
         {children}
       </body>

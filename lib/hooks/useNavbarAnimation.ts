@@ -24,6 +24,21 @@ interface NavbarAnimationRefs {
    * what makes the hook see the bar that actually exists.
    */
   isNarrow: boolean;
+  /**
+   * Whether this bar is on `/`, where the intro exists.
+   *
+   * ⚠ Load-bearing since the site grew a second route. The entrance below waits for `REVEAL_EVENT`,
+   * which is fired by `IntroSequence` — and only the homepage mounts `IntroSequence`. On `/about` or
+   * `/careers` nothing ever fires it, so the bar sat at `opacity: 0` until the seven-second "the intro
+   * was bypassed" fallback lapsed and then faded in, which reads as a page that has not finished
+   * loading. Off the homepage there is nothing to hand off FROM, so the bar simply enters on mount.
+   *
+   * The meters are a separate consequence of the same fact and are handled in `Navbar` rather than
+   * here: they are fed by `--nav-progress-<key>`, which the hero pin publishes, so off the homepage
+   * they would render as a row of gauges permanently at zero. They are not rendered at all there, and
+   * `positionMeters` already no-ops on the missing element.
+   */
+  isHomepage: boolean;
 }
 
 // Where each item starts before it converges to its resting spot (data-enter on the <li>).
@@ -38,7 +53,7 @@ function enterOffset(direction: string | null) {
 }
 
 export function useNavbarAnimation(navbarAnimationRefs: NavbarAnimationRefs) {
-  const { navRef, accentRef, metersRef, isNarrow } = navbarAnimationRefs;
+  const { navRef, accentRef, metersRef, isNarrow, isHomepage } = navbarAnimationRefs;
   // Survives the effect re-running when the bar swaps layout — see `isNarrow` on the props.
   const hasEnteredRef = useRef(false);
 
@@ -148,17 +163,25 @@ export function useNavbarAnimation(navbarAnimationRefs: NavbarAnimationRefs) {
       }
     };
 
+    window.addEventListener('resize', positionMeters);
+    if (document.fonts?.ready) document.fonts.ready.then(positionMeters);
+
+    // ⚠ Off the homepage there is no intro, so there is no reveal to be in lockstep WITH — see
+    // `isHomepage` on the props for what waiting for it used to cost. The bar is the first thing on
+    // a document page, so it enters immediately.
+    if (!isHomepage) {
+      playEntrance();
+      return () => window.removeEventListener('resize', positionMeters);
+    }
+
     // Enter in lockstep with the hero reveal (or on the fallback if the intro is bypassed).
     window.addEventListener(REVEAL_EVENT, playEntrance);
     const fallbackTimeout = window.setTimeout(playEntrance, ENTRANCE_FALLBACK_MS);
-
-    window.addEventListener('resize', positionMeters);
-    if (document.fonts?.ready) document.fonts.ready.then(positionMeters);
 
     return () => {
       window.removeEventListener(REVEAL_EVENT, playEntrance);
       window.removeEventListener('resize', positionMeters);
       window.clearTimeout(fallbackTimeout);
     };
-  }, [isNarrow]);
+  }, [isNarrow, isHomepage]);
 }

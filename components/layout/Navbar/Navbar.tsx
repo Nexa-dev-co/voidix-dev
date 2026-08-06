@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, type CSSProperties } from 'react';
+import { usePathname } from 'next/navigation';
 import { useNavbarAnimation } from '@/lib/hooks/useNavbarAnimation';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import { originOfElement, requestSection } from '@/lib/sectionNavigation';
@@ -52,19 +53,25 @@ export default function Navbar() {
   const isNarrow = useIsNarrowViewport();
   const toggleRef = useRef<HTMLButtonElement>(null);
 
-  useNavbarAnimation({ navRef, accentRef, metersRef, isNarrow });
-
+  // ── Which route this bar is on ──
   // On the homepage EVERY item drives the pin, because none of these sections is a place you can jump
   // to: they are overlays inside one pinned ScrollTrigger, so the href would land on the hero whichever
-  // one you clicked. Off the homepage (the labs render this navbar too) the "/#key" href navigates
-  // normally and the pin picks it up on arrival.
-  const isHomepage = () => window.location.pathname === '/';
+  // one you clicked. On `/about` and `/careers` there is no pin, and the "/#key" href navigates for
+  // real — `useHeroAnimation` reads the hash once it has built the pin on the other side.
+  //
+  // ⚠ `usePathname`, not `window.location.pathname` read inside the handlers. The handlers were only
+  // ever called after mount so the old read was safe, but the same answer is now needed during RENDER
+  // (the meters below) and during the entrance effect, and neither of those may touch `window`.
+  const pathname = usePathname();
+  const isHomepage = pathname === '/';
+
+  useNavbarAnimation({ navRef, accentRef, metersRef, isNarrow, isHomepage });
 
   // The clicked control's centre travels with the request: a jump far enough to be hidden collapses
   // into the label you pressed and unfolds out of it again, which is what gives the cover a cause
   // rather than making it a wipe. See lib/sectionJumpEvents.ts.
   const handleNavClick = (event: React.MouseEvent, key: string) => {
-    if (!isHomepage()) return;
+    if (!isHomepage) return;
     event.preventDefault();
     requestSection(key, originOfElement(event.currentTarget));
   };
@@ -74,7 +81,7 @@ export default function Navbar() {
   // a facet that is already folding away. See lib/sectionJumpEvents.ts.
   const handleStationSelect = (index: number, origin: HTMLElement) => {
     const key = NAV_ITEMS[index].key;
-    if (!isHomepage()) {
+    if (!isHomepage) {
       window.location.href = `/#${key}`;
       return;
     }
@@ -87,7 +94,7 @@ export default function Navbar() {
 
   // "Start Project" goes where a start-a-project button should: the contact form at the end.
   const handleCtaClick = (event: React.MouseEvent) => {
-    if (!isHomepage()) {
+    if (!isHomepage) {
       window.location.href = '/#contact';
       return;
     }
@@ -136,17 +143,24 @@ export default function Navbar() {
         </span>
 
         {/* One meter per section + one for the logo (home). JS sets each meter's
-            left/width to sit under its item; the fill scales to --nav-progress-<key>. */}
-        <div ref={metersRef} className="nav-meters">
-          {METER_KEYS.map((meterKey) => (
-            <span key={meterKey} className="nav-meter" data-meter={meterKey}>
-              <span
-                className="nav-meter-fill"
-                style={{ '--meter-progress': `var(--nav-progress-${meterKey}, 0)` } as CSSProperties}
-              />
-            </span>
-          ))}
-        </div>
+            left/width to sit under its item; the fill scales to --nav-progress-<key>.
+
+            ⚠ HOMEPAGE ONLY. Every one of these is fed by `--nav-progress-<key>`, and the only writer
+            of those variables is the hero pin. On a document route nobody publishes them, so this
+            would render four gauge tracks pinned at zero underneath four labels — telemetry that is
+            not merely idle but structurally incapable of moving. Better absent than lying. */}
+        {isHomepage && (
+          <div ref={metersRef} className="nav-meters">
+            {METER_KEYS.map((meterKey) => (
+              <span key={meterKey} className="nav-meter" data-meter={meterKey}>
+                <span
+                  className="nav-meter-fill"
+                  style={{ '--meter-progress': `var(--nav-progress-${meterKey}, 0)` } as CSSProperties}
+                />
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Blended bar — mix-blend-mode: difference inverts all of this against whatever

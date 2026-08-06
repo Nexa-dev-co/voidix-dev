@@ -201,10 +201,14 @@ Everything ships working from ~360px phones to large desktops **in the same chan
 app/
   layout.tsx        # fonts, Navbar, metadata
   globals.css       # tokens + every component's CSS
-  page.tsx          # the ONLY public route
+  page.tsx          # the site: the one pinned journey
+  about/page.tsx    # ┐ the DOCUMENT routes (added 2026-08-06). Ordinary native scroll — no pin,
+  careers/page.tsx  # ┘ no WebGL, no scene. See "Two kinds of route" below.
 
 components/
   layout/Navbar/
+  layout/PageShell/  # the document routes' frame: field, masthead, orbit rail, footer
+  pages/             # ⚠ a ROUTE's content (About/, Careers/) — not a homepage section
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
     ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial
@@ -225,6 +229,39 @@ scripts/
   optimizeTextures.mjs  # `npm run optimize:textures` — the standalone maps, which no GLB contains
 docs/               # living design + state docs
 ```
+
+### Two kinds of route — and `/` is only one of them
+
+**Added 2026-08-06.** For most of this project's life the homepage was the only page, and a lot of
+the code below was written on that assumption. It no longer holds.
+
+| | `/` | `/about`, `/careers` |
+|---|---|---|
+| scroll | ONE pinned ScrollTrigger; every section is an overlay inside it | native, ordinary document flow |
+| 3D | four scenes | none |
+| libraries | gsap + ScrollTrigger + three | none used (⚠ gsap still *ships* — see below) |
+| copy | in a content file per section | same convention: `aboutContent.ts`, `careersContent.ts` |
+| CSS | `globals.css` | `globals.css`, the `.doc-*` block at the end |
+
+**The rules in this file about the pin, the crossings and the scene budget apply to `/` only.** The
+right way to honour "one pin" for a page that is genuinely prose is to keep it out of the pin
+entirely — not to build a second one. See `docs/about-careers-plan.md`.
+
+⚠ **Three things in the shared chrome were written assuming one route, and all three have been
+fixed** — check them before adding a fourth route:
+1. `useNavbarAnimation` waited on `REVEAL_EVENT`, which only `IntroSequence` fires. Off the homepage
+   the bar was invisible until a 7.2 s fallback lapsed. It now takes an `isHomepage` prop.
+2. `.nav-root` is a fixed full-width strip at z-9999 and a transparent box still hit-tests — it ate
+   every click across the top of a document page. Now `pointer-events: none`, with its controls
+   taking their own back.
+3. The navbar's `/#work` hrefs went nowhere: **nothing read `location.hash`**, despite a comment
+   claiming the pin picked it up on arrival. `useHeroAnimation`'s reveal now consumes it through
+   `requestSection`.
+
+⚠ **Two known costs on the document routes, both measured and both deferred deliberately:** the
+root layout preloads ~2.1 MB of star/Draco/Basis on *every* route, and the navbar's static `import
+gsap` puts ~69 KB of unused animation library on both pages. `docs/about-careers-plan.md` §1e and §6
+have the numbers and the fixes.
 
 **Component file convention:** each component lives in its own folder named after it, holding its
 `.tsx` plus everything it owns (config, events, sub-hooks, shaders). A component that owns a WebGL
@@ -583,7 +620,13 @@ the numbers — is in `docs/lag-and-freeze-diagnosis.md`.
 ## Nothing is configurable at runtime
 
 **Deleted 2026-08-02, deliberately and by request.** There are no authoring routes, no `?tune`, no
-`lil-gui`, no knob schemas, no writable tuning handles. One route ships: `/`.
+`lil-gui`, no knob schemas, no writable tuning handles.
+
+⚠ This section used to end "One route ships: `/`", and that is no longer true — `/about` and
+`/careers` shipped 2026-08-06. **The rule it was standing for is untouched**, and it was never about
+the route count: no route on this site exposes a tuning surface, and neither of the new ones has a
+single knob, query parameter or editor in it. They are content pages. Do not read them as a
+precedent for bringing an authoring route back.
 
 What went: `/sun-lab` (the fractured-sun + black-hole editor), `/letters` and
 `/letters/transition/[strategy]` (the glyph testbed and the mark→mark comparison rig),
