@@ -335,9 +335,15 @@ const STEP_DOWN_MIN_GAIN = 1.08;
  * Sustained frame rate has none of those problems. It is the real thing, measured on the real site, at
  * the real resolution, over seconds rather than one draw.
  *
- * ⚠ `pixelRatio >= effectiveCeil` is the "at high quality" half, and it is not optional. A machine
+ * ⚠ `pixelRatio >= fullQualityRatio` is the "at high quality" half, and it is not optional. A machine
  * holding 55 fps because it has already given up a third of its pixels has not earned anything — it is
  * coping. Extras are only ever bought on top of full quality, never instead of it.
+ *
+ * ⚠ And "full quality" stops at NATIVE. Since the landing was split there (see
+ * `reportProbedFrameCost`), above-native is itself an extra — so gating this on the supersampled
+ * ceiling would make one extra the entry fee for another, and on a 1× panel with probed headroom
+ * MSAA could never be earned without first climbing to 1.5. A machine whose measured ceiling is
+ * BELOW native still has to reach that ceiling.
  */
 const EXTRA_QUALITY_FPS = 50;
 /** Long enough that a quiet stretch between sections cannot pass for headroom. */
@@ -553,7 +559,28 @@ export function reportProbedFrameCost(
   //
   // ⚠ A machine measured as NOT capable still starts below native. `ceil` carries that; nothing here
   // raises it.
-  pixelRatio = ceil;
+  //
+  // ── …and then the landing was split AT NATIVE, because the ceiling's two halves mean different
+  //    things ──
+  //
+  // The verdict makes landing on a wrong ceiling SURVIVABLE; a cold run on the Vercel preview showed
+  // it does not make it cheap. A dpr-1 laptop probed 2.2 ms on the loader's quiet stage → ceiling
+  // 1.50, opened at 2.25× native pixels, and spent the entire services section paying the guess
+  // back: the EMA had to converge down from 60 before the first cut could even fire, the first trial
+  // was abandoned (sampling kept pausing), and the verdict that finally freed it compared 41 → 17
+  // fps across the services→works handoff — the crossing arriving, not the cut failing. Four
+  // reallocations and ~30 s at 27–39 fps, to arrive at NATIVE — exactly where it could have started.
+  //
+  //   · At or below native, the ceiling is a measured INABILITY. Land on it, exactly as before — a
+  //     machine that measured unable to hold native must not open above what it can afford, and
+  //     `fillBound` remains the check on that measurement being pessimistic.
+  //   · Above native, the ceiling is measured HEADROOM for a subtle gain. Supersampling is an
+  //     EXTRA, and extras on this site are bought with OBSERVED frame rate (see EXTRA_QUALITY_FPS),
+  //     never with the probe's one quiet-stage frame — the frame that carries neither the sun's
+  //     bloom nor the compositor. The step-up path is the purchase: sustained > FAST_FPS at the real
+  //     workload climbs into the headroom one checked step at a time, and a climb that never happens
+  //     is a grant the machine could not afford.
+  pixelRatio = Math.max(floor, Math.min(ceil, nativeRatio));
 }
 
 /**
@@ -610,9 +637,10 @@ export function getProbedAffordableRatio(): number | null {
  * What is left AFTER the resolution has taken its share — the number anything else must be paid from.
  *
  * ⚠ Read this, not `getProbedAffordableRatio`, before granting any extra. The probe's raw figure is
- * spent the instant it arrives: `reportProbedFrameCost` LANDS on the ceiling it solves, so a machine
- * that measured 1.32 is immediately rendering at 1.32 and has nothing spare. Comparing an extra
- * against the raw number therefore spends the same headroom twice.
+ * spent the instant it arrives: `reportProbedFrameCost` lands on the ceiling it solves (capped at
+ * native since the landing split — a 2× panel that measured 1.32 is immediately rendering at 1.32)
+ * and has nothing spare. Comparing an extra against the raw number therefore spends the same
+ * headroom twice.
  *
  * That is not hypothetical — it shipped for an afternoon. A laptop measured `affordable 1.32`, took
  * all of it as resolution, was then granted 4× MSAA against that same 1.32, fell to 23 fps and gave
@@ -711,17 +739,20 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   }
 
   const effectiveCeil = Math.min(ceil, softCeil);
+  // "Full quality" for the extras gate — native, or the measured ceiling where that is lower. See
+  // the ⚠ note above EXTRA_QUALITY_FPS for why it is NOT the supersampled ceiling.
+  const fullQualityRatio = Math.min(effectiveCeil, nativeRatio);
 
   // ── Has this machine earned an extra, on top of full quality? ──
   if (!extraQualityEarned) {
-    if (fps >= EXTRA_QUALITY_FPS && pixelRatio >= effectiveCeil) {
+    if (fps >= EXTRA_QUALITY_FPS && pixelRatio >= fullQualityRatio) {
       extraQualityFor += dtSeconds;
       if (extraQualityFor >= EXTRA_QUALITY_SECONDS) {
         extraQualityEarned = true;
         if (telemetryEnabled) {
           console.log(
             `%c[pixels] EARNED EXTRA QUALITY%c held ${fps.toFixed(0)} fps at ratio ` +
-              `${pixelRatio.toFixed(2)} (its ceiling) for ${EXTRA_QUALITY_SECONDS}s` +
+              `${pixelRatio.toFixed(2)} (full quality) for ${EXTRA_QUALITY_SECONDS}s` +
               `\n  anything optional may now be switched on — the resolution is already paid for.`,
             'color:#5bd6a0;font-weight:700',
             'color:#888',

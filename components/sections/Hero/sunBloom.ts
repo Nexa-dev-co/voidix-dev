@@ -22,9 +22,13 @@ import * as THREE from 'three';
  * adds nothing and stays fully transparent. Only where the star actually glows does alpha rise,
  * so the halo appears over the cream and the canvas box never does.
  *
- * The cost is rendering the scene twice per DRAWN frame. That is affordable here and nowhere else:
- * the canvas is small, the model is ~10k verts, and `SunModelCanvas` is demand-rendered — it draws
- * nothing at all for the whole services → works → chamber span.
+ * The cost is rendering the scene a second time per DRAWN frame — at HALF resolution since
+ * 2026-08-06, see `GLOW_SOURCE_SCALE`. The full-res version of that copy was the most expensive
+ * thing on the whole site: the frame profiler measured `sun · bloom` at 11–17 ms of submit time on a
+ * 1366px dpr-1 laptop — the single largest span on the page, 40–66% of every frame it drew in, in
+ * dev and on the Vercel preview alike, through the whole hero → services → works span.
+ * `SunModelCanvas` is also demand-rendered — it draws nothing at all for the whole
+ * services → works → chamber span.
  */
 
 // The sun's authored "Peaceful" bloom. This is now the only copy of it;
@@ -47,6 +51,26 @@ const THRESHOLD_KNEE = 0.22;
  * a tight core glow and level 2 is the wide bleed.
  */
 const MIP_COUNT = 3;
+
+/**
+ * The glow SOURCE renders at half the canvas resolution — a quarter of the pixels of the full-res
+ * copy it replaces.
+ *
+ * Step 1's render exists only to feed the bright pass, and the bright pass writes into mip 0, which
+ * is ALREADY half-resolution — the chain was throwing the detail away one pass later anyway. This
+ * moves the halving to before the expensive scene render instead of after it, so the sun's shaders
+ * run for a quarter of the fragments and the bright pass reads 1:1 instead of downsampling. The
+ * visible base image (step 4) is untouched: it still renders directly to the canvas at full
+ * resolution, so sharpness cannot regress — only the GLOW seeds softer, and everything sampled from
+ * this target gets Gaussian-blurred and mip-chained anyway.
+ *
+ * The one visible risk: sub-pixel highlights (the particle grains) can fall between half-res texels
+ * and feed the tight mip-0 glow a touch less. The grains themselves stay sharp in the base image.
+ * If the core glow ever reads dimmer than the authored Peaceful grade, raise this back toward 1
+ * before touching BLOOM_STRENGTH — the grade's three dials were authored against the source, and
+ * re-tuning them to compensate for it would weld the two together.
+ */
+const GLOW_SOURCE_SCALE = 0.5;
 
 /** Never let a mip collapse to nothing on a small canvas — a 0-sized target is a WebGL error. */
 const MIN_MIP_SIZE = 4;
@@ -254,8 +278,14 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
     const pixelRatio = renderer.getPixelRatio();
     const deviceWidth = Math.max(MIN_MIP_SIZE, Math.round(width * pixelRatio));
     const deviceHeight = Math.max(MIN_MIP_SIZE, Math.round(height * pixelRatio));
-    sceneTarget.setSize(deviceWidth, deviceHeight);
+    // The glow's source is smaller than the frame it feeds — see GLOW_SOURCE_SCALE.
+    sceneTarget.setSize(
+      Math.max(MIN_MIP_SIZE, Math.round(deviceWidth * GLOW_SOURCE_SCALE)),
+      Math.max(MIN_MIP_SIZE, Math.round(deviceHeight * GLOW_SOURCE_SCALE)),
+    );
 
+    // The mip chain keeps its CANVAS-relative sizes (1/2, 1/4, 1/8 of the frame), so the glow's
+    // spread on screen is unchanged — the source shrank, not the bloom.
     let mipWidth = deviceWidth;
     let mipHeight = deviceHeight;
     for (let level = 0; level < MIP_COUNT; level += 1) {
