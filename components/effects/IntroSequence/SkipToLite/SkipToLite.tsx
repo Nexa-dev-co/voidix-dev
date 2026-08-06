@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { isSourceLoaded } from '@/lib/assetLoadProgress';
-import { createDownloadEtaEstimator } from '../downloadEta';
+import { areAssetsReady } from '@/lib/assetLoadProgress';
+import { createPageEtaEstimator } from '../downloadEta';
 
 /**
  * The way out of a long load — offered, not imposed.
@@ -29,13 +29,17 @@ import { createDownloadEtaEstimator } from '../downloadEta';
  */
 
 /**
- * How far out the star has to look before an exit is worth offering.
+ * How far out the WHOLE PAGE has to look before an exit is worth offering.
  *
- * Far higher than `SHAPE_ONSET_ETA_SECONDS` (4), and the gap is the point: filling a wait and
- * apologising for one are different acts. Four seconds is a beat worth decorating. Twelve is a wait
- * worth escaping.
+ * ⚠ Measured against the page, not the star — and that alone moves it a long way earlier. The star is
+ * ~18 % of the weighted download and lands early, so a star-based estimate reported four seconds while
+ * the fleet still had 5.3 MB to go. Now that the gate holds for every source, the page's estimate is
+ * the visitor's actual wait.
+ *
+ * Still well above `SHAPE_ONSET_ETA_SECONDS` (4), because filling a wait and apologising for one are
+ * different acts: four seconds is a beat worth decorating, ten is a wait worth escaping.
  */
-const OFFER_AFTER_ETA_SECONDS = 12;
+const OFFER_AFTER_ETA_SECONDS = 10;
 
 /**
  * The backstop, for when no estimate can be formed at all.
@@ -44,7 +48,7 @@ const OFFER_AFTER_ETA_SECONDS = 12;
  * bytes arriving perfectly healthily, so `secondsRemaining()` stays `null` however long it takes. That
  * is exactly the visitor this exists for, and an ETA-only trigger would never reach them.
  */
-const OFFER_AFTER_ELAPSED_MS = 20_000;
+const OFFER_AFTER_ELAPSED_MS = 12_000;
 
 const POLL_MS = 1000;
 
@@ -59,7 +63,7 @@ export default function SkipToLite() {
 
   useEffect(() => {
     // Already in — there is no wait left to escape.
-    if (isSourceLoaded('sun')) return;
+    if (areAssetsReady()) return;
 
     // ⚠ An INSTRUCTION, not a hint. `deviceTier` and `prefetchWhenAssetsReady` both honour this
     // already; someone who has asked their browser to spend less should be shown the cheap route
@@ -69,11 +73,11 @@ export default function SkipToLite() {
       return;
     }
 
-    const starEta = createDownloadEtaEstimator('sun');
+    const pageEta = createPageEtaEstimator();
     const startedAt = performance.now();
     const ticker = window.setInterval(() => {
-      starEta.sample();
-      const remaining = starEta.secondsRemaining();
+      pageEta.sample();
+      const remaining = pageEta.secondsRemaining();
       const longEnough =
         (remaining !== null && remaining >= OFFER_AFTER_ETA_SECONDS) ||
         performance.now() - startedAt >= OFFER_AFTER_ELAPSED_MS;

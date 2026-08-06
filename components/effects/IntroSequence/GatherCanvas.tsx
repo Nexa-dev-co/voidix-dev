@@ -3,11 +3,11 @@
 import { useEffect, useRef } from "react";
 import {
   areArrivedWarmupsDone,
-  getSourceProgress,
-  isSourceLoaded,
+  areAssetsReady,
+  getAssetProgress,
 } from "@/lib/assetLoadProgress";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
-import { createDownloadEtaEstimator } from "./downloadEta";
+import { createPageEtaEstimator } from "./downloadEta";
 import { GatherRenderer } from "./gatherRenderer";
 import { SUN_IN_O_RATIO, SUN_BODY_FILL, SUN_FRAMING_NUDGE_X } from "./gatherShader";
 import type { GatherMessage } from "./gatherMessages";
@@ -198,31 +198,35 @@ export default function GatherCanvas() {
     // `ASSEMBLY_LEAD_MS` — the held beat the intro already inserts before the flight. So the shapes
     // cover the whole wait, and the dust still gets its full second of stream before the first shard
     // moves. Both rules satisfied, rather than one traded for the other.
-    const starEta = createDownloadEtaEstimator("sun");
+    const pageEta = createPageEtaEstimator();
     let shapeHold = 0;
     const resolveShapeHold = () => {
-      starEta.sample();
-      if (isSourceLoaded("sun") && areArrivedWarmupsDone()) {
+      pageEta.sample();
+      if (areAssetsReady() && areArrivedWarmupsDone()) {
         shapeHold = 0;
         return;
       }
       // Latched: once the wait has been judged long, it stays long. Without this the estimate
       // wobbling either side of the threshold would gather and release the whole field repeatedly.
       if (shapeHold === 0) {
-        const remaining = starEta.secondsRemaining();
+        const remaining = pageEta.secondsRemaining();
         if (remaining !== null && remaining >= SHAPE_ONSET_ETA_SECONDS) shapeHold = 1;
       }
     };
 
-    // The field's density tracks the STAR, like the loader's counter — it is what the gate waits for,
-    // so it is what the loader should be reporting. Using the whole page's weighted total would leave
-    // the field thin at the very moment the star lands and the assembly plays.
+    // ── The field's density tracks THE WHOLE PAGE ──
+    // It tracked the star, on the stated reasoning that the star "is what the gate waits for, so it is
+    // what the loader should be reporting". That reasoning is kept and its premise has changed: the
+    // gate now holds for every source (see `isGateSatisfied` in IntroSequence). Left on the star, the
+    // field would reach full density around 18 % of the way through the download and then sit there
+    // for the rest of it — dense, still, and saying nothing — which is the same lie the counter was
+    // just taken off the star to stop telling.
     const sendUpdate = () => {
       resolveShapeHold();
       const measured = measureTarget();
       const update = {
         type: "update" as const,
-        progress: getSourceProgress("sun"),
+        progress: getAssetProgress(),
         shapeHold,
         ...measured,
       };
@@ -246,7 +250,9 @@ export default function GatherCanvas() {
     // Progress is cheap to read, so it goes often. Measuring the "o" forces a layout, so it goes rarely.
     const sendProgress = () => {
       resolveShapeHold();
-      const update = { type: "update" as const, progress: getSourceProgress("sun"), shapeHold };
+      // Same reading as `sendUpdate` — the whole page, not the star. Two call sites, one source of
+      // truth, or the field's density would flicker between two different ideas of "how far in".
+      const update = { type: "update" as const, progress: getAssetProgress(), shapeHold };
       if (worker) post(update);
       else fallback?.update(update);
     };

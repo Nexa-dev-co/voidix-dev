@@ -23,6 +23,13 @@
 const EXPECTED_SOURCES = ['deck', 'works', 'sun'] as const;
 export type AssetSource = (typeof EXPECTED_SOURCES)[number];
 
+/**
+ * The same list, exported, so the intro's gate can ask about every source rather than hard-coding
+ * three strings a second time. Naming a set of sections in two files is how one of them gets a fourth
+ * added and the other does not.
+ */
+export const ASSET_SOURCES: readonly AssetSource[] = EXPECTED_SOURCES;
+
 // Weight the combined progress by each source's rough download weight so the counter climbs at an
 // honest pace — an unweighted average would leap to 50% the instant the lighter source finished, then
 // crawl. Weights sum to 1.
@@ -194,17 +201,19 @@ export function getAssetProgress(): number {
 /**
  * How close the page is to being ENTERABLE, 0..1 — the number the loader's counter should show.
  *
- * ── ⚠ Why this is not `getAssetProgress` ─────────────────────────────────────────────────────────
- * The gate waits for the STAR, not for the whole page: on a slow connection the fleet is ~62 % of the
- * weighted download and is still streaming when the site opens, so a counter on the combined total
- * would hand off at "18" and the visitor would watch it fail to finish. That reasoning is unchanged.
+ * ── ⚠ Why it is the COMBINED download and no longer the star's ───────────────────────────────────
+ * It was the star's, on the reasoning that the gate waited for the star alone — so a counter on the
+ * combined total would have handed off at "18" and the visitor would have watched it fail to finish.
+ * That reasoning was correct and its premise is now gone: the gate waits for every source (see
+ * `isGateSatisfied` in IntroSequence), because a site that opens while the fleet is still streaming is
+ * a site that opens before it is loaded. The counter follows the gate; it always did.
  *
- * ── ⚠ …and why it is not the star's download either, any more ────────────────────────────────────
- * Because the star landing stopped being the end of the wait. After the last byte the two scenes still
- * compile their programs, allocate composers, upload every map, and run the burn-in that decides the
- * session's resolution — up to 1.5 s on its own. A counter that reads 100 and then makes you wait
- * through all of that is exactly the dishonesty the weighting in this file exists to prevent; it was
- * simply being honest about one half of the wait and silent about the other.
+ * ── ⚠ …and why it is not the downloads alone either ──────────────────────────────────────────────
+ * Because the last byte stopped being the end of the wait. After it the two scenes still compile their
+ * programs, allocate composers, upload every map, and run the burn-in that decides the session's
+ * resolution — up to 1.5 s on its own. A counter that reads 100 and then makes you wait through all of
+ * that is exactly the dishonesty the weighting in this file exists to prevent; it was simply being
+ * honest about one half of the wait and silent about the other.
  */
 export function getEntryProgress(): number {
   // Measured over what has ARRIVED, mirroring `areArrivedWarmupsDone` — the gate does not wait for a
@@ -220,7 +229,7 @@ export function getEntryProgress(): number {
     warmHighWater = Math.max(warmHighWater, warmWeight / arrivedWeight);
   }
 
-  return getSourceProgress('sun') * (1 - WARMUP_SHARE) + warmHighWater * WARMUP_SHARE;
+  return getAssetProgress() * (1 - WARMUP_SHARE) + warmHighWater * WARMUP_SHARE;
 }
 
 /** One source's own 0..1 fraction (0 if it hasn't reported yet) — for per-module loader readouts. */

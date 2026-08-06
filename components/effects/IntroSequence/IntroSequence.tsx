@@ -14,7 +14,9 @@ import {
   getMillisecondsSinceActivity,
   onAssetProgress,
   markStageQuiet,
+  ASSET_SOURCES,
   ASSETS_WARMUP_EVENT,
+  type AssetSource,
 } from "@/lib/assetLoadProgress";
 import { startCacheTelemetry } from "@/lib/cacheTelemetry";
 import {
@@ -409,16 +411,25 @@ export default function IntroSequence() {
         }
       };
 
-      const isStarSettled = () => {
-        if (isSourceLoaded("sun")) return true;
-        // ⚠ `null` means the star has never reported — its chunk may not have mounted yet — so the
-        // wait is measured from when it started rather than read as "silent for 0 ms", which would
-        // wait forever on a source that never begins. Same reasoning as `tickGate`.
-        const sinceActivity = getMillisecondsSinceActivity("sun");
-        const silentFor =
-          sinceActivity ?? performance.now() - quietWaitStartedAt;
-        return silentFor > ASSET_STALL_GIVE_UP_MS;
-      };
+      /**
+       * The same question `isGateSatisfied` asks on the animated path: is EVERY source either in or
+       * demonstrably dead?
+       *
+       * ⚠ It waits for the whole page here too, and for the same reason. Reduced motion asks for less
+       * MOVEMENT; it does not ask to arrive before the site exists. This path used to release on the
+       * star alone and hand a phone on cellular a fleet section with nothing in it — which is exactly
+       * the failure the animated gate has just been changed to stop having.
+       */
+      const areQuietAssetsSettled = () =>
+        ASSET_SOURCES.every((source) => {
+          if (isSourceLoaded(source)) return true;
+          // ⚠ `null` means that source has never reported — its chunk may not have mounted yet — so
+          // the wait is measured from when it started rather than read as "silent for 0 ms", which
+          // would wait forever on a source that never begins. Same reasoning as `tickGate`.
+          const sinceActivity = getMillisecondsSinceActivity(source);
+          const silentFor = sinceActivity ?? performance.now() - quietWaitStartedAt;
+          return silentFor > ASSET_STALL_GIVE_UP_MS;
+        });
 
       const finishQuietIntro = () => {
         window.clearInterval(quietTicker);
@@ -443,7 +454,7 @@ export default function IntroSequence() {
       );
 
       paintQuietCounter();
-      if (isStarSettled()) {
+      if (areQuietAssetsSettled()) {
         // A warm cache lands straight here — it should not sit out a tick to discover that.
         finishQuietIntro();
       } else {
@@ -455,7 +466,7 @@ export default function IntroSequence() {
           // while scroll is still locked. The real gate dispatches this from `tickGate` for exactly
           // the same reason.
           window.dispatchEvent(new Event(INTRO_ACTIVE_EVENT));
-          if (isStarSettled()) finishQuietIntro();
+          if (areQuietAssetsSettled()) finishQuietIntro();
         }, GATE_TICK_MS);
       }
 
@@ -518,7 +529,6 @@ export default function IntroSequence() {
     let assemblyCued = false;
     let hasResumed = false;
     /** The star stopped showing any sign of life — proceed without it rather than wait forever. */
-    let starGaveUp = false;
     let sunAssembled = false;
     let resumeFrame = 0;
     /** The gate's 500 ms clock: countdown, stall check, and when to offer the skip. */
@@ -624,11 +634,34 @@ export default function IntroSequence() {
       checkWarm(); // a scene can already be warm — on a fast load it will be
     };
 
-    // ── What the reveal actually waits for ──
-    // The STAR, and nothing else. The hero opens on it; the fleet and the field are a minute of
-    // scrolling away and used to hold the reveal for no reason anyone could point at.
+    /**
+     * ── What the reveal actually waits for: EVERY source ─────────────────────────────────────────
+     *
+     * ⚠ THIS WAS "THE STAR, AND NOTHING ELSE", AND THE REVERSAL IS DELIBERATE.
+     *
+     * That earlier reasoning was sound on its own terms: the hero opens on the star, the fleet and the
+     * field are a minute of scrolling away, and holding the reveal for ~5.3 MB of vessels nobody was
+     * about to look at cost every visitor a wait they could not see the point of. What it produced,
+     * though, is a site that OPENS BEFORE IT IS LOADED — the first lap runs while the fleet is still
+     * streaming, which is most of what "it feels heavy the first time" turned out to be.
+     *
+     * The objection to waiting was never that waiting is wrong. It was that a visitor on a weak
+     * connection had no alternative but to sit through it. That is now answered: `SkipToLite` offers
+     * `/lite` — the same services, work and answers as a document — the moment the wait looks long.
+     * With a way out on screen, waiting for the whole page is the honest default rather than a
+     * punishment.
+     *
+     * ⚠ A source that has STALLED still counts as satisfied. Otherwise one dead request traps the
+     * loader forever, which is the failure the old star-only rule could not have.
+     */
+    const gaveUpSources = new Set<AssetSource>();
+    const isGateSatisfied = () =>
+      ASSET_SOURCES.every(
+        (source) => isSourceLoaded(source) || gaveUpSources.has(source),
+      );
+
     const tryBeginWarmup = () => {
-      if (gateReached && (isSourceLoaded('sun') || starGaveUp)) beginWarmup();
+      if (gateReached && isGateSatisfied()) beginWarmup();
     };
 
     const stopAssetProgress = onAssetProgress(() => {
@@ -663,16 +696,23 @@ export default function IntroSequence() {
       // re-arms on every one of these, which is precisely what is wanted.
       window.dispatchEvent(new Event(INTRO_ACTIVE_EVENT));
 
-      // ── Is it still alive? ──
+      // ── Is each one still alive? ──
       // Against ACTIVITY, not against the fraction: a server sending no `Content-Length` cannot move
       // the fraction at all, and reading that as a stall would abandon a perfectly healthy download.
-      // `null` means the star has never reported — its chunk may not even have mounted yet — so the
+      // `null` means that source has never reported — its chunk may not even have mounted yet — so the
       // wait is measured from when the gate started instead of giving up on something not begun.
-      const sinceActivity = getMillisecondsSinceActivity('sun');
-      const silentFor =
-        sinceActivity ?? (gateWaitStartedAt ? performance.now() - gateWaitStartedAt : 0);
-      if (silentFor > ASSET_STALL_GIVE_UP_MS) {
-        starGaveUp = true;
+      //
+      // ⚠ Per source, now that the gate waits for all of them. One dead request must retire itself
+      // without taking the other two down, and without trapping the loader behind it.
+      for (const source of ASSET_SOURCES) {
+        if (isSourceLoaded(source) || gaveUpSources.has(source)) continue;
+        const sinceActivity = getMillisecondsSinceActivity(source);
+        const silentFor =
+          sinceActivity ?? (gateWaitStartedAt ? performance.now() - gateWaitStartedAt : 0);
+        if (silentFor > ASSET_STALL_GIVE_UP_MS) gaveUpSources.add(source);
+      }
+
+      if (isGateSatisfied()) {
         stopGateTicker();
         tryBeginWarmup();
       }
@@ -764,11 +804,11 @@ export default function IntroSequence() {
     // resumes on the same frame, so a fast / cached load feels exactly like before.
     timeline.addPause(">", () => {
       gateReached = true;
-      if (isSourceLoaded('sun') || starGaveUp) {
+      if (isGateSatisfied()) {
         beginWarmup();
         return;
       }
-      // Still waiting on the star. Show life, and start the clock that decides whether this wait is
+      // Still waiting on the page. Show life, and start the clock that decides whether this wait is
       // short enough to simply sit through or long enough to need explaining.
       startHoldPulse();
       gateWaitStartedAt = performance.now();
