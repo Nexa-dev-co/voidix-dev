@@ -52,8 +52,10 @@ import {
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
 import {
+  getControllerFps,
   getPixelRatio,
   hasEarnedExtraQuality,
+  noteRatioApplied,
   RATIO_APPLY_GRACE_SECONDS,
   reportProbedFrameCost,
   sampleFrame,
@@ -2035,6 +2037,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       if (!width || !height) return;
       const aspect = width / height;
       const ratio = getPixelRatio();
+      if (ratio !== appliedPixelRatio) noteRatioApplied();
       appliedPixelRatio = ratio;
       viewportWidth = width;
       viewportHeight = height;
@@ -2432,6 +2435,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // frame through two composers with many internal passes — so the first cut of this printed
         // `works draws 1.00`, which is the final fullscreen quad and nothing else.
         profileGauge('ratio', renderer.getPixelRatio());
+        // Cross-check: this must now track the `[frame]` headline. It did not before — the controller
+        // read a clamped delta and believed 20+ fps while the page ran at 9.
+        profileGauge('fps(ctrl)', getControllerFps());
         profileGauge('works draws', renderer.info.render.calls);
         profileGauge('works tris', renderer.info.render.triangles);
       }
@@ -2488,7 +2494,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           ratioPendingSeconds = 0;
           // In sync → measure this frame. Only frames we actually DREW, so idle frames can't fake
           // headroom and trick the controller into ramping the resolution up.
-          if (isDrawing) sampleFrame(deltaSeconds, 'works');
+          // ⚠ RAW, not `deltaSeconds`. This loop clamps at MAX_FRAME_SECONDS (0.05 s = 20 fps) so a
+          // tab-restore cannot fling the animation — and feeding that clamp to the controller meant it
+          // could not see this section running below 20 fps, which is where it spends its whole time
+          // on the machines this exists for. See `FrameTimer.lastRawDelta`.
+          if (isDrawing) sampleFrame(frameTimer.lastRawDelta(), 'works');
         } else {
           // Queued. Sampling deliberately stops here — measuring at one ratio while the controller
           // believes it is at another feeds it a lie.
@@ -2499,6 +2509,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // excluded by the enclosing guard, and the two spans it does NOT cover are added here, so
           // the hitch can only ever land on a stop that is being browsed at rest.
           const scrubbing =
+            // ⚠ THE HOP. `travelActive` is the real-time GSAP tween that moves the camera between two
+            // projects, and it is the exact hazard the original comment above describes: a stall
+            // mid-hop lets the tween advance behind it, so the camera skips to the far end and the hop
+            // reads as a freeze then a jump. It is NOT covered by `handoffActive` or `revealScrubbing`
+            // — those are the two crossings — so a forced apply would have landed straight in it.
+            travelActive ||
             (chamberState.contact > CROSSING_IDLE_EPSILON &&
               chamberState.contact < 1 - CROSSING_IDLE_EPSILON) ||
             diveProgress > CROSSING_IDLE_EPSILON;

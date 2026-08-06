@@ -55,6 +55,20 @@ const RECENT_STEP_UP_SECONDS = 3.5; // a drop this soon after a step-up means th
 const SOFT_CEIL_PROBE_SECONDS = 20; // after this long pinned + calm, cautiously re-test one step higher
 const EMA_ALPHA = 0.1;           // smoothing on the measured frame time (rejects one-frame spikes)
 const MAX_SANE_DT = 0.5;         // ignore absurd deltas (tab-restore, breakpoints)
+/**
+ * Cap on how much ONE frame may contribute to the settle clocks — not to the frame rate itself.
+ *
+ * ⚠ Needed the moment `sampleFrame` started receiving RAW deltas. `slowFor` is meant to mean
+ * "sustained below SLOW_FPS for 0.8 s", and with a clamped input each frame added at most 0.05 s, so
+ * it took sixteen of them. Raw, a single 429 ms frame — and the profiler logs plenty, most of them
+ * OUR OWN composer reallocations — adds 0.429 s, so two frames trip a threshold that is supposed to
+ * mean "this has been going on for a while". That turns a self-inflicted stall into a resolution cut,
+ * which causes another reallocation, which is the beginning of a feedback loop.
+ *
+ * The frame RATE still uses the raw value, because that is the measurement and it must stay honest.
+ * This only governs how fast a duration accumulates.
+ */
+const SETTLE_SAMPLE_CAP_SECONDS = 0.1;
 
 /**
  * How much of a frame the heaviest scene may spend, in milliseconds — the budget the probe solves
@@ -238,6 +252,8 @@ type PipelineKey = 'deck' | 'works';
 const fillBoundByPipeline = new Map<PipelineKey, boolean>();
 let activePipeline: PipelineKey | null = null;
 let awaitingStepDownVerdict = false;
+/** Set by `noteRatioApplied` — the next sample carries a reallocation stall and must be discarded. */
+let dropNextSample = false;
 let lastStepDownAt = -Infinity;
 let fpsBeforeStepDown = 0;
 /** Long enough for the EMA to have absorbed the new resolution, short enough to not sit ugly. */
@@ -303,7 +319,13 @@ function logRatioChange(what: string, from: number, fps: number, note: string): 
  * just because the bottleneck turned out to be elsewhere.
  */
 function releaseCeilingToNative(): void {
-  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetCeil, nativeRatio));
+  // ⚠ An UNPROBED session has no `pixelBudgetCeil`: that number is derived from the area the probe
+  // reported, so without it this function has no idea how many megapixels "native" implies and would
+  // release straight past `MAX_DRAWING_BUFFER_MEGAPIXELS`. On a dpr 2.5 panel that is 4.27 Mpx against
+  // a 3 Mpx budget — the exact failure the buffer budget exists to prevent, arrived at from the other
+  // direction. Unmeasured falls back to this module's own unmeasured default, which is native-or-1.
+  const target = probed ? nativeRatio : Math.min(nativeRatio, 1);
+  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetCeil, target));
   softCeil = ceil;
   pixelRatio = ceil;
 }
@@ -475,6 +497,21 @@ export function reportProbedFrameCost(
 }
 
 /**
+ * Tell the controller that a scene has just re-allocated at a new ratio, so the frame carrying that
+ * stall is not counted as evidence about the new ratio.
+ *
+ * ⚠ Without this the controller marks its own homework with the cost of doing the work. Applying a
+ * ratio rebuilds a composer, its bloom pyramid and its ping-pong targets — the profiler logs those as
+ * frames of 150–400 ms — and the very next frame is the first one sampled at the new ratio. So a step
+ * DOWN is immediately followed by the worst frame in the window, which pushes the frame rate the wrong
+ * way at precisely the moment `STEP_DOWN_MIN_GAIN` is about to ask whether the cut helped. The cut
+ * then reads as useless, `fillBound` goes false, and the controller retires the only lever it has.
+ */
+export function noteRatioApplied(): void {
+  dropNextSample = true;
+}
+
+/**
  * What the probe found this machine could afford, unclamped — or `null` if it never produced a
  * believable reading (see `gpuProbe`, which returns null rather than a number it does not trust).
  *
@@ -536,6 +573,17 @@ export function hasEarnedExtraQuality(): boolean {
   return extraQualityEarned;
 }
 
+/**
+ * The frame rate THIS CONTROLLER believes it is seeing, for cross-checking against a real measurement.
+ *
+ * Worth exposing because the two disagreeing is what hid the clamped-delta bug for so long: the frame
+ * profiler reported 9–18 fps while this module was acting on a number pinned at its input's clamp. If
+ * these two ever drift apart again, something is lying to `sampleFrame`.
+ */
+export function getControllerFps(): number {
+  return 1 / emaFrameSeconds;
+}
+
 /** The current shared pixel ratio. Read once per frame; apply to renderer + composer when it moves. */
 export function getPixelRatio(): number {
   ensureInitialised();
@@ -549,6 +597,11 @@ export function getPixelRatio(): number {
 export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   ensureInitialised();
   if (dtSeconds <= 0 || dtSeconds > MAX_SANE_DT) return;
+  // The reallocation's own stall — see `noteRatioApplied`.
+  if (dropNextSample) {
+    dropNextSample = false;
+    return;
+  }
 
   // ── Whose frame is this? ──
   // Only one heavy scene ever draws at a time, so a change here is a handover rather than a clash.
@@ -571,11 +624,14 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   emaFrameSeconds += (dtSeconds - emaFrameSeconds) * EMA_ALPHA;
   const fps = 1 / emaFrameSeconds;
 
+  // See SETTLE_SAMPLE_CAP_SECONDS — the rate above is raw, the durations below are capped.
+  const settleSeconds = Math.min(dtSeconds, SETTLE_SAMPLE_CAP_SECONDS);
+
   if (fps < SLOW_FPS) {
-    slowFor += dtSeconds;
+    slowFor += settleSeconds;
     fastFor = 0;
   } else if (fps > FAST_FPS) {
-    fastFor += dtSeconds;
+    fastFor += settleSeconds;
     slowFor = 0;
   } else {
     slowFor = 0;

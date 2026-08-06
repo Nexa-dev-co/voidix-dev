@@ -27,6 +27,7 @@ import {
 import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
 import {
   getPixelRatio,
+  noteRatioApplied,
   RATIO_APPLY_GRACE_SECONDS,
   sampleFrame,
 } from '@/lib/adaptivePixelRatio';
@@ -1234,6 +1235,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const height = canvas.clientHeight || canvas.offsetHeight;
       if (!width || !height) return;
       const ratio = getPixelRatio();
+      if (ratio !== appliedPixelRatio) noteRatioApplied();
       appliedPixelRatio = ratio;
       camera.aspect = width / height;
       portraitScale = portraitPullbackScale(camera.aspect);
@@ -1475,7 +1477,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           ratioPendingSeconds = 0;
           // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
           // (gated-off) frames can never fake headroom and trick it into ramping the resolution up.
-          if (isDrawing) sampleFrame(deltaSeconds, 'deck');
+          // Raw by name rather than by luck: this loop happens to be unclamped today (see its
+          // frameTimer), so `deltaSeconds` would work — but the moment anyone adds a max delta here
+          // for the tab-restore reason, the controller would go blind exactly as the works field did.
+          if (isDrawing) sampleFrame(frameTimer.lastRawDelta(), 'deck');
         } else {
           // Queued. Sampling deliberately stops — measuring at the old ratio while the controller
           // believes it is already at the new one would feed it a lie and make it over-climb.

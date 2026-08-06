@@ -503,7 +503,6 @@ export default function SunModelCanvas() {
       frameHalfHeightAtSun * Math.min(1, camera.aspect || 1);
     /** The ratio these buffers were actually allocated at — see the loop's follow-up below. */
     let appliedPixelRatio = sunPixelRatio();
-    let ratioPendingSeconds = 0;
     const applySize = () => {
       const width = canvas.clientWidth || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -1239,19 +1238,18 @@ export default function SunModelCanvas() {
       }
       wasAnimating = animating;
 
-      // ── Follow the shared controller ──
-      // Same rule the two heavy scenes use: reallocating the bloom targets stalls a frame, so take an
-      // idle one if the demand-render offers it and otherwise accept the hitch rather than wait for
-      // one that may not come (see RATIO_APPLY_GRACE_SECONDS).
-      if (sunPixelRatio() !== appliedPixelRatio) {
-        ratioPendingSeconds += delta;
-        if (!animating || ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS) {
-          applySize();
-          ratioPendingSeconds = 0;
-        }
-      } else {
-        ratioPendingSeconds = 0;
-      }
+      // ── Follow the shared controller, but ONLY on a settled frame ──
+      //
+      // ⚠ No grace period here, unlike the two heavy scenes, and the asymmetry is the point. Those
+      // two draw continuously and can go a whole lap without an idle frame, so they have to take the
+      // hitch eventually. This one is DEMAND-RENDERED: `animating` goes false at every rest state by
+      // construction, so an idle frame always arrives.
+      //
+      // And it must wait for one. The star is the only thing on screen through the hero→services
+      // ramp, the collapse across the handoff and the reveal's fade — all real-time eases with no
+      // guard here equivalent to `handoffActive`. A forced reallocation would stall inside one of
+      // them, and the tween would advance behind the stall exactly as it does for the works hop.
+      if (sunPixelRatio() !== appliedPixelRatio && !animating) applySize();
 
       profileSpan('sun · loop', profileNow() - loopStartedAt);
     };

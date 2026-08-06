@@ -225,17 +225,27 @@ export default function IntroSequence() {
     // it a frame or two early. An UNBOUNDED retry would be a per-frame querySelector running for the
     // whole loader on every desktop visit, where the prompt is correctly never going to render.
     let motionPromptAttempts = MOTION_PROMPT_RENDER_ATTEMPTS;
+    /** True only while the handoff is actually blocked on an answer. */
+    let motionChoiceWaiting = false;
     const offerMotionChoice = () => {
       const prompt = document.querySelector(MOTION_PROMPT_SELECTOR);
       if (prompt) {
         prompt.classList.add(MOTION_PROMPT_SHOWN_CLASS);
         return;
       }
-      if (motionPromptAttempts-- <= 0) return;
-      motionPromptFrame = requestAnimationFrame(offerMotionChoice);
+      if (motionPromptAttempts-- > 0) {
+        motionPromptFrame = requestAnimationFrame(offerMotionChoice);
+        return;
+      }
+      // ⚠ Give up LOUDLY, but only if someone is actually waiting. If the offer never rendered,
+      // `awaitMotionChoice` is holding the handoff for a control that does not exist, and the only
+      // thing that would free it is the 60 s never-strand timer — a minute of dead loader on every
+      // touch device. Saying "answered" here costs an unasked question; not saying it costs the visit.
+      if (motionChoiceWaiting) window.dispatchEvent(new Event(MOTION_CHOICE_EVENT));
     };
 
     const teardownMotionChoiceWait = () => {
+      motionChoiceWaiting = false;
       cancelAnimationFrame(motionPromptFrame);
       window.clearInterval(motionChoiceHeartbeat);
       window.clearTimeout(motionChoiceGiveUp);
@@ -265,16 +275,24 @@ export default function IntroSequence() {
         proceed();
         return;
       }
-      // The delay may not have elapsed — a question the loader is WAITING on has to be on screen.
-      window.clearTimeout(motionPromptTimer);
-      offerMotionChoice();
-
+      // ⚠ ORDER MATTERS. The listener goes on FIRST, because `offerMotionChoice` can answer
+      // synchronously — if its retries are already spent it dispatches immediately, and a dispatch
+      // before the listener exists is a dispatch into nothing, which puts us right back on the 60 s
+      // timer this was meant to avoid.
       const release = () => {
         teardownMotionChoiceWait();
         proceed();
       };
       motionChoiceListener = release;
+      motionChoiceWaiting = true;
       window.addEventListener(MOTION_CHOICE_EVENT, release);
+
+      // The delay may not have elapsed — a question the loader is WAITING on has to be on screen. The
+      // retry budget is refreshed: the earlier attempts were a best-effort preview, this one is the
+      // one the handoff depends on.
+      window.clearTimeout(motionPromptTimer);
+      motionPromptAttempts = MOTION_PROMPT_RENDER_ATTEMPTS;
+      offerMotionChoice();
 
       // ⚠ Load-bearing, and easy to miss: by this point BOTH tickers have stopped, and the hero arms
       // a reveal fallback that is re-armed only by this event (REVEAL_FALLBACK_WITH_INTRO_MS). A
