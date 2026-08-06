@@ -4224,29 +4224,37 @@ body {
 
 
 /* ─── The loader's motion offer ───────────────────────────────────────
-   Centred under the wordmark, above the frame's fill meter — the loader's bottom-left is already the
-   throughput readout and its bottom-right is the ghost counter, so the middle is the only clear lane.
-
    ⚠ `fixed`, not `absolute`. This element is a SIBLING of the intro's root rather than a child of it,
    because that root is `aria-hidden` with `pointer-events: none` and this is the one thing on the
    loader meant to be read aloud and pressed. It therefore has no positioned ancestor to hang from.
 
    ⚠ Above the veil (z 10000) and level with the sun, which cannot reach down here — the star flies
-   between the "o" and the hero square, both of which are centre-stage. */
+   between the "o" and the hero square, both of which are centre-stage.
+
+   ⚠ The lane is chosen AROUND `.loader-modules`, not around the corner readouts. An earlier revision
+   sat at `bottom: 3.25rem` on the reasoning that the bottom-left is the throughput line and the
+   bottom-right is the ghost counter — which is true and irrelevant, because the four telemetry rows
+   grow upward from ~4.8rem across the full width and this landed straight through them. On a 390px
+   phone the copy was rendered over "STREAMING 55%". Anything moved into this area has to clear
+   `.loader-modules` first. */
 .intro-motion-prompt {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: clamp(3.25rem, 7vh, 5rem);
+  bottom: clamp(11rem, 24vh, 14rem);
   z-index: 10001;
+  width: min(92vw, 30rem);
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  max-width: min(90vw, 34rem);
-  text-align: center;
-  text-wrap: balance;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: clamp(1rem, 3vw, 1.3rem);
+  /* A surface, not floating text. It sits over a live scene and it is asking a question the loader
+     is waiting on — reading as part of the telemetry is exactly what went wrong before. */
+  border: 1px solid var(--border);
+  background: rgb(0 0 0 / 0.82);
+  backdrop-filter: blur(6px);
   font-family: var(--font-dm-sans), sans-serif;
-  font-size: var(--fs-small);
+  text-align: left;
   /* Revealed by the loader adding `.is-offered`, and taken away again before the handoff. Hidden
      rather than merely transparent so it can never take a press while invisible. */
   opacity: 0;
@@ -4255,6 +4263,12 @@ body {
   transition:
     opacity 0.5s ease,
     visibility 0s linear 0.5s;
+}
+
+/* Pressed, and the reload has not torn the page down yet. */
+.intro-motion-prompt[data-committing="true"] {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .intro-motion-prompt.is-offered {
@@ -4266,46 +4280,73 @@ body {
     visibility 0s;
 }
 
-.intro-motion-copy {
-  color: var(--muted);
+/* ⚠ `--fg`, not `--muted`. The old copy colour was 0.38 alpha off-white on near-black — around 3:1,
+   under the 4.5:1 floor this file sets for small text, on the one element whose entire purpose is
+   accessibility. */
+.intro-motion-title {
+  margin: 0;
+  color: var(--fg);
+  font-size: var(--fs-small);
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.intro-motion-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ⚠ `min-height: 44px` is not padding taste. The previous control was an underlined word at
+   `padding: 0.25rem 0` — about a 28px target — which is the accessibility control itself failing the
+   target-size guidance it exists to serve. Both answers are real buttons for the same reason: an
+   underlined word reads as "the alternative", and there is no default here. */
+.intro-motion-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-height: 44px;
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  background: none;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    border-color 0.25s ease,
+    background-color 0.25s ease;
+}
+
+.intro-motion-option:hover {
+  border-color: rgb(var(--accent-rgb) / 0.5);
+  background: rgb(var(--accent-rgb) / 0.05);
+}
+
+.intro-motion-option:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.intro-motion-option-label {
+  color: var(--accent);
+  font-size: var(--fs-small);
+  letter-spacing: 0.02em;
+}
+
+.intro-motion-option-detail {
+  color: var(--fg);
+  opacity: 0.72;
+  font-size: var(--fs-micro);
   line-height: 1.4;
 }
 
-/* An underlined word rather than a bordered button: the loader is an editorial frame and a chip in
-   the middle of it would read as an interruption. The rule under it is what says "press me". */
-.intro-motion-action {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  padding: 0.25rem 0;
-  cursor: pointer;
-  color: var(--accent);
-  font-family: inherit;
-  font-size: inherit;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  border-bottom: 1px solid rgb(var(--accent-rgb) / 0.45);
-  transition:
-    color 0.25s ease,
-    border-color 0.25s ease;
-}
-
-.intro-motion-action:hover {
-  border-bottom-color: var(--accent);
-}
-
-.intro-motion-action:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 0.3rem;
-}
-
-/* A ~310px measure cannot hold the sentence and the action on one line — stacking them keeps the
-   action a full-width target instead of a word squeezed against the edge. */
-@media (max-width: 30em) {
-  .intro-motion-prompt {
-    flex-direction: column;
-    gap: 0.5rem;
-  }
+/* Said out loud rather than discovered: one of the two answers restarts the page, because the value
+   it changes was captured at construction by everything that reads it. */
+.intro-motion-option-note {
+  color: var(--muted);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .loader-throughput {

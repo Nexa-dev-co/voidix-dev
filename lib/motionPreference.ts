@@ -34,6 +34,32 @@ const STORAGE_KEY = 'voidix:motion-preference';
 const MEDIA_QUERY = '(prefers-reduced-motion: reduce)';
 
 /**
+ * Fired when the visitor answers the loader's motion offer and the page is NOT going to reload.
+ *
+ * ⚠ The loader holds its handoff on this, so it is a release signal rather than a notification —
+ * `subscribeMotionPreference` already covers "the value changed" and deliberately does not serve
+ * here, because it also fires when the OS setting changes mid-session, which is not an answer.
+ */
+export const MOTION_CHOICE_EVENT = 'voidix:motion-choice';
+
+/**
+ * Who is asked to decide before the site opens.
+ *
+ * ⚠ A TOUCH test, not a size test, and not a platform test. The camera work is hardest to sit
+ * through on something held close in one hand, which is a property of the device rather than of the
+ * window — a narrow browser window on a desktop is a mouse user who has resized, and does not want
+ * an accessibility dialog over their first impression. This is the same distinction
+ * `useIsLowPowerViewport` and `useIsNarrowViewport` exist to keep apart, so it deliberately does not
+ * reuse either: the first would also match any window under 760px.
+ *
+ * ⚠ And explicitly NOT a user-agent test for iPhone, which is where this started. `Reduce Motion` is
+ * a platform-wide standard — Android reports it from "Remove animations", Windows and macOS from
+ * their own settings — so sniffing for one vendor would deny the choice to the Android visitor who
+ * has already asked their phone for exactly this. It would also miss iPads, which report as Macs.
+ */
+const TOUCH_POINTER_QUERY = '(pointer: coarse)';
+
+/**
  * Mirrored onto `<html>` so CSS can follow an in-page override.
  *
  * ⚠ The `@media (prefers-reduced-motion: reduce)` blocks in `globals.css` read the OS query and
@@ -141,6 +167,27 @@ export function setMotionPreference(next: MotionPreference): void {
 
   paintMotionAttribute();
   notifyListeners();
+}
+
+/**
+ * Should the loader stop and ask, on this visit?
+ *
+ * ⚠ It answers from the preference and the media queries ONLY — never from whether the prompt is on
+ * screen. `IntroSequence` has to know whether to hold its handoff, and `MotionPrompt` decides whether
+ * to render at all, and those two answers must agree. Reading the DOM would make the loader's answer
+ * depend on whether a React render had committed yet, which on a warm cache it has not: the gate can
+ * be reached within a frame of mount, the element would not be there, and the visitor would be let
+ * straight through the decision they were supposed to be given.
+ *
+ * ⚠ It goes false the moment a choice is stored, and that is what stops this becoming a toll gate on
+ * every future visit. The offer still APPEARS after that (see MotionPrompt's revisit mode) so the
+ * choice stays reversible — it just no longer holds anything up.
+ */
+export function shouldAskMotionChoice(): boolean {
+  if (typeof window === 'undefined') return false;
+  initialise();
+  if (preference !== 'system') return false;
+  return systemReduced || window.matchMedia(TOUCH_POINTER_QUERY).matches;
 }
 
 /** Subscribe to changes. Returns its own unsubscribe, so callers can hand it straight to an effect. */

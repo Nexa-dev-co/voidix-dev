@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import gsap from "gsap";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import {
+  MOTION_CHOICE_EVENT,
+  shouldAskMotionChoice,
+} from "@/lib/motionPreference";
+import {
   getSourceProgress,
   areArrivedWarmupsDone,
   isSourceLoaded,
@@ -68,10 +72,22 @@ const REDUCED_MOTION_DELAY = 0.3;
  */
 const MOTION_PROMPT_DELAY = 2.4;
 /** The quiet path has no timeline to wait out — the stage is still from the first frame. */
-const MOTION_PROMPT_DELAY_QUIET = 0.8;
+const MOTION_PROMPT_DELAY_QUIET = 0.2;
 /** Toggled by the loader rather than by React — see MotionPrompt's header for why. */
 const MOTION_PROMPT_SHOWN_CLASS = "is-offered";
 const MOTION_PROMPT_SELECTOR = ".intro-motion-prompt";
+
+/**
+ * The longest the loader will sit on an unanswered motion question before opening anyway.
+ *
+ * ⚠ This is a NEVER-STRAND guard, not a timeout in the usual sense — a minute of nobody pressing
+ * anything is far more likely to be a prompt that failed to render than a visitor still reading two
+ * sentences. Without it, one exception inside `MotionPrompt` would leave every touch visitor staring
+ * at a loader that can no longer finish, which is a worse outcome than the unasked question.
+ */
+const MOTION_CHOICE_GIVE_UP_MS = 60_000;
+/** Frames the loader will wait for `MotionPrompt`'s first render before it stops looking. */
+const MOTION_PROMPT_RENDER_ATTEMPTS = 8;
 
 // How smoothly the counter chases real load progress.
 const COUNTER_EASE_SECONDS = 0.5;
@@ -199,16 +215,76 @@ export default function IntroSequence() {
     // sibling of the intro's root, outside `rootRef` — it has to be, since that root is `aria-hidden`
     // with `pointer-events: none` and an offer you cannot click or hear is not an offer.
     let motionPromptTimer = 0;
+    let motionPromptFrame = 0;
+    let motionChoiceHeartbeat = 0;
+    let motionChoiceGiveUp = 0;
+    let motionChoiceListener: (() => void) | null = null;
+
+    // ⚠ Retried, but only for a handful of frames. `MotionPrompt` decides whether to exist inside
+    // its own effect and appears on the render that follows, so on a warm cache the gate can ask for
+    // it a frame or two early. An UNBOUNDED retry would be a per-frame querySelector running for the
+    // whole loader on every desktop visit, where the prompt is correctly never going to render.
+    let motionPromptAttempts = MOTION_PROMPT_RENDER_ATTEMPTS;
     const offerMotionChoice = () => {
-      document
-        .querySelector(MOTION_PROMPT_SELECTOR)
-        ?.classList.add(MOTION_PROMPT_SHOWN_CLASS);
+      const prompt = document.querySelector(MOTION_PROMPT_SELECTOR);
+      if (prompt) {
+        prompt.classList.add(MOTION_PROMPT_SHOWN_CLASS);
+        return;
+      }
+      if (motionPromptAttempts-- <= 0) return;
+      motionPromptFrame = requestAnimationFrame(offerMotionChoice);
     };
+
+    const teardownMotionChoiceWait = () => {
+      cancelAnimationFrame(motionPromptFrame);
+      window.clearInterval(motionChoiceHeartbeat);
+      window.clearTimeout(motionChoiceGiveUp);
+      if (motionChoiceListener) {
+        window.removeEventListener(MOTION_CHOICE_EVENT, motionChoiceListener);
+        motionChoiceListener = null;
+      }
+    };
+
     const withdrawMotionChoice = () => {
       window.clearTimeout(motionPromptTimer);
+      teardownMotionChoiceWait();
       document
         .querySelector(MOTION_PROMPT_SELECTOR)
         ?.classList.remove(MOTION_PROMPT_SHOWN_CLASS);
+    };
+
+    /**
+     * Hold the handoff until the visitor has answered — on the ONE visit where they are asked.
+     *
+     * ⚠ It asks `shouldAskMotionChoice()` rather than looking for the prompt on screen, because the
+     * loader and the prompt have to reach the same answer and only one of them is a React render.
+     * See that function's header.
+     */
+    const awaitMotionChoice = (proceed: () => void) => {
+      if (!shouldAskMotionChoice()) {
+        proceed();
+        return;
+      }
+      // The delay may not have elapsed — a question the loader is WAITING on has to be on screen.
+      window.clearTimeout(motionPromptTimer);
+      offerMotionChoice();
+
+      const release = () => {
+        teardownMotionChoiceWait();
+        proceed();
+      };
+      motionChoiceListener = release;
+      window.addEventListener(MOTION_CHOICE_EVENT, release);
+
+      // ⚠ Load-bearing, and easy to miss: by this point BOTH tickers have stopped, and the hero arms
+      // a reveal fallback that is re-armed only by this event (REVEAL_FALLBACK_WITH_INTRO_MS). A
+      // visitor who takes their time reading would otherwise have the hero reveal itself and build
+      // its pin behind the veil while scroll is still locked.
+      motionChoiceHeartbeat = window.setInterval(
+        () => window.dispatchEvent(new Event(INTRO_ACTIVE_EVENT)),
+        GATE_TICK_MS,
+      );
+      motionChoiceGiveUp = window.setTimeout(release, MOTION_CHOICE_GIVE_UP_MS);
     };
 
     // Hold the page at the top for the duration of the intro. overflow:hidden stops
@@ -313,12 +389,16 @@ export default function IntroSequence() {
 
       const finishQuietIntro = () => {
         window.clearInterval(quietTicker);
-        withdrawMotionChoice();
-        quietRevealTimeout = window.setTimeout(() => {
-          revealHero();
-          unlockScroll();
-          setDone(true);
-        }, REDUCED_MOTION_DELAY * 1000);
+        // The star is in; the only thing left to wait for is the visitor. On a warm cache this is
+        // the whole loader, which is exactly the case where the offer used to flash past unread.
+        awaitMotionChoice(() => {
+          withdrawMotionChoice();
+          quietRevealTimeout = window.setTimeout(() => {
+            revealHero();
+            unlockScroll();
+            setDone(true);
+          }, REDUCED_MOTION_DELAY * 1000);
+        });
       };
 
       // Worth making the offer on THIS path above all others: the visitor has arrived with the OS
@@ -350,6 +430,7 @@ export default function IntroSequence() {
         window.clearInterval(quietTicker);
         window.clearTimeout(quietRevealTimeout);
         window.clearTimeout(motionPromptTimer);
+        teardownMotionChoiceWait();
         unlockScroll();
       };
     }
@@ -431,11 +512,15 @@ export default function IntroSequence() {
       hasResumed = true;
       window.clearTimeout(gateTimeout);
       stopHoldPulse();
-      // Taken off screen before the handoff, not left to fade with the veil — it is a SIBLING of the
-      // intro root, so the veil's fade-out does not cover it and it would otherwise still be sitting
-      // over the hero after the reveal.
-      withdrawMotionChoice();
-      resumeFrame = requestAnimationFrame(() => timeline.resume());
+      // ⚠ `hasResumed` is already true, so nothing else can re-enter while this waits. The wait is
+      // usually zero — it only holds on the one visit where a decision is owed.
+      awaitMotionChoice(() => {
+        // Taken off screen before the handoff, not left to fade with the veil — it is a SIBLING of
+        // the intro root, so the veil's fade-out does not cover it and it would otherwise still be
+        // sitting over the hero after the reveal.
+        withdrawMotionChoice();
+        resumeFrame = requestAnimationFrame(() => timeline.resume());
+      });
     };
 
     // ── Stage 3: the shards have landed → a short settle, then the reveal ──
@@ -708,6 +793,8 @@ export default function IntroSequence() {
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
       window.clearInterval(gateTicker);
       window.clearTimeout(gateTimeout);
+      window.clearTimeout(motionPromptTimer);
+      teardownMotionChoiceWait();
       cancelAnimationFrame(resumeFrame);
       gsap.killTweensOf(counterDisplay);
       stopHoldPulse(); // a class now, not a tween — killTweensOf would no longer clear it
