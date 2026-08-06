@@ -4235,6 +4235,69 @@ body {
 }
 
 
+/* ─── The loader's way out ────────────────────────────────────────────
+   ⚠ TOP, not bottom, and the placement is the only thing about this that took any thought. The
+   loader's lower half is fully spoken for — `.loader-modules` grows up from ~4.8rem across the full
+   width, the throughput sits under it, the fill meter is on the frame's edge, and `.intro-motion-prompt`
+   already occupies the clear band above those. On a slow load on a phone BOTH offers can be up at
+   once, so they cannot share a lane. Everything between the wordmark row and the centre is empty.
+
+   ⚠ `fixed`, and a SIBLING of the intro's root — that root is `aria-hidden` with
+   `pointer-events: none`, and neither can be undone from a descendant. Same reason as the motion
+   offer. Above the veil (z 10000) so it can be pressed. */
+.intro-skip {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: clamp(4.5rem, 12vh, 7rem);
+  z-index: 10001;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  max-width: min(92vw, 32rem);
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  text-wrap: balance;
+  /* No entrance to drive: it mounts only once the wait has already been judged long, so it simply
+     arrives. A fade would be one more thing competing with the counter for attention. */
+}
+
+.intro-skip-copy {
+  color: var(--fg);
+  opacity: 0.55;
+}
+
+/* An underlined phrase rather than a button. This is an aside offering an alternative, not a decision
+   the loader is waiting on — the motion offer is that, and it looks like it. */
+.intro-skip-action {
+  flex-shrink: 0;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+  border-bottom: 1px solid rgb(var(--accent-rgb) / 0.45);
+  transition: border-color 0.25s ease;
+}
+
+.intro-skip-action:hover {
+  border-bottom-color: var(--accent);
+}
+
+.intro-skip-action:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0.3rem;
+}
+
+/* A ~310px measure cannot hold the sentence and the link on one line. */
+@media (max-width: 30em) {
+  .intro-skip {
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    text-align: center;
+  }
+}
+
 /* ─── The loader's motion offer ───────────────────────────────────────
    ⚠ `fixed`, not `absolute`. This element is a SIBLING of the intro's root rather than a child of it,
    because that root is `aria-hidden` with `pointer-events: none` and this is the one thing on the

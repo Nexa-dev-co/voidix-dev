@@ -8,7 +8,7 @@ import {
   shouldAskMotionChoice,
 } from "@/lib/motionPreference";
 import {
-  getSourceProgress,
+  getEntryProgress,
   areArrivedWarmupsDone,
   isSourceLoaded,
   getMillisecondsSinceActivity,
@@ -27,6 +27,7 @@ import {
 import GatherCanvas from "./GatherCanvas";
 import LoaderTelemetry from "./LoaderTelemetry/LoaderTelemetry";
 import MotionPrompt from "./MotionPrompt/MotionPrompt";
+import SkipToLite from "./SkipToLite/SkipToLite";
 
 // The shared sun lives in HeroSun, as three nested elements so no two things ever own one transform:
 //   .hero-sun-layer    — the outer layer (we fade its opacity in; the hero pin owns its transform)
@@ -145,7 +146,21 @@ const GATE_TICK_MS = 500;
 // function of the visitor's bandwidth and cannot be written down here any more. That is why
 // `ASSEMBLE_CUE_FALLBACK_MS` in SunModelCanvas is measured from the model landing rather than from
 // page load: after the landing what is still owed is exactly these two, which is knowable.
-const WARMUP_WAIT_MAX_MS = 3500;
+/**
+ * ⚠ RAISED FROM 3500 WHEN THE BURN-IN WAS ADDED, and the arithmetic matters.
+ *
+ * This caps how long the gate will wait for the scenes' warm-ups. That stage now contains one more
+ * beat — the works field's burn-in, capped at `BURN_IN_MAX_MS` (1.5 s) — on top of the compile, the
+ * allocations and the probe. On a slow machine `compileAsync` alone can run to two seconds, and at
+ * 3500 the total would cross the cap: the gate would stop waiting and cue the shard assembly WHILE
+ * the burn-in was still drawing works frames, which is the one thing the assembly is given a quiet
+ * GPU to avoid.
+ *
+ * ⚠ `ASSEMBLE_CUE_FALLBACK_MS` (8000, in SunModelCanvas) must stay past this + ASSEMBLY_LEAD_MS, or
+ * the sun cues its own assembly first and the two race. 5000 + 1000 = 6000, leaving 2 s of margin.
+ * Move this and check that one.
+ */
+const WARMUP_WAIT_MAX_MS = 5000;
 const ASSEMBLY_WAIT_MAX_MS = 3500;
 const WARMUP_SETTLE_MS = 250;
 /**
@@ -389,7 +404,7 @@ export default function IntroSequence() {
       const paintQuietCounter = () => {
         if (counterRef.current) {
           counterRef.current.textContent = String(
-            Math.round(getSourceProgress("sun") * 100),
+            Math.round(getEntryProgress() * 100),
           );
         }
       };
@@ -485,7 +500,9 @@ export default function IntroSequence() {
     };
     const syncCounterToAssets = () => {
       gsap.to(counterDisplay, {
-        value: Math.round(getSourceProgress('sun') * 100),
+        // ⚠ `getEntryProgress`, not the star's raw download. The star landing stopped being the end of
+        // the wait once the warm-ups and the burn-in were added after it — see that function.
+        value: Math.round(getEntryProgress() * 100),
         duration: COUNTER_EASE_SECONDS,
         ease: "power1.out",
         overwrite: true,
@@ -1019,6 +1036,10 @@ export default function IntroSequence() {
         `prefersReducedMotion()` read during render — that would differ between server and client and
         break hydration, the same reason `GatherCanvas` always mounts. */}
     <MotionPrompt />
+    {/* The exit, for a wait long enough to be worth escaping. A sibling for the same aria/pointer
+        reason as above; unlike the motion offer it holds nothing and needs no wiring, so it decides
+        its own timing. See SkipToLite. */}
+    <SkipToLite />
     </>
   );
 }

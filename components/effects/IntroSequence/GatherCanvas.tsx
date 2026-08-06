@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { getSourceProgress, isSourceLoaded } from "@/lib/assetLoadProgress";
+import {
+  areArrivedWarmupsDone,
+  getSourceProgress,
+  isSourceLoaded,
+} from "@/lib/assetLoadProgress";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
 import { createDownloadEtaEstimator } from "./downloadEta";
 import { GatherRenderer } from "./gatherRenderer";
@@ -68,8 +72,19 @@ const CLEARING_MAX_MS = 3000;
  * ⚠ Checked against the ESTIMATE, not against elapsed time, and that is the whole point of measuring:
  * a fast connection is already finished by the time a stopwatch would have fired, so it never sees a
  * form at all and its loader is exactly what it was.
+ *
+ * ⚠ WAS 10, AND THAT MEANT ALMOST NOBODY EVER SAW THIS. The estimate is the STAR's, not the page's —
+ * the field's density tracks the star deliberately (see `sendUpdate`) — and the star is 1.25 MB against
+ * the page's ~10 MB. So on real loads that ran 14–17 s end to end, the star was landing in 1–8 s and
+ * the threshold was never crossed: a shipped feature that had effectively never run outside a
+ * throttled tab.
+ *
+ * 4 s still leaves a genuinely fast load alone (a warm cache pulls the star in well under it, and a
+ * two-second loader has no wait worth filling), while any load with a real gap in it now gets the
+ * forms. Paired with the later release below, the shapes now cover the whole wait rather than a slice
+ * of the download.
  */
-const SHAPE_ONSET_ETA_SECONDS = 10;
+const SHAPE_ONSET_ETA_SECONDS = 4;
 
 /**
  * Workers already attached to a canvas, so a re-run of the effect reuses one instead of transferring
@@ -170,13 +185,24 @@ export default function GatherCanvas() {
     // already in this file: the field, its inputs, and the star's progress. One estimator, sampled on
     // the same tick that posts progress.
     //
-    // Releases on the star LANDING rather than on the assembly cue, so the dust is back in its stream
-    // through the warm-up beat and well before the shards fly — the finale is the flow's, not a shape's.
+    // ── When the shapes let go ──
+    // The rule this file has always held is that THE FINALE IS THE FLOW'S, not a shape's: the dust has
+    // to be back in its stream before the shards fly. That is unchanged and must stay.
+    //
+    // ⚠ What changed is where the wait ends. It used to release on the star LANDING, on the reasoning
+    // that the warm-up beat after it was short. It is not any more — the two scenes compile, allocate
+    // and now run a burn-in of up to 1.5 s (see `reportBurnIn`), so releasing at the landing left the
+    // field back to plain dust for seconds while the loader was still visibly working.
+    //
+    // Releasing when the ARRIVED warm-ups are done instead puts the release at the start of
+    // `ASSEMBLY_LEAD_MS` — the held beat the intro already inserts before the flight. So the shapes
+    // cover the whole wait, and the dust still gets its full second of stream before the first shard
+    // moves. Both rules satisfied, rather than one traded for the other.
     const starEta = createDownloadEtaEstimator("sun");
     let shapeHold = 0;
     const resolveShapeHold = () => {
       starEta.sample();
-      if (isSourceLoaded("sun")) {
+      if (isSourceLoaded("sun") && areArrivedWarmupsDone()) {
         shapeHold = 0;
         return;
       }

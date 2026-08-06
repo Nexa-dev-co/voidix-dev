@@ -43,6 +43,34 @@ export type AssetSource = (typeof EXPECTED_SOURCES)[number];
 // through (see WORKS_TEXTURE_SHARE in useWorksField). The extra weight pays for that.
 const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.62, works: 0.2, sun: 0.18 };
 
+/**
+ * The last slice of the counter, reserved for the work that happens AFTER the last byte lands.
+ *
+ * ── ⚠ Why the counter used to lie at exactly the wrong moment ────────────────────────────────────
+ * This value was the download fraction and nothing else, so the loader reached 100 % the instant the
+ * bytes were in — and then held, visibly, for everything that still had to happen before the site
+ * could open: two scenes compiling their programs, allocating composers, uploading every map, and now
+ * the burn-in that measures what this machine can actually sustain (up to 1.5 s on its own).
+ *
+ * A counter that reads 100 % and then makes you wait is the exact dishonesty the weighting at the top
+ * of this file exists to prevent — it was just being honest about one half of the wait and silent
+ * about the other.
+ *
+ * ⚠ Re-weigh this the same way as SOURCE_WEIGHTS, and for the same reason: it is a guess at the
+ * proportion of the wait, and the burn-in changed that proportion once already.
+ */
+const WARMUP_SHARE = 0.15;
+
+/**
+ * The warm fraction, high-watermarked.
+ *
+ * ⚠ Monotonic BY FORCE, and it has to be. The fraction below is measured over the sources that have
+ * ARRIVED, because a source still downloading cannot be expected to have compiled — which means its
+ * denominator GROWS as the load proceeds. Without the watermark, one source arriving unwarmed after
+ * another had already warmed would drop the fraction and walk the counter backwards.
+ */
+let warmHighWater = 0;
+
 const progressBySource = new Map<AssetSource, number>();
 const warmedSources = new Set<AssetSource>();
 const listeners = new Set<() => void>();
@@ -147,13 +175,52 @@ export function areArrivedWarmupsDone(): boolean {
   );
 }
 
-/** Combined 0..1 across every expected source, weighted by download size (missing source = 0). */
+/**
+ * Combined 0..1 across every expected source, weighted by download size (missing source = 0).
+ *
+ * ⚠ DOWNLOADS ONLY, and it has to stay that way. `useLoaderTelemetry` samples the DELTAS of this to
+ * compute the throughput readout in KB/s — so folding the warm-up into it would have the counter
+ * report several hundred phantom kilobytes the moment a scene finished compiling. The wait's other
+ * half lives in `getEntryProgress` instead.
+ */
 export function getAssetProgress(): number {
   let progress = 0;
   for (const source of EXPECTED_SOURCES) {
     progress += (progressBySource.get(source) ?? 0) * SOURCE_WEIGHTS[source];
   }
   return progress;
+}
+
+/**
+ * How close the page is to being ENTERABLE, 0..1 — the number the loader's counter should show.
+ *
+ * ── ⚠ Why this is not `getAssetProgress` ─────────────────────────────────────────────────────────
+ * The gate waits for the STAR, not for the whole page: on a slow connection the fleet is ~62 % of the
+ * weighted download and is still streaming when the site opens, so a counter on the combined total
+ * would hand off at "18" and the visitor would watch it fail to finish. That reasoning is unchanged.
+ *
+ * ── ⚠ …and why it is not the star's download either, any more ────────────────────────────────────
+ * Because the star landing stopped being the end of the wait. After the last byte the two scenes still
+ * compile their programs, allocate composers, upload every map, and run the burn-in that decides the
+ * session's resolution — up to 1.5 s on its own. A counter that reads 100 and then makes you wait
+ * through all of that is exactly the dishonesty the weighting in this file exists to prevent; it was
+ * simply being honest about one half of the wait and silent about the other.
+ */
+export function getEntryProgress(): number {
+  // Measured over what has ARRIVED, mirroring `areArrivedWarmupsDone` — the gate does not wait for a
+  // scene that is still downloading to have compiled, so the counter must not either.
+  let arrivedWeight = 0;
+  let warmWeight = 0;
+  for (const source of EXPECTED_SOURCES) {
+    if (!isSourceLoaded(source)) continue;
+    arrivedWeight += SOURCE_WEIGHTS[source];
+    if (warmedSources.has(source)) warmWeight += SOURCE_WEIGHTS[source];
+  }
+  if (arrivedWeight > 0) {
+    warmHighWater = Math.max(warmHighWater, warmWeight / arrivedWeight);
+  }
+
+  return getSourceProgress('sun') * (1 - WARMUP_SHARE) + warmHighWater * WARMUP_SHARE;
 }
 
 /** One source's own 0..1 fraction (0 if it hasn't reported yet) — for per-module loader readouts. */

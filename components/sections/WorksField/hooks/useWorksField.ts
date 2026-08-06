@@ -57,6 +57,7 @@ import {
   hasEarnedExtraQuality,
   noteRatioApplied,
   RATIO_APPLY_GRACE_SECONDS,
+  reportBurnIn,
   reportProbedFrameCost,
   sampleFrame,
 } from '@/lib/adaptivePixelRatio';
@@ -153,6 +154,27 @@ const CHAMBER_ENGAGE_EPSILON = 0.001;
  * `handoffActive` uses.
  */
 const CROSSING_IDLE_EPSILON = 0.001;
+
+// ── The loader's burn-in ───────────────────────────────────────────────────────────────────────────
+/**
+ * Frames drawn and thrown away before timing begins. The resize just above may have reallocated both
+ * composers, and that frame is the cost of switching resolutions rather than the cost of holding one.
+ */
+const BURN_IN_DISCARD_FRAMES = 3;
+/** Enough samples for a median to mean something. A 60 fps machine reaches this in ~0.2 s. */
+const BURN_IN_TARGET_SAMPLES = 12;
+/** Below this the reading is thrown away and the runtime calibration handles it instead. */
+const BURN_IN_MIN_SAMPLES = 6;
+/**
+ * ⚠ A HARD CEILING IN TIME, and it is not decoration. The whole warm-up is capped by
+ * `WARMUP_WAIT_MAX_MS` (3.5 s) in IntroSequence, and past that the gate stops waiting and cues the
+ * shard assembly regardless. A burn-in bounded only by a frame count would, on a 5 fps machine, still
+ * be rendering works frames while the loader's finale played — which is the exact thing the assembly
+ * is given a quiet GPU to avoid.
+ */
+const BURN_IN_MAX_MS = 1500;
+/** Belt and braces on the loop itself, so a pathological rAF cadence cannot spin it. */
+const BURN_IN_MAX_FRAMES = 48;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
@@ -1915,6 +1937,58 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // actually use are allocated now rather than on the frame it first appears.
           applyRendererSize();
           drawWarmupFrame();
+        }
+
+        // ── 5 · the burn-in — what this machine ACTUALLY sustains ──
+        //
+        // Everything above measures the pipeline in isolation. This measures the FRAME: real rAF
+        // cadence, real pipelining, the star's own context rendering alongside, the compositor doing
+        // its work. It is the number the resolution is finally chosen from — see `reportBurnIn`.
+        //
+        // ⚠ ONLY WHILE THE LOADER IS STILL UP. This warm-up runs when THIS section's assets land, and
+        // on a slow connection that is after the reveal — the fleet is ~5.3 MB against this section's
+        // ~0.95 MB, but the gate opens on the star alone, so works can warm while the visitor is
+        // already looking at the hero. Compiling there is one frame and was always the deal; drawing
+        // a dozen more works frames on top of it is a visible hitch in front of somebody. The runtime
+        // calibration is the designed fallback for exactly this case, so skipping costs nothing.
+        const loaderStillUp = document.querySelector(INTRO_MARKER_SELECTOR) !== null;
+
+        // ⚠ SMAA back OFF for it. It was forced on for the probe deliberately (the chamber runs it and
+        // is the worst frame this pipeline ever draws), but the works BROWSING span — the long one,
+        // the one that is scrubbed through — runs without it. Measuring the common case and letting
+        // the safety margin absorb the chamber is the right way round: sizing the whole session
+        // against its single heaviest frame is how a site ends up uniformly soft.
+        if (loaderStillUp) smaaPass.enabled = false;
+        const frameSamples: number[] = [];
+        const burnStartedAt = performance.now();
+        let previousFrameAt = 0;
+        for (let frame = 0; loaderStillUp && frame < BURN_IN_MAX_FRAMES; frame += 1) {
+          await nextWarmupFrame();
+          if (disposed) return;
+          const frameAt = performance.now();
+          drawWarmupFrame();
+          if (frame >= BURN_IN_DISCARD_FRAMES && previousFrameAt > 0) {
+            frameSamples.push(frameAt - previousFrameAt);
+          }
+          previousFrameAt = frameAt;
+          if (frameSamples.length >= BURN_IN_TARGET_SAMPLES) break;
+          if (frameAt - burnStartedAt >= BURN_IN_MAX_MS) break;
+        }
+
+        if (frameSamples.length >= BURN_IN_MIN_SAMPLES) {
+          // Median, not mean: one garbage collection inside the window is worth sixteen real frames
+          // at 25 fps, and the mean would carry it straight into the solve.
+          frameSamples.sort((left, right) => left - right);
+          reportBurnIn(
+            frameSamples[Math.floor(frameSamples.length / 2)],
+            renderer.getPixelRatio(),
+          );
+          if (getPixelRatio() !== appliedPixelRatio) {
+            // Allocate what the burn-in decided, here, behind the veil — so the works section's first
+            // real frame is already at its final resolution and never re-sizes in front of anyone.
+            applyRendererSize();
+            drawWarmupFrame();
+          }
         }
       } catch {
         // A failed compile is not a reason to trap the loader — the section degrades to compiling
