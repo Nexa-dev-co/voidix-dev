@@ -164,6 +164,17 @@ let softCeil = 1;           // dynamic cap ≤ ceil; lowered when a higher level
 let pixelRatio = 1;
 /** The most this panel could ever justify — the probe's own upper bound. */
 let hardwareCeil = 1;
+/** This panel's own density, unclamped. What "native" means on this machine. */
+let nativeRatio = 1;
+/**
+ * The ratio at which THIS viewport hits `MAX_DRAWING_BUFFER_MEGAPIXELS`.
+ *
+ * Kept because it is the one probe-derived limit that stays true when the frame turns out not to be
+ * fill-bound: a memory cap is about how much VRAM the render targets take, which does not care why
+ * the frame is slow. `affordable` — the frame-cost solve — is exactly the part that stops meaning
+ * anything, so `releaseCeilingToNative` drops that and keeps this.
+ */
+let pixelBudgetCeil = Infinity;
 /** True once a believable measurement has been acted on, so a second scene's probe cannot re-decide. */
 let probed = false;
 /**
@@ -265,10 +276,25 @@ function logRatioChange(what: string, from: number, fps: number, note: string): 
   );
 }
 
+/**
+ * Retire the probe's frame-cost ceiling and go back to this panel's own density.
+ *
+ * Called once, when a step down has been measured to change nothing. Both remaining bounds are still
+ * honoured: `hardwareCeil` because a panel cannot show more than it has, and `pixelBudgetCeil`
+ * because the render targets still have to fit in VRAM — a memory limit does not stop being true
+ * just because the bottleneck turned out to be elsewhere.
+ */
+function releaseCeilingToNative(): void {
+  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetCeil, nativeRatio));
+  softCeil = ceil;
+  pixelRatio = ceil;
+}
+
 function ensureInitialised(): void {
   if (initialised) return;
   initialised = true;
   const deviceRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  nativeRatio = deviceRatio;
   // The most this panel could ever justify: its own density, or a little super-sampling on a 1× panel
   // — but ONLY as a bound the probe is allowed to reach, never as a starting assumption.
   hardwareCeil = Math.min(MAX_PIXEL_RATIO, Math.max(deviceRatio, SUPERSAMPLE_CEIL));
@@ -354,6 +380,7 @@ export function reportProbedFrameCost(
   // that lands well below `hardwareCeil`; on a 1080p one it never binds at all.
   const cssMegapixels = megapixels / (probeRatio * probeRatio);
   const pixelBudgetRatio = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / cssMegapixels);
+  pixelBudgetCeil = pixelBudgetRatio;
 
   ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetRatio, affordable));
   softCeil = ceil;
@@ -550,14 +577,38 @@ export function sampleFrame(dtSeconds: number): void {
     if (fps < fpsBeforeStepDown * STEP_DOWN_MIN_GAIN) {
       fillBound = false;
       const from = pixelRatio;
-      pixelRatio = Math.min(effectiveCeil, pixelRatio + STEP);
+      // ── ⚠ ALL of them back, not one step ─────────────────────────────────────────────────────
+      //
+      // This used to hand back a single STEP and stop, which left the session pinned at whatever
+      // `ceil` the probe had produced — and the probe is the thing that has just been shown not to
+      // describe this frame. Measured on a dpr 2.5 panel across two loads of the SAME page:
+      //
+      //     load 1:  gpu probe 2.3 ms → affordable 1.82, ceiling 1.68
+      //     load 2:  gpu probe 7.5 ms → affordable 1.01, ceiling 1.01
+      //
+      // A 3.3× spread, because the probe runs seconds after `buildField` has burned the CPU cutting
+      // four marks and the median of three consecutive drains is three samples of the same
+      // disturbance. On the unlucky load the whole session then rendered at ~40 % of the panel's
+      // density — reported, correctly, as "the quality is low now" — while the frame rate sat at 30
+      // either way. Thirty at 1.01 and thirty at 0.81 is the site's own proof that none of it bought
+      // anything.
+      //
+      // So when the lever is measured not to work, the pixels go back to NATIVE, and the only limits
+      // kept are the ones that stay true regardless of why the frame is slow: the panel's own density
+      // and the drawing-buffer memory budget. `affordable` is dropped, because it is a frame-cost
+      // solve and frame cost has just been shown not to follow pixel count here.
+      //
+      // ⚠ Native, NOT `hardwareCeil`. Not-fill-bound is not a licence to supersample — it means stop
+      // paying for a reduction that buys nothing. A 1× panel goes back to 1.0, not to 1.5.
+      releaseCeilingToNative();
       logRatioChange(
         'GAVE BACK',
         from,
         fps,
         ` — cutting ${((1 - (from * from) / (pixelRatio * pixelRatio)) * 100).toFixed(0)}% of the` +
           ` pixels changed nothing (${fpsBeforeStepDown.toFixed(0)} → ${fps.toFixed(0)} fps).` +
-          `\n  This frame is not fill-bound; resolution is not the lever. Holding here.`,
+          `\n  This frame is not fill-bound; resolution is not the lever, so the probe's ceiling is` +
+          ` retired and the pixels go back to native. Holding here.`,
       );
       slowFor = 0;
       fastFor = 0;

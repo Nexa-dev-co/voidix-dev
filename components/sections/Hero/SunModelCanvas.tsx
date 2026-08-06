@@ -6,6 +6,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createFrameTimer } from '@/lib/frameTimer';
 import { profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
+import { getPixelRatio, RATIO_APPLY_GRACE_SECONDS } from '@/lib/adaptivePixelRatio';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
@@ -100,6 +101,21 @@ const CAMERA_FOV = 45;
 const CAMERA_FIT_MARGIN = 0.575 * SUN_CANVAS_HEADROOM;
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
+
+/**
+ * The star's resolution — the SHARED adaptive one, capped by this canvas's own limit.
+ *
+ * ── ⚠ Why it stopped being `min(devicePixelRatio, 2)` ────────────────────────────────────────────
+ * It was the only heavy renderer on the page not answering to `adaptivePixelRatio`, and on a dpr 2.5
+ * laptop that meant the star drew at **2.0 with MSAA while the works field beside it drew at 1.01** —
+ * roughly four times the pixel density of the scene it sits in front of. The frame profiler found it
+ * costing 10–21 ms, the largest measured span on the page during works, against a cost table in
+ * CLAUDE.md that rates the sun BELOW the fleet.
+ *
+ * Two renderers arguing about how expensive the machine is cannot both be right, and the one that has
+ * actually measured something should win.
+ */
+const sunPixelRatio = () => Math.min(getPixelRatio(), MAX_DEVICE_PIXEL_RATIO);
 const MAX_FRAME_SECONDS = 0.05;
 
 // ── Assembly ──
@@ -404,7 +420,7 @@ export default function SunModelCanvas() {
       alpha: true,
       preserveDrawingBuffer: true,
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_DEVICE_PIXEL_RATIO));
+    renderer.setPixelRatio(sunPixelRatio());
     // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads —
     // the loader throws rather than guessing. See lib/modelLoading.ts.
     detectKtx2Support(renderer);
@@ -485,10 +501,17 @@ export default function SunModelCanvas() {
      */
     const particleFrameExtent = () =>
       frameHalfHeightAtSun * Math.min(1, camera.aspect || 1);
+    /** The ratio these buffers were actually allocated at — see the loop's follow-up below. */
+    let appliedPixelRatio = sunPixelRatio();
+    let ratioPendingSeconds = 0;
     const applySize = () => {
       const width = canvas.clientWidth || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
       if (!width || !height) return;
+      // Also the re-entry point for a ratio change, so the controller has one thing to call.
+      const ratio = sunPixelRatio();
+      appliedPixelRatio = ratio;
+      renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
       // The bloom's targets follow the canvas, or the glow is sampled at the wrong scale.
       bloom.setSize(width, height);
@@ -496,6 +519,9 @@ export default function SunModelCanvas() {
       camera.updateProjectionMatrix();
       // Re-fit the rings to the new frame — this is what keeps them from clipping on resize.
       sunParticles?.setFrameExtent(particleFrameExtent());
+      // Point sizes are computed in DEVICE pixels, so they have to follow the ratio too — otherwise
+      // the grains change apparent size the moment the controller moves.
+      sunParticles?.setPixelRatio(ratio);
       forceRender = true;
     };
     const observer = new ResizeObserver(applySize);
@@ -1212,6 +1238,20 @@ export default function SunModelCanvas() {
         forceRender = false;
       }
       wasAnimating = animating;
+
+      // ── Follow the shared controller ──
+      // Same rule the two heavy scenes use: reallocating the bloom targets stalls a frame, so take an
+      // idle one if the demand-render offers it and otherwise accept the hitch rather than wait for
+      // one that may not come (see RATIO_APPLY_GRACE_SECONDS).
+      if (sunPixelRatio() !== appliedPixelRatio) {
+        ratioPendingSeconds += delta;
+        if (!animating || ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS) {
+          applySize();
+          ratioPendingSeconds = 0;
+        }
+      } else {
+        ratioPendingSeconds = 0;
+      }
 
       profileSpan('sun · loop', profileNow() - loopStartedAt);
     };

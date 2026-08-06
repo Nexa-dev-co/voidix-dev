@@ -67,7 +67,19 @@ const gauges = new Map<string, number | string>();
 
 let running = false;
 let frames = 0;
+/** Time inside SAMPLED frames — the denominator for the per-frame averages. */
 let windowMilliseconds = 0;
+/**
+ * Wall clock across the whole window, including the frames thrown out as insane.
+ *
+ * ⚠ These two are NOT the same number and the difference is itself a finding. A frame over
+ * `MAX_SANE_FRAME_MS` is discarded from the average (it is a tab-restore or a multi-second stall, not
+ * a frame rate), but the time still passed. The first version of this printed the sampled figure and
+ * called it the window, which produced a report claiming 9158 ms of long tasks "over 3.3 s" — the
+ * long-task total was right and the window was a sixth of the truth. `dropped` now says so out loud.
+ */
+let wallClockStartedAt = 0;
+let droppedFrames = 0;
 let worstFrameMilliseconds = 0;
 let stallCount = 0;
 let lastFrameAt = 0;
@@ -102,9 +114,12 @@ function ensureRunning(): void {
         windowMilliseconds += delta;
         if (delta > worstFrameMilliseconds) worstFrameMilliseconds = delta;
         if (delta > STALL_FRAME_MS) stallCount += 1;
+      } else if (delta >= MAX_SANE_FRAME_MS) {
+        droppedFrames += 1;
       }
     }
     lastFrameAt = now;
+    if (wallClockStartedAt === 0) wallClockStartedAt = now;
 
     if (windowMilliseconds >= REPORT_INTERVAL_SECONDS * 1000) report();
   };
@@ -117,8 +132,10 @@ function reset(): void {
   windowMilliseconds = 0;
   worstFrameMilliseconds = 0;
   stallCount = 0;
+  droppedFrames = 0;
   longTaskCount = 0;
   longTaskMilliseconds = 0;
+  wallClockStartedAt = performance.now();
 }
 
 function report(): void {
@@ -168,7 +185,10 @@ function report(): void {
   console.log(
     `%c[frame] ${fps.toFixed(0)} fps · ${averageFrameMilliseconds.toFixed(1)} ms avg · ` +
       `worst ${worstFrameMilliseconds.toFixed(0)} ms · ${stallCount} stalls over ${STALL_FRAME_MS} ms` +
-      `%c   (${frames} frames / ${(windowMilliseconds / 1000).toFixed(1)} s)` +
+      `%c   (${frames} frames sampled in ${(windowMilliseconds / 1000).toFixed(1)} s` +
+      ` of ${((performance.now() - wallClockStartedAt) / 1000).toFixed(1)} s wall clock` +
+      (droppedFrames > 0 ? `, ${droppedFrames} dropped over ${MAX_SANE_FRAME_MS} ms` : '') +
+      `)` +
       lines.join('') +
       `\n  ${'─'.repeat(46)}` +
       `\n  ${'submitted by us'.padEnd(20)}${measuredPerFrame.toFixed(2).padStart(7)} ms  ` +
