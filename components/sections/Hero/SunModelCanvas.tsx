@@ -416,7 +416,25 @@ export default function SunModelCanvas() {
     // un-preserved buffer's contents are undefined once we stop rendering.
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      /**
+       * ── ⚠ OFF, and this is the one change in the perf pass that wants eyes on it ────────────────
+       *
+       * MSAA on the DEFAULT framebuffer, on the one context that also sets `preserveDrawingBuffer`.
+       * That pair is the expensive one: the driver has to resolve the multisample buffer and then
+       * keep the result rather than discarding it, every frame, on a canvas that is 3 Mpx at this
+       * ratio and 6.7 Mpx of device pixels once composited. The profiler had `sun · bloom` at 9–22 ms
+       * — the largest measured span on the page whenever the star draws.
+       *
+       * What it buys is small here, for two reasons specific to this canvas. The star goes through a
+       * bloom pass, so its bright edges are already soft; MSAA only ever helped the shards' hard
+       * silhouette against the transparent background. And the canvas renders BELOW the panel's
+       * density (ratio ~1.68 on a dpr 2.5 display), so the browser upscales it on composite, which
+       * softens those silhouettes anyway.
+       *
+       * If the star's edges crawl as it turns, this is the line — put it back and we find the frame
+       * time somewhere else.
+       */
+      antialias: false,
       alpha: true,
       preserveDrawingBuffer: true,
     });
@@ -1221,13 +1239,18 @@ export default function SunModelCanvas() {
       // buys back only the tail: once the reveal has faded the sun out, `moving` goes false and this
       // holds one frozen frame for the rest of the room.
       // `wasAnimating` draws the one final settled frame; `forceRender` covers resize / tab-restore.
-      const animating =
+      // ── Split in two, because "is anything moving" and "is anything CHOREOGRAPHED" are different ──
+      // The ramps and the shard flight are authored beats: a stall inside one lets it advance behind
+      // the stall and land somewhere else. The idle turn is not — it is delta-timed and constant, so a
+      // dropped frame in the middle of it is invisible. Only the first kind may block a reallocation;
+      // see where this is used below.
+      const choreographyActive =
         Math.abs(targetCracks - cracks) > STATE_SETTLE_EPSILON ||
         Math.abs(targetRingForm - ringForm) > STATE_SETTLE_EPSILON ||
         Math.abs(targetRingWorks - ringWorksForm) > STATE_SETTLE_EPSILON ||
         Math.abs(targetCollapse - collapse) > STATE_SETTLE_EPSILON ||
-        moving ||
         assembling;
+      const animating = choreographyActive || moving;
       if (!document.hidden && (animating || wasAnimating || forceRender)) {
         // ⚠ The star is a SECOND WebGL context and it draws alongside the field for the whole of
         // services and works (see CLAUDE.md — `covered` only goes true at the chamber reveal). It is
@@ -1238,18 +1261,22 @@ export default function SunModelCanvas() {
       }
       wasAnimating = animating;
 
-      // ── Follow the shared controller, but ONLY on a settled frame ──
+      // ── Follow the shared controller, on a frame with no authored beat running ──
       //
-      // ⚠ No grace period here, unlike the two heavy scenes, and the asymmetry is the point. Those
-      // two draw continuously and can go a whole lap without an idle frame, so they have to take the
-      // hitch eventually. This one is DEMAND-RENDERED: `animating` goes false at every rest state by
-      // construction, so an idle frame always arrives.
+      // ⚠ `choreographyActive`, NOT `animating`, and the difference is the whole thing. `animating`
+      // includes `moving`, which is `!covered` — true for the ENTIRE hero, fleet and works, because
+      // the star turns the whole way. Gating on it meant the star kept whatever ratio it was built
+      // with (the pre-probe 1.0) for the entire visible journey, which on a dpr 2.5 panel is 40 % of
+      // the display's density on the site's centrepiece, for the whole session.
       //
-      // And it must wait for one. The star is the only thing on screen through the hero→services
-      // ramp, the collapse across the handoff and the reveal's fade — all real-time eases with no
-      // guard here equivalent to `handoffActive`. A forced reallocation would stall inside one of
-      // them, and the tween would advance behind the stall exactly as it does for the works hop.
-      if (sunPixelRatio() !== appliedPixelRatio && !animating) applySize();
+      // What must block a reallocation is an AUTHORED beat — the state ramps and the shard flight —
+      // because those advance behind a stall and land in the wrong place, exactly like the works hop.
+      // The idle turn is delta-timed and constant; losing a frame of it cannot be seen.
+      //
+      // ⚠ Still no grace period, unlike the two heavy scenes. Those draw continuously and can go a
+      // whole lap without a clear frame, so they have to take the hitch eventually. This one settles
+      // between every beat, so a clear frame always arrives on its own.
+      if (sunPixelRatio() !== appliedPixelRatio && !choreographyActive) applySize();
 
       profileSpan('sun · loop', profileNow() - loopStartedAt);
     };

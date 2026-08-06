@@ -255,9 +255,30 @@ let awaitingStepDownVerdict = false;
 /** Set by `noteRatioApplied` — the next sample carries a reallocation stall and must be discarded. */
 let dropNextSample = false;
 let lastStepDownAt = -Infinity;
+/** Real time the current trial began — the only clock that keeps running when sampling stops. */
+let stepDownStartedAtMs = 0;
 let fpsBeforeStepDown = 0;
 /** Long enough for the EMA to have absorbed the new resolution, short enough to not sit ugly. */
 const STEP_DOWN_VERDICT_SECONDS = 1.5;
+/**
+ * Wall-clock limit on a step-down trial. Past this the experiment is ABANDONED, not decided.
+ *
+ * ⚠ `STEP_DOWN_VERDICT_SECONDS` is counted in `elapsed`, which only advances while frames are being
+ * sampled — and sampling stops during both crossings, during a portal swap, and for as long as a
+ * ratio change is queued. On a site whose every section is a scrubbed cinematic that is most of the
+ * time, so a "1.5 second" trial was measured taking twelve to fifteen seconds of real time:
+ *
+ *     27.4s  STEPPED DOWN 1.60 → 1.40 at ~30 fps      deck: 9 draws, 5.96 ms
+ *     39.7s  GAVE BACK — "changed nothing (30 → 23)"  deck: 21 draws, 11.77 ms
+ *
+ * Those are not the same scene. The frame rate fell because the content got heavier, and the verdict
+ * charged it to the resolution — then retired the controller's only lever on the strength of it.
+ *
+ * An experiment that could not be run cleanly has no result. Abandoning keeps the cut and leaves
+ * `fillBound` alone, so the next step down gets a fresh trial; concluding from it is how we got two
+ * days of confidently wrong answers.
+ */
+const STEP_DOWN_TRIAL_ABANDON_MS = 4000;
 /** The frame rate has to improve by at least this much for the pixels to have been worth giving up. */
 const STEP_DOWN_MIN_GAIN = 1.08;
 
@@ -662,6 +683,27 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
     }
   }
 
+  // ── The trial drifted across a section change: no result, rather than a wrong one ──
+  if (
+    awaitingStepDownVerdict &&
+    performance.now() - stepDownStartedAtMs > STEP_DOWN_TRIAL_ABANDON_MS
+  ) {
+    awaitingStepDownVerdict = false;
+    // ⚠ And make the NEXT cut earn its own evidence. `slowFor` has been accumulating throughout the
+    // abandoned trial, so leaving it charged means the following step down fires on the very next
+    // frame — cuts would chain every four seconds with nothing ever measured, straight to the floor.
+    slowFor = 0;
+    if (telemetryEnabled) {
+      console.log(
+        `%c[pixels] trial abandoned%c — the step down to ${pixelRatio.toFixed(2)} could not be judged` +
+          ` within ${STEP_DOWN_TRIAL_ABANDON_MS / 1000}s of real time (sampling kept pausing).` +
+          `\n  Keeping the cut and concluding nothing. See STEP_DOWN_TRIAL_ABANDON_MS.`,
+        'color:#e0b341;font-weight:700',
+        'color:#888',
+      );
+    }
+  }
+
   // ── Did the last step down actually buy anything? ──
   // If it did not, this frame is not fill-bound and every pixel given up from here is pure loss.
   if (awaitingStepDownVerdict && elapsed - lastStepDownAt >= STEP_DOWN_VERDICT_SECONDS) {
@@ -732,6 +774,7 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
     logRatioChange('STEPPED DOWN', from, fps, recap ? ` — and capped here (that level cost too much)` : '');
     // Watch this one. If the frame rate does not answer, the next block puts the pixels back.
     lastStepDownAt = elapsed;
+    stepDownStartedAtMs = performance.now();
     fpsBeforeStepDown = fps;
     awaitingStepDownVerdict = true;
     slowFor = 0;

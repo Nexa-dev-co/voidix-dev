@@ -26,6 +26,7 @@ import {
 } from '@/lib/assetLoadProgress';
 import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
 import {
+  getControllerFps,
   getPixelRatio,
   noteRatioApplied,
   RATIO_APPLY_GRACE_SECONDS,
@@ -1450,6 +1451,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       if (isDrawing) {
         profileMeasure('deck · render', () => composer.render(), true);
         profileGauge('deck draws', renderer.info.render.calls);
+        // Also published here, not only from the works field — otherwise the whole fleet section
+        // reports no ratio and no controller reading, which is exactly the span where the first step
+        // down happens and where the last log left us guessing.
+        profileGauge('ratio', renderer.getPixelRatio());
+        profileGauge('fps(ctrl)', getControllerFps());
       }
 
       // ── Stop paying the compositor for a canvas nobody can see ──
