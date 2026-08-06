@@ -10,6 +10,7 @@ import { getPixelRatio, RATIO_APPLY_GRACE_SECONDS } from '@/lib/adaptivePixelRat
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
+  INTRO_ACTIVE_EVENT,
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
   SUN_FORMING_EVENT,
@@ -674,6 +675,8 @@ export default function SunModelCanvas() {
     // sun in pieces forever. Armed from the model's landing (see ASSEMBLE_CUE_FALLBACK_MS) — until
     // then there is nothing to assemble and nothing this could be late for.
     let cueFallbackTimer = 0;
+    /** The heartbeat listener that keeps re-arming it, held so teardown can remove it. */
+    let introHeartbeatListener: (() => void) | null = null;
     const onReveal = () => {
       forceAssembled = true;
       cueAssembly(); // past the point of waiting for a cue that clearly is not coming
@@ -1042,7 +1045,25 @@ export default function SunModelCanvas() {
       modelReady = true; // the one-shot assembly starts on the next frame after the cue
       // There is now something to assemble, so the backstop starts counting. See
       // ASSEMBLE_CUE_FALLBACK_MS for why this is armed here rather than at page load.
-      cueFallbackTimer = window.setTimeout(cueAssembly, ASSEMBLE_CUE_FALLBACK_MS);
+      //
+      // ⚠ RE-ARMED ON EVERY INTRO HEARTBEAT, and without that this is a hole straight through the
+      // gate. The intro now waits for EVERY source, not just this one — so the star can land in eight
+      // seconds and the fleet keep streaming for another thirty. A one-shot timer measured from the
+      // landing would fire in the middle of that, assemble the star while the loader was still
+      // counting, and — because `SUN_ASSEMBLED_EVENT` is what releases the intro's last pause — hand
+      // off to a site whose fleet had not arrived. Which is exactly the "it starts before the loading
+      // finishes" report.
+      //
+      // The hero's own reveal fallback already solves this the same way (see
+      // REVEAL_FALLBACK_WITH_INTRO_MS): while the loader is beating, nothing is stuck, so the backstop
+      // has nothing to protect against. It only means anything once the beat stops.
+      const armCueFallback = () => {
+        window.clearTimeout(cueFallbackTimer);
+        cueFallbackTimer = window.setTimeout(cueAssembly, ASSEMBLE_CUE_FALLBACK_MS);
+      };
+      armCueFallback();
+      window.addEventListener(INTRO_ACTIVE_EVENT, armCueFallback);
+      introHeartbeatListener = armCueFallback;
       applySize();
       forceRender = true;
       reportAssetProgress('sun', 1);
@@ -1305,6 +1326,9 @@ export default function SunModelCanvas() {
       window.removeEventListener(SUN_REGATHER_EVENT, onRegather);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
+      if (introHeartbeatListener) {
+        window.removeEventListener(INTRO_ACTIVE_EVENT, introHeartbeatListener);
+      }
       window.clearTimeout(cueFallbackTimer);
       modelRoot?.traverse((object) => {
         if (!(object instanceof THREE.Mesh)) return;
