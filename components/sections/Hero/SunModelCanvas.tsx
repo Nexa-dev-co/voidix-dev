@@ -11,6 +11,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import {
   REVEAL_EVENT,
   INTRO_ACTIVE_EVENT,
+  BURN_IN_EVENT,
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
   SUN_FORMING_EVENT,
@@ -657,11 +658,50 @@ export default function SunModelCanvas() {
     // drops the orbital ring entirely, and snaps the state ramp instead of easing it.
     const reduceMotion = prefersReducedMotion();
     let assembly = 0;
+    /**
+     * ── ⚠ THE STAR DOES NOT DRAW WHILE THE LOADER IS WAITING ─────────────────────────────────────
+     *
+     * It used to draw every frame from the moment the model landed until the reveal: ten shards
+     * drifting, `sunParticles`, and a bloom pass, on a canvas `SUN_CANVAS_HEADROOM` larger than the
+     * hero square PER AXIS — 6.76× its area. The profiler note above puts `sun · bloom` at 10–21 ms,
+     * the largest measured span on the page. On a slow connection the loader was paying that for a
+     * minute, on the frames where the GPU process was already decoding textures and compiling two
+     * scenes, and it is most of why the loading screen itself was reported as laggy.
+     *
+     * ⚠ THIS REVERSES THE REASONING BEHIND `ASSEMBLY_ENTRY_MARGIN_MIN/MAX`, deliberately. The shards
+     * were moved INTO frame to wait, because "on a slow load that left the loader with nothing on it
+     * but dust for a minute, and the star arriving from nowhere at the end". That was correct, and its
+     * premise is gone: the loader's wait is now filled by the gather field's held drawings, and the
+     * whole finale — wordmark, star, assembly — sits on the far side of the gate (see IntroSequence).
+     * If the drawings are ever removed, this decision has to be revisited with them.
+     *
+     * ⚠ It is permitted at the BURN-IN, not at the reveal, and that is load-bearing. The burn-in's
+     * only claim over `gpuProbe` is that it measures the frame the visitor actually gets — which
+     * includes this canvas rendering alongside the works field. Letting it start one stage early costs
+     * ~1.5 s of star and keeps the measurement honest.
+     *
+     * ⚠ AND IT DOES NOT APPLY UNDER REDUCED MOTION. That path has no held beat and no drawings — the
+     * gather field opts out of WebGL entirely — and it reveals the sun layer from its first frame, at
+     * z-index 10001, ABOVE the veil. Withholding the render there would put an empty box on screen
+     * where the star is meant to be, for the whole download. The reduced-motion loader is a counter
+     * and a star, exactly as it was.
+     */
+    let drawingPermitted = reduceMotion;
+    const permitDrawing = () => {
+      if (drawingPermitted) return;
+      drawingPermitted = true;
+      forceRender = true;
+    };
+    window.addEventListener(BURN_IN_EVENT, permitDrawing);
+
     let modelReady = false;
     let assemblyCued = false;
     let forceAssembled = false;
     const cueAssembly = () => {
       assemblyCued = true;
+      // Belt and braces: whatever cued it — the intro, a missing loader, the fallback timer — the
+      // flight must never run behind a canvas that is not being drawn. It is the loader's finale.
+      permitDrawing();
     };
     // The intro cues this when the load hits 100%, and holds its own handoff until we answer with
     // SUN_ASSEMBLED_EVENT — so the flight is the loader's finale and is always watched start to finish.
@@ -1133,8 +1173,9 @@ export default function SunModelCanvas() {
       ringWorksForm += (targetRingWorks - ringWorksForm) * stateEase;
       collapse += (targetCollapse - collapse) * stateEase;
       const elapsed = frameTimer.elapsed();
-      // The star always turns; it only stops once the works field has covered it completely.
-    const moving = !covered;
+      // The star always turns — once it is allowed to be seen at all. It stops again only once the
+      // works field has covered it completely.
+      const moving = drawingPermitted && !covered;
 
       // ── Waiting: the pieces drift, and they are ON SCREEN while they do it ──
       //
@@ -1148,7 +1189,12 @@ export default function SunModelCanvas() {
       // float and the per-shard spin are all at full strength and the magma is at full ASSEMBLY_HEAT.
       // The pieces read as the largest, hottest debris in the same flow the dust belongs to.
       let assembling = false;
-      if (modelReady && !assemblyCued && !reduceMotion) {
+      // ⚠ `drawingPermitted` gates the DRIFT as well as the render, not just the render. The pieces
+      // tumble on a delta-timed clock with no authored landing, so skipping it while nothing is on
+      // screen changes nothing anyone can see — and leaving it running would keep `assembling` true,
+      // which is one of the two things that force a draw below. Gating one without the other would
+      // have saved nothing at all.
+      if (modelReady && !assemblyCued && !reduceMotion && drawingPermitted) {
         positionShards(0, elapsed);
         assembling = true; // keep drawing: something on this canvas is moving
       }
@@ -1283,7 +1329,10 @@ export default function SunModelCanvas() {
         Math.abs(targetCollapse - collapse) > STATE_SETTLE_EPSILON ||
         assembling;
       const animating = choreographyActive || moving;
-      if (!document.hidden && (animating || wasAnimating || forceRender)) {
+      // ⚠ `drawingPermitted` is checked here as well as inside `moving`, and it has to be: the three
+      // state ramps in `choreographyActive` settle on their own and `forceRender` is set by resize and
+      // tab-restore, so either could ask for a draw while the loader is still waiting.
+      if (drawingPermitted && !document.hidden && (animating || wasAnimating || forceRender)) {
         // ⚠ The star is a SECOND WebGL context and it draws alongside the field for the whole of
         // services and works (see CLAUDE.md — `covered` only goes true at the chamber reveal). It is
         // therefore one of the prime suspects for the frame time the works probe cannot see, and it
@@ -1325,6 +1374,7 @@ export default function SunModelCanvas() {
       window.removeEventListener(LOOP_RESET_EVENT, onLoopReset);
       window.removeEventListener(SUN_REGATHER_EVENT, onRegather);
       window.removeEventListener(REVEAL_EVENT, onReveal);
+      window.removeEventListener(BURN_IN_EVENT, permitDrawing);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
       if (introHeartbeatListener) {
         window.removeEventListener(INTRO_ACTIVE_EVENT, introHeartbeatListener);

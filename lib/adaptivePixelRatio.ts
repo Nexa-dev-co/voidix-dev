@@ -215,6 +215,32 @@ const SETTLE_SAMPLE_CAP_SECONDS = 0.1;
 const EXTRA_QUALITY_FPS = 50;
 const EXTRA_QUALITY_SECONDS = 4;
 
+/**
+ * How much MORE ratio the burn-in's solve had to be worth than the ratio we actually took, before an
+ * extra may be bought with the difference.
+ *
+ * ── ⚠ Why the licence can be granted here at all ─────────────────────────────────────────────────
+ * The runtime version of this test — 50 fps held for four seconds — is a good test and it cannot
+ * possibly be met before the first visible frame. So on a first lap the raise it gates (4× MSAA on
+ * the space stage) was BY CONSTRUCTION a mid-session `dispose()` and reallocation of both composer
+ * ping-pong targets, several seconds into the fleet. It is one of the few remaining things a second
+ * lap gets for free that a first lap pays for, which is the whole complaint this work exists to
+ * answer.
+ *
+ * The burn-in already produces the number that licence was standing in for: a median frame cost at a
+ * known ratio, taken on real pipelined frames with the star drawing alongside. If the ratio it solves
+ * is clipped by the ceiling, the machine proved it could afford more than the site is able to spend —
+ * and THAT surplus, not a guess, is what buys the extra.
+ *
+ * ⚠ 1.25 on the RATIO is 1.56 on the PIXELS, and pixels are what an extra costs. It is deliberately
+ * the same figure CLAUDE.md records for the probe-based version of this gate.
+ *
+ * ⚠ It cannot spend resolution. The ratio is already assigned by the time this is consulted, and the
+ * rule this module exists to enforce is that resolution is the priority and samples are the leftover.
+ * A surplus of exactly 1 means there was no leftover, and nothing is bought.
+ */
+const EXTRA_QUALITY_BURN_IN_SURPLUS = 1.25;
+
 // ── State ──────────────────────────────────────────────────────────────────────────────────────────
 
 type ControllerPhase = 'calibrating' | 'locked';
@@ -434,6 +460,10 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
   calibratedPipelines.add('works');
   calibratedPipelines.add('deck');
 
+  // What the machine proved it could afford, over what the site was able to spend. See the constant.
+  const surplus = solved / pixelRatio;
+  if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
   if (telemetryEnabled) {
     const bound =
       solved > ceil ? 'the probe ceiling' : solved < floor ? 'the floor' : 'the measurement';
@@ -447,7 +477,9 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
         `${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}% safety → ${solved.toFixed(2)}, ` +
         `bound by ${bound}` +
         `\n  floor ${floor.toFixed(2)}, ceiling ${ceil.toFixed(2)} — runtime calibration stood down;` +
-        ` only ${EMERGENCY_SLOW_FPS}–${EMERGENCY_FAST_FPS} fps for ${EMERGENCY_SETTLE_SECONDS}s moves this.`,
+        ` only ${EMERGENCY_SLOW_FPS}–${EMERGENCY_FAST_FPS} fps for ${EMERGENCY_SETTLE_SECONDS}s moves this.` +
+        `\n  surplus ${surplus.toFixed(2)}× over what was spent — extras ` +
+        `${extraQualityEarned ? 'EARNED, decided here rather than four seconds into the fleet' : `not earned (needs ${EXTRA_QUALITY_BURN_IN_SURPLUS}×)`}.`,
       'color:#5bd6a0;font-weight:700',
       'color:#888',
     );

@@ -28,7 +28,6 @@ import { LOOP_PROGRESS_EVENT, LOOP_RESET_EVENT, readLoopProgress } from '@/lib/l
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import {
   createChamberScene,
-  TABLE_MODEL,
   type ChamberScene,
 } from '@/components/sections/Chamber/chamberScene';
 // Hosted here for the same reason the chamber is: it has to be drawn by THIS renderer. The chamber
@@ -37,17 +36,18 @@ import {
 import {
   createSingularityScene,
   CONTACT_BLOOM_STRENGTH,
-  BLACKHOLE_MODEL_PATH,
   type SingularityScene,
 } from '@/components/sections/Contact/singularityScene';
-import { prefetchWhenAssetsReady } from '@/lib/prefetchWhenAssetsReady';
 import { createFrameTimer } from '@/lib/frameTimer';
 import { hideHologram } from '@/lib/hologramPose';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { createWorksHud } from '../worksHud';
 import {
   reportAssetProgress,
+  reportSourceActivity,
   reportWarmupDone,
+  areEntrySourcesReady,
+  onAssetProgress,
   isStageQuiet,
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
@@ -72,7 +72,11 @@ import { detectKtx2Support } from '@/lib/modelLoading';
 import { getDeviceTier, isLowPowerDevice, type DeviceTier } from '@/lib/deviceTier';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { warmSceneMaterials } from '@/lib/warmScene';
-import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
+import {
+  BURN_IN_DONE_EVENT,
+  BURN_IN_EVENT,
+  INTRO_MARKER_SELECTOR,
+} from '@/components/effects/IntroSequence/introEvents';
 import { SLATE_200, SLATE_400, SLATE_800 } from '@/lib/coolPalette';
 
 // ── Textures ────────────────────────────────────────────────────────────
@@ -1719,26 +1723,59 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // land on the frame it first appears — which for both of these is inside a scrubbed crossing, the
     // worst place on the site to spend one. So each is warmed on the next idle frame after it lands.
     // See lib/warmScene.ts, which is the sun's corona fix generalised.
+    //
+    // ⚠ `onWarm` is not decoration. Both callers are gated sources now, and the loader holds its
+    // finale until every arrived source reports warm — so the report has to happen on the far side of
+    // the deferred frame, not beside the call that schedules it.
     let lazyWarmupFrame = 0;
-    const warmWhenIdle = (target: THREE.Object3D, targetCamera: THREE.Camera) => {
+    const warmWhenIdle = (
+      target: THREE.Object3D,
+      targetCamera: THREE.Camera,
+      onWarm?: () => void,
+    ) => {
       lazyWarmupFrame = requestAnimationFrame(() => {
         if (disposed) return;
         warmSceneMaterials(renderer, target, targetCamera);
+        onWarm?.();
       });
     };
 
-    // ── The chamber (built lazily; see ensureChamber) ──
+    // ── The chamber ──
+    //
+    // ⚠ IT IS NO LONGER "BUILT LAZILY", and the two call sites that used to be its only cues are now
+    // its safety net. See `beginPreflight` below for why, and `assetLoadProgress`'s source list for
+    // what it cost to leave it until the crossing.
     let chamber: ChamberScene | null = null;
     let chamberReady = false;
     const ensureChamber = () => {
       if (chamber) return;
+      reportSourceActivity('chamber');
       chamber = createChamberScene({
         environment: scene.environment,
+        // ⚠ Activity on EVERY event, the fraction only when there is one. The loader tells "slow"
+        // from "dead" by activity, so a server sending no `Content-Length` must still count as alive.
+        onProgress: (fraction) => {
+          reportSourceActivity('chamber');
+          reportAssetProgress('chamber', fraction);
+        },
         onReady: () => {
           chamberReady = true;
           // The room's walls, ground grid, plinth, display shader and the table's maps — none of which
           // exist on the GPU until something draws them, and the first thing that does is the reveal.
-          if (chamber) warmWhenIdle(chamber.scene, chamber.camera);
+          //
+          // ⚠ The loader holds for this, so the warm report has to come AFTER the warm-up has actually
+          // run, not beside the call that schedules it. `warmWhenIdle` defers a frame, and saying
+          // "warm" before that frame has drawn is how the gate would open on a room whose programs are
+          // still uncompiled.
+          if (chamber) warmWhenIdle(chamber.scene, chamber.camera, () => reportWarmupDone('chamber'));
+          else reportWarmupDone('chamber');
+        },
+        // ⚠ Separate from `onReady` because it also fires when the load FAILED — at which point there
+        // is no room to warm and nothing will ever report one, so the source has to retire itself or
+        // the loader waits out its full stall window for a file that is not coming.
+        onSettled: () => {
+          reportAssetProgress('chamber', 1);
+          if (!chamberReady) reportWarmupDone('chamber');
         },
       });
     };
@@ -1752,18 +1789,72 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     let singularity: SingularityScene | null = null;
     const ensureSingularity = () => {
       if (singularity) return;
+      reportSourceActivity('singularity');
       singularity = createSingularityScene({
-        pixelRatio: renderer.getPixelRatio(),
+        // A getter: this is built during the loader now, before the burn-in has decided the
+        // session's resolution. See the option's own header.
+        pixelRatio: () => renderer.getPixelRatio(),
         lowPower,
         // The star, its rings, the accretion spiral and `black_hole.glb`'s maps all come into existence
         // hidden and stay that way until the return fades them up — so without this they would compile
         // and upload on the frame the camera swings back onto the star, which is the frame the whole
         // finale is built to deliver. Warmed through the SPACE scene, because that is where the group
         // now lives; recompiling the rest of it is cached and costs nothing.
-        onReady: () => warmWhenIdle(scene, camera),
+        onProgress: (fraction) => {
+          reportSourceActivity('singularity');
+          reportAssetProgress('singularity', fraction);
+        },
+        onReady: () => warmWhenIdle(scene, camera, () => reportWarmupDone('singularity')),
+        // ⚠ THE GATE OPENS ON THIS, NOT ON `onReady`, and the difference is the whole point of putting
+        // this source on the gate at all: `onReady` fires when the STAR lands and the black hole is
+        // only requested from inside that callback. Reporting there would have declared 2.37 MB
+        // finished at the moment it started.
+        onSettled: () => {
+          reportAssetProgress('singularity', 1);
+          // A second warm pass costs nothing — every program compiled by the first is cached — and it
+          // is what puts the black hole's own materials on the GPU rather than leaving them for the
+          // frame the finale first shows them.
+          warmWhenIdle(scene, camera, () => reportWarmupDone('singularity'));
+        },
       });
       scene.add(singularity.group);
     };
+
+    /**
+     * ── Rung 3, and it is a BUILD now, not a prefetch ────────────────────────────────────────────
+     *
+     * `prefetchWhenAssetsReady` used to pull `table.glb` and `black_hole.glb` into the HTTP cache here
+     * so that the crossings which build them would not also have to download them. That was a real
+     * improvement and it only ever fixed a third of the problem: the parse, the Draco decode, the
+     * geometry upload, the material compile and the first draw all still happened mid-scrub, on the
+     * first lap, which is what a visitor actually felt.
+     *
+     * So the same signal now builds them outright. The prefetch is gone rather than kept alongside —
+     * two requests for one URL at the same instant is not a warm cache, it is a race.
+     *
+     * ⚠ STILL ONLY ONCE THE ENTRY SOURCES ARE IN. `areEntrySourcesReady`, deliberately not
+     * `areAssetsReady` — these two ARE two of the sources that function counts now, so asking it here
+     * would be a deadlock. The ladder is unchanged and it is the whole reason this is safe: the star
+     * first, then the field and the fleet, then these. They compete with nothing.
+     *
+     * ⚠ The `ensureChamber` / `ensureSingularity` calls on HANDOFF_PROGRESS and CHAMBER_PROGRESS stay
+     * exactly where they are. They are idempotent, and they are now the safety net for a load where
+     * one of these gave up (a stalled request retires its source; see the intro's gate) — the section
+     * degrades to precisely the behaviour it had before any of this existed.
+     */
+    let stopPreflightWatch: (() => void) | null = null;
+    const beginPreflight = () => {
+      stopPreflightWatch?.();
+      stopPreflightWatch = null;
+      ensureChamber();
+      ensureSingularity();
+    };
+    if (areEntrySourcesReady()) beginPreflight();
+    else {
+      stopPreflightWatch = onAssetProgress(() => {
+        if (areEntrySourcesReady()) beginPreflight();
+      });
+    }
     const onChamberProgress = (event: Event) => {
       chamberState.reveal = readChamberProgress(event);
       combineChamberTarget();
@@ -1777,14 +1868,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       ensureSingularity();
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
-
-    // ── Rung 3: warm the cache for the two models nobody waits for ──
-    // `ensureChamber` and `ensureSingularity` above still fetch these exactly when they always did —
-    // this only means the bytes are usually already here by then. Both are fetched mid-scroll on a
-    // first visit (the black hole is 2.94 MB, the largest asset on the site), which is most of why the
-    // first lap is rougher than every lap after it. Starts only once every gated source has reported
-    // in, so it competes with neither the star nor the fleet. See lib/prefetchWhenAssetsReady.ts.
-    const stopLatePrefetch = prefetchWhenAssetsReady([TABLE_MODEL, BLACKHOLE_MODEL_PATH]);
 
     // The return: the same room, walked back out of. It only ever UNDOES the reveal (see
     // combineChamberTarget), so it never engages the chamber on its own — arriving here without the
@@ -1939,57 +2022,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           drawWarmupFrame();
         }
 
-        // ── 5 · the burn-in — what this machine ACTUALLY sustains ──
-        //
-        // Everything above measures the pipeline in isolation. This measures the FRAME: real rAF
-        // cadence, real pipelining, the star's own context rendering alongside, the compositor doing
-        // its work. It is the number the resolution is finally chosen from — see `reportBurnIn`.
-        //
-        // ⚠ ONLY WHILE THE LOADER IS STILL UP. This warm-up runs when THIS section's assets land, and
-        // on a slow connection that is after the reveal — the fleet is ~5.3 MB against this section's
-        // ~0.95 MB, but the gate opens on the star alone, so works can warm while the visitor is
-        // already looking at the hero. Compiling there is one frame and was always the deal; drawing
-        // a dozen more works frames on top of it is a visible hitch in front of somebody. The runtime
-        // calibration is the designed fallback for exactly this case, so skipping costs nothing.
-        const loaderStillUp = document.querySelector(INTRO_MARKER_SELECTOR) !== null;
-
-        // ⚠ SMAA back OFF for it. It was forced on for the probe deliberately (the chamber runs it and
-        // is the worst frame this pipeline ever draws), but the works BROWSING span — the long one,
-        // the one that is scrubbed through — runs without it. Measuring the common case and letting
-        // the safety margin absorb the chamber is the right way round: sizing the whole session
-        // against its single heaviest frame is how a site ends up uniformly soft.
-        if (loaderStillUp) smaaPass.enabled = false;
-        const frameSamples: number[] = [];
-        const burnStartedAt = performance.now();
-        let previousFrameAt = 0;
-        for (let frame = 0; loaderStillUp && frame < BURN_IN_MAX_FRAMES; frame += 1) {
-          await nextWarmupFrame();
-          if (disposed) return;
-          const frameAt = performance.now();
-          drawWarmupFrame();
-          if (frame >= BURN_IN_DISCARD_FRAMES && previousFrameAt > 0) {
-            frameSamples.push(frameAt - previousFrameAt);
-          }
-          previousFrameAt = frameAt;
-          if (frameSamples.length >= BURN_IN_TARGET_SAMPLES) break;
-          if (frameAt - burnStartedAt >= BURN_IN_MAX_MS) break;
-        }
-
-        if (frameSamples.length >= BURN_IN_MIN_SAMPLES) {
-          // Median, not mean: one garbage collection inside the window is worth sixteen real frames
-          // at 25 fps, and the mean would carry it straight into the solve.
-          frameSamples.sort((left, right) => left - right);
-          reportBurnIn(
-            frameSamples[Math.floor(frameSamples.length / 2)],
-            renderer.getPixelRatio(),
-          );
-          if (getPixelRatio() !== appliedPixelRatio) {
-            // Allocate what the burn-in decided, here, behind the veil — so the works section's first
-            // real frame is already at its final resolution and never re-sizes in front of anyone.
-            applyRendererSize();
-            drawWarmupFrame();
-          }
-        }
+        // ⚠ The burn-in used to be step 5 here and produced a reading exactly never. It has moved out
+        // to its own gate stage — see `runBurnIn` below and BURN_IN_EVENT.
       } catch {
         // A failed compile is not a reason to trap the loader — the section degrades to compiling
         // whatever failed on first draw, exactly as it did before any of this existed.
@@ -1998,6 +2032,101 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         if (!disposed) reportWarmupDone('works'); // the intro holds the reveal until this fires
       }
     };
+
+    /**
+     * ── The loader's performance measurement ─────────────────────────────────────────────────────
+     *
+     * Cued by the intro once BOTH scenes report warm and before the shards fly — the one moment in the
+     * whole load where the main thread is genuinely idle. Nothing is compiling, nothing is uploading,
+     * the dust is in a worker, and the only other thing drawing is the star, which is exactly what will
+     * be drawing alongside this section later.
+     *
+     * That last point is why this is a measurement and `gpuProbe` is only a ceiling: the probe times
+     * this pipeline ALONE with the GPU drained either side, and its spread across four loads of one
+     * page was eightfold. This is rAF-to-rAF on real pipelined frames with the real second context
+     * running.
+     *
+     * ⚠ It ALWAYS answers, even when it refuses. The intro is holding its finale on the done event, so
+     * a silent return here would stall the loader until the cap expires — and a refusal that says
+     * nothing is how the previous version of this went unnoticed for a day.
+     */
+    let burnInRun = false;
+    const runBurnIn = async () => {
+      if (burnInRun || disposed) return;
+      burnInRun = true;
+      // ⚠ SMAA off for it. It is forced ON for the probe deliberately (the chamber runs it and is the
+      // worst frame this pipeline ever draws), but the works BROWSING span — the long one, the one
+      // that is scrubbed through — runs without it. Measure the common case and let the safety margin
+      // absorb the chamber; sizing a whole session against its single heaviest frame is how a site
+      // ends up uniformly soft.
+      const smaaWasEnabled = smaaPass.enabled;
+      smaaPass.enabled = false;
+      const frameSamples: number[] = [];
+      const burnStartedAt = performance.now();
+      let previousFrameAt = 0;
+
+      try {
+        for (let frame = 0; frame < BURN_IN_MAX_FRAMES; frame += 1) {
+          await nextWarmupFrame();
+          if (disposed) return;
+          const frameAt = performance.now();
+          drawWarmupFrame();
+          // The first frames carry the reallocation and the first draw after a state change — the cost
+          // of arriving at this resolution rather than the cost of holding it.
+          if (frame >= BURN_IN_DISCARD_FRAMES && previousFrameAt > 0) {
+            frameSamples.push(frameAt - previousFrameAt);
+          }
+          previousFrameAt = frameAt;
+          if (frameSamples.length >= BURN_IN_TARGET_SAMPLES) break;
+          if (frameAt - burnStartedAt >= BURN_IN_MAX_MS) break;
+        }
+
+        if (frameSamples.length < BURN_IN_MIN_SAMPLES) {
+          if (telemetryEnabled) {
+            console.log(
+              `%c[pixels] burn-in REFUSED%c only ${frameSamples.length} usable frames in ` +
+                `${(performance.now() - burnStartedAt).toFixed(0)} ms (needs ${BURN_IN_MIN_SAMPLES}).` +
+                `\n  The runtime calibration will decide instead — expect a CALIBRATED line per scene.`,
+              'color:#e0b341;font-weight:700',
+              'color:#888',
+            );
+          }
+          return;
+        }
+
+        // Median, not mean: one garbage collection inside the window is worth sixteen real frames at
+        // 25 fps, and the mean would carry it straight into the solve.
+        frameSamples.sort((left, right) => left - right);
+        reportBurnIn(
+          frameSamples[Math.floor(frameSamples.length / 2)],
+          renderer.getPixelRatio(),
+        );
+        if (getPixelRatio() !== appliedPixelRatio) {
+          // Allocate what it decided, here, behind the veil — so this section's first real frame is
+          // already at its final resolution and never re-sizes in front of anyone.
+          applyRendererSize();
+          drawWarmupFrame();
+        }
+        // ── …and the extra it may have earned, in the same still frame ──
+        // The burn-in's solve is the only measurement that exists before the site is visible, and it
+        // is the one that decides this now. Left to the render loop it could not possibly be decided
+        // before the first lap — the runtime licence needs four seconds of 50 fps — so the raise was
+        // always a `dispose()` and reallocation of two composer targets several seconds into the
+        // fleet, on the first visit and never again. That is exactly the class of thing this whole
+        // change is here to move.
+        //
+        // ⚠ AFTER the ratio, never before. The samples come out of what the resolution left over, and
+        // `estimateComposerBytes` below is measured against the drawing buffer the ratio just sized.
+        raiseMsaaIfEarned();
+        if (msaaRaised) drawWarmupFrame(); // rebuild the disposed targets now, not on the first real frame
+      } finally {
+        smaaPass.enabled = smaaWasEnabled;
+        // ⚠ Unconditional. The intro's finale is waiting on this.
+        if (!disposed) window.dispatchEvent(new Event(BURN_IN_DONE_EVENT));
+      }
+    };
+    const onBurnInRequested = () => void runBurnIn();
+    window.addEventListener(BURN_IN_EVENT, onBurnInRequested);
 
     // ── When it runs ──
     // As soon as THIS section's own assets are in — not when the whole page's are.
@@ -2087,6 +2216,55 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // whenever the adaptive controller shifts the ratio; defined before the loop so it can call it.
     /** One MSAA upgrade attempt per session, whichever way it goes. */
     let msaaRaised = false;
+
+    /**
+     * Raise the space stage to 4× MSAA, if this machine earned it and can hold the bytes.
+     *
+     * ⚠ TWO GATES, AND THEY ARE DIFFERENT QUESTIONS. `hasEarnedExtraQuality` asks whether there is
+     * time in the frame for it; `estimateComposerBytes` asks whether there is memory for it. A
+     * machine can pass one and fail the other, and the memory answer is the one that turns a fast
+     * laptop into a slow one — see the render-target arithmetic in the constant block above.
+     *
+     * ⚠ Called from the BURN-IN first, behind the loader's veil, so the reallocation lands where no
+     * one can see it. The render loop keeps a call as the fallback for a load where the burn-in never
+     * ran. Idempotent either way: `msaaRaised` latches on the first attempt, pass or fail.
+     */
+    const raiseMsaaIfEarned = () => {
+      if (
+        msaaRaised ||
+        deviceTier === 'potato' ||
+        !hasEarnedExtraQuality() ||
+        spaceBuffer.samples >= BLOOM_MSAA_SAMPLES_EARNED
+      ) {
+        return;
+      }
+      const drawingContext = renderer.getContext();
+      const projectedBytes = estimateComposerBytes(
+        drawingContext.drawingBufferWidth,
+        drawingContext.drawingBufferHeight,
+        BLOOM_MSAA_SAMPLES_EARNED,
+      );
+      msaaRaised = true;
+      const affordable = projectedBytes <= SPACE_COMPOSER_MEMORY_BUDGET_BYTES;
+      if (affordable) {
+        // ⚠ BOTH buffers, and `dispose` rather than `setSize`: the latter only rebuilds when the
+        // DIMENSIONS change, and `samples` is read in `setupRenderTarget`.
+        for (const target of [spaceComposer.renderTarget1, spaceComposer.renderTarget2]) {
+          target.samples = BLOOM_MSAA_SAMPLES_EARNED;
+          target.dispose();
+        }
+      }
+      if (telemetryEnabled) {
+        console.log(
+          affordable
+            ? `[voidix] msaa: raised to ${BLOOM_MSAA_SAMPLES_EARNED}× on the space stage — ` +
+                `earned, and it costs ${(projectedBytes / 1048576).toFixed(0)} MB`
+            : `[voidix] msaa: earned but declined — ${BLOOM_MSAA_SAMPLES_EARNED}× would cost ` +
+                `${(projectedBytes / 1048576).toFixed(0)} MB, over the ` +
+                `${SPACE_COMPOSER_MEMORY_BUDGET_BYTES / 1048576} MB budget`,
+        );
+      }
+    };
     let appliedPixelRatio = getPixelRatio();
     /** How long the controller's ratio has differed from the one actually allocated. */
     let ratioPendingSeconds = 0;
@@ -2525,43 +2703,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // backgrounded. Also frozen entirely through either crossing.
       if (!handoffActive && !revealScrubbing) {
         // ── The one optional extra, on a frame nobody is watching ──
-        // Rebuilding these framebuffers blocks exactly as long as a resize does, so it rides the same
-        // rule: only while this scene is NOT being drawn. `hasEarnedExtraQuality` has by then required
-        // 50 fps at full resolution for four seconds — see the constant block above for the two
-        // probe-based versions of this that spent the resolution instead of what was left over.
-        if (
-          !msaaRaised &&
-          !isDrawing &&
-          deviceTier !== 'potato' &&
-          hasEarnedExtraQuality() &&
-          spaceBuffer.samples < BLOOM_MSAA_SAMPLES_EARNED
-        ) {
-          const drawingContext = renderer.getContext();
-          const projectedBytes = estimateComposerBytes(
-            drawingContext.drawingBufferWidth,
-            drawingContext.drawingBufferHeight,
-            BLOOM_MSAA_SAMPLES_EARNED,
-          );
-          msaaRaised = true; // one attempt per session, whichever way it goes
-          if (projectedBytes <= SPACE_COMPOSER_MEMORY_BUDGET_BYTES) {
-            // ⚠ BOTH buffers, and `dispose` rather than `setSize`: the latter only rebuilds when the
-            // DIMENSIONS change, and `samples` is read in `setupRenderTarget`.
-            for (const target of [spaceComposer.renderTarget1, spaceComposer.renderTarget2]) {
-              target.samples = BLOOM_MSAA_SAMPLES_EARNED;
-              target.dispose();
-            }
-          }
-          if (telemetryEnabled) {
-            console.log(
-              projectedBytes <= SPACE_COMPOSER_MEMORY_BUDGET_BYTES
-                ? `[voidix] msaa: raised to ${BLOOM_MSAA_SAMPLES_EARNED}× on the space stage — ` +
-                    `50 fps held at full resolution, and it costs ${(projectedBytes / 1048576).toFixed(0)} MB`
-                : `[voidix] msaa: earned but declined — 4× would cost ` +
-                    `${(projectedBytes / 1048576).toFixed(0)} MB, over the ` +
-                    `${SPACE_COMPOSER_MEMORY_BUDGET_BYTES / 1048576} MB budget`,
-            );
-          }
-        }
+        //
+        // ⚠ THIS IS THE FALLBACK PATH NOW, not the usual one. `raiseMsaaIfEarned` is called from the
+        // burn-in, behind the veil, where the reallocation costs a frame nobody will ever see. It can
+        // still only be reached from here on a load where the burn-in never ran or refused — in which
+        // case `hasEarnedExtraQuality` is back to meaning what it always meant: 50 fps held at full
+        // resolution for four seconds, and a `dispose()` of two composer targets in front of somebody.
+        // That is the right trade when there is no measurement, and the wrong one when there is.
+        if (!isDrawing) raiseMsaaIfEarned();
 
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
@@ -2621,10 +2770,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+      window.removeEventListener(BURN_IN_EVENT, onBurnInRequested);
       window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
       traceBuild('effect: TEARDOWN — disposed is now true for this run');
       window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
-      stopLatePrefetch();
+      stopPreflightWatch?.();
       cancelAnimationFrame(warmupFrame);
       cancelAnimationFrame(lazyWarmupFrame);
       chamber?.dispose();

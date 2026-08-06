@@ -79,8 +79,8 @@ function classify(): DeviceTier {
   const isNarrow = window.innerWidth < PHONE_MAX_WIDTH;
 
   // ── The visitor has asked for less. That is not a hint, it is an instruction. ──
-  // `prefetchWhenAssetsReady` already honours this for speculative downloads; honouring it here too
-  // means one answer to "does this person want us spending their resources" instead of two.
+  // `SkipToLite` offers the document version of the site on the strength of the same flag; honouring
+  // it here too means one answer to "does this person want us spending their resources", not two.
   if (navigatorWithHints.connection?.saveData) return 'potato';
 
   // ── Phones and tablets ──

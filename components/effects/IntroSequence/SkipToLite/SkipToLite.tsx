@@ -28,29 +28,54 @@ import { createPageEtaEstimator } from '../downloadEta';
  * not the loader re-rendering.
  */
 
+// ── ⚠ TWO CONDITIONS, BOTH REQUIRED, AND THEN HELD ──────────────────────────────────────────────
+//
+// This used to be one test: a page ETA over ten seconds. That fires on a fast connection with a big
+// payload — which is not the visitor this is for. Somebody on fibre pulling 10.8 MB is having a
+// perfectly good time and does not need to be offered the text version of the site.
+//
+// The visitor this is for is on a SLOW PIPE with a LONG WAIT, and those are two different facts. A
+// slow connection with little left to fetch will be fine; a fast connection with a lot left will also
+// be fine. Requiring both, and then requiring them to persist, is what separates "this is genuinely
+// going to be painful" from "the first few seconds looked bad".
+
 /**
- * How far out the WHOLE PAGE has to look before an exit is worth offering.
+ * Below this the connection itself is the problem, in bytes per second.
  *
- * ⚠ Measured against the page, not the star — and that alone moves it a long way earlier. The star is
- * ~18 % of the weighted download and lands early, so a star-based estimate reported four seconds while
- * the fleet still had 5.3 MB to go. Now that the gate holds for every source, the page's estimate is
- * the visitor's actual wait.
- *
- * Still well above `SHAPE_ONSET_ETA_SECONDS` (4), because filling a wait and apologising for one are
- * different acts: four seconds is a beat worth decorating, ten is a wait worth escaping.
+ * ⚠ Derived from a fraction rate against `TOTAL_PAYLOAD_BYTES`, so it is an order-of-magnitude
+ * figure rather than a measurement — see `bytesPerSecond` in downloadEta. That is the right precision
+ * for this question: the difference between 480 and 520 KB/s does not change whether someone should
+ * be offered a way out, and the difference between 500 and 5 000 does.
  */
-const OFFER_AFTER_ETA_SECONDS = 10;
+const OFFER_BELOW_BYTES_PER_SECOND = 500 * 1024;
+
+/** …and there has to be enough left to fetch that the slow pipe actually costs them something. */
+const OFFER_AFTER_ETA_SECONDS = 20;
+
+/**
+ * How long both conditions have to hold before the offer appears.
+ *
+ * Throughput is spiky and the estimate is at its worst early — the first samples are dominated by
+ * connection setup, not by the connection. Without this dwell, one bad second during TLS negotiation
+ * would put an escape hatch on screen for someone who is about to load the site in four seconds.
+ * ⚠ The dwell resets the moment either condition stops holding, so it measures a SUSTAINED state
+ * rather than accumulating unrelated bad moments.
+ */
+const OFFER_SUSTAINED_MS = 3000;
 
 /**
  * The backstop, for when no estimate can be formed at all.
  *
  * A server sending no `Content-Length` — chunked or compressed — leaves the fraction pinned at 0 with
- * bytes arriving perfectly healthily, so `secondsRemaining()` stays `null` however long it takes. That
- * is exactly the visitor this exists for, and an ETA-only trigger would never reach them.
+ * bytes arriving perfectly healthily, so both readings above stay `null` however long it takes. That
+ * is exactly the visitor this exists for, and a measurement-only trigger would never reach them.
+ *
+ * ⚠ Raised well past the two conditions plus their dwell, so it stays a BACKSTOP. At its old 12 s it
+ * would now usually fire first, and the conditions above would never decide anything.
  */
-const OFFER_AFTER_ELAPSED_MS = 12_000;
+const OFFER_AFTER_ELAPSED_MS = 30_000;
 
-const POLL_MS = 1000;
+const POLL_MS = 500;
 
 interface NavigatorWithConnection extends Navigator {
   connection?: { saveData?: boolean };
@@ -75,14 +100,34 @@ export default function SkipToLite() {
 
     const pageEta = createPageEtaEstimator();
     const startedAt = performance.now();
+    /** When the two conditions most recently STARTED holding together, or 0 while they are not. */
+    let strugglingSince = 0;
+
     const ticker = window.setInterval(() => {
       pageEta.sample();
+
+      const bytesPerSecond = pageEta.bytesPerSecond();
       const remaining = pageEta.secondsRemaining();
-      const longEnough =
-        (remaining !== null && remaining >= OFFER_AFTER_ETA_SECONDS) ||
-        performance.now() - startedAt >= OFFER_AFTER_ELAPSED_MS;
-      if (!longEnough) return;
-      // Latched: the estimate wobbling back under the threshold must not take the offer away again
+      // ⚠ `null` is not "fine", it is "not knowable yet" — and it must not be read as either
+      // condition being met. Whatever it is hiding is the backstop's problem, below.
+      const isSlowPipe =
+        bytesPerSecond !== null && bytesPerSecond < OFFER_BELOW_BYTES_PER_SECOND;
+      const isLongWait = remaining !== null && remaining >= OFFER_AFTER_ETA_SECONDS;
+
+      if (isSlowPipe && isLongWait) {
+        if (strugglingSince === 0) strugglingSince = performance.now();
+      } else {
+        // Reset rather than pause: the dwell has to measure a SUSTAINED state, not a total of
+        // unrelated bad seconds spread across a load that is otherwise going fine.
+        strugglingSince = 0;
+      }
+
+      const sustained =
+        strugglingSince !== 0 && performance.now() - strugglingSince >= OFFER_SUSTAINED_MS;
+      const strandedWithNoEstimate = performance.now() - startedAt >= OFFER_AFTER_ELAPSED_MS;
+      if (!sustained && !strandedWithNoEstimate) return;
+
+      // Latched: the estimate wobbling back under a threshold must not take the offer away again
       // while somebody is reaching for it.
       setIsOffered(true);
       window.clearInterval(ticker);

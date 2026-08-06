@@ -35,7 +35,33 @@
  * is what makes the near-sun end match the density the tight version had. **If the field looks sparse or
  * too hot, this is the first knob**, together with `size` below.
  */
-export const GATHER_COUNT = 60000;
+/**
+ * ⚠ Now a TABLE, and it was a flat 60 000 on every machine.
+ *
+ * The field is fullscreen additive point sprites with a `discard` in the fragment shader — no early-z,
+ * pure fill — and it is the one canvas on this loader that must never stutter. It was also the only
+ * renderer on the site that answered to nothing: not `adaptivePixelRatio`, not `deviceTier`. A phone
+ * drew the same 60 000 grains as a desktop, at up to dpr 3, while its cores were decoding 10 MB of
+ * models.
+ *
+ * ⚠ Read on the MAIN THREAD and passed into the renderer. `getDeviceTier()` asks `matchMedia`, and
+ * there is no `matchMedia` in a worker.
+ */
+export const GATHER_COUNT_BY_TIER = {
+  potato: 18000,
+  low: 28000,
+  mid: 45000,
+  high: 60000,
+} as const;
+
+/**
+ * The most the field will ever draw, for anything sizing a buffer against the worst case.
+ *
+ * ⚠ The grain COUNT is not the same knob as the grain SIZE. If the field looks sparse on a low tier,
+ * `GATHER_DEFAULTS.size` is the one to reach for — the dust is meant to thin out with the machine,
+ * not to shrink.
+ */
+export const GATHER_COUNT_MAX = GATHER_COUNT_BY_TIER.high;
 
 /**
  * ── THE THREE NUMBERS THAT TIE THIS TO THE SUN ──
@@ -123,6 +149,13 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
   //   z  = phase offset 0..1     w = seed 0..1
   attribute vec4 aParticle;
 
+  // This grain's target in each of the four drawings, normalised to −1..1 and packed two to a vec4:
+  //   aShapeAB = shape0.xy · shape1.xy      aShapeCD = shape2.xy · shape3.xy
+  // Zeroed for shapes that do not exist, and their weights are zero too, so a bake of one or two
+  // drawings costs nothing here. Three attributes against a guaranteed sixteen.
+  attribute vec4 aShapeAB;
+  attribute vec4 aShapeCD;
+
   uniform float uFlow;           // accumulated inflow; advances every frame, faster as progress climbs
   uniform float uProgress;       // real bytes-loaded 0..1 — gates DENSITY only
   uniform float uTime;
@@ -137,7 +170,19 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
   uniform float uOpacity;
   uniform float uPixelRatio;
   uniform float uShapeHold;      // 0..1 — how far the field has left the flow for a held form
-  uniform float uShapePhase;     // advances 1.0 per form; the fraction is the morph into the next
+  // The drawing being left and the one being entered, each as a one-hot selector over the four, plus
+  // how far the CYCLE has crossed between them. Owned by gatherRenderer, which runs the sequence off
+  // its own delta time — so the morph stays smooth while the main thread is blocked parsing glTF,
+  // which is the entire reason this field lives in a worker.
+  //
+  // ⚠ TWO SELECTORS AND A SCALAR, not one blended weight vector. A single set of weights makes every
+  // grain cross at the same instant, and the midpoint of that is 60 000 grains at the average of two
+  // unrelated silhouettes — which is a formless cloud, every time, for about a second of every cycle.
+  // Kept apart, each grain can cross on its OWN clock (see SHAPE_MORPH_STAGGER) and what you see is
+  // one drawing coming apart while the next assembles out of it.
+  uniform vec4  uShapeFrom;
+  uniform vec4  uShapeTo;
+  uniform float uShapeMorph;
 
   varying float vAlpha;
   varying float vHeat;
@@ -179,6 +224,13 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
   const float ABSORB_PEAK = 0.95;
   /** Distant dust must still cover a pixel or it stops existing at all. */
   const float SIZE_MIN_PIXELS = 1.0;
+  /**
+   * How much wider the SPRITE is than the grain, to make room for the bloom's halo.
+   *
+   * The core stays the same apparent size (BLOOM_CORE_RADIUS is a fraction of the sprite, so it
+   * scales with this) — what this buys is the pixels the glow spills into. See the fragment shader.
+   */
+  const float BLOOM_SPREAD = 1.7;
 
   // While the shards dock, the dust immediately around the star is pulled back so the docking reads
   // cleanly against empty space. Only this zone clears — the wider field keeps streaming, so the screen
@@ -191,103 +243,124 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
 
   // ══ THE HELD FORMS ══════════════════════════════════════════════════════════════════════════════
   //
-  // On a slow connection the loader is on screen for a minute or more, and the flow alone cannot carry
-  // that: it is the same picture at second 3 and second 70. So when the wait is long enough to be worth
-  // it (GatherCanvas decides, from a measured ETA) the same 60k grains leave the stream and gather into
-  // a form, hold it, and dissolve into the next one. Nothing else is added to the loader and no model
-  // is downloaded to do it — these are the dust it already has.
+  // The loader is one held beat now: the same grains that make the stream leave it, gather into a
+  // drawing, hold it, and dissolve into the next, for the whole of the download, the warm-up, the
+  // measurement and the caching. No model is downloaded to do it — these are the dust it already has.
   //
-  // ⚠ THEY MUST NEVER BE STILL. This file's own rule is that a loading screen cannot animate on
-  // position, because a stalled load then means a stationary pose. Every form below therefore turns on
-  // its own axis and is built so the turn is legible: a sphere shows it through the depth ramp, the
-  // disc and the spiral through shear. A frozen form would be the exact failure the flow exists to
-  // prevent, just prettier.
+  // ⚠ THESE USED TO BE THREE CLOSED-FORM FUNCTIONS of a particle's seed (a star shell, an accretion
+  // annulus, a log spiral) and that was genuinely elegant — no buffers, no attributes, no CPU per
+  // frame. It is also exactly why there could never be a fourth: there is no function that turns a
+  // random seed into "a point inside this drawing". The forms are baked point clouds now, sampled
+  // from SVG by scripts/buildLoaderShapes.mjs, and each grain carries its target in EVERY shape as a
+  // vertex attribute. A morph is therefore one grain travelling from its place in one drawing to its
+  // place in the next — the shape TRANSFORMS rather than dissolving and re-forming.
   //
-  // Each is a closed-form function of the particle's own seed, so there are no target buffers, no extra
-  // attributes and no CPU work per frame — one uniform says which form, another how far into it.
+  // ⚠ And the point index is not arbitrary. The bake walks the image in scan order, so index 0 is the
+  // topmost ink in every shape and the last index is the lowest. Giving a grain the same INDEX in all
+  // four shapes therefore makes the morph structurally coherent — tops travel to tops — instead of
+  // 60 000 grains crossing each other at random. Do not shuffle the indices to "spread them out".
   //
-  // Sizes are in SUN RADII, like everything else here. The frame's half-height is about 19 of them, so
-  // a form of radius 12-20 fills a good part of the screen. ⚠ These are the first knobs to reach for:
-  // they were written to the geometry, not tuned against the real loader.
-  const float SHAPE_COUNT = 3.0;
-  // Pushes each form far enough back that nothing crosses the lens. ⚠ It has to clear the deepest
-  // point any form reaches toward the camera (the star's shell, at its radius) or the perspective
-  // divide runs away — at this offset the nearest grain sits at about 1.3x and the furthest at 0.3x,
-  // which is a real depth ramp without anything degenerate at either end.
-  const float SHAPE_DEPTH_OFFSET = 10.0;
+  // ⚠ THEY MUST NEVER BE STILL. This file's rule is that a loading screen cannot animate on position,
+  // because a stalled load then means a stationary pose. The old forms carried their turn in their
+  // geometry — a shell reads its spin through the depth ramp, a disc through shear. A DRAWING IS
+  // FLAT and, rotated in 3D, becomes an edge-on line. So the motion is authored instead, in the three
+  // constants below: a slab of depth so the pinhole still grades it, a tilt that parallaxes the near
+  // face against the far one without ever approaching edge-on, and a per-grain shimmer so the
+  // silhouette breathes.
+
   const float TAU = 6.2831853;
 
-  // Form 0 — the star. A shell, not a disc, so the depth ramp does the reading.
-  const float STAR_SHAPE_RADIUS = 12.0;
-  const float STAR_SPIN = 0.16;
-  // Form 1 — the black hole. An accretion annulus with a genuinely empty core, seen at a tilt.
-  const float HOLE_INNER = 6.0;
-  const float HOLE_OUTER = 20.0;
-  const float HOLE_THICKNESS = 1.1;
-  const float HOLE_TILT = 1.05;
-  const float HOLE_SPIN = 1.5;
-  // Form 2 — the galaxy. Log-spiral arms, flattened, tilted a little further than the disc.
-  const float GALAXY_ARMS = 3.0;
-  const float GALAXY_INNER = 1.5;
-  const float GALAXY_OUTER = 22.0;
-  const float GALAXY_TURNS = 0.62;
-  const float GALAXY_SCATTER = 3.4;
-  const float GALAXY_FLATTEN = 1.3;
-  const float GALAXY_TILT = 1.18;
-  const float GALAXY_SPIN = 0.2;
+  // ── How big a form is, and why it is measured against the FRAME ──
+  //
+  // Everything else in this file is measured in sun radii, and a form must not be: the sun's screen
+  // radius is derived from the wordmark's "o", which is a fluid font size. On a 1440 px desktop the
+  // frame is ~15 sun radii tall and on a 390 px phone it is ~48, so a form sized in radii would be
+  // half the screen on one and a postage stamp on the other. These are fractions of the frame's own
+  // half-height, which is 1 aspect unit by definition.
+  const float SHAPE_FRAME_HALF = 0.72;
+  /** …and of its half-WIDTH, which binds instead on anything portrait. The smaller of the two wins. */
+  const float SHAPE_FRAME_WIDE = 0.80;
 
-  /** Fraction of a form's cycle spent HOLDING it; the rest morphs into the next. */
-  const float SHAPE_HOLD_FRACTION = 0.62;
+  // Pushes each form far enough back that nothing crosses the lens, in sun radii. It also decides how
+  // big and how hot a grain in a form reads against one in the stream: at this offset a form's grains
+  // sit at about half the apparent size of one being absorbed at the rim, which is what keeps the
+  // held drawing from out-shouting the flow it came out of.
+  const float SHAPE_DEPTH_OFFSET = 10.0;
+
+  /**
+   * How far a grain's own depth may stray from the form's plane, in DRAWING units (the −1..1 the bake
+   * normalises to), and how many sun radii one of those units is worth.
+   *
+   * This is the whole reason a flat drawing reads as an object rather than as a decal: given a slab
+   * of depth the pinhole grades near grains larger and hotter than far ones, and the tilt below then
+   * has something to parallax.
+   */
+  const float SHAPE_SLAB = 0.34;
+  const float SHAPE_DEPTH_SCALE = 14.0;
+  /**
+   * Radians of tilt about the vertical, and how fast it swings.
+   *
+   * ⚠ Deliberately small. A drawing is FLAT: rotate it far and it collapses to an edge-on line, which
+   * is the one thing the old procedural forms could never do. At this angle a grain at the drawing's
+   * edge moves ±2.2 sun radii in depth — real parallax between the near and far side — while losing
+   * 1.3% of its width, which nobody can see.
+   */
+  const float SHAPE_TILT = 0.16;
+  const float SHAPE_TILT_RATE = 0.31;
+  /**
+   * How far a grain circles its target, in drawing units.
+   *
+   * Load-bearing twice over. There are far more grains than sampled points — 60 000 against 4 096 —
+   * so without this every grain sharing a point would sit on one identical pixel and the form would
+   * be a plotted outline rather than dust. And it is what keeps a HELD form alive: the circling never
+   * stops, so a form that is holding still is still moving. See this block's header on why that rule
+   * is not negotiable.
+   *
+   * ⚠ Sized against the SOURCE ART. These drawings are line work about 2% of their own width, so a
+   * drift much past this stops reading as a thickened stroke and starts reading as a blurred one.
+   */
+  const float SHAPE_SCATTER = 0.010;
+  const float SHAPE_SHIMMER_RATE = 0.9;
+  /**
+   * How much larger a grain is once it has left the stream for a drawing.
+   *
+   * ⚠ THIS IS WHAT MAKES THE BLOOM READ, and without it the drawings came out gritty rather than lit.
+   * A form sits at about half the apparent size of a grain being absorbed at the rim, so its sprites
+   * were ~2.5 px across — too small for the halo in the fragment shader to have any pixels to spill
+   * into, and far too small for neighbouring halos to sum along a stroke. Bloom in an additive field
+   * IS that summing; a sprite that cannot reach its neighbour cannot do it.
+   *
+   * Only the sprite grows. The number of grains, where they are and how bright each one is are all
+   * unchanged — so the stroke gets softer and hotter rather than thicker.
+   */
+  const float SHAPE_GRAIN_BOOST = 2.1;
+
+  /**
+   * Fraction of a crossing spent staggering the grains rather than moving them.
+   *
+   * Each grain waits out its own hashed share of the window before it starts, then crosses over what
+   * is left. At 0 every grain moves together and the midpoint is the average of two silhouettes —
+   * mush. At this value the first grains have arrived before the last have set off, so the old
+   * drawing visibly comes apart while the new one assembles, which is the whole effect.
+   *
+   * ⚠ Do not take it much higher. What is left over — one minus this — is each grain's own travel
+   * time; too little of it and the individual crossings snap.
+   *
+   * (And no backticks anywhere in this file, ever. This is the fourth time a comment has closed the
+   * template literal the shader source lives in.)
+   */
+  const float SHAPE_MORPH_STAGGER = 0.55;
+  /**
+   * How far a grain bows through DEPTH on its way across, in drawing units.
+   *
+   * Without it a crossing is 60 000 straight lines and reads as a wipe. Bowed — half toward the lens,
+   * half away, peaking mid-flight — the grains in transit separate from both drawings by size and
+   * heat, so the crossing has its own volume.
+   */
+  const float SHAPE_MORPH_ARC = 0.55;
 
   float hash(float x) {
     return fract(sin(x) * 43758.5453123);
-  }
-
-  vec3 rotateX(vec3 p, float angle) {
-    float s = sin(angle);
-    float c = cos(angle);
-    return vec3(p.x, p.y * c - p.z * s, p.y * s + p.z * c);
-  }
-
-  vec3 formPosition(float form, float seed, float t) {
-    float a = hash(seed * 12.9898);
-    float b = hash(seed * 78.2330);
-    float c = hash(seed * 37.7190);
-    float d = hash(seed * 93.9898);
-
-    if (form < 0.5) {
-      // ── The star ──
-      // Uniform on a sphere: the vertical coordinate has to be the one distributed evenly, or the
-      // grains bunch at the poles.
-      float y = a * 2.0 - 1.0;
-      float ring = sqrt(max(0.0, 1.0 - y * y));
-      float phi = b * TAU + t * STAR_SPIN;
-      return vec3(ring * cos(phi), y, ring * sin(phi)) * STAR_SHAPE_RADIUS;
-    }
-
-    if (form < 1.5) {
-      // ── The black hole ──
-      // sqrt on the radial pick spreads grains evenly over the ANNULUS rather than over its radius,
-      // which would pile them against the inner edge. The sweep is Keplerian, so the disc shears the
-      // way the site's finale does.
-      float radius = mix(HOLE_INNER, HOLE_OUTER, sqrt(a));
-      float sweep = t * HOLE_SPIN * pow(HOLE_INNER / radius, 1.5);
-      float angle = b * TAU + sweep;
-      float height = (c - 0.5) * HOLE_THICKNESS;
-      return rotateX(vec3(cos(angle) * radius, height, sin(angle) * radius), HOLE_TILT);
-    }
-
-    // ── The galaxy ──
-    // Arms are a log spiral: the angle grows with the radius, so the arm trails. Scatter widens with
-    // radius, which is what keeps the core tight and the outskirts loose.
-    float arm = floor(a * GALAXY_ARMS);
-    float along = b;
-    float radius = mix(GALAXY_INNER, GALAXY_OUTER, along);
-    float angle =
-      (arm / GALAXY_ARMS) * TAU + along * GALAXY_TURNS * TAU + t * GALAXY_SPIN;
-    vec3 point = vec3(cos(angle) * radius, (c - 0.5) * GALAXY_FLATTEN, sin(angle) * radius);
-    point.xz += vec2(cos(angle + 1.5708), sin(angle + 1.5708)) * (d - 0.5) * GALAXY_SCATTER * along;
-    return rotateX(point, GALAXY_TILT);
   }
 
   void main() {
@@ -349,23 +422,55 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
     float hold = smoothstep(0.0, 1.0, holdStagger);
 
     if (hold > 0.001) {
-      // Which form, and how far into the next. The hold fraction is what makes it a SEQUENCE — sit on
-      // one shape, dissolve, sit on the next — rather than a continuous unresolved churn.
-      float cycle = floor(uShapePhase);
-      float morph = smoothstep(SHAPE_HOLD_FRACTION, 1.0, fract(uShapePhase));
-      float formFrom = mod(cycle, SHAPE_COUNT);
-      float formTo = mod(cycle + 1.0, SHAPE_COUNT);
+      // ── Where this grain belongs, in the drawing it is leaving and the one it is entering ──
+      // Because the same grain holds a target in EVERY drawing, a crossing is one grain TRAVELLING
+      // from its place in one to its place in the next — the shape transforms rather than dissolving
+      // and re-forming somewhere else.
+      vec2 leaving =
+        aShapeAB.xy * uShapeFrom.x + aShapeAB.zw * uShapeFrom.y +
+        aShapeCD.xy * uShapeFrom.z + aShapeCD.zw * uShapeFrom.w;
+      vec2 entering =
+        aShapeAB.xy * uShapeTo.x + aShapeAB.zw * uShapeTo.y +
+        aShapeCD.xy * uShapeTo.z + aShapeCD.zw * uShapeTo.w;
 
-      vec3 formPoint = mix(
-        formPosition(formFrom, seed, uTime),
-        formPosition(formTo, seed, uTime),
-        morph
+      // This grain's own crossing, inside the cycle's. It waits out its share of the stagger, then
+      // travels over what is left — so the first grains land before the last ones leave.
+      float grainStart = hash(seed * 17.31) * SHAPE_MORPH_STAGGER;
+      float grainTravel =
+        clamp((uShapeMorph - grainStart) / (1.0 - SHAPE_MORPH_STAGGER), 0.0, 1.0);
+      float grainMorph = smoothstep(0.0, 1.0, grainTravel);
+      vec2 drawing = mix(leaving, entering, grainMorph);
+
+      // Circling its target — the form's own life, and what turns 4 096 sampled points into dust.
+      float driftAngle =
+        hash(seed * 21.71) * TAU + uTime * SHAPE_SHIMMER_RATE * (0.6 + hash(seed * 5.37));
+      float driftRadius = SHAPE_SCATTER * (0.35 + hash(seed * 63.19));
+      drawing += vec2(cos(driftAngle), sin(driftAngle)) * driftRadius;
+
+      // The slab, and the tilt that makes it legible. Rotating about the VERTICAL swings the near
+      // face across the far one; at SHAPE_TILT this is parallax and never an edge-on collapse.
+      // The bow is added to the same axis, so a grain in transit is genuinely nearer or further than
+      // both drawings rather than just sliding between them.
+      float slab = (hash(seed * 45.13) - 0.5) * SHAPE_SLAB;
+      slab += sin(grainMorph * 3.14159265) * SHAPE_MORPH_ARC * (hash(seed * 7.77) - 0.5) * 2.0;
+      float tilt = sin(uTime * SHAPE_TILT_RATE) * SHAPE_TILT;
+      float tiltSin = sin(tilt);
+      float tiltCos = cos(tilt);
+      vec2 turnedXZ = vec2(
+        drawing.x * tiltCos + slab * tiltSin,
+        -drawing.x * tiltSin + slab * tiltCos
       );
 
       // Through the SAME pinhole the flow uses, so a grain that leaves the stream keeps its depth cues
-      // and the two states are one space rather than two effects sharing a screen.
-      float formScale = uCameraDistance / (uCameraDistance + SHAPE_DEPTH_OFFSET + formPoint.z);
-      vec2 formAspect = uTarget + formPoint.xy * formScale * uSunRadius;
+      // and the two states are one space rather than two effects sharing a screen. The base scale is
+      // divided back out so a grain at the form's own plane lands exactly on the span below — depth
+      // then only changes how big and how bright it is, never how large the drawing reads.
+      float formScale =
+        uCameraDistance / (uCameraDistance + SHAPE_DEPTH_OFFSET + turnedXZ.y * SHAPE_DEPTH_SCALE);
+      float baseScale = uCameraDistance / (uCameraDistance + SHAPE_DEPTH_OFFSET);
+      float span = min(SHAPE_FRAME_HALF, uAspect * SHAPE_FRAME_WIDE);
+      vec2 formAspect =
+        uTarget + vec2(turnedXZ.x, drawing.y) * span * (formScale / baseScale);
 
       aspectPosition = mix(aspectPosition, formAspect, hold);
       scale = mix(scale, formScale, hold);
@@ -417,7 +522,15 @@ export const GATHER_VERTEX_SHADER = /* glsl */ `
       (1.0 - uClearing * nearStar) *
       (1.0 - smoothstep(0.55, 1.0, uIgnite));
 
-    gl_PointSize = max(SIZE_MIN_PIXELS, uSize * uPixelRatio * scale);
+    // ⚠ BLOOM_SPREAD is what gives the halo somewhere to live. The grain itself is still uSize
+    // across — the core's radius is a fraction of the sprite (see the fragment shader) — so this
+    // widens the glow, not the dust. Cost is the square of it and it is the only price the bloom
+    // charges; it is roughly paid for by the drop from dpr 2 to 1.5 in GatherCanvas.
+    //
+    // The held form gets more again (SHAPE_GRAIN_BOOST), because that is where the glow has to carry a
+    // drawing rather than a stream. Faded in with the hold, so nothing changes size at a threshold.
+    gl_PointSize =
+      max(SIZE_MIN_PIXELS, uSize * BLOOM_SPREAD * mix(1.0, SHAPE_GRAIN_BOOST, hold) * uPixelRatio * scale);
   }
 `;
 
@@ -430,16 +543,55 @@ export const GATHER_FRAGMENT_SHADER = /* glsl */ `
   varying float vAlpha;
   varying float vHeat;
 
+  // ══ THE BLOOM ═══════════════════════════════════════════════════════════════════════════════════
+  //
+  // ⚠ IT IS IN THE SPRITE, NOT IN A POST PASS, and that is a decision rather than a shortcut.
+  //
+  // A real bloom means a framebuffer, a downsample, two blur passes and a composite — and this is the
+  // ONE canvas on the site that has to be drawing on its first frame and must never stutter, on a
+  // thread that is simultaneously decoding 10 MB of models. It is also the canvas whose cost is very
+  // nearly pure fill rate, so a post chain is the most expensive thing that could be added to it.
+  //
+  // What makes bloom READ is three things, and a point sprite can do all three for the price of a few
+  // more pixels per grain: additive blending (already), a hot core that saturates toward white, and a
+  // wide soft halo around it. The field is additive on near-black with 4 096 sampled points shared by
+  // tens of thousands of grains — so the halos of neighbouring grains sum along a stroke, which is
+  // exactly the light-bleeding-between-sources that a blur pass would be simulating.
+  //
+  // If a true post-processed bloom is ever wanted, the honest place to spend it is a quarter-res FBO
+  // with a single separable blur. Do not add one on top of this — retune these first.
+
+  /** How far out the core reaches, as a fraction of the sprite radius, and how hard it falls off. */
+  const float BLOOM_CORE_RADIUS = 0.42;
+  const float BLOOM_CORE_FALLOFF = 2.0;
+  /** The halo runs the whole sprite. Higher falloff = tighter glow; lower = softer and wider. */
+  const float BLOOM_HALO_FALLOFF = 2.6;
+  const float BLOOM_HALO_STRENGTH = 0.55;
+  /**
+   * How far the core burns toward white where it is brightest.
+   *
+   * This is the part that reads as LIGHT rather than as a coloured dot. Real bloom whitens at the
+   * source and keeps its colour in the spill, so the halo below is left on the temperature ramp.
+   */
+  const float BLOOM_WHITE_CORE = 0.55;
+
   void main() {
     if (vAlpha <= 0.0) discard;
-    float distanceFromCentre = length(gl_PointCoord - 0.5);
-    if (distanceFromCentre > 0.5) discard;
-    float glow = smoothstep(0.5, 0.0, distanceFromCentre);
-    // Cold blue dust in the void, warming toward starlight as it falls in.
+    // 0 at the centre, 1 at the sprite's edge — so every radius below is a plain fraction.
+    float radius = length(gl_PointCoord - 0.5) * 2.0;
+    if (radius > 1.0) discard;
+
+    float core = pow(max(0.0, 1.0 - radius / BLOOM_CORE_RADIUS), BLOOM_CORE_FALLOFF);
+    float halo = pow(max(0.0, 1.0 - radius), BLOOM_HALO_FALLOFF);
+    float glow = core + halo * BLOOM_HALO_STRENGTH;
+
+    // Cold ember in the void, warming toward starlight as it falls in.
     vec3 color = mix(uColorCool, uColorHot, vHeat);
-    // The absorption flare pushes intensity past 1 on purpose — the colour carries it (additive blending
-    // saturates it into white-hot), while the alpha channel stays legal.
+    vec3 lit = mix(color, vec3(1.0), core * BLOOM_WHITE_CORE);
+
+    // The absorption flare pushes intensity past 1 on purpose — the colour carries it (additive
+    // blending saturates it into white-hot), while the alpha channel stays legal.
     float intensity = glow * vAlpha;
-    gl_FragColor = vec4(color * intensity, min(1.0, intensity));
+    gl_FragColor = vec4(lit * intensity, min(1.0, intensity));
   }
 `;

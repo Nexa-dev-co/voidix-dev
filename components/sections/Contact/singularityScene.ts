@@ -266,8 +266,9 @@ const REDUCED_MOTION_FLASH_SCALE = 0.22;
 // ── The black hole ──
 // `black_hole.glb` is *"Black Hole"* by NestaEric, CC-BY-4.0. ⚠ THE CREDIT IS LEGALLY REQUIRED WHEREVER
 // THIS SHIPS and is still nowhere on the site — the contact footer is where it goes. See step 8.
-// Exported for the same reason as TABLE_MODEL in chamberScene: the rung-3 prefetch needs this path
-// and must not hold a second copy of it. See lib/prefetchWhenAssetsReady.ts.
+// Exported for the same reason as TABLE_MODEL in chamberScene: nothing else should hold a second
+// copy of the path. It is a GATED source now — `useWorksField` builds this star during the loader
+// rather than during the works-to-chamber reveal. See lib/assetLoadProgress.ts.
 export const BLACKHOLE_MODEL_PATH = '/models/black_hole.glb';
 /** The horizon opens from the middle, and only once the star is essentially gone. */
 const FINALE_HORIZON: readonly [number, number] = [0.4, 0.62];
@@ -477,14 +478,41 @@ export interface SingularitySceneOptions {
   /**
    * The renderer's DPR, so the rings' point sizes match what the canvas actually draws.
    *
-   * Read once, at build time. The works field runs adaptive resolution, so this can drift if the tier
-   * changes mid-session — the grains would then be a little large or small, which is well inside what
-   * the twinkle already varies and is not worth a per-frame uniform write to chase.
+   * ⚠ A GETTER, AND IT USED TO BE A NUMBER. Read once at build time it was allowed to drift a little,
+   * on the reasoning that a grain slightly large or small is well inside what the twinkle already
+   * varies. That was true while this scene was built at CHAMBER_PROGRESS, long after the resolution
+   * had settled. It is built during the LOADER now (it is a gated source), which is before the
+   * burn-in decides anything — so a captured number would be the provisional ratio every time, on
+   * every machine, rather than occasionally.
+   *
+   * Still read exactly once, just later: at the moment the rings are actually created, inside the
+   * model's own callback. Nothing chases it per frame and nothing needs to.
    */
-  pixelRatio: number;
+  pixelRatio: () => number;
   /** Drops the accretion spiral entirely — the one part of the finale with a real per-frame cost. */
   lowPower?: boolean;
   onReady?: () => void;
+  /**
+   * The BLACK HOLE's download fraction, 0..1 — this star is a GATED SOURCE now (see
+   * lib/assetLoadProgress).
+   *
+   * ⚠ The black hole's, not the whole scene's, and that is the honest choice rather than a shortcut.
+   * `fractured_sun.glb` is loaded here for the second time on the page — the hero pulled it in at
+   * rung 1 — so by the time this runs it comes out of cache and its progress is a single jump from
+   * nothing to everything. `black_hole.glb` is 2.37 MB and genuinely on the wire, which makes it the
+   * only part of this scene a progress bar can describe.
+   */
+  onProgress?: (fraction: number) => void;
+  /**
+   * Every model this scene needs is in — or has failed and is not coming.
+   *
+   * ⚠ NOT `onReady`, and the difference is 2.37 MB. `onReady` fires when the STAR lands, because that
+   * is when there is something to draw; the black hole is only requested from inside that callback,
+   * since the hole has to be fitted against a measured star. Gating the loader on `onReady` would open
+   * it while the largest asset on the site was still downloading — which is the exact failure this
+   * source was added to stop.
+   */
+  onSettled?: () => void;
 }
 
 /**
@@ -496,6 +524,8 @@ export function createSingularityScene({
   pixelRatio,
   lowPower = false,
   onReady,
+  onProgress,
+  onSettled,
 }: SingularitySceneOptions): SingularityScene {
   const group = new THREE.Group();
   // Hidden until the return brings it in. The star does not exist for the rest of the site.
@@ -1083,7 +1113,7 @@ export function createSingularityScene({
     // which is what the RINGS table is authored in. The hero passes its canvas frame extent instead,
     // because there the binding constraint is the canvas edge; here there is no edge to clip against.
     const bodyRadius = sphere.radius * STAR_BODY_FRACTION;
-    rings = createSunParticles(bodyRadius / SUN_BODY_FILL, pixelRatio, {
+    rings = createSunParticles(bodyRadius / SUN_BODY_FILL, pixelRatio(), {
       pointSize: RING_POINT_SIZE,
     });
     group.add(rings.object);
@@ -1168,7 +1198,20 @@ export function createSingularityScene({
       // Reflect whatever moment the finale is already at — the return can have scrubbed while this
       // was in flight, exactly as with the star.
       applyFinale();
+      onSettled?.();
+    },
+    (event) => onProgress?.(event.total > 0 ? event.loaded / event.total : 0),
+    (error) => {
+      // The finale degrades to a star that collapses into nothing rather than into a hole, which is
+      // worth having. What it must not do is leave the loader holding for a file that is not coming.
+      console.error(`Failed to load ${BLACKHOLE_MODEL_PATH}`, error);
+      onSettled?.();
     });
+  },
+  undefined,
+  (error) => {
+    console.error(`Failed to load ${MODEL_PATH}`, error);
+    onSettled?.();
   });
 
   const setArmed = (next: boolean) => {

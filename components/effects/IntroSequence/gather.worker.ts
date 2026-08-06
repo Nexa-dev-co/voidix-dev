@@ -27,7 +27,11 @@ self.onmessage = (event: MessageEvent<GatherMessage>) => {
   switch (message.type) {
     case "init": {
       if (renderer) return;
-      renderer = new GatherRenderer(message.canvas, message.pixelRatio);
+      renderer = new GatherRenderer(
+        message.canvas,
+        message.pixelRatio,
+        message.particleCount,
+      );
       renderer.resize(message.width, message.height);
       loop();
       return;

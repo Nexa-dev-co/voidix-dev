@@ -20,7 +20,23 @@
 // a hero with a HOLE where its star should be, and the star faded in 30–60 s later when its download
 // finally finished behind 5.3 MB of vessels nobody needed yet. The counter was lying by ~17 % of the
 // page's weight, about the one asset the page cannot open without.
-const EXPECTED_SOURCES = ['deck', 'works', 'sun'] as const;
+//
+// ⚠ `chamber` and `singularity` joined them on 2026-08-06, and that is a change of KIND, not just of
+// count. Everything above is on the wire because the opening needs it. Those two are not: the room is
+// a minute of scrolling away and the black hole is two. They are here because of what happens when
+// they are NOT here — `ensureChamber()` fires at HANDOFF_PROGRESS and `ensureSingularity()` at
+// CHAMBER_PROGRESS, so on a first visit `table.glb` is parsed, built and compiled DURING the
+// services→works crossing and `black_hole.glb` (2.37 MB, the largest asset on the site) during the
+// works→chamber reveal. `prefetchWhenAssetsReady` put those bytes in the HTTP cache, which removed
+// the download from the crossing and nothing else: the parse, the geometry upload, the material
+// compile and the first draw all still landed mid-scrub. That is what "heavy the first time, smooth
+// on the second lap" was.
+//
+// The price is honest and it is the one the brief accepted: a cold first visit now downloads ~10.8 MB
+// before the hero instead of ~7.9 MB. `SkipToLite` is the way out for anyone who cannot afford it.
+const ENTRY_SOURCES = ['deck', 'works', 'sun'] as const;
+const PREFLIGHT_SOURCES = ['chamber', 'singularity'] as const;
+const EXPECTED_SOURCES = [...ENTRY_SOURCES, ...PREFLIGHT_SOURCES] as const;
 export type AssetSource = (typeof EXPECTED_SOURCES)[number];
 
 /**
@@ -29,6 +45,18 @@ export type AssetSource = (typeof EXPECTED_SOURCES)[number];
  * added and the other does not.
  */
 export const ASSET_SOURCES: readonly AssetSource[] = EXPECTED_SOURCES;
+
+/**
+ * The sources that go on the wire FIRST — the ones the opening itself is made of.
+ *
+ * ⚠ It exists because rung 3 cannot be started by a check that includes rung 3. `useWorksField` only
+ * builds the chamber and the contact star once these are in (so they compete with neither the star
+ * nor the fleet), and `prefetchWhenAssetsReady` waits on the same signal. Asking `areAssetsReady()`
+ * there instead would be a deadlock: the two would each be waiting for the other.
+ */
+export function areEntrySourcesReady(): boolean {
+  return ENTRY_SOURCES.every((source) => (progressBySource.get(source) ?? 0) >= 1);
+}
 
 // Weight the combined progress by each source's rough download weight so the counter climbs at an
 // honest pace — an unweighted average would leap to 50% the instant the lighter source finished, then
@@ -48,7 +76,19 @@ export const ASSET_SOURCES: readonly AssetSource[] = EXPECTED_SOURCES;
 // Not the raw byte ratio (deck would take 0.70): the works source's last stretch is not a download at
 // all — it covers preparing the outlines and CUTTING four marks, real CPU time the visitor waits
 // through (see WORKS_TEXTURE_SHARE in useWorksField). The extra weight pays for that.
-const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.62, works: 0.2, sun: 0.18 };
+//   chamber      ~0.48 MB — table.glb, plus building the room, its ground shader and the display rig
+//   singularity  ~2.37 MB — black_hole.glb (fractured_sun is already in cache by the time it asks)
+//
+// ⚠ RE-WEIGHED 2026-08-06 when the last two joined. Byte shares of the 10.76 MB total are
+// deck .53 / works .08 / sun .13 / chamber .04 / singularity .22; what is below moves weight from the
+// deck to `works` for the same reason it always did, and rounds the rest to the bytes.
+const SOURCE_WEIGHTS: Record<AssetSource, number> = {
+  deck: 0.47,
+  works: 0.16,
+  sun: 0.12,
+  chamber: 0.05,
+  singularity: 0.2,
+};
 
 /**
  * The last slice of the counter, reserved for the work that happens AFTER the last byte lands.

@@ -38,6 +38,67 @@ export const INTRO_ACTIVE_EVENT = 'voidix:intro-active';
 export const INTRO_MARKER_SELECTOR = '.intro-o-slot';
 
 /**
+ * Cue and completion of the loader's PERFORMANCE MEASUREMENT — a stage of the gate in its own right.
+ *
+ * ── ⚠ Why this is a stage and not a step inside the works warm-up ────────────────────────────────
+ * It was inside it, and it never once produced a reading. The burn-in needs ~12 real frames, and it was
+ * running while the OTHER scene was still compiling and uploading — so frames were 300–500 ms, twelve
+ * of them could not fit inside the 1.5 s cap, and it silently gave up every time. Worse, the frames it
+ * did get were not the frame the visitor gets: measuring the machine while the machine is still
+ * building the site reports it as far weaker than it is, and the resolution would be cut on the
+ * strength of that.
+ *
+ * As its own stage — after BOTH scenes report warm, before the shards fly — it runs on the one quiet
+ * main thread the loader ever has. Nothing is compiling, nothing is uploading, the dust is in a worker,
+ * and the only other thing drawing is the star, which is exactly what will be drawing later too.
+ *
+ * The intro cues it and holds the assembly until the done event (capped), so the resolution is settled
+ * before a single visible frame is drawn.
+ */
+export const BURN_IN_EVENT = 'voidix:burn-in';
+export const BURN_IN_DONE_EVENT = 'voidix:burn-in-done';
+
+/**
+ * The gate has opened: the wait is over and the loader's finale is starting.
+ *
+ * ── ⚠ Why this is an event and not a condition anyone can evaluate ───────────────────────────────
+ * `GatherCanvas` used to decide for itself when to let its held drawings go, by asking whether the
+ * assets were in and warm. That was a faithful reading of "the wait is over" right up until the wait
+ * stopped being a function of the assets: `MINIMUM_LOADER_MS` holds the finale so that at least one
+ * drawing is seen, and on a warm cache that is seven seconds during which the field would have
+ * already released — plain stream, nothing on screen, waiting for a wordmark that has not been
+ * allowed to arrive yet.
+ *
+ * Two modules independently guessing when a third thing happens is how that goes wrong. The intro
+ * knows exactly when it resumes; this is it saying so.
+ *
+ * ⚠ It fires BEFORE the wordmark, not with it. The field's oldest rule is that THE FINALE IS THE
+ * FLOW'S — the dust must be back in its stream before the first shard moves — and the release takes
+ * about 0.8 s against the ~2.3 s of wordmark that follows this. That margin is the reason this is
+ * cued here rather than at SUN_ASSEMBLE_EVENT, which would be exactly too late.
+ */
+export const FINALE_EVENT = 'voidix:intro-finale';
+
+/**
+ * The shortest the loader may be, from mount to the wordmark.
+ *
+ * ── Why a loading screen has a MINIMUM ───────────────────────────────────────────────────────────
+ * Because on a warm cache the whole gate can be satisfied in under two seconds, and the field would
+ * be released before it had finished gathering into its first drawing — so the one thing the loader
+ * is now made of would only ever be seen by people on slow connections.
+ *
+ * ⚠ It holds the SHOW, never the WORK. Every download, compile, allocation and measurement runs at
+ * full speed and is finished before this is consulted (see `openFinale`) — this only decides when the
+ * wordmark is allowed to arrive.
+ *
+ * ⚠ It lives HERE, next to the events, because two files need it and they are not in the same tree:
+ * `IntroSequence` enforces it, and `GatherCanvas` needs it to pace the drawings (on a warm cache this
+ * IS the wait, so a sequence paced on the download estimate alone would race to the end of a loader
+ * that is being held open). A second copy would drift the moment either was retuned.
+ */
+export const MINIMUM_LOADER_MS = 6500;
+
+/**
  * Fired when the load reaches 100%, cueing the sun's fracture shards to sweep in from off-frame.
  *
  * This is the loader's finale, so it is deliberately the LAST thing that happens rather than something
