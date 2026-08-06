@@ -219,6 +219,24 @@ let lastSoftCeilProbeAt = 0;
  * A genuinely fill-bound machine sees the gain, keeps `fillBound` true, and behaves exactly as before.
  */
 let fillBound = true;
+/**
+ * ── ⚠ THE VERDICT IS PER PIPELINE, because the two scenes are not the same experiment ────────────
+ *
+ * It was global and latched for a day, and the field log shows exactly what that costs. The verdict
+ * was reached at 31.6 s while the FLEET was on screen — a scene the frame rate genuinely does not
+ * follow pixel count on — and it then bound the works field, which started eight seconds later and
+ * whose bloom pyramid is the heaviest fill on the site:
+ *
+ *     31.6s  GAVE BACK 1.13 → 1.68  — cutting 54% changed nothing (32 → 31 fps)   ← measured on DECK
+ *     39.4s  works · space 4.29 ms …                                              ← works arrives
+ *     66.7s  works · space 39.06 ms, 12 fps                                        ← and cannot cut
+ *
+ * One scene proving resolution is not its lever says nothing about the other, and a controller that
+ * has been told to stop pulling the only lever it has is worse than one that never had it.
+ */
+type PipelineKey = 'deck' | 'works';
+const fillBoundByPipeline = new Map<PipelineKey, boolean>();
+let activePipeline: PipelineKey | null = null;
 let awaitingStepDownVerdict = false;
 let lastStepDownAt = -Infinity;
 let fpsBeforeStepDown = 0;
@@ -528,9 +546,27 @@ export function getPixelRatio(): number {
  * Feed one real render frame time (seconds). Call only on frames a heavy scene actually drew, so idle
  * (gated-off) frames can't trick the controller into ramping the resolution up.
  */
-export function sampleFrame(dtSeconds: number): void {
+export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   ensureInitialised();
   if (dtSeconds <= 0 || dtSeconds > MAX_SANE_DT) return;
+
+  // ── Whose frame is this? ──
+  // Only one heavy scene ever draws at a time, so a change here is a handover rather than a clash.
+  // The incoming pipeline gets its OWN verdict — untested means `true`, i.e. allowed to try cutting —
+  // and the settle clocks restart so a run-up measured on the outgoing scene cannot trip a decision
+  // about the incoming one.
+  if (pipeline !== activePipeline) {
+    activePipeline = pipeline;
+    fillBound = fillBoundByPipeline.get(pipeline) ?? true;
+    slowFor = 0;
+    fastFor = 0;
+    awaitingStepDownVerdict = false;
+    // ⚠ A pipeline already judged not fill-bound wants its pixels BACK on arrival. `fillBound: false`
+    // blocks stepping up as well as down, so without this a scene that had been released to native
+    // would inherit whatever the OTHER scene cut its way down to and have no way to climb out of it.
+    if (!fillBound) releaseCeilingToNative();
+  }
+
   elapsed += dtSeconds;
   emaFrameSeconds += (dtSeconds - emaFrameSeconds) * EMA_ALPHA;
   const fps = 1 / emaFrameSeconds;
@@ -576,6 +612,7 @@ export function sampleFrame(dtSeconds: number): void {
     awaitingStepDownVerdict = false;
     if (fps < fpsBeforeStepDown * STEP_DOWN_MIN_GAIN) {
       fillBound = false;
+      if (activePipeline) fillBoundByPipeline.set(activePipeline, false);
       const from = pixelRatio;
       // ── ⚠ ALL of them back, not one step ─────────────────────────────────────────────────────
       //
@@ -612,6 +649,9 @@ export function sampleFrame(dtSeconds: number): void {
       );
       slowFor = 0;
       fastFor = 0;
+    } else if (activePipeline) {
+      // The cut DID buy frames — this pipeline is fill-bound, and resolution is a lever for it.
+      fillBoundByPipeline.set(activePipeline, true);
     }
   }
 

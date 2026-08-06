@@ -36,6 +36,7 @@ import {
   profileNow,
   profileSpan,
 } from '@/lib/frameProfiler';
+import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
 import { SLATE_600 } from '@/lib/coolPalette';
@@ -445,6 +446,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     detectKtx2Support(renderer);
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
+    if (telemetryEnabled) renderer.info.autoReset = false;
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES
     // does — the fleet read flat/grey under ACES. OutputPass applies this after the composer.
     renderer.toneMapping = THREE.NeutralToneMapping;
@@ -1254,6 +1256,9 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
       const loopStartedAt = profileNow();
+      // See the works field: three resets `info` on every `render()`, so a composer's many passes all
+      // vanish except the last unless it is accumulated by hand.
+      if (telemetryEnabled) renderer.info.reset();
 
       const deltaSeconds = frameTimer.tick();
       const elapsed = frameTimer.elapsed();
@@ -1458,7 +1463,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           ratioPendingSeconds = 0;
           // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
           // (gated-off) frames can never fake headroom and trick it into ramping the resolution up.
-          if (isDrawing) sampleFrame(deltaSeconds);
+          if (isDrawing) sampleFrame(deltaSeconds, 'deck');
         } else {
           // Queued. Sampling deliberately stops — measuring at the old ratio while the controller
           // believes it is already at the new one would feed it a lie and make it over-climb.

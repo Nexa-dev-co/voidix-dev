@@ -711,6 +711,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     detectKtx2Support(renderer);
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
+    // Manual, so the per-frame gauge can total every pass instead of only the last one.
+    if (telemetryEnabled) renderer.info.autoReset = false;
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -2056,6 +2058,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
       const loopStartedAt = profileNow();
+      // Accumulate across every pass this frame rather than being reset by each `render()` — see the
+      // gauge read at the bottom. Costs nothing when telemetry is off; `autoReset` is set there too.
+      if (telemetryEnabled) renderer.info.reset();
       const deltaSeconds = frameTimer.tick();
       const elapsed = frameTimer.elapsed();
 
@@ -2401,6 +2406,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // Gauges, not spans: the latest reading, so the breakdown carries what the frame was actually
         // asked to draw. Draw-call count is the first thing to look at when `unaccounted` is large and
         // the spans are small — submission is cheap, but a few thousand calls is not.
+        //
+        // ⚠ Read AFTER both composers and with `autoReset` off (see the loop's head). three resets
+        // `info` at the start of every `render()` by default, and this scene calls render twice per
+        // frame through two composers with many internal passes — so the first cut of this printed
+        // `works draws 1.00`, which is the final fullscreen quad and nothing else.
         profileGauge('ratio', renderer.getPixelRatio());
         profileGauge('works draws', renderer.info.render.calls);
         profileGauge('works tris', renderer.info.render.triangles);
@@ -2458,7 +2468,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           ratioPendingSeconds = 0;
           // In sync → measure this frame. Only frames we actually DREW, so idle frames can't fake
           // headroom and trick the controller into ramping the resolution up.
-          if (isDrawing) sampleFrame(deltaSeconds);
+          if (isDrawing) sampleFrame(deltaSeconds, 'works');
         } else {
           // Queued. Sampling deliberately stops here — measuring at one ratio while the controller
           // believes it is at another feeds it a lie.
