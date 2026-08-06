@@ -53,10 +53,17 @@ import {
 } from '@/lib/assetLoadProgress';
 import {
   getPixelRatio,
-  sampleFrame,
-  reportProbedFrameCost,
   hasEarnedExtraQuality,
+  RATIO_APPLY_GRACE_SECONDS,
+  reportProbedFrameCost,
+  sampleFrame,
 } from '@/lib/adaptivePixelRatio';
+import {
+  profileGauge,
+  profileMeasure,
+  profileNow,
+  profileSpan,
+} from '@/lib/frameProfiler';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
 import { detectKtx2Support } from '@/lib/modelLoading';
 import { getDeviceTier, isLowPowerDevice, type DeviceTier } from '@/lib/deviceTier';
@@ -138,6 +145,12 @@ const WORKS_RENDER_THRESHOLD = 0.28;
 // RenderPass in place of the full-bleed quad. At progress 0 the display exactly fills the frustum, so
 // the swap is invisible — see components/sections/Chamber/chamberScene.ts.
 const CHAMBER_ENGAGE_EPSILON = 0.001;
+/**
+ * Below this, a crossing's progress counts as "not running" — so a resolution change may take its
+ * frame-long stall here without a moving camera to jump behind it. Same value the flight's own
+ * `handoffActive` uses.
+ */
+const CROSSING_IDLE_EPSILON = 0.001;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
@@ -1997,6 +2010,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     /** One MSAA upgrade attempt per session, whichever way it goes. */
     let msaaRaised = false;
     let appliedPixelRatio = getPixelRatio();
+    /** How long the controller's ratio has differed from the one actually allocated. */
+    let ratioPendingSeconds = 0;
     // The canvas's CSS size, which the chamber needs in full — not just as an aspect. Its display wears
     // the aspect (that's what makes the cover distance exact), and its hologram's anchor is projected
     // into these pixels (see lib/hologramPose.ts). Measured here rather than read off `window` on the
@@ -2040,6 +2055,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     let warp = 0;
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
+      const loopStartedAt = profileNow();
       const deltaSeconds = frameTimer.tick();
       const elapsed = frameTimer.elapsed();
 
@@ -2360,7 +2376,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
         // Stage 1 into the texture, stage 2 out to the canvas. Never one without the other — the
         // screen pipeline paints whatever the space pipeline last produced.
-        spaceComposer.render();
+        profileMeasure('works · space', () => spaceComposer.render(), true);
         const space = spaceTexture();
 
         if (revealing && chamber) {
@@ -2380,7 +2396,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // meteor field looking perfectly valid.
           hideHologram();
         }
-        screenComposer.render();
+        profileMeasure('works · screen', () => screenComposer.render(), true);
+
+        // Gauges, not spans: the latest reading, so the breakdown carries what the frame was actually
+        // asked to draw. Draw-call count is the first thing to look at when `unaccounted` is large and
+        // the spans are small — submission is cheap, but a few thousand calls is not.
+        profileGauge('ratio', renderer.getPixelRatio());
+        profileGauge('works draws', renderer.info.render.calls);
+        profileGauge('works tris', renderer.info.render.triangles);
       }
 
       // ── Adaptive resolution: only ever re-sized while this scene is NOT being drawn ──
@@ -2432,15 +2455,31 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
+          ratioPendingSeconds = 0;
           // In sync → measure this frame. Only frames we actually DREW, so idle frames can't fake
           // headroom and trick the controller into ramping the resolution up.
           if (isDrawing) sampleFrame(deltaSeconds);
-        } else if (!isDrawing) {
-          applyRendererSize();
+        } else {
+          // Queued. Sampling deliberately stops here — measuring at one ratio while the controller
+          // believes it is at another feeds it a lie.
+          ratioPendingSeconds += deltaSeconds;
+          // ⚠ The `||` half is what stops this waiting for an idle frame that never comes. This scene
+          // draws works, the chamber AND contact without a break, so its only idle frame is the
+          // teleport — see RATIO_APPLY_GRACE_SECONDS for the whole failure. The crossings are already
+          // excluded by the enclosing guard, and the two spans it does NOT cover are added here, so
+          // the hitch can only ever land on a stop that is being browsed at rest.
+          const scrubbing =
+            (chamberState.contact > CROSSING_IDLE_EPSILON &&
+              chamberState.contact < 1 - CROSSING_IDLE_EPSILON) ||
+            diveProgress > CROSSING_IDLE_EPSILON;
+          if (!isDrawing || (!scrubbing && ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS)) {
+            applyRendererSize();
+            ratioPendingSeconds = 0;
+          }
         }
-        // Else: a change is queued but we're on screen — hold it, and deliberately STOP sampling
-        // until it lands, so the controller never measures at one ratio while believing it's at another.
       }
+
+      profileSpan('works · loop', profileNow() - loopStartedAt);
     };
     renderFrame();
 

@@ -99,6 +99,31 @@ const SAFETY_HEADROOM_FRACTION = 0.15;
 const SPENDABLE_FRAME_BUDGET_MS = PIPELINE_FRAME_BUDGET_MS * (1 - SAFETY_HEADROOM_FRACTION);
 
 /**
+ * How long a queued resolution change may wait for an idle frame before it is applied anyway.
+ *
+ * ── ⚠ THE DEADLOCK THIS EXISTS TO BREAK ──────────────────────────────────────────────────────────
+ * Both heavy scenes only ever re-size while they are NOT being drawn, because reallocating a composer
+ * stalls a frame and a stall hidden behind a running tween makes the motion jump. Sound on its own.
+ * But `useWorksField` hosts the chamber AND the contact singularity, so `worksShouldRender` goes true
+ * at the services→works handoff and is set false in exactly one place: `LOOP_RESET_EVENT`.
+ *
+ * The works field therefore has NO idle frame between works and the teleport — and while a change is
+ * queued the scenes also stop sampling, so the controller goes deaf at the same moment it goes mute:
+ *
+ *     hero ─ services ─╫─ works ── chamber ── contact ─╫─ LOOP ─ hero
+ *                      ║  drawing, uninterrupted       ║
+ *        deck idles ✓  ║  step down decided at 1 s…    ║  …applied HERE, 40 s later
+ *
+ * That is the whole of the "I have to scroll all the way round and Travel in Time before it gets
+ * smooth" report. It was not the site warming up; it was one queued `setSize` finally draining.
+ *
+ * So a change gets its idle frame if one comes along, and otherwise takes the hitch. One dropped
+ * frame beats a lap at 27 fps, and the crossings are still excluded by the caller's own guards — this
+ * grace period only ever elapses while a scene is being browsed at rest.
+ */
+export const RATIO_APPLY_GRACE_SECONDS = 1.5;
+
+/**
  * Smallest frame worth believing, in megapixels (~224²).
  *
  * A section measured before its first resize is drawing into a 1×1 buffer, which is instant and says

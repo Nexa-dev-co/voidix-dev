@@ -74,19 +74,64 @@ const listeners = new Set<MotionListener>();
 
 let preference: MotionPreference = 'system';
 let systemReduced = false;
+/** What the OS was asking at the moment the stored choice was made. See `readStoredPreference`. */
+let choiceSystemBaseline = false;
 let initialised = false;
+
+/** The stored shape. A bare `'reduced'`/`'full'` string is the earlier format and is still read. */
+interface StoredChoice {
+  choice: 'reduced' | 'full';
+  systemReduced: boolean;
+}
+
+function clearStoredChoice(): void {
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // See readStoredPreference — losing the write is survivable, throwing here is not.
+  }
+}
 
 function notifyListeners(): void {
   listeners.forEach((listener) => listener());
 }
 
+/**
+ * ⚠ Reads `systemReduced`, so it must run AFTER that is set.
+ *
+ * ⚠ A STORED CHOICE EXPIRES WHEN THE OS SETTING MOVES UNDER IT, and that is what makes it safe to
+ * ask only once. A stored `full` otherwise overrides `prefers-reduced-motion` for good: someone who
+ * pressed "Show everything", then later turned Reduce Motion on in their system settings, would find
+ * this site the one place that ignored it — and with the offer now shown a single time, no control
+ * left anywhere to undo it. Toggling an OS accessibility switch is a newer and more deliberate
+ * request than a preference recorded on some earlier visit, so it wins and the question re-opens.
+ */
 function readStoredPreference(): MotionPreference {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored === 'reduced' || stored === 'full') return stored;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return 'system';
+
+    // The earlier format: the bare preference, written before choices recorded a baseline. Honoured
+    // rather than discarded — nobody should be re-asked just because the format grew a field — and
+    // adopted into the current OS state so it behaves like a fresh choice from here on.
+    if (raw === 'reduced' || raw === 'full') {
+      choiceSystemBaseline = systemReduced;
+      return raw;
+    }
+
+    const stored = JSON.parse(raw) as Partial<StoredChoice>;
+    if (stored.choice !== 'reduced' && stored.choice !== 'full') return 'system';
+
+    if (stored.systemReduced !== systemReduced) {
+      clearStoredChoice();
+      return 'system';
+    }
+    choiceSystemBaseline = stored.systemReduced;
+    return stored.choice;
   } catch {
-    // Safari in private browsing throws on localStorage rather than returning null. A visitor who
-    // cannot persist a choice should still be able to make one for this session.
+    // Safari in private browsing throws on localStorage rather than returning null, and a value
+    // mangled by hand should not be fatal either. A visitor who cannot persist a choice should still
+    // be able to make one for this session.
   }
   return 'system';
 }
@@ -114,13 +159,21 @@ function initialise(): void {
   preference = readStoredPreference();
 
   // The OS setting can change mid-session too — on iOS it is reachable without leaving the browser.
-  // Only worth announcing when nothing is overriding it.
   query.addEventListener('change', (event: MediaQueryListEvent) => {
     systemReduced = event.matches;
-    if (preference === 'system') {
-      paintMotionAttribute();
-      notifyListeners();
+
+    if (preference !== 'system') {
+      // Nothing to say: the visitor's own choice still stands and still wins.
+      if (choiceSystemBaseline === systemReduced) return;
+      // ⚠ The same expiry `readStoredPreference` applies, applied live. It has to be in both places
+      // or whether a choice retires would depend on whether the visitor happened to reload — and on
+      // iOS the switch is reachable without leaving the browser, so the live path is the likely one.
+      preference = 'system';
+      clearStoredChoice();
     }
+
+    paintMotionAttribute();
+    notifyListeners();
   });
 
   paintMotionAttribute();
@@ -157,12 +210,17 @@ export function setMotionPreference(next: MotionPreference): void {
   initialise();
   if (preference === next) return;
   preference = next;
+  choiceSystemBaseline = systemReduced;
 
-  try {
-    if (next === 'system') window.localStorage.removeItem(STORAGE_KEY);
-    else window.localStorage.setItem(STORAGE_KEY, next);
-  } catch {
-    // See readStoredPreference — the choice still applies to this session.
+  if (next === 'system') {
+    clearStoredChoice();
+  } else {
+    try {
+      const record: StoredChoice = { choice: next, systemReduced };
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
+    } catch {
+      // See readStoredPreference — the choice still applies to this session.
+    }
   }
 
   paintMotionAttribute();
@@ -179,9 +237,10 @@ export function setMotionPreference(next: MotionPreference): void {
  * be reached within a frame of mount, the element would not be there, and the visitor would be let
  * straight through the decision they were supposed to be given.
  *
- * ⚠ It goes false the moment a choice is stored, and that is what stops this becoming a toll gate on
- * every future visit. The offer still APPEARS after that (see MotionPrompt's revisit mode) so the
- * choice stays reversible — it just no longer holds anything up.
+ * ⚠ It goes false the moment a choice is stored — asked once, never again — and that is only safe
+ * because `readStoredPreference` retires a choice the OS setting has moved out from under. Those two
+ * rules are a pair: drop the expiry and this becomes a permanent override of an accessibility
+ * setting with no way back, since there is no other motion control anywhere on the site.
  */
 export function shouldAskMotionChoice(): boolean {
   if (typeof window === 'undefined') return false;

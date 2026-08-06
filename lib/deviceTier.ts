@@ -44,11 +44,9 @@ const PHONE_MAX_WIDTH = 760;
  * hundred megabytes of render target". It is Chromium-only and coarsely bucketed (0.25/0.5/1/2/4/8),
  * and 8 is the maximum it will ever report — a 64 GB workstation also says 8.
  */
-const MEMORY_GB_HIGH = 8;
 const MEMORY_GB_MID = 4;
 const MEMORY_GB_LOW = 2;
 
-const CORES_HIGH = 8;
 const CORES_MID = 4;
 
 // ── What promotes a phone out of `low` ──
@@ -124,12 +122,39 @@ function classify(): DeviceTier {
   // ── Everything with a mouse ──
   // ⚠ `mid` is the default and the honest answer for most visitors, including every Safari and Firefox
   // user — `deviceMemory` is Chromium-only, so on those browsers only `cores` is available and it is a
-  // weak signal on its own. Erring to `mid` matters: `high` allocates 4× MSAA on two composers, and
-  // guessing upward is the exact mistake `adaptivePixelRatio` was rewritten to stop making.
+  // weak signal on its own. Erring to `mid` matters, and guessing upward is the exact mistake
+  // `adaptivePixelRatio` was rewritten to stop making. See the block below on why nothing reaches
+  // `high` from here at all.
   if (deviceMemoryGb === undefined) {
-    return cores >= CORES_HIGH ? 'mid' : cores >= CORES_MID ? 'mid' : 'low';
+    return cores >= CORES_MID ? 'mid' : 'low';
   }
-  if (deviceMemoryGb >= MEMORY_GB_HIGH && cores >= CORES_HIGH) return 'high';
+  // ── ⚠ `high` IS NOT REACHABLE FROM HINTS, AND THAT IS THE POINT ────────────────────────────────
+  //
+  // It used to be `deviceMemoryGb >= 8 && cores >= 8`, which reads like a demanding test and is not
+  // one. BOTH signals saturate at exactly that threshold:
+  //
+  //   · `deviceMemory` is capped at 8 BY SPEC — a 64 GB workstation reports 8, same as an ultrabook.
+  //     ">= 8" is therefore a check for "not ancient", not a check for "powerful".
+  //   · `hardwareConcurrency` counts THREADS, so an ordinary 4-core/8-thread laptop reports 8.
+  //
+  // The conjunction is satisfied by the single most common laptop configuration in existence. It was
+  // found by a visitor being told their mid laptop was `high` while it ran the works section at 27 fps
+  // — they were right to disbelieve it, and the classifier had no way to be right.
+  //
+  // The deeper problem is that neither signal describes a GPU, which is the only thing this tier is
+  // ever consulted about. That is the same error one level up that this file was written to undo:
+  // *"Width and pointer type correlate with GPU strength; they are not it."* Replacing 8 with 12 or 16
+  // would not fix it, it would just make a CPU test wrong less often.
+  //
+  // So nothing is guessed into the top tier any more. `high` stays in the union because it is what a
+  // machine may be PROMOTED to on evidence — `gpuProbe` plus `hasEarnedExtraQuality()` in
+  // `adaptivePixelRatio`, which already require a real measurement and four seconds of sustained
+  // 50 fps at full resolution before anything optional is switched on.
+  //
+  // ⚠ This changes no allocation today: `BLOOM_MSAA_SAMPLES_BY_TIER` gives `low`, `mid` and `high` the
+  // same 2 samples, and 4× has been earned rather than granted since it moved to the probe. The value
+  // of the fix is that the console stops lying and the trap stops being loaded — the next `high`-only
+  // branch anyone writes would have landed on every 8 GB laptop on the internet.
   if (deviceMemoryGb >= MEMORY_GB_MID && cores >= CORES_MID) return 'mid';
   return 'low';
 }

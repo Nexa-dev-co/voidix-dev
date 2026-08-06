@@ -1,13 +1,13 @@
-'use client';
+"use client";
 
-import { useRef, type CSSProperties } from 'react';
-import { usePathname } from 'next/navigation';
-import { useNavbarAnimation } from '@/lib/hooks/useNavbarAnimation';
-import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
-import { originOfElement, requestSection } from '@/lib/sectionNavigation';
-import OrbitDial from './OrbitDial/OrbitDial';
-import { useOrbitDial } from './OrbitDial/useOrbitDial';
-import { HOME_METER_KEY, NAV_ITEMS } from './navItems';
+import { useRef, type CSSProperties } from "react";
+import { usePathname } from "next/navigation";
+import { useNavbarAnimation } from "@/lib/hooks/useNavbarAnimation";
+import { useIsNarrowViewport } from "@/lib/hooks/useIsNarrowViewport";
+import { originOfElement, requestSection } from "@/lib/sectionNavigation";
+import OrbitDial from "./OrbitDial/OrbitDial";
+import { useOrbitDial } from "./OrbitDial/useOrbitDial";
+import { HOME_METER_KEY, NAV_ITEMS } from "./navItems";
 
 const METER_KEYS = [HOME_METER_KEY, ...NAV_ITEMS.map((item) => item.key)];
 
@@ -30,11 +30,30 @@ function LinkArrow() {
 function OrbitalMark() {
   return (
     <div className="orbital-mark" aria-hidden="true">
-      <svg className="orbital-static" width="26" height="26" viewBox="0 0 26 26" fill="none">
-        <circle cx="13" cy="13" r="9" stroke="rgb(var(--accent-rgb) / 0.18)" strokeWidth="0.75" strokeDasharray="2 2.5" />
+      <svg
+        className="orbital-static"
+        width="26"
+        height="26"
+        viewBox="0 0 26 26"
+        fill="none"
+      >
+        <circle
+          cx="13"
+          cy="13"
+          r="9"
+          stroke="rgb(var(--accent-rgb) / 0.18)"
+          strokeWidth="0.75"
+          strokeDasharray="2 2.5"
+        />
         <circle cx="13" cy="13" r="2" fill="var(--accent)" />
       </svg>
-      <svg className="orbital-spinning" width="26" height="26" viewBox="0 0 26 26" fill="none">
+      <svg
+        className="orbital-spinning"
+        width="26"
+        height="26"
+        viewBox="0 0 26 26"
+        fill="none"
+      >
         <circle cx="22" cy="13" r="1.5" fill="var(--accent)" opacity="0.85" />
       </svg>
     </div>
@@ -42,7 +61,7 @@ function OrbitalMark() {
 }
 
 export default function Navbar() {
-  const navRef    = useRef<HTMLElement>(null);
+  const navRef = useRef<HTMLElement>(null);
   const accentRef = useRef<HTMLDivElement>(null);
   const metersRef = useRef<HTMLDivElement>(null);
 
@@ -63,7 +82,7 @@ export default function Navbar() {
   // ever called after mount so the old read was safe, but the same answer is now needed during RENDER
   // (the meters below) and during the entrance effect, and neither of those may touch `window`.
   const pathname = usePathname();
-  const isHomepage = pathname === '/';
+  const isHomepage = pathname === "/";
 
   useNavbarAnimation({ navRef, accentRef, metersRef, isNarrow, isHomepage });
 
@@ -95,10 +114,10 @@ export default function Navbar() {
   // "Start Project" goes where a start-a-project button should: the contact form at the end.
   const handleCtaClick = (event: React.MouseEvent) => {
     if (!isHomepage) {
-      window.location.href = '/#contact';
+      window.location.href = "/#contact";
       return;
     }
-    requestSection('contact', originOfElement(event.currentTarget));
+    requestSection("contact", originOfElement(event.currentTarget));
   };
 
   return (
@@ -155,7 +174,11 @@ export default function Navbar() {
               <span key={meterKey} className="nav-meter" data-meter={meterKey}>
                 <span
                   className="nav-meter-fill"
-                  style={{ '--meter-progress': `var(--nav-progress-${meterKey}, 0)` } as CSSProperties}
+                  style={
+                    {
+                      "--meter-progress": `var(--nav-progress-${meterKey}, 0)`,
+                    } as CSSProperties
+                  }
                 />
               </span>
             ))}
@@ -166,7 +189,6 @@ export default function Navbar() {
       {/* Blended bar — mix-blend-mode: difference inverts all of this against whatever
           is underneath (cream hero → dark, black sections → light). */}
       <header ref={navRef} className="nav-root">
-
         <a href="/" className="nav-logo">
           {/* Transparent placeholder where the accent mark sits in the accent layer. */}
           <span className="nav-mark-spacer" aria-hidden="true" />
@@ -180,7 +202,11 @@ export default function Navbar() {
           <nav aria-label="Main navigation">
             <ul className="nav-items">
               {NAV_ITEMS.map((navItem) => (
-                <li key={navItem.href} className="nav-item" data-enter={navItem.enter}>
+                <li
+                  key={navItem.href}
+                  className="nav-item"
+                  data-enter={navItem.enter}
+                >
                   <a
                     href={navItem.href}
                     className="nav-link"
@@ -239,14 +265,19 @@ export default function Navbar() {
         ) : (
           <button className="nav-cta" type="button" onClick={handleCtaClick}>
             <span>Start Project</span>
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 11 11"
+              fill="none"
+              aria-hidden="true"
+            >
               <path
                 d="M1 10L10 1M10 1H3.5M10 1V7.5"
                 stroke="currentColor"
                 strokeWidth="1.25"
                 strokeLinecap="round"
-                strokeLinejoin="round" 
-                
+                strokeLinejoin="round"
               />
             </svg>
             <span className="cta-corner cta-tl" aria-hidden="true" />
@@ -255,7 +286,6 @@ export default function Navbar() {
             <span className="cta-corner cta-br" aria-hidden="true" />
           </button>
         )}
-
       </header>
 
       {/* The phone's navigation. Mounted only at narrow widths — nothing can open it otherwise, and an

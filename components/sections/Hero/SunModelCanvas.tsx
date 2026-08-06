@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createFrameTimer } from '@/lib/frameTimer';
+import { profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
@@ -1046,6 +1047,7 @@ export default function SunModelCanvas() {
     let animationFrame = 0;
     const animate = () => {
       animationFrame = requestAnimationFrame(animate);
+      const loopStartedAt = profileNow();
       const delta = frameTimer.tick();
 
       // Ease our own copy of the scrubbed targets, so the choreography can't be outrun by a fast
@@ -1202,10 +1204,16 @@ export default function SunModelCanvas() {
         moving ||
         assembling;
       if (!document.hidden && (animating || wasAnimating || forceRender)) {
-        bloom.render(scene, camera);
+        // ⚠ The star is a SECOND WebGL context and it draws alongside the field for the whole of
+        // services and works (see CLAUDE.md — `covered` only goes true at the chamber reveal). It is
+        // therefore one of the prime suspects for the frame time the works probe cannot see, and it
+        // has never been measured separately from it.
+        profileMeasure('sun · bloom', () => bloom.render(scene, camera), true);
         forceRender = false;
       }
       wasAnimating = animating;
+
+      profileSpan('sun · loop', profileNow() - loopStartedAt);
     };
     animate();
 

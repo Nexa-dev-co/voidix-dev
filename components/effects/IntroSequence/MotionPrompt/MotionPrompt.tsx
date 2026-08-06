@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import {
-  getMotionPreference,
   isReducedMotion,
   isSystemReducedMotion,
   MOTION_CHOICE_EVENT,
@@ -11,16 +10,6 @@ import {
   subscribeMotionPreference,
   type MotionPreference,
 } from '@/lib/motionPreference';
-
-/**
- * `decide` — nothing has been chosen yet, so the loader HOLDS its handoff on this. `revisit` — a
- * choice is already stored, so the offer is shown but blocks nothing.
- *
- * ⚠ The two modes exist because "stay on screen until they answer" and "ask once" are the same
- * requirement seen from two sides. Without `revisit` the dialog would stop every future visit at the
- * door; without `decide` the offer is a suggestion the loader can outrun, which is what it was.
- */
-type PromptMode = 'decide' | 'revisit';
 
 /**
  * The motion offer, made while the loader holds.
@@ -47,7 +36,7 @@ export default function MotionPrompt() {
   // returns `false` on the server, so branching on it during render would give a reduced-motion
   // machine a different first paint than the server sent — the same hydration trap that keeps
   // `GatherCanvas` mounted unconditionally. `null` renders nothing, which is what the server sent.
-  const [mode, setMode] = useState<PromptMode | null>(null);
+  const [shouldAsk, setShouldAsk] = useState(false);
   const [isReduced, setIsReduced] = useState(false);
   const [askedBySystem, setAskedBySystem] = useState(false);
   // Set between the press and the reload, which on a cold connection is long enough to look broken.
@@ -57,14 +46,11 @@ export default function MotionPrompt() {
     const syncFromPreference = () => {
       setIsReduced(isReducedMotion());
       setAskedBySystem(isSystemReducedMotion());
-      if (shouldAskMotionChoice()) {
-        setMode('decide');
-        return;
-      }
-      // ⚠ Shown after the decision too, or the control is a one-way door: someone who chose "show
-      // everything" and then regretted it would have no way back, which is the failure this whole
-      // feature exists to prevent.
-      setMode(getMotionPreference() === 'system' ? null : 'revisit');
+      // ⚠ ASKED ONCE. Once a choice is stored this goes false and the panel never returns, which is
+      // only tolerable because `readStoredPreference` retires a choice whose OS baseline has since
+      // moved — a later flip of the system switch re-opens the question by itself. Showing the panel
+      // on every subsequent load was the first cut and it read as the site having forgotten.
+      setShouldAsk(shouldAskMotionChoice());
     };
     syncFromPreference();
     return subscribeMotionPreference(syncFromPreference);
@@ -100,7 +86,7 @@ export default function MotionPrompt() {
   // QUERYING for it (`.intro-motion-prompt`) rather than holding a ref. The loader does NOT infer
   // anything from the element's absence, though — it asks `shouldAskMotionChoice()` itself, so the
   // two can never disagree about whether a decision is owed.
-  if (!mode) return null;
+  if (!shouldAsk) return null;
 
   // The same two outcomes whichever way round they are offered, so the consequence text is written
   // once. Order puts what is already running first: the answer that costs nothing should be the
@@ -125,12 +111,10 @@ export default function MotionPrompt() {
   return (
     <div
       className="intro-motion-prompt"
-      data-mode={mode}
       data-committing={isCommitting}
-      // Only a dialog when it actually owns the moment. In revisit mode it blocks nothing, and
-      // announcing an aside as a modal would be a lie to a screen reader.
-      role={mode === 'decide' ? 'dialog' : 'group'}
-      aria-modal={mode === 'decide' ? true : undefined}
+      // Always a real dialog now: the only time it renders, the loader is holding for it.
+      role="dialog"
+      aria-modal
       aria-labelledby="intro-motion-title"
     >
       <p className="intro-motion-title" id="intro-motion-title">

@@ -25,7 +25,17 @@ import {
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
 import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
-import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
+import {
+  getPixelRatio,
+  RATIO_APPLY_GRACE_SECONDS,
+  sampleFrame,
+} from '@/lib/adaptivePixelRatio';
+import {
+  profileGauge,
+  profileMeasure,
+  profileNow,
+  profileSpan,
+} from '@/lib/frameProfiler';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
 import { SLATE_600 } from '@/lib/coolPalette';
@@ -1205,6 +1215,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // whenever the adaptive controller shifts the ratio. Defined before the render loop so the loop
     // can call it without a forward reference.
     let appliedPixelRatio = getPixelRatio();
+    /** How long the controller's ratio has differed from the one actually allocated. */
+    let ratioPendingSeconds = 0;
     // How far the flight's camera pulls back on a narrow frame, at its far end. Held here beside the
     // aspect it is derived from rather than recomputed in the loop, so the two can't disagree — and
     // read ONLY by the handoff below. The fleet's own resting shot is deliberately not touched by it
@@ -1241,6 +1253,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
+      const loopStartedAt = profileNow();
 
       const deltaSeconds = frameTimer.tick();
       const elapsed = frameTimer.elapsed();
@@ -1425,7 +1438,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const parkedAtWorks = departState.current >= DECK_PARKED_THRESHOLD;
       const handoffActive = departState.current > 0.001 && departState.current < 0.999;
       const isDrawing = deckShouldRender && !document.hidden && !parkedAtWorks;
-      if (isDrawing) composer.render();
+      if (isDrawing) {
+        profileMeasure('deck · render', () => composer.render(), true);
+        profileGauge('deck draws', renderer.info.render.calls);
+      }
 
       // ── Adaptive resolution: only ever re-sized while this scene is NOT being drawn ──
       // Applying a new pixel ratio reallocates the whole composer (the UnrealBloom target pyramid +
@@ -1439,16 +1455,25 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       if (!handoffActive && !swapActive) {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
+          ratioPendingSeconds = 0;
           // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
           // (gated-off) frames can never fake headroom and trick it into ramping the resolution up.
           if (isDrawing) sampleFrame(deltaSeconds);
-        } else if (!isDrawing) {
-          applyRendererSize();
+        } else {
+          // Queued. Sampling deliberately stops — measuring at the old ratio while the controller
+          // believes it is already at the new one would feed it a lie and make it over-climb.
+          ratioPendingSeconds += deltaSeconds;
+          // The fleet does get idle frames (it parks behind works), but not while it is being
+          // browsed — four stops with wide crossings between them is a long time to hold a queued
+          // change. Same rule as the works field; see RATIO_APPLY_GRACE_SECONDS.
+          if (!isDrawing || ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS) {
+            applyRendererSize();
+            ratioPendingSeconds = 0;
+          }
         }
-        // Else: a change is queued but we're on screen — hold it, and deliberately STOP sampling
-        // until it lands. Measuring at the old ratio while the controller believes it's already at
-        // the new one would feed it a lie and make it over-climb.
       }
+
+      profileSpan('deck · loop', profileNow() - loopStartedAt);
     };
     renderFrame();
 
