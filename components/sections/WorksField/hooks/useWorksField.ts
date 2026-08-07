@@ -68,6 +68,7 @@ import {
   profileSpan,
 } from '@/lib/frameProfiler';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
+import { shouldDrawThisFrame } from '@/lib/renderClock';
 import { detectKtx2Support } from '@/lib/modelLoading';
 import { getDeviceTier, isLowPowerDevice, type DeviceTier } from '@/lib/deviceTier';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
@@ -206,8 +207,19 @@ const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as
  * progress does walk this back toward 1 on its own, but `chamberState.current` EASES, so a hard flick
  * out of the room leaves the room's value lagging its target by ~180 ms while the finale is already
  * under way. Excluding the return states the real condition instead of relying on a race.
+ *
+ * ── ⚠ CUT 2 → 1 WHEN THE SHARED CADENCE LANDED, AND IT IS NOT A CLIMBDOWN ────────────────────────
+ * This stride is a multiplier on the page's frame rate, not a frame rate. It was authored against an
+ * uncapped loop, where a maximum of 2 (stride 3) meant the display's feed ran at ~20 fps out of ~60.
+ * Under `lib/renderClock` the loop itself delivers 30, so the SAME constant would have quietly meant
+ * 10 fps — and the room's camera is scrubbed by scroll, so a 10 fps feed inside a picture the visitor
+ * is dragging is exactly the "two-frame-old camera" the window below exists to prevent.
+ *
+ * 1 (stride 2) restores the authored ratio: the display updates at half the page's rate, ~15 fps,
+ * which is what a slow starfield behind an angled panel was always being asked to do. The saving is
+ * unchanged as a FRACTION, and the fraction is what §2.3 of the plan measured.
  */
-const CHAMBER_SPACE_STRIDE_MAX = 2;
+const CHAMBER_SPACE_STRIDE_MAX = 1;
 /**
  * The window is keyed to the PULL-BACK, not chosen by taste.
  *
@@ -2403,7 +2415,18 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const streakDirection = new THREE.Vector3(0, 0, 1);
     let hasPreviousCameraPosition = false;
     let warp = 0;
-    const renderFrame = () => {
+    /**
+     * When this scene last actually PAINTED, for the resolution controller.
+     *
+     * ⚠ Not `frameTimer.lastRawDelta()` any more, and the difference is the whole reason this exists.
+     * That measures tick to tick, and under the shared cadence most ticks are skips — so on a 60 Hz
+     * panel drawing every other tick it would report 16.7 ms, the controller would read 60 fps on a
+     * site delivering 30, and both of its one-way latches (`EMERGENCY_FAST_FPS`, `EXTRA_QUALITY_FPS`)
+     * would fire within seconds of the first stop. Draw to draw is the only interval that describes a
+     * frame this scene actually paid for.
+     */
+    let previousPaintAt = 0;
+    const renderFrame = (timestamp = performance.now()) => {
       frameId = requestAnimationFrame(renderFrame);
       const loopStartedAt = profileNow();
       // Accumulate across every pass this frame rather than being reset by each `render()` — see the
@@ -2720,6 +2743,21 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         chamberState.engaged && roomRaw > CHAMBER_ENGAGE_EPSILON && roomRaw < CHAMBER_SCRUB_END;
 
       const isDrawing = worksShouldRender && !document.hidden;
+      /**
+       * `isDrawing` says this SECTION is live; this says the shared cadence wants a picture on this
+       * tick. They are deliberately two variables rather than one.
+       *
+       * ⚠ Everything below that reads `!isDrawing` means "the visitor is not looking at this scene" and
+       * uses it to pick a frame nobody can see for an expensive reallocation — the MSAA raise and the
+       * pixel-ratio apply, both of which stall for 150–400 ms. A cadence skip is NOT that: the field is
+       * on screen, one frame between two drawn ones, and dropping a composer reallocation into it would
+       * put a visible hitch in the middle of a section rather than hide one at the edge of it.
+       *
+       * The state above this line still runs every tick, on purpose. It is scroll-derived and cheap
+       * (~0.2 ms), and running it every tick means the frame we DO paint carries the freshest possible
+       * scroll position instead of one that is a tick stale.
+       */
+      const isPainting = isDrawing && shouldDrawThisFrame(timestamp);
 
       // ── Stop paying the compositor for a canvas nobody can see ──
       // `worksShouldRender` is the section's own gate — false through the hero and the whole fleet,
@@ -2734,7 +2772,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Hoisted out of the draw block because the resolution controller below has to know whether this
       // frame did the full job before it decides whether the NEXT one's timing means anything.
       let spaceRenderedThisFrame = true;
-      if (isDrawing) {
+      if (isPainting) {
         // Geometry AA follows the room, because the room is the only thing stage 2 ever draws that has
         // geometry. Toggling `enabled` is all this needs: EffectComposer recomputes which pass is the
         // last ENABLED one on every render, so `OutputPass` takes over drawing to the canvas by itself
@@ -2831,11 +2869,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // could not see this section running below 20 fps, which is where it spends its whole time
           // on the machines this exists for. See `FrameTimer.lastRawDelta`.
           //
-          // ⚠ …and only frames whose PREVIOUS frame did the full job. `lastRawDelta` measures the frame
-          // before this one, so once the chamber's space stride engages, two frames in three are cheap
-          // by construction and would read as headroom the site does not have. Both consumers latch on
-          // that and neither ever un-latches — see `spaceRenderedLastFrame`.
-          if (isDrawing && spaceRenderedLastFrame) sampleFrame(frameTimer.lastRawDelta(), 'works');
+          // ⚠ …and only frames whose PREVIOUS PAINTED frame did the full job. Once the chamber's space
+          // stride engages, two painted frames in three are cheap by construction and would read as
+          // headroom the site does not have. Both consumers latch on that and neither ever un-latches
+          // — see `spaceRenderedLastFrame`.
+          if (isPainting && spaceRenderedLastFrame && previousPaintAt > 0) {
+            sampleFrame((timestamp - previousPaintAt) / 1000, 'works');
+          }
         } else {
           // Queued. Sampling deliberately stops here — measuring at one ratio while the controller
           // believes it is at another feeds it a lie.
@@ -2862,10 +2902,19 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         }
       }
 
-      // Last, so the controller above reads the PREVIOUS frame's answer rather than this one's. Only
-      // updated on frames we drew: an undrawn frame's timing is already excluded from sampling, and
-      // letting it write here would make the first frame back look like it followed a full one.
-      if (isDrawing) spaceRenderedLastFrame = spaceRenderedThisFrame;
+      // Last, so the controller above reads the PREVIOUS painted frame's answer rather than this one's.
+      // Only updated on frames we painted: an unpainted frame's timing is already excluded from
+      // sampling, and letting it write here would make the first frame back look like it followed a
+      // full one.
+      if (isPainting) {
+        spaceRenderedLastFrame = spaceRenderedThisFrame;
+        previousPaintAt = timestamp;
+      } else if (!isDrawing) {
+        // The section has gone away. The next paint is on the far side of a crossing or a whole lap,
+        // and that gap is not a frame cost — clearing this makes the first paint back un-sampleable
+        // rather than sampled as a several-second frame.
+        previousPaintAt = 0;
+      }
 
       profileSpan('works · loop', profileNow() - loopStartedAt);
     };

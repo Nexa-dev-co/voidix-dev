@@ -1,3 +1,9 @@
+import {
+  getCadencePeriodMilliseconds,
+  isCadenceCapping,
+  isMissingCadence,
+  TARGET_FRAME_RATE,
+} from '@/lib/renderClock';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 
 /**
@@ -180,26 +186,57 @@ const CALIBRATION_MAX_SAMPLE_MS = 200;
  * tell you which one matters more — that is a decision about the site, not about the machine. This is
  * where it is written down, so it is one word rather than an archaeology dig through four constants.
  *
- *   'quality'    — hold the pixels, accept 40 fps. Sharpest. On a scrubbed site 40 is watchable.
- *   'balanced'   — aim for 50.
- *   'smoothness' — aim for 60, and give up whatever resolution that costs.
+ * ── ⚠ REDEFINED WHEN `lib/renderClock` LANDED, AND THE OLD FORM WAS A LATENT DISASTER ────────────
+ * This used to name an absolute target frame rate — 40 / 50 / 60 — and solve the ratio against it. The
+ * site now DELIVERS a fixed cadence, so the frame rate is a constant the cap manufactures rather than
+ * a measurement of the machine, and solving against an absolute target would have read that constant
+ * as a verdict:
+ *
+ *     balanced aimed at 50 fps → 20 ms; the cap delivers 33.3 ms by construction
+ *     sustainable = ratio × √(20 ÷ 33.3) = ratio × 0.78
+ *
+ * Every machine on earth, however fast, would have had its resolution cut 22 % on the strength of idle
+ * time the cap deliberately inserted — and then cut again on the next lap. It is the failure §5 item 8
+ * of the quality-budget plan describes for decimated frames, except that under a cap EVERY frame is
+ * decimated, so the mitigation there ("skip the cheap ones") degenerates to "never sample".
+ *
+ * So the dial is now HEADROOM OVER THE CADENCE: how much faster than the delivered rate a machine has
+ * to be able to run before the resolution stops climbing.
+ *
+ *   'quality'    — solve for exactly the cadence period. Sharpest, and the first to drop a frame.
+ *   'balanced'   — 15 % inside it, so an ordinary variation has somewhere to go.
+ *   'smoothness' — 35 % inside it; gives up resolution to keep the cadence through the worst moments.
  *
  * ⚠ IT CANNOT PUSH PAST THE FLOOR, and on a dense panel the floor is usually what binds. If this is
  * set to 'quality' and the picture is still softer than you want, the constant you actually want is
  * `MAX_COMPOSITE_UPSCALE` above — that is what decides how far below your display's density the site
- * is ever allowed to render, and no target frame rate can override it.
+ * is ever allowed to render, and no headroom setting can override it.
  */
 type ResolutionPriority = 'quality' | 'balanced' | 'smoothness';
 const RESOLUTION_PRIORITY: ResolutionPriority = 'balanced';
 
-const PRIORITY_TARGET_FPS: Record<ResolutionPriority, number> = {
-  quality: 40,
-  balanced: 50,
-  smoothness: 60,
+const PRIORITY_CADENCE_HEADROOM: Record<ResolutionPriority, number> = {
+  quality: 1.0,
+  balanced: 1.15,
+  smoothness: 1.35,
 };
 
-/** The frame time the calibration solves toward. Lower target fps → more pixels kept. */
-const CALIBRATION_TARGET_FRAME_MS = 1000 / PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY];
+/**
+ * The frame time the calibration solves toward: one cadence period, less the headroom above.
+ *
+ * ⚠ Read from the clock rather than from `1000 / TARGET_FRAME_RATE`, because a 144 Hz panel cannot
+ * deliver 30 evenly and settles at 28.8 — a 34.7 ms period. Solving against 33.3 there would ask every
+ * machine on that panel for 4 % more than the cadence will ever demand.
+ *
+ * ⚠ The fallback matters more than it looks: the loader's burn-in runs BEFORE the clock has seen
+ * enough ticks to know the panel, so it always takes the nominal period. That is correct rather than
+ * unfortunate — the burn-in must measure this machine's true UNCAPPED cost, and the 4 % it can be out
+ * by is an order of magnitude inside `CALIBRATION_SAFETY_FRACTION`.
+ */
+function calibrationTargetFrameMilliseconds(): number {
+  const period = getCadencePeriodMilliseconds() || 1000 / TARGET_FRAME_RATE;
+  return period / PRIORITY_CADENCE_HEADROOM[RESOLUTION_PRIORITY];
+}
 
 /**
  * Held back from whatever the machine proved it could sustain.
@@ -307,6 +344,13 @@ let calibrationMilliseconds = 0;
 let calibrationFrames = 0;
 /** The ratio the calibration frames were actually drawn at. */
 let calibrationRatio = 1;
+/**
+ * Did the cadence slip at any point inside the current calibration window?
+ *
+ * The window's verdict depends entirely on this. Held throughout → the ratio is already correct and
+ * there is nothing to solve. Slipped → the frames are honest and worth solving from.
+ */
+let cadenceMissedDuringWindow = false;
 /** Which scene's frames are arriving right now. */
 let activePipeline: PipelineKey | null = null;
 /** Scenes that have had their one measurement. */
@@ -341,6 +385,7 @@ function resetCalibration(): void {
   calibrationSeconds = 0;
   calibrationMilliseconds = 0;
   calibrationFrames = 0;
+  cadenceMissedDuringWindow = false;
 }
 
 function ensureInitialised(): void {
@@ -471,7 +516,8 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
   if (phase === 'locked') return;
   if (!(medianFrameMilliseconds > 0) || !(ratio > 0)) return;
 
-  const sustainable = ratio * Math.sqrt(CALIBRATION_TARGET_FRAME_MS / medianFrameMilliseconds);
+  const targetFrameMs = calibrationTargetFrameMilliseconds();
+  const sustainable = ratio * Math.sqrt(targetFrameMs / medianFrameMilliseconds);
   const solved = sustainable * (1 - CALIBRATION_SAFETY_FRACTION);
   const from = pixelRatio;
 
@@ -490,7 +536,9 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
     console.log(
       `%c[pixels] BURN-IN%c ${from.toFixed(2)} → ${pixelRatio.toFixed(2)} — decided during the loader,` +
         ` locked before the first visible frame.` +
-        `\n  priority "${RESOLUTION_PRIORITY}" → aiming for ${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps` +
+        `\n  priority "${RESOLUTION_PRIORITY}" → a ${targetFrameMs.toFixed(1)} ms frame, ` +
+        `${PRIORITY_CADENCE_HEADROOM[RESOLUTION_PRIORITY].toFixed(2)}× inside the ` +
+        `${TARGET_FRAME_RATE} fps cadence` +
         `\n  measured ${medianFrameMilliseconds.toFixed(1)} ms/frame ` +
         `(${(1000 / medianFrameMilliseconds).toFixed(0)} fps) at ratio ${ratio.toFixed(2)}` +
         `\n  sustains ${sustainable.toFixed(2)}, less ` +
@@ -596,8 +644,20 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   emaFrameSeconds += (dtSeconds - emaFrameSeconds) * EMA_ALPHA;
   const fps = 1 / emaFrameSeconds;
 
+  // ── ⚠ WHAT A FRAME TIME MEANS ONCE THERE IS A CAP ──
+  // Under the shared cadence a machine that is COPING reports the cadence period and nothing else, no
+  // matter how much headroom it has — the number is manufactured by the cap, not measured. A machine
+  // that is MISSING is reporting a real frame that costs too much. So: holding says nothing, missing
+  // says spend less. Everything below keys off that distinction rather than off the raw rate.
+  const capping = isCadenceCapping();
+  if (isMissingCadence()) cadenceMissedDuringWindow = true;
+
   // ── Extras, on top of whatever resolution we settled at ──
-  if (!extraQualityEarned && phase === 'locked') {
+  // ⚠ Unreachable under a cap by construction (EXTRA_QUALITY_FPS is 50 and the site delivers 30), and
+  // guarded rather than left to fail silently — a gate that can never open reads as a bug the next time
+  // somebody wonders why MSAA never appears. The burn-in's measured surplus is the route that works,
+  // and it is the one CLAUDE.md already prefers.
+  if (!extraQualityEarned && phase === 'locked' && !capping) {
     if (fps >= EXTRA_QUALITY_FPS) {
       extraQualityFor += dtSeconds;
       if (extraQualityFor >= EXTRA_QUALITY_SECONDS) {
@@ -640,9 +700,32 @@ function calibrate(dtSeconds: number): void {
   calibrationFrames += 1;
   if (calibrationSeconds < CALIBRATION_SECONDS) return;
 
+  // ── ⚠ HELD THE CADENCE FOR THE WHOLE WINDOW → THERE IS NOTHING TO SOLVE ──
+  // This is the ordinary outcome on a machine that is coping, and it has to return without touching
+  // the ratio. Every frame in the window cost exactly one cadence period because that is what the cap
+  // asked for, so the square law below would be solving against a number the site chose rather than
+  // one the machine reported — and it would come out low, and it would come out low again on the next
+  // section, for the rest of the session. The ratio the burn-in decided stands.
+  if (isCadenceCapping() && !cadenceMissedDuringWindow) {
+    if (activePipeline) calibratedPipelines.add(activePipeline);
+    phase = 'locked';
+    if (telemetryEnabled) {
+      console.log(
+        `%c[pixels] CADENCE HELD (${activePipeline})%c ratio ${pixelRatio.toFixed(2)} stands — ` +
+          `${calibrationFrames} frames, none late.` +
+          `\n  Nothing to solve: a capped frame that arrives on time reports the cap, not the machine.` +
+          ` Only a slipped cadence can move this now.`,
+        'color:#5bd6a0;font-weight:700',
+        'color:#888',
+      );
+    }
+    return;
+  }
+
   const measuredFrameMs = calibrationMilliseconds / calibrationFrames;
   // Same square law the probe uses, but against a REAL frame instead of one pipeline on a quiet stage.
-  const sustainable = calibrationRatio * Math.sqrt(CALIBRATION_TARGET_FRAME_MS / measuredFrameMs);
+  const targetFrameMs = calibrationTargetFrameMilliseconds();
+  const sustainable = calibrationRatio * Math.sqrt(targetFrameMs / measuredFrameMs);
   const solved = sustainable * (1 - CALIBRATION_SAFETY_FRACTION);
   const from = pixelRatio;
 
@@ -663,7 +746,9 @@ function calibrate(dtSeconds: number): void {
         (calibratedPipelines.size < 2
           ? ` — holding here until the other scene is measured too.`
           : ` — both scenes measured, locked for the session.`) +
-        `\n  priority "${RESOLUTION_PRIORITY}" → aiming for ${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps` +
+        `\n  priority "${RESOLUTION_PRIORITY}" → a ${targetFrameMs.toFixed(1)} ms frame, ` +
+        `${PRIORITY_CADENCE_HEADROOM[RESOLUTION_PRIORITY].toFixed(2)}× inside the ` +
+        `${TARGET_FRAME_RATE} fps cadence` +
         `\n  measured ${measuredFrameMs.toFixed(1)} ms/frame (${(1000 / measuredFrameMs).toFixed(0)} fps)` +
         ` at ratio ${calibrationRatio.toFixed(2)}, over ${calibrationFrames} frames` +
         `\n  sustains ${sustainable.toFixed(2)}, less ${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}%` +

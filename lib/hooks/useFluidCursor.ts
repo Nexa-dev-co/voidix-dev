@@ -6,6 +6,7 @@ import {
 import { createFluidSimulation } from '@/components/effects/FluidCursor/fluidSimulation';
 import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
+import { shouldDrawThisFrame } from '@/lib/renderClock';
 
 /**
  * The INK canvas's density cap.
@@ -254,12 +255,21 @@ export function useFluidCursor(
     /** Latches the one clear that happens on the way into idle — see the render loop. */
     let isIdle = true;
 
-    const renderFrame = () => {
+    const renderFrame = (timestamp = performance.now()) => {
       animationFrame = requestAnimationFrame(renderFrame);
 
       // Idle the whole sim while the hero is off screen, or the tab is backgrounded — nothing to
       // draw, no work.
       if (!isHeroVisible || document.hidden) return;
+
+      // ── On the shared cadence, like every other renderer on the page ──
+      // ⚠ This is the one place the cap costs INPUT rather than motion. Everywhere else the cadence
+      // samples a scroll position; here it samples a cursor, and an ink trail is judged on how closely
+      // it tracks the pointer. It is on the clock anyway because the hero is a section like any other
+      // and a star at 30 over a sim at 120 is exactly the "several clocks" the cadence exists to
+      // remove — but if the trail ever reads as lagging the cursor, this is the line to lift, and
+      // lifting it costs the hero its uniformity and nothing else.
+      if (!shouldDrawThisFrame(timestamp)) return;
 
       const now = performance.now();
       const deltaSeconds = Math.min((now - lastFrameTime) / 1000, MAX_FRAME_SECONDS);

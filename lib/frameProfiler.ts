@@ -1,3 +1,10 @@
+import {
+  getDetectedRefreshHz,
+  getRenderStride,
+  getTotalDrawCount,
+  isMissingCadence,
+  TARGET_FRAME_RATE,
+} from '@/lib/renderClock';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 
 /**
@@ -85,6 +92,17 @@ let stallCount = 0;
 let lastFrameAt = 0;
 let longTaskCount = 0;
 let longTaskMilliseconds = 0;
+/**
+ * `getTotalDrawCount()` as the window opened.
+ *
+ * ⚠ THE HEADLINE USED TO COUNT TICKS, AND UNDER A CAP THAT IS NOT THE FRAME RATE. This module runs its
+ * own animation frame and counted every one of them, which was the delivered rate right up until the
+ * site started skipping draws on purpose: a 60 Hz panel drawing every other tick still TICKS at 60, so
+ * the report would have read "60 fps" on a site delivering 30 and the cap would have looked like it
+ * never shipped. Differencing the clock's own draw counter over this window gives the rate a visitor
+ * actually sees, averaged over exactly the same window as everything else in the report.
+ */
+let drawsAtWindowStart = 0;
 
 function ensureRunning(): void {
   if (running || !telemetryEnabled || typeof window === 'undefined') return;
@@ -136,6 +154,7 @@ function reset(): void {
   longTaskCount = 0;
   longTaskMilliseconds = 0;
   wallClockStartedAt = performance.now();
+  drawsAtWindowStart = getTotalDrawCount();
 }
 
 function report(): void {
@@ -182,8 +201,16 @@ function report(): void {
     .map(([name, value]) => `${name} ${typeof value === 'number' ? value.toFixed(2) : value}`)
     .join(' · ');
 
+  // The two rates are different questions and the report now answers both: `drawn` is what the visitor
+  // sees, `ticks` is the wall clock every span and `unaccounted` figure below is a fraction of.
+  const wallClockSeconds = Math.max(0.001, (performance.now() - wallClockStartedAt) / 1000);
+  const drawnFps = (getTotalDrawCount() - drawsAtWindowStart) / wallClockSeconds;
+  const stride = getRenderStride();
+  const refreshHz = getDetectedRefreshHz();
+
   console.log(
-    `%c[frame] ${fps.toFixed(0)} fps · ${averageFrameMilliseconds.toFixed(1)} ms avg · ` +
+    `%c[frame] ${drawnFps.toFixed(0)} fps drawn · ${fps.toFixed(0)} Hz ticks · ` +
+      `${averageFrameMilliseconds.toFixed(1)} ms/tick · ` +
       `worst ${worstFrameMilliseconds.toFixed(0)} ms · ${stallCount} stalls over ${STALL_FRAME_MS} ms` +
       `%c   (${frames} frames sampled in ${(windowMilliseconds / 1000).toFixed(1)} s` +
       ` of ${((performance.now() - wallClockStartedAt) / 1000).toFixed(1)} s wall clock` +
@@ -199,8 +226,18 @@ function report(): void {
       (longTaskCount > 0
         ? `\n  long tasks: ${longTaskCount} (${longTaskMilliseconds.toFixed(0)} ms total)`
         : '\n  long tasks: none') +
+      `\n  cadence: ${
+        stride === 1
+          ? `UNCAPPED — ${refreshHz > 0 ? `${refreshHz.toFixed(0)} Hz panel, ` : ''}this machine has no spare frames to give back`
+          : `every ${stride}th tick of a ${refreshHz.toFixed(0)} Hz panel → ${(refreshHz / stride).toFixed(1)} fps` +
+            (isMissingCadence() ? ' · ⚠ MISSING — draws are landing late' : ' · held')
+      }` +
       (gaugeLine ? `\n  ${gaugeLine}` : ''),
-    fps < 50 ? 'color:#ff5c5c;font-weight:700' : 'color:#5bd6a0;font-weight:700',
+    // Graded against the cadence the site is actually trying to deliver, not against 50 — under a cap
+    // "below 50" is the normal, correct, intended state and colouring it red says nothing.
+    drawnFps < TARGET_FRAME_RATE * 0.9
+      ? 'color:#ff5c5c;font-weight:700'
+      : 'color:#5bd6a0;font-weight:700',
     'color:#888',
   );
 

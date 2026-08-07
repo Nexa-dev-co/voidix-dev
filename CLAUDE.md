@@ -530,12 +530,75 @@ the fan is up. Don't "restore" the drag, and don't collapse it to one tap either
 are ready), so a new section's meter works with zero navbar changes. Entrance plays on
 `REVEAL_EVENT`, items converging from the four directions in their `data-enter`.
 
+## The render cadence — one clock, 30 fps, every renderer
+
+**Added 2026-08-07.** `lib/renderClock.ts` decides which animation-frame ticks are draw ticks, and
+**every renderer on the page asks it** — the sun, the fleet, the works field and the fluid cursor.
+The site delivers one fixed frame rate everywhere instead of 21–49 fps depending on the section.
+
+Nothing here is timed in frames — crossings are pure functions of scroll progress, idle motion is
+delta-timed — so drawing less often changes how often the picture is sampled and changes nothing
+about where anything is or how fast it moves. The freed budget is not saved, it is **spent on
+resolution**, which is the trade this file already calls the priority.
+
+- ⚠ **ONE clock, not three.** Three loops each doing `% 2` land on different ticks: some frames carry
+  one scene, some carry three, and the result is lumpier than no cap. They stay in phase because
+  **every rAF callback in a tick receives the same `timestamp`**, and the decision is memoised on it.
+  **Callers must pass the rAF timestamp, never `performance.now()`** — two loops passing their own
+  clock reading each get a fresh decision, each advance the counter, and the phase is nonsense.
+- ⚠ **Exactly 30 is a property of the display.** An even cadence means an integer stride, and 30 only
+  divides some panels: 60/90/120/240 Hz → exactly 30; **144 Hz → 28.8, 165 Hz → 27.5.** A wall-clock
+  33.3 ms accumulator would average 30.0 on 144 Hz by alternating 4- and 5-tick gaps, which is judder.
+  Steady 28.8 beats jittery 30.0, and since nothing is frame-timed the 1.2 fps costs only the number.
+  `ceil`, not `round`, so the cadence is never *faster* than the target.
+- ⚠ **The stride comes from the vblank, and the vblank is the FLOOR of the deltas, not the median.**
+  A 60 Hz panel GPU-bound at 45 fps delivers a mix of 16.7 and 33.3 ms gaps; its median reads as a
+  45 Hz display. Vsync deltas are integer multiples of one vblank, so the short ones are the hardware
+  and the long ones are load. Consequence: **a machine that genuinely cannot reach 30 detects a low
+  refresh, lands on stride 1, and is never capped** — the cap can only take frames a machine had
+  spare.
+- ⚠ **`isDrawing` and `isPainting` are different questions in the scene hooks.** The first is "is this
+  section live" and is what picks an unwatched frame for a composer reallocation; the second is "does
+  the cadence want a picture". A cadence skip is a frame the section is very much on screen for, and
+  dropping a 150–400 ms reallocation into one puts a hitch mid-section instead of hiding one at the
+  edge.
+- ⚠ **Sub-strides compose, so they had to be re-based.** `SUN_IDLE_STRIDE` counts *cadence* frames,
+  not ticks — a tick counter would share a factor with the clock's own stride and silently stop
+  existing. `CHAMBER_SPACE_STRIDE_MAX` went 2 → 1 for the same reason: it is a multiplier on the page
+  rate, and against a 30 fps loop the old value meant a 10 fps feed under a scrubbed camera.
+- **The loader is uncapped by construction.** The clock refuses to cap until it has seen 20 sane ticks,
+  and during the load frames are hundreds of milliseconds. That is also exactly what the burn-in needs
+  — it must measure this machine's true *uncapped* cost.
+- **The one place the cap costs input rather than motion** is `useFluidCursor` — an ink trail is judged
+  on how closely it tracks the pointer. It is on the clock for uniformity; lifting that one line is the
+  revert.
+
+⚠ **A cap changes what a frame time MEANS, and `adaptivePixelRatio` had to be rewritten for it.** A
+capped machine that is coping reports the cadence period whatever its headroom — the number is
+manufactured by the cap, not measured. The old dial named an absolute target (balanced = 50 fps =
+20 ms) and would have solved `ratio × √(20 ÷ 33.3)` = **a 22 % resolution cut on every machine on
+earth, forever, on the strength of idle time the cap inserted.** So:
+
+- the dial is now **headroom over the cadence** (`PRIORITY_CADENCE_HEADROOM`), not a target fps;
+- **holding the cadence says nothing; missing it says spend less.** `isMissingCadence()` is the only
+  honest frame-rate signal once the cap is on, and the runtime calibration stands down unless the
+  cadence slipped inside its window (`CADENCE HELD` in the console);
+- `EXTRA_QUALITY_FPS` (50) and `EMERGENCY_FAST_FPS` (58) are unreachable under a cap and are now
+  explicitly guarded rather than left to fail silently. The burn-in's measured surplus is the only
+  route to MSAA.
+
+⚠ **The `[frame]` headline changed.** The profiler runs its own rAF and counted ticks, which was the
+delivered rate right up until the site started skipping draws on purpose — a capped 60 Hz panel still
+ticks at 60. It now reads `N fps drawn · M Hz ticks`, plus a `cadence:` line. The spans and
+`unaccounted` are still per *tick*, because that is the wall clock they are a fraction of.
+
 ## Performance systems
 
 These exist and are load-bearing — don't reinvent them:
 
 | `lib/` | Job |
 |---|---|
+| `renderClock.ts` | **The page's one render cadence** — see the section above. Every renderer asks it whether this tick is a draw tick. |
 | `gpuProbe.ts` | Times **one real frame** of a real pipeline with a GPU drain either side of it. Used once, on the works field's warm-up render — a render that had to happen anyway, so the measurement is nearly free. |
 | `adaptivePixelRatio.ts` | The shared resolution. **Native by default; above native has to be EARNED — and the probe only sets the CAP, it never starts you there.** It used to land straight on the measured ceiling, and since the probe times one works frame on a quiet stage while the real frame also carries the sun, the compositor and the blend layers, that meant the controller walked the ratio back down on nearly every load. Starting at `min(ceiling, 1)` and letting the controller climb costs the same reallocation in the opposite direction — sharpening rather than giving up. Also runs a live controller on real frame times for the rest of the session. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. ⚠ **A ratio is not a cost — `MAX_DRAWING_BUFFER_MEGAPIXELS` is.** `hardwareCeil` rises with `devicePixelRatio`, which is backwards: a 4K laptop at 250% scaling was handed ratio 2.0 *because* its panel is dense, drew 5.26 Mpx, put the render targets over 700 MB and ran at 20 fps. The budget caps the pixels the ratio actually implies. |
 | `warmScene.ts` | Compiles a scene's programs **and uploads its maps** on an idle frame. Both halves are needed: `compile()` builds programs only, and three uploads a texture on first *draw*. |

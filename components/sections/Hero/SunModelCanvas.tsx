@@ -7,6 +7,7 @@ import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/
 import { createFrameTimer } from '@/lib/frameTimer';
 import { profileGauge, profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
 import { getPixelRatio, RATIO_APPLY_GRACE_SECONDS } from '@/lib/adaptivePixelRatio';
+import { shouldDrawThisFrame } from '@/lib/renderClock';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
@@ -1208,11 +1209,20 @@ export default function SunModelCanvas() {
     let collapse = 0;
     let wasAnimating = true;
     let animationFrame = 0;
-    /** Loop frames, for SUN_IDLE_STRIDE. */
+    /**
+     * CADENCE frames, for SUN_IDLE_STRIDE.
+     *
+     * ⚠ Counts frames the shared clock offered, not animation-frame ticks, and the distinction is a bug
+     * that would not have looked like one. `SUN_IDLE_STRIDE` is 2 and the clock's stride on a 60 Hz
+     * panel is also 2 — so a counter incremented every TICK is even on exactly the ticks the cadence
+     * draws on, `loopFrameCounter % 2 === 0` is true on every one of them, and the star's idle stride
+     * silently stops existing. Two strides that happen to share a factor is not a coincidence to rely
+     * on; counting offered frames makes the two compose whatever the panel does.
+     */
     let loopFrameCounter = 0;
     /** Frames actually DRAWN, for SUN_GLOW_STRIDE. */
     let drawnFrameCounter = 0;
-    const animate = () => {
+    const animate = (timestamp = performance.now()) => {
       animationFrame = requestAnimationFrame(animate);
       const loopStartedAt = profileNow();
       const delta = frameTimer.tick();
@@ -1395,12 +1405,19 @@ export default function SunModelCanvas() {
       //
       // Counters are read BEFORE they increment so frame 0 always draws with a full glow — starting on
       // a skipped glow would composite an empty mip chain and flash the star in without its halo.
+      //
+      // ⚠ THE CADENCE COVERS THE AUTHORED BEATS TOO, which is the one place this rule bends. The
+      // collapse is scrubbed under the visitor's finger and every instinct says to draw it as often as
+      // possible — but the works field is drawing the same crossing on the same clock, and a star at
+      // 60 against a field at 30 is not a smoother handoff, it is two clocks again, which is the
+      // failure the whole scroll spine is built to avoid. Full rate now means the full CADENCE rate,
+      // and `choreographyActive` still buys exemption from `SUN_IDLE_STRIDE` on top of it.
+      const cadenceDue = shouldDrawThisFrame(timestamp);
       const paintThisFrame =
-        !inBlackStage ||
-        choreographyActive ||
         forceRender ||
-        loopFrameCounter % SUN_IDLE_STRIDE === 0;
-      loopFrameCounter += 1;
+        (cadenceDue &&
+          (!inBlackStage || choreographyActive || loopFrameCounter % SUN_IDLE_STRIDE === 0));
+      if (cadenceDue) loopFrameCounter += 1;
       // What the star is costing right now, in the profiler's own report. 1 on the hero and through
       // every authored beat; SUN_IDLE_STRIDE while it is a background object behind another scene.
       profileGauge('sun stride', inBlackStage && !choreographyActive ? SUN_IDLE_STRIDE : 1);
