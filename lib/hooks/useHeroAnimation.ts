@@ -26,6 +26,7 @@ import {
   BLACK_STAGE_EVENT,
   type BlackStageDetail,
 } from "@/lib/blackStageEvent";
+import { profileGauge } from "@/lib/frameProfiler";
 import {
   JUMP_ARRIVED_EVENT,
   JUMP_BEGIN_EVENT,
@@ -761,10 +762,19 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       loop: enterLoop,
     };
     let currentStage: Stage = "fill";
+    // Published once up front too — `setStage` returns early on a no-op, so without this the very
+    // first reports (the hero, which is the one section that is only ever ARRIVED at by starting
+    // there) would carry no section at all.
+    profileGauge("section", currentStage);
     const setStage = (stage: Stage) => {
       if (stage === currentStage) return;
       const fromStage = currentStage;
       currentStage = stage;
+      // ⚠ The profiler prints one breakdown every three seconds and, until now, nothing in it said
+      // WHICH section the frame belonged to — so a report read off a laptop was un-attributable the
+      // moment the page had been scrolled. Per-section cost is the whole question this instrument
+      // exists to answer. Free in production: `profileGauge` folds away with `telemetryEnabled`.
+      profileGauge("section", stage);
       enterStage[stage](fromStage);
 
       // ⚠ Published from HERE — the boundary — and not from `enterServices`.

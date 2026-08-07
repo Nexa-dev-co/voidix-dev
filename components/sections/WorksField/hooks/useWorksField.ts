@@ -184,6 +184,44 @@ const BURN_IN_MAX_FRAMES = 48;
 const CHAMBER_SCRUB_END = 0.999; // past this you're standing in the room → let adaptive resolution resume
 const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as the crossings all do
 
+// ── The room draws at full rate; its display's FEED does not ──
+/**
+ * How many frames stage 1 may skip between draws once the camera is standing in the room.
+ *
+ * Deep in the chamber this renderer is drawing a full-screen space scene — starfield, debris, bloom
+ * pyramid, the whole stage — onto a panel that occupies a small fraction of the frame and is seen at
+ * an angle, while the thing the visitor is actually looking at is a ROOM. Stage 2 keeps painting at
+ * full rate; stage 1 updates every Nth frame and stage 2 re-paints whatever `spaceComposer.readBuffer`
+ * last held, which is exactly what it does on a frame where nothing in space moved anyway.
+ *
+ * Nothing in that scene moves fast here. The mark has been removed, drag-to-look is refused in the
+ * room, and what is left is a starfield and slow debris.
+ *
+ * ⚠ Derived per frame from the room's own progress: no flag, no timer, no threshold on an eased
+ * value. Rule 2 of the scroll spine — it reverses for free and cannot be outrun.
+ *
+ * ⚠ The CONTACT return is excluded outright rather than left to fall out of the progress, and the
+ * distinction is the justification above read carefully. As the return runs, the fall streaks open,
+ * the star fades back in and the singularity arrives — things in space start moving again. The
+ * progress does walk this back toward 1 on its own, but `chamberState.current` EASES, so a hard flick
+ * out of the room leaves the room's value lagging its target by ~180 ms while the finale is already
+ * under way. Excluding the return states the real condition instead of relying on a race.
+ */
+const CHAMBER_SPACE_STRIDE_MAX = 2;
+/**
+ * The window is keyed to the PULL-BACK, not chosen by taste.
+ *
+ * `TOUR_START` (0.55, in chamberScene) is where the camera finishes backing off the display's normal.
+ * Below it the picture is still growing back toward filling the frustum, and a two-frame-old camera
+ * inside a near-full-bleed picture is plainly visible. So the ramp is placed to be back at stride 1
+ * before the pull-back does any of its work, and only reaches its maximum well inside the tour.
+ *
+ * It also clears the instrument frame, which rides in stage 1 as a composer pass: `HUD_FADE_WINDOW`
+ * ends at 0.16 and `HUD_EXPOSURE_RECOVER` — the −5.6 EV climbing back to nominal, the one thing on it
+ * that visibly animates — ends at 0.42. Both are finished before this opens.
+ */
+const CHAMBER_SPACE_STRIDE_WINDOW: readonly [number, number] = [0.5, 0.72];
+
 // ── The camera feed's instrument frame (worksHud.ts) ──
 //
 // ⚠ It appears ONLY as the reveal starts — as the display's edges come into frame — and never during
@@ -2340,6 +2378,25 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // ── Render loop ──
     const frameTimer = createFrameTimer(MAX_FRAME_SECONDS);
     let frameId = 0;
+    /**
+     * Frames drawn since stage 1 last redrew — the chamber's space stride (CHAMBER_SPACE_STRIDE_MAX).
+     *
+     * Counted as "since", not as `frameCounter % stride`, on purpose: the stride is a live function of
+     * the room's progress, and a modulo against a stride that just changed can skip several frames in
+     * a row or fire twice. This form always draws the frame the stride returns to 1.
+     */
+    let framesSinceSpaceRender = 0;
+    /**
+     * Did stage 1 actually redraw on the PREVIOUS drawn frame?
+     *
+     * ⚠ The resolution controller's whole diet. `frameTimer.lastRawDelta()` measures the frame BEFORE
+     * this one, so a sample is only honest when that frame did the full job. Decimated frames are
+     * cheaper by construction, and feeding them to `sampleFrame` would teach the controller a frame
+     * rate the site cannot hold — which it latches on, twice and both one-way: `EMERGENCY_FAST_FPS`
+     * raises the resolution for the rest of the session, and `EXTRA_QUALITY_FPS` buys 4× MSAA on the
+     * space composer. The chamber would quietly bill works browsing for standing still in a room.
+     */
+    let spaceRenderedLastFrame = true;
     // Warp state — read from the camera's own speed each frame so the streaks + FOV follow the exact
     // launch/arrive curve of the travel tween (longer hops naturally streak harder).
     const previousCameraPosition = new THREE.Vector3();
@@ -2674,6 +2731,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         canvasUncomposited = shouldUncomposite;
         canvas.classList.toggle('is-uncomposited', shouldUncomposite);
       }
+      // Hoisted out of the draw block because the resolution controller below has to know whether this
+      // frame did the full job before it decides whether the NEXT one's timing means anything.
+      let spaceRenderedThisFrame = true;
       if (isDrawing) {
         // Geometry AA follows the room, because the room is the only thing stage 2 ever draws that has
         // geometry. Toggling `enabled` is all this needs: EffectComposer recomputes which pass is the
@@ -2681,9 +2741,28 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // whenever this is off. See the note where the pass is built.
         smaaPass.enabled = revealing;
 
-        // Stage 1 into the texture, stage 2 out to the canvas. Never one without the other — the
-        // screen pipeline paints whatever the space pipeline last produced.
-        profileMeasure('works · space', () => spaceComposer.render(), true);
+        // Stage 1 into the texture, stage 2 out to the canvas. Stage 2 runs every frame without
+        // exception; stage 1 may stride once the room is established, because the screen pipeline
+        // paints whatever the space pipeline LAST produced and the composer's read buffer is still
+        // holding it. See CHAMBER_SPACE_STRIDE_MAX for why that is safe here and nowhere else.
+        const spaceStride = revealing && chamberState.contact <= CROSSING_IDLE_EPSILON
+          ? 1 + Math.round(
+              CHAMBER_SPACE_STRIDE_MAX *
+                THREE.MathUtils.smoothstep(
+                  revealProgress,
+                  CHAMBER_SPACE_STRIDE_WINDOW[0],
+                  CHAMBER_SPACE_STRIDE_WINDOW[1],
+                ),
+            )
+          : 1;
+        const spaceDue = framesSinceSpaceRender >= spaceStride - 1;
+        spaceRenderedThisFrame = spaceDue;
+        if (spaceDue) {
+          framesSinceSpaceRender = 0;
+          profileMeasure('works · space', () => spaceComposer.render(), true);
+        } else {
+          framesSinceSpaceRender += 1;
+        }
         const space = spaceTexture();
 
         if (revealing && chamber) {
@@ -2714,6 +2793,9 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // frame through two composers with many internal passes — so the first cut of this printed
         // `works draws 1.00`, which is the final fullscreen quad and nothing else.
         profileGauge('ratio', renderer.getPixelRatio());
+        // How hard each stage is running. `space stride` above 1 means the room is decimating its
+        // display's feed — expect it to read 1 everywhere except standing in the chamber.
+        profileGauge('space stride', spaceStride);
         // Cross-check: this must now track the `[frame]` headline. It did not before — the controller
         // read a clamped delta and believed 20+ fps while the page ran at 9.
         profileGauge('fps(ctrl)', getControllerFps());
@@ -2748,7 +2830,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // tab-restore cannot fling the animation — and feeding that clamp to the controller meant it
           // could not see this section running below 20 fps, which is where it spends its whole time
           // on the machines this exists for. See `FrameTimer.lastRawDelta`.
-          if (isDrawing) sampleFrame(frameTimer.lastRawDelta(), 'works');
+          //
+          // ⚠ …and only frames whose PREVIOUS frame did the full job. `lastRawDelta` measures the frame
+          // before this one, so once the chamber's space stride engages, two frames in three are cheap
+          // by construction and would read as headroom the site does not have. Both consumers latch on
+          // that and neither ever un-latches — see `spaceRenderedLastFrame`.
+          if (isDrawing && spaceRenderedLastFrame) sampleFrame(frameTimer.lastRawDelta(), 'works');
         } else {
           // Queued. Sampling deliberately stops here — measuring at one ratio while the controller
           // believes it is at another feeds it a lie.
@@ -2774,6 +2861,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           }
         }
       }
+
+      // Last, so the controller above reads the PREVIOUS frame's answer rather than this one's. Only
+      // updated on frames we drew: an undrawn frame's timing is already excluded from sampling, and
+      // letting it write here would make the first frame back look like it followed a full one.
+      if (isDrawing) spaceRenderedLastFrame = spaceRenderedThisFrame;
 
       profileSpan('works · loop', profileNow() - loopStartedAt);
     };

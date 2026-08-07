@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createFrameTimer } from '@/lib/frameTimer';
-import { profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
+import { profileGauge, profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
 import { getPixelRatio, RATIO_APPLY_GRACE_SECONDS } from '@/lib/adaptivePixelRatio';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
@@ -34,6 +34,7 @@ import {
   BLOOM_RADIUS,
   BLOOM_THRESHOLD,
 } from './sunBloom';
+import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
@@ -119,6 +120,36 @@ const MAX_DEVICE_PIXEL_RATIO = 2;
  */
 const sunPixelRatio = () => Math.min(getPixelRatio(), MAX_DEVICE_PIXEL_RATIO);
 const MAX_FRAME_SECONDS = 0.05;
+
+// ── How often the star is actually drawn ─────────────────────────────────────────────────────────
+/**
+ * Frames between draws while nothing is CHOREOGRAPHED **and a black scene owns the page**.
+ *
+ * ⚠ THE BLACK-STAGE HALF IS THE POINT, not a refinement of it. This is per-section budgeting, and the
+ * sections differ in what the star IS:
+ *
+ *   hero      the star is the subject, at full size, and NOTHING else on the page is drawing.
+ *             There is no contention to resolve, so striding here would buy nothing and cost the one
+ *             screen where the star has to be perfect. Full rate.
+ *   services  behind the fleet at z-index −1, with the deck's own renderer wanting the frame.
+ *   works     behind the marks, with the heaviest scene on the site wanting the frame.
+ *             `AUTO_ROTATE_DEGREES_PER_SECOND` is 11 — 0.37° of turn in a 30 fps frame, on a
+ *             background object. It cannot be seen; the fleet and the marks in front of it can.
+ *   chamber   already frozen outright by `covered`. This never reaches it.
+ *
+ * `preserveDrawingBuffer` (see the renderer) is what makes a skipped frame keep compositing the last
+ * image rather than showing an undefined one — the mechanism this rides on already existed for the
+ * demand-render gate.
+ */
+const SUN_IDLE_STRIDE = 2;
+/**
+ * Drawn frames between refreshes of the bloom's SOURCE (sunBloom steps 1–3).
+ *
+ * Counted in DRAWN frames, not in loop frames, so it composes with the stride above instead of
+ * multiplying against it in some way nobody could predict from either constant alone. Gated on the
+ * black stage for the same reason and by the same rule.
+ */
+const SUN_GLOW_STRIDE = 2;
 
 // ── Assembly ──
 // The shards do not just slide outward — they arrive from deep space: scattered far behind the sun in
@@ -608,6 +639,23 @@ export default function SunModelCanvas() {
       applyCovered();
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+
+    // ── Is another scene competing for the frame? ──
+    // False on the hero and its fill, where the star is the subject and nothing else draws; true from
+    // the fleet to the bottom of the page. The ONLY thing it gates is how often the star is drawn (see
+    // SUN_IDLE_STRIDE) — not what it looks like, not when it is allowed to move. Keyed off the black
+    // stage rather than the deck's reveal because a navbar jump reaches works without entering the
+    // fleet; see lib/blackStageEvent.ts.
+    let inBlackStage = false;
+    const onBlackStage = (event: Event) => {
+      const active = readBlackStageActive(event);
+      if (active === inBlackStage) return;
+      inBlackStage = active;
+      // Coming back to the hero, draw immediately rather than up to one strided frame later — this is
+      // also the teleport's path home, where the star has a whole re-gather to play.
+      if (!active) forceRender = true;
+    };
+    window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     // ── The loop landed at the top ──
     // The pin has jumped to progress 0, so every target below is already home while our own eased copies
@@ -1160,6 +1208,10 @@ export default function SunModelCanvas() {
     let collapse = 0;
     let wasAnimating = true;
     let animationFrame = 0;
+    /** Loop frames, for SUN_IDLE_STRIDE. */
+    let loopFrameCounter = 0;
+    /** Frames actually DRAWN, for SUN_GLOW_STRIDE. */
+    let drawnFrameCounter = 0;
     const animate = () => {
       animationFrame = requestAnimationFrame(animate);
       const loopStartedAt = profileNow();
@@ -1329,18 +1381,50 @@ export default function SunModelCanvas() {
         Math.abs(targetCollapse - collapse) > STATE_SETTLE_EPSILON ||
         assembling;
       const animating = choreographyActive || moving;
+
+      // ── ONE RULE: an authored beat runs at full rate; everything else may stride ──
+      //
+      // `choreographyActive` is that rule, and it is the same discriminator the reallocation below
+      // uses for the same reason. The cracks, the ring, the shard flight and above all the COLLAPSE
+      // are scrubbed under the visitor's finger, so a decimated one steps against the scroll. The idle
+      // turn is delta-timed and constant; a dropped frame in it is invisible.
+      //
+      // ⚠ It also covers a subtlety that has nothing to do with motion: `bloom.setGrade` lerps the
+      // bright pass's `uThreshold` during the collapse, and that uniform lives inside the very pass
+      // SUN_GLOW_STRIDE skips. One rule, both problems.
+      //
+      // Counters are read BEFORE they increment so frame 0 always draws with a full glow — starting on
+      // a skipped glow would composite an empty mip chain and flash the star in without its halo.
+      const paintThisFrame =
+        !inBlackStage ||
+        choreographyActive ||
+        forceRender ||
+        loopFrameCounter % SUN_IDLE_STRIDE === 0;
+      loopFrameCounter += 1;
+      // What the star is costing right now, in the profiler's own report. 1 on the hero and through
+      // every authored beat; SUN_IDLE_STRIDE while it is a background object behind another scene.
+      profileGauge('sun stride', inBlackStage && !choreographyActive ? SUN_IDLE_STRIDE : 1);
+
       // ⚠ `drawingPermitted` is checked here as well as inside `moving`, and it has to be: the three
       // state ramps in `choreographyActive` settle on their own and `forceRender` is set by resize and
       // tab-restore, so either could ask for a draw while the loader is still waiting.
-      if (drawingPermitted && !document.hidden && (animating || wasAnimating || forceRender)) {
+      if (drawingPermitted && !document.hidden && paintThisFrame && (animating || wasAnimating || forceRender)) {
         // ⚠ The star is a SECOND WebGL context and it draws alongside the field for the whole of
         // services and works (see CLAUDE.md — `covered` only goes true at the chamber reveal). It is
         // therefore one of the prime suspects for the frame time the works probe cannot see, and it
         // has never been measured separately from it.
-        profileMeasure('sun · bloom', () => bloom.render(scene, camera), true);
+        const refreshGlow =
+          !inBlackStage || choreographyActive || drawnFrameCounter % SUN_GLOW_STRIDE === 0;
+        drawnFrameCounter += 1;
+        profileMeasure('sun · bloom', () => bloom.render(scene, camera, refreshGlow), true);
         forceRender = false;
       }
-      wasAnimating = animating;
+      // ⚠ Only a frame the stride let through may consume this. `wasAnimating` exists to draw the ONE
+      // final settled frame after motion stops — and if the frame where `animating` goes false happens
+      // to be one the stride skipped, clearing it here would mean that frame is never drawn by anyone.
+      // The star would hold a pose 16 ms short of where the scroll actually left it, which is exactly
+      // the kind of thing that only shows up as "it doesn't quite land right".
+      if (paintThisFrame) wasAnimating = animating;
 
       // ── Follow the shared controller, on a frame with no authored beat running ──
       //
@@ -1371,6 +1455,7 @@ export default function SunModelCanvas() {
       window.removeEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+      window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       window.removeEventListener(LOOP_RESET_EVENT, onLoopReset);
       window.removeEventListener(SUN_REGATHER_EVENT, onRegather);
       window.removeEventListener(REVEAL_EVENT, onReveal);
