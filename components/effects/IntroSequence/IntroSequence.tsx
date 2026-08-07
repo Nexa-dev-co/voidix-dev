@@ -188,25 +188,49 @@ const WARMUP_WAIT_MAX_MS = 5000;
  *
  * `runBurnIn` in `useWorksField` answers unconditionally — it dispatches its done event even when it
  * refuses — so this only ever matters when there is no works field listening at all: a page whose
- * scene failed to build, or a future route that renders the loader without it. Sized to comfortably
- * clear `BURN_IN_MAX_MS` (1.5 s) plus the frames either side of it.
+ * scene failed to build, or a future route that renders the loader without it.
+ *
+ * ── ⚠ 2500 → 5500, AND IT IS PAIRED WITH THE BURN-IN'S OWN BUDGET ───────────────────────────────
+ * The burn-in now waits for the main thread to go quiet before it samples, because it was measuring
+ * inside the black hole's Draco decode every time (see `BURN_IN_SETTLE_MAX_MS` for the timeline). Its
+ * worst case is settle 4000 + two phases at 600 = **5200**, and this has to clear that or the gate
+ * stops waiting and the finale plays over a burn-in still rendering works frames — the exact thing the
+ * finale is given a quiet GPU to avoid. **Move one and you must move the other.**
+ *
+ * ⚠ This is a CAP, not a delay. It is what the loader will wait *up to*; a machine that goes quiet
+ * immediately still measures immediately. And it is not new waiting either — the reveal already waits
+ * for every asset source, so on a normal load this window is spent inside a wait that was happening
+ * anyway.
  *
  * ⚠ It ADDS to the serial caps, so it also pushes `ASSEMBLE_CUE_FALLBACK_MS`'s margin. That timer
  * re-arms on the intro's heartbeat now, so a longer gate cannot outrun it — but if the heartbeat is
  * ever removed, check this.
  */
-const BURN_IN_WAIT_MAX_MS = 2500;
+const BURN_IN_WAIT_MAX_MS = 5500;
 
 /**
  * How long the star will wait for the works field to hand it a draw permit before taking one anyway.
  *
- * Sized against the field's own budget: settle (800) + phase A (600) leaves the permit arriving at
- * ~1.4 s in the worst case, so this sits just past that. Early enough that a field which never answers
- * costs the loader a second of star rather than the whole gate, late enough that it does not cut phase
- * A short on a slow machine — and if it does fire early the only cost is a less clean measurement,
- * never a missing star. See SUN_DRAW_PERMIT_EVENT.
+ * ── ⚠ THIS MUST CLEAR SETTLE + PHASE A, OR IT SILENTLY BREAKS THE MEASUREMENT ───────────────────
+ * The whole point of phase A is that the star is NOT drawing during it. If this fires first, the star
+ * joins phase A, `B − A` comes out at roughly zero, and `MIN_CREDIBLE_STAR_MS` rejects the split — so
+ * it fails safe, but it fails EVERY TIME, which is worse than useless: it would quietly disable the
+ * allocator on exactly the slow-to-settle machines the widened settle exists for.
+ *
+ * Four constants are coupled here and they are worth listing in one place:
+ *
+ *     BURN_IN_SETTLE_MAX_MS   4000   (useWorksField)  wait for a quiet main thread
+ *     BURN_IN_PHASE_MAX_MS     600   (useWorksField)  each of the two sampling phases
+ *     SUN_PERMIT_FALLBACK_MS  4800   (here)           ≥ settle + ONE phase
+ *     BURN_IN_WAIT_MAX_MS     5500   (here)           ≥ settle + TWO phases
+ *
+ * ⚠ The cost of this number being large is paid only by a page with NO WORKS FIELD — one whose scene
+ * failed to build, or a future route that renders the loader without it. There, the star stays dark
+ * for 4.8 s behind the veil before taking its own permit. That is an already-broken page, and the
+ * loader still has its dust and its counter on screen throughout. Every healthy load gets its permit
+ * from the field between the phases, seconds earlier than this.
  */
-const SUN_PERMIT_FALLBACK_MS = 1600;
+const SUN_PERMIT_FALLBACK_MS = 4800;
 const ASSEMBLY_WAIT_MAX_MS = 3500;
 const WARMUP_SETTLE_MS = 250;
 /**

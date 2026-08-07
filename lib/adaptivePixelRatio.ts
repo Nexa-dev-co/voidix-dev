@@ -377,7 +377,30 @@ function ensureInitialised(): void {
   const deviceRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
   hardwareCeil = Math.min(MAX_PIXEL_RATIO, Math.max(deviceRatio, SUPERSAMPLE_CEIL));
   floor = Math.max(MIN_PIXEL_RATIO, deviceRatio / MAX_COMPOSITE_UPSCALE);
-  ceil = Math.max(floor, Math.min(MAX_PIXEL_RATIO, deviceRatio));
+
+  // ── ⚠ THE BUFFER BUDGET APPLIES EVEN WITHOUT A PROBE ────────────────────────────────────────────
+  // `pixelBudgetCeil` used to stay `Infinity` until `reportProbedFrameCost` solved it from the frame it
+  // measured — so a REFUSED probe silently removed `MAX_DRAWING_BUFFER_MEGAPIXELS` from the system
+  // altogether. `docs/per-section-quality-budget-plan.md` §3 flags exactly this, and it is the one
+  // constant standing between a 4K laptop at 250 % scaling and the 5.26 Mpx / 700 MB / 20 fps case its
+  // own header records.
+  //
+  // ⚠ Retargeting to 30 fps WIDENED that hole rather than leaving it where it was. The solve is
+  // `ratio × √(budget ÷ measured)`, so the frame time at which a machine reaches an unbounded ceiling
+  // of 2.0 moved from ~4.0 ms to ~6.1 ms — a materially larger band of machines. A hole nobody falls
+  // into is a footnote; this change made it wider, so it gets closed here.
+  //
+  // The heavy scenes are full-viewport, so the viewport IS their CSS area. The probe refines this with
+  // the canvas it actually measured; this is the floor of correctness underneath it.
+  const viewportMegapixels =
+    typeof window !== 'undefined'
+      ? (window.innerWidth * window.innerHeight) / 1_000_000
+      : 0;
+  if (viewportMegapixels > 0) {
+    pixelBudgetCeil = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / viewportMegapixels);
+  }
+
+  ceil = Math.max(floor, Math.min(MAX_PIXEL_RATIO, deviceRatio, pixelBudgetCeil));
   // Until something is measured, native — never above it, and never below the floor.
   pixelRatio = Math.min(ceil, Math.max(floor, 1));
 }
@@ -598,10 +621,17 @@ export function reportSectionCosts(split: SectionCostSplit): void {
   if (!(fieldMilliseconds > 0) || !(starMilliseconds > 0)) return;
   if (!(fieldRatio > 0) || !(starRatio > 0)) return;
 
-  // The frame every section is being sized to fit inside, with the safety margin already taken out of
-  // it. A machine set to land exactly on what it measured drops a frame the moment anything varies.
-  const budgetMs =
-    (1000 / PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]) * (1 - CALIBRATION_SAFETY_FRACTION);
+  // The frame every section is being sized to fit inside.
+  //
+  // ⚠ THE SAFETY MARGIN IS APPLIED TO THE RATIO BELOW, NOT TO THIS BUDGET, AND THE TWO ARE NOT THE
+  // SAME THING. Cost is the square of the ratio, so 10 % off the ratio is 19 % off the pixels while
+  // 10 % off the budget is 10 % off the pixels — nearly double the margin, from the same constant.
+  // `SAFETY_HEADROOM_FRACTION` above argues the milliseconds reading is the more honest one, and it is
+  // probably right; but `reportBurnIn` and `calibrate` have both always taken it off the ratio, and
+  // those are the two paths that run whenever this one does not. A visitor must not get a measurably
+  // different picture depending on which solver happened to answer, so this matches its siblings.
+  // Changing the convention is a one-line change in three places, and it belongs in its own pass.
+  const budgetMs = 1000 / PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY];
 
   const starFloor = floor;
   const starCeil = sunCeiling();
@@ -613,13 +643,15 @@ export function reportSectionCosts(split: SectionCostSplit): void {
 
   // ── 2 · The models take what they can afford, capped by their own ceiling ──
   const fieldBudget = Math.max(0, budgetMs - starFloorCost);
-  const fieldSolved = fieldRatio * Math.sqrt(fieldBudget / fieldMilliseconds);
+  const fieldSolved =
+    fieldRatio * Math.sqrt(fieldBudget / fieldMilliseconds) * (1 - CALIBRATION_SAFETY_FRACTION);
   const newFieldRatio = Math.min(ceil, Math.max(floor, fieldSolved));
 
   // ── 3 · The star takes the remainder ──
   const fieldSpent = costAt(fieldMilliseconds, fieldRatio, newFieldRatio);
   const remainingMs = Math.max(0, budgetMs - fieldSpent);
-  const starSolved = starRatio * Math.sqrt(remainingMs / starMilliseconds);
+  const starSolved =
+    starRatio * Math.sqrt(remainingMs / starMilliseconds) * (1 - CALIBRATION_SAFETY_FRACTION);
   const newStarRatio = Math.min(starCeil, Math.max(starFloor, starSolved));
 
   const fieldFrom = pixelRatio;
@@ -641,8 +673,8 @@ export function reportSectionCosts(split: SectionCostSplit): void {
     const starShare = ((budgetMs - fieldSpent) / budgetMs) * 100;
     console.log(
       `%c[pixels] ALLOCATED%c a ${budgetMs.toFixed(1)} ms frame ` +
-        `(${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps, less ` +
-        `${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}% safety), models first.` +
+        `(${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps), models first, each ratio less ` +
+        `${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}% safety.` +
         `\n  measured   field ${fieldMilliseconds.toFixed(1)} ms @ ${fieldRatio.toFixed(2)}` +
         `  ·  star ${starMilliseconds.toFixed(1)} ms @ ${starRatio.toFixed(2)}` +
         ` (${((starMilliseconds / (fieldMilliseconds + starMilliseconds)) * 100).toFixed(0)}% of the frame)` +

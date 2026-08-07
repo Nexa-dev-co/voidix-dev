@@ -189,20 +189,50 @@ const BURN_IN_SANE_FRAME_MS = 120;
 /**
  * How long to wait for the main thread to go quiet before sampling starts.
  *
- * The other half of the same fix. The stage is cued when both scenes report *warm*, which on a warm
- * cache is well before the mark build (measured: 1548 ms) and the model decodes have drained out of
- * the task queue. Warm means "compiled", not "finished" — so this waits for the machine to actually be
- * doing nothing before it starts asking how fast it is.
+ * The stage is cued when both SCENES report *warm*, and warm means "compiled", not "the page has
+ * finished loading". So this waits for the machine to actually be doing nothing before it starts
+ * asking how fast it is.
+ *
+ * ── ⚠ 800 → 4000, BECAUSE 800 WAS LOOKING IN THE WRONG PLACE ────────────────────────────────────
+ * Measured on a dpr 2.5 laptop, second attempt at this fix:
+ *
+ *     8.6s   table.glb lands
+ *     8.7s   black_hole.glb lands — 1.99 MB, then a Draco decode
+ *     8.8s   the burn-in starts                    ← inside the decode
+ *    10.0s   REFUSED, 1164 ms, no usable frames    ← the [frame] report covering this window
+ *                                                    reports 6 long tasks totalling 3361 ms
+ *    14.4s   `long tasks: none`, 38 fps            ← the quiet window, four seconds later
+ *    16.1s   load complete
+ *
+ * The chamber's table and the contact black hole are not part of the gate that cues this stage, so the
+ * measurement was being taken inside their decode every single time. The settle gate was right and its
+ * budget was wrong: it failed honestly in 1164 ms instead of silently in 15786 ms, but it cannot
+ * manufacture quiet that does not exist inside its window.
+ *
+ * ⚠ This costs the LOADER nothing on a normal load. The reveal already waits for every asset source
+ * (see IntroSequence, "What the reveal actually waits for: EVERY source") — so this is not new waiting,
+ * it is the same waiting with the measurement moved to the part of it that is quiet.
  */
-const BURN_IN_SETTLE_MAX_MS = 800;
+const BURN_IN_SETTLE_MAX_MS = 4000;
+/**
+ * The same budget on a device that cannot spend it well.
+ *
+ * ⚠ The settle loop DRAWS while it waits (deliberately — it has to reach the state the measurement is
+ * taken in). On a machine whose works frame is already near `BURN_IN_SANE_FRAME_MS` that is close to
+ * self-defeating: the drawing helps keep the frames long, quiet never arrives, and the full budget is
+ * spent before sampling starts anyway. Such a machine's reading is going to be floored whatever it
+ * says, so the four seconds buy nothing and cost a phone four seconds of loader.
+ */
+const BURN_IN_SETTLE_MAX_LOW_POWER_MS = 1200;
 /** Consecutive sane frames that count as "the main thread has gone quiet". */
 const BURN_IN_CALM_FRAMES = 3;
 /**
  * Per-phase sampling deadline.
  *
- * ⚠ Sized so SETTLE + two PHASES fit inside `BURN_IN_WAIT_MAX_MS` (2.5 s in IntroSequence), past which
- * the loader stops waiting and the finale plays over a burn-in still rendering works frames — the exact
- * thing the finale is given a quiet GPU to avoid. 800 + 600 + 600 = 2000, leaving margin.
+ * ⚠ Sized so SETTLE + two PHASES fit inside `BURN_IN_WAIT_MAX_MS` in IntroSequence, past which the
+ * loader stops waiting and the finale plays over a burn-in still rendering works frames — the exact
+ * thing the finale is given a quiet GPU to avoid. 4000 + 600 + 600 = 5200; that constant is 5500.
+ * **Move either and you must move the other.**
  */
 const BURN_IN_PHASE_MAX_MS = 600;
 /**
@@ -2189,9 +2219,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
        * empty wait would hand phase A its own first-draw costs all over again.
        */
       const waitForQuietMainThread = async () => {
+        const settleBudgetMs = isLowPowerDevice()
+          ? BURN_IN_SETTLE_MAX_LOW_POWER_MS
+          : BURN_IN_SETTLE_MAX_MS;
         let calmFrames = 0;
         let previousFrameAt = 0;
-        while (performance.now() - burnStartedAt < BURN_IN_SETTLE_MAX_MS) {
+        while (performance.now() - burnStartedAt < settleBudgetMs) {
           await nextWarmupFrame();
           if (disposed) return;
           const frameAt = performance.now();
