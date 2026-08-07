@@ -27,6 +27,7 @@ import {
   SUN_ASSEMBLED_EVENT,
   BURN_IN_EVENT,
   BURN_IN_DONE_EVENT,
+  SUN_DRAW_PERMIT_EVENT,
   FINALE_EVENT,
   MINIMUM_LOADER_MS,
 } from "./introEvents";
@@ -195,6 +196,17 @@ const WARMUP_WAIT_MAX_MS = 5000;
  * ever removed, check this.
  */
 const BURN_IN_WAIT_MAX_MS = 2500;
+
+/**
+ * How long the star will wait for the works field to hand it a draw permit before taking one anyway.
+ *
+ * Sized against the field's own budget: settle (800) + phase A (600) leaves the permit arriving at
+ * ~1.4 s in the worst case, so this sits just past that. Early enough that a field which never answers
+ * costs the loader a second of star rather than the whole gate, late enough that it does not cut phase
+ * A short on a slow machine — and if it does fire early the only cost is a less clean measurement,
+ * never a missing star. See SUN_DRAW_PERMIT_EVENT.
+ */
+const SUN_PERMIT_FALLBACK_MS = 1600;
 const ASSEMBLY_WAIT_MAX_MS = 3500;
 const WARMUP_SETTLE_MS = 250;
 /**
@@ -712,6 +724,15 @@ export default function IntroSequence() {
       burnInStarted = true;
       window.clearTimeout(gateTimeout);
       gateTimeout = window.setTimeout(settleThenOpen, BURN_IN_WAIT_MAX_MS);
+      // ⚠ THE STAR MUST NOT DEPEND ON THE WORKS FIELD TO APPEAR. Its draw permit normally comes from
+      // the field, between the burn-in's two phases — but a page whose field failed to build, or was
+      // disposed mid-load, or threw before it got there, would then hold a dark square where the
+      // site's centrepiece goes for the rest of the loader. This does not care whether the field ever
+      // answered. `permitDrawing` is idempotent, so both firing is the normal case, not a clash.
+      window.setTimeout(
+        () => window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT)),
+        SUN_PERMIT_FALLBACK_MS,
+      );
       window.dispatchEvent(new Event(BURN_IN_EVENT));
     };
 

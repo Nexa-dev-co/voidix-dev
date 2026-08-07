@@ -59,6 +59,33 @@ export const BURN_IN_EVENT = 'voidix:burn-in';
 export const BURN_IN_DONE_EVENT = 'voidix:burn-in-done';
 
 /**
+ * The star may start drawing.
+ *
+ * ── ⚠ Why this is not simply `BURN_IN_EVENT`, which is what it used to be ────────────────────────
+ * Because the burn-in now has to answer TWO questions, and the second one is only answerable while the
+ * star is NOT on the glass:
+ *
+ *     phase A   works draws, star does not   →  what the field costs
+ *     phase B   works draws, star draws      →  what the field AND the star cost
+ *                                    B − A   →  what the STAR costs, on its own, measured
+ *
+ * That difference is the whole input to the quality allocator (`reportSectionCosts`): it is the only
+ * way this page can put a number on the star, because WebGL is asynchronous and no span around
+ * `bloom.render` measures what the GPU actually spends on it — `unaccounted` is 70–95 % of every frame
+ * and the star lives inside it.
+ *
+ * So the works field dispatches this between its two phases, and the star waits for it rather than for
+ * the cue that starts the whole stage.
+ *
+ * ⚠ THE STAR MUST NEVER DEPEND ON THE WORKS FIELD TO APPEAR. A page whose field failed to build, was
+ * disposed mid-load, or threw inside the burn-in would otherwise hold a dark square where the site's
+ * centrepiece goes. Three things fire this, and any one of them is sufficient: the works field between
+ * its phases, the works field's `finally`, and a fallback timer in `IntroSequence` that does not care
+ * whether the field ever answered. `permitDrawing` is idempotent, so all three firing is normal.
+ */
+export const SUN_DRAW_PERMIT_EVENT = 'voidix:sun-draw-permit';
+
+/**
  * The gate has opened: the wait is over and the loader's finale is starting.
  *
  * ── ⚠ Why this is an event and not a condition anyone can evaluate ───────────────────────────────

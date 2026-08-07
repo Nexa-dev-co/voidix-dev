@@ -1,9 +1,3 @@
-import {
-  getCadencePeriodMilliseconds,
-  isCadenceCapping,
-  isMissingCadence,
-  TARGET_FRAME_RATE,
-} from '@/lib/renderClock';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 
 /**
@@ -186,57 +180,40 @@ const CALIBRATION_MAX_SAMPLE_MS = 200;
  * tell you which one matters more — that is a decision about the site, not about the machine. This is
  * where it is written down, so it is one word rather than an archaeology dig through four constants.
  *
- * ── ⚠ REDEFINED WHEN `lib/renderClock` LANDED, AND THE OLD FORM WAS A LATENT DISASTER ────────────
- * This used to name an absolute target frame rate — 40 / 50 / 60 — and solve the ratio against it. The
- * site now DELIVERS a fixed cadence, so the frame rate is a constant the cap manufactures rather than
- * a measurement of the machine, and solving against an absolute target would have read that constant
- * as a verdict:
+ *   'quality'    — hold the pixels, accept 24 fps. Sharpest, and the first to drop a frame.
+ *   'smoothness' — aim for 40, and give up whatever resolution that costs.
+ *   'balanced'   — 30. The rate this site is authored to, and what everything below is sized against.
  *
- *     balanced aimed at 50 fps → 20 ms; the cap delivers 33.3 ms by construction
- *     sustainable = ratio × √(20 ÷ 33.3) = ratio × 0.78
+ * ⚠ LOWER TARGET FPS MEANS MORE PIXELS. The two are the same budget spent two ways, so 'quality' is
+ * the SLOWEST setting, not the fastest. That reads backwards at a glance and is worth saying out loud.
  *
- * Every machine on earth, however fast, would have had its resolution cut 22 % on the strength of idle
- * time the cap deliberately inserted — and then cut again on the next lap. It is the failure §5 item 8
- * of the quality-budget plan describes for decimated frames, except that under a cap EVERY frame is
- * decimated, so the mitigation there ("skip the cheap ones") degenerates to "never sample".
+ * ── ⚠ RETARGETED 50 → 30 ON 2026-08-07 ───────────────────────────────────────────────────────────
+ * 'balanced' was 50, so every solve on the site aimed at a 20 ms frame. Against a 30 fps budget that
+ * is a 33.3 ms frame, and since cost is the square of the ratio the difference is worth
+ * √(33.3 ÷ 20) = **1.29× the ratio, or 1.67× the pixels, on every machine with room above the floor.**
+ * It is the single largest quality change available to this file and it is one number.
  *
- * So the dial is now HEADROOM OVER THE CADENCE: how much faster than the delivered rate a machine has
- * to be able to run before the resolution stops climbing.
- *
- *   'quality'    — solve for exactly the cadence period. Sharpest, and the first to drop a frame.
- *   'balanced'   — 15 % inside it, so an ordinary variation has somewhere to go.
- *   'smoothness' — 35 % inside it; gives up resolution to keep the cadence through the worst moments.
+ * 30 is not a compromise here — it is what the site is FOR. Every crossing is a scrubbed cinematic
+ * and nothing on the page is timed in frames, so the visitor's experience of 30 vs 50 is a slightly
+ * softer sample of a camera move against a visibly sharper image. The brief asks for as much quality
+ * as the machine can give at 30, and this is where that number is written down.
  *
  * ⚠ IT CANNOT PUSH PAST THE FLOOR, and on a dense panel the floor is usually what binds. If this is
  * set to 'quality' and the picture is still softer than you want, the constant you actually want is
  * `MAX_COMPOSITE_UPSCALE` above — that is what decides how far below your display's density the site
- * is ever allowed to render, and no headroom setting can override it.
+ * is ever allowed to render, and no target frame rate can override it.
  */
 type ResolutionPriority = 'quality' | 'balanced' | 'smoothness';
 const RESOLUTION_PRIORITY: ResolutionPriority = 'balanced';
 
-const PRIORITY_CADENCE_HEADROOM: Record<ResolutionPriority, number> = {
-  quality: 1.0,
-  balanced: 1.15,
-  smoothness: 1.35,
+const PRIORITY_TARGET_FPS: Record<ResolutionPriority, number> = {
+  quality: 24,
+  balanced: 30,
+  smoothness: 40,
 };
 
-/**
- * The frame time the calibration solves toward: one cadence period, less the headroom above.
- *
- * ⚠ Read from the clock rather than from `1000 / TARGET_FRAME_RATE`, because a 144 Hz panel cannot
- * deliver 30 evenly and settles at 28.8 — a 34.7 ms period. Solving against 33.3 there would ask every
- * machine on that panel for 4 % more than the cadence will ever demand.
- *
- * ⚠ The fallback matters more than it looks: the loader's burn-in runs BEFORE the clock has seen
- * enough ticks to know the panel, so it always takes the nominal period. That is correct rather than
- * unfortunate — the burn-in must measure this machine's true UNCAPPED cost, and the 4 % it can be out
- * by is an order of magnitude inside `CALIBRATION_SAFETY_FRACTION`.
- */
-function calibrationTargetFrameMilliseconds(): number {
-  const period = getCadencePeriodMilliseconds() || 1000 / TARGET_FRAME_RATE;
-  return period / PRIORITY_CADENCE_HEADROOM[RESOLUTION_PRIORITY];
-}
+/** The frame time the calibration solves toward. Lower target fps → more pixels kept. */
+const CALIBRATION_TARGET_FRAME_MS = 1000 / PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY];
 
 /**
  * Held back from whatever the machine proved it could sustain.
@@ -335,6 +312,20 @@ let pixelBudgetCeil = Infinity;
 let probed = false;
 let probedAffordableRatio: number | null = null;
 
+/**
+ * The star's OWN resolution, once the allocator has solved one. `null` until then, and while it is
+ * null the star tracks the shared ratio exactly as it always did.
+ *
+ * ⚠ `SunModelCanvas`'s header records why the star was brought UNDER the shared ratio in the first
+ * place — it was the last renderer answering to nothing, and on a dpr 2.5 laptop it drew at 2.0 with
+ * MSAA while the field beside it drew at 1.01, costing 10–21 ms. Giving it its own number again is not
+ * a return to that. The old number was `min(devicePixelRatio, 2)` — a guess that had measured nothing.
+ * This one is what is left of a 30 fps frame after the section's models have taken theirs, from a
+ * measurement of the star's actual marginal cost. The objection was never "the star should not have
+ * its own ratio"; it was "two renderers cannot both guess how fast the machine is".
+ */
+let sunPixelRatio: number | null = null;
+
 let emaFrameSeconds = 1 / 60;
 let dropNextSample = false;
 
@@ -344,13 +335,6 @@ let calibrationMilliseconds = 0;
 let calibrationFrames = 0;
 /** The ratio the calibration frames were actually drawn at. */
 let calibrationRatio = 1;
-/**
- * Did the cadence slip at any point inside the current calibration window?
- *
- * The window's verdict depends entirely on this. Held throughout → the ratio is already correct and
- * there is nothing to solve. Slipped → the frames are honest and worth solving from.
- */
-let cadenceMissedDuringWindow = false;
 /** Which scene's frames are arriving right now. */
 let activePipeline: PipelineKey | null = null;
 /** Scenes that have had their one measurement. */
@@ -385,7 +369,6 @@ function resetCalibration(): void {
   calibrationSeconds = 0;
   calibrationMilliseconds = 0;
   calibrationFrames = 0;
-  cadenceMissedDuringWindow = false;
 }
 
 function ensureInitialised(): void {
@@ -516,8 +499,7 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
   if (phase === 'locked') return;
   if (!(medianFrameMilliseconds > 0) || !(ratio > 0)) return;
 
-  const targetFrameMs = calibrationTargetFrameMilliseconds();
-  const sustainable = ratio * Math.sqrt(targetFrameMs / medianFrameMilliseconds);
+  const sustainable = ratio * Math.sqrt(CALIBRATION_TARGET_FRAME_MS / medianFrameMilliseconds);
   const solved = sustainable * (1 - CALIBRATION_SAFETY_FRACTION);
   const from = pixelRatio;
 
@@ -536,9 +518,7 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
     console.log(
       `%c[pixels] BURN-IN%c ${from.toFixed(2)} → ${pixelRatio.toFixed(2)} — decided during the loader,` +
         ` locked before the first visible frame.` +
-        `\n  priority "${RESOLUTION_PRIORITY}" → a ${targetFrameMs.toFixed(1)} ms frame, ` +
-        `${PRIORITY_CADENCE_HEADROOM[RESOLUTION_PRIORITY].toFixed(2)}× inside the ` +
-        `${TARGET_FRAME_RATE} fps cadence` +
+        `\n  priority "${RESOLUTION_PRIORITY}" → aiming for ${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps` +
         `\n  measured ${medianFrameMilliseconds.toFixed(1)} ms/frame ` +
         `(${(1000 / medianFrameMilliseconds).toFixed(0)} fps) at ratio ${ratio.toFixed(2)}` +
         `\n  sustains ${sustainable.toFixed(2)}, less ` +
@@ -554,12 +534,166 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
   }
 }
 
+/** What the burn-in's two phases separated out. All four are needed to solve anything. */
+export interface SectionCostSplit {
+  /** Median frame ms with the FIELD drawing and the star dark. Contains the fixed cost too. */
+  fieldMilliseconds: number;
+  /** The star's own marginal cost, in ms — phase B minus phase A, at full draw rate. */
+  starMilliseconds: number;
+  /** The ratio the field was drawn at while it was measured. */
+  fieldRatio: number;
+  /** The ratio the star was drawn at while it was measured. */
+  starRatio: number;
+}
+
+/**
+ * ── THE QUALITY ALLOCATOR ────────────────────────────────────────────────────────────────────────
+ *
+ * Spend a 30 fps frame across the two things that share it, in priority order: **the section's models
+ * take what they can afford, and whatever is left goes to the star.**
+ *
+ * This is the thing `docs/per-section-quality-budget-plan.md` §1a says is missing — *"the split
+ * between the star and the scene behind it is decided by their canvas areas and nothing else — no
+ * budget, no priority, no section"* — and it supersedes §3's "Per-section sun ratio: unnecessary and
+ * risky". §3 was ruling on a design that changed the star's ratio AS YOU SCROLLED, which would put a
+ * composer reallocation at a section boundary. Nothing here does that: all of it is solved once, in
+ * the loader, behind the veil, and then held for the session exactly like every other number in this
+ * file.
+ *
+ * ── How the split is obtained at all ──
+ * WebGL is asynchronous, so no span around a render call measures what the GPU spends — `unaccounted`
+ * is 70–95 % of every frame on this site and both subjects live inside it. The only instrument that
+ * can see them is a DIFFERENCE between two sets of drawing things, which is why the burn-in now runs
+ * two phases and why the star's draw permit had to be moved off `BURN_IN_EVENT`.
+ *
+ * ── The solve ──
+ * Cost is the square of the ratio, so a pipeline measured at `c` ms while drawn at `r` costs
+ * `c × (r'/r)²` at any other ratio. Then, in order:
+ *
+ *     1.  reserve the star's FLOOR      — the centrepiece is never starved to nothing
+ *     2.  the models take the rest      — up to their own ceiling, never past it
+ *     3.  the star takes what remains   — up to its own ceiling
+ *
+ * Step 2 capping at the ceiling is what makes step 3 meaningful: on a machine strong enough to run the
+ * field at full density there is real budget left over, and the star gets all of it. That is the
+ * brief's *"if the device can handle more, the sun can get the highest"* — as an outcome of
+ * measurement rather than as a fixed value anywhere.
+ *
+ * ── ⚠ Two deliberate conservatisms, both in the same direction ──
+ * `fieldMilliseconds` contains the FIXED cost (compositor, blend layers, DOM) as well as the field's,
+ * and scaling the whole thing by `(r'/r)²` therefore over-charges the field for pixels the fixed part
+ * never spends. And the star is measured at FULL rate here, while in the two sections where it
+ * actually competes it draws at `SUN_IDLE_STRIDE` — every other frame — so its real cost there is half
+ * what is budgeted for it.
+ *
+ * Both make the allocation land under the budget rather than over it, which is the correct direction
+ * for a number that can only be applied once. The star's 2× margin is also what makes the HERO safe
+ * without a separate measurement: there the star draws at full rate, but the field is not drawing at
+ * all, so the whole of `fieldSpent` is free.
+ */
+export function reportSectionCosts(split: SectionCostSplit): void {
+  ensureInitialised();
+  if (phase === 'locked') return;
+  const { fieldMilliseconds, starMilliseconds, fieldRatio, starRatio } = split;
+  if (!(fieldMilliseconds > 0) || !(starMilliseconds > 0)) return;
+  if (!(fieldRatio > 0) || !(starRatio > 0)) return;
+
+  // The frame every section is being sized to fit inside, with the safety margin already taken out of
+  // it. A machine set to land exactly on what it measured drops a frame the moment anything varies.
+  const budgetMs =
+    (1000 / PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]) * (1 - CALIBRATION_SAFETY_FRACTION);
+
+  const starFloor = floor;
+  const starCeil = sunCeiling();
+
+  // ── 1 · Reserve the star's floor ──
+  const costAt = (measuredMs: number, measuredRatio: number, wantedRatio: number) =>
+    measuredMs * (wantedRatio / measuredRatio) ** 2;
+  const starFloorCost = costAt(starMilliseconds, starRatio, starFloor);
+
+  // ── 2 · The models take what they can afford, capped by their own ceiling ──
+  const fieldBudget = Math.max(0, budgetMs - starFloorCost);
+  const fieldSolved = fieldRatio * Math.sqrt(fieldBudget / fieldMilliseconds);
+  const newFieldRatio = Math.min(ceil, Math.max(floor, fieldSolved));
+
+  // ── 3 · The star takes the remainder ──
+  const fieldSpent = costAt(fieldMilliseconds, fieldRatio, newFieldRatio);
+  const remainingMs = Math.max(0, budgetMs - fieldSpent);
+  const starSolved = starRatio * Math.sqrt(remainingMs / starMilliseconds);
+  const newStarRatio = Math.min(starCeil, Math.max(starFloor, starSolved));
+
+  const fieldFrom = pixelRatio;
+  const starFrom = getSunPixelRatio();
+  pixelRatio = newFieldRatio;
+  sunPixelRatio = newStarRatio;
+  phase = 'locked';
+  calibratedPipelines.add('works');
+  calibratedPipelines.add('deck');
+
+  // Same licence the burn-in grants, on the same evidence: what the machine proved it could afford
+  // over what the site was able to spend. ⚠ Read off the FIELD, because that is what the samples buy.
+  const surplus = fieldSolved / newFieldRatio;
+  if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
+  if (telemetryEnabled) {
+    const boundBy = (solved: number, low: number, high: number) =>
+      solved > high ? 'its ceiling' : solved < low ? 'the floor' : 'the measurement';
+    const starShare = ((budgetMs - fieldSpent) / budgetMs) * 100;
+    console.log(
+      `%c[pixels] ALLOCATED%c a ${budgetMs.toFixed(1)} ms frame ` +
+        `(${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps, less ` +
+        `${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}% safety), models first.` +
+        `\n  measured   field ${fieldMilliseconds.toFixed(1)} ms @ ${fieldRatio.toFixed(2)}` +
+        `  ·  star ${starMilliseconds.toFixed(1)} ms @ ${starRatio.toFixed(2)}` +
+        ` (${((starMilliseconds / (fieldMilliseconds + starMilliseconds)) * 100).toFixed(0)}% of the frame)` +
+        `\n  1 · reserved the star's floor          ${starFloorCost.toFixed(1)} ms` +
+        `\n  2 · models  ${fieldFrom.toFixed(2)} → ${newFieldRatio.toFixed(2)}` +
+        `  spending ${fieldSpent.toFixed(1)} ms, bound by ${boundBy(fieldSolved, floor, ceil)}` +
+        `\n  3 · star    ${starFrom.toFixed(2)} → ${newStarRatio.toFixed(2)}` +
+        `  from the ${remainingMs.toFixed(1)} ms left (${starShare.toFixed(0)}% of the budget),` +
+        ` bound by ${boundBy(starSolved, starFloor, starCeil)}` +
+        `\n  ⚠ the star is budgeted at FULL rate; through services and works it draws at` +
+        ` SUN_IDLE_STRIDE, so it actually spends half of this.` +
+        `\n  surplus ${surplus.toFixed(2)}× — extras ` +
+        `${extraQualityEarned ? 'EARNED' : `not earned (needs ${EXTRA_QUALITY_BURN_IN_SURPLUS}×)`}.`,
+      'color:#5bd6a0;font-weight:700',
+      'color:#888',
+    );
+  }
+}
+
+/**
+ * The star's resolution.
+ *
+ * Until the allocator has run this is the shared ratio capped at the panel — byte-for-byte what
+ * `SunModelCanvas` used to compute for itself, so a load where the split never arrives behaves
+ * exactly as it did before.
+ */
+export function getSunPixelRatio(): number {
+  ensureInitialised();
+  return sunPixelRatio ?? Math.min(pixelRatio, MAX_PIXEL_RATIO);
+}
+
 /**
  * What the probe found this machine could afford, unclamped — or `null` if it never produced a
  * believable reading. A CAPABILITY figure, not a resolution.
  */
 export function getProbedAffordableRatio(): number | null {
   return probedAffordableRatio;
+}
+
+/**
+ * The most resolution the star may ever be given.
+ *
+ * The panel's own ceiling, same as the field's — but deliberately NOT `pixelBudgetCeil`, and that is
+ * the one asymmetry worth naming. That budget exists because a full-viewport drawing buffer at a high
+ * ratio is where render-target memory explodes (§`MAX_DRAWING_BUFFER_MEGAPIXELS`). The star's canvas is
+ * ~0.21 Mpx of CSS pixels against the field's ~1.5, so even at 2× it is under a megapixel and the
+ * budget has nothing to say about it. What bounds the star in practice is the measurement, which is
+ * the intent — its cost is overdraw, not area.
+ */
+function sunCeiling(): number {
+  return Math.max(floor, Math.min(hardwareCeil, MAX_PIXEL_RATIO));
 }
 
 /** What is left after the resolution has taken its share. `1` means fully spent. */
@@ -644,20 +778,8 @@ export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   emaFrameSeconds += (dtSeconds - emaFrameSeconds) * EMA_ALPHA;
   const fps = 1 / emaFrameSeconds;
 
-  // ── ⚠ WHAT A FRAME TIME MEANS ONCE THERE IS A CAP ──
-  // Under the shared cadence a machine that is COPING reports the cadence period and nothing else, no
-  // matter how much headroom it has — the number is manufactured by the cap, not measured. A machine
-  // that is MISSING is reporting a real frame that costs too much. So: holding says nothing, missing
-  // says spend less. Everything below keys off that distinction rather than off the raw rate.
-  const capping = isCadenceCapping();
-  if (isMissingCadence()) cadenceMissedDuringWindow = true;
-
   // ── Extras, on top of whatever resolution we settled at ──
-  // ⚠ Unreachable under a cap by construction (EXTRA_QUALITY_FPS is 50 and the site delivers 30), and
-  // guarded rather than left to fail silently — a gate that can never open reads as a bug the next time
-  // somebody wonders why MSAA never appears. The burn-in's measured surplus is the route that works,
-  // and it is the one CLAUDE.md already prefers.
-  if (!extraQualityEarned && phase === 'locked' && !capping) {
+  if (!extraQualityEarned && phase === 'locked') {
     if (fps >= EXTRA_QUALITY_FPS) {
       extraQualityFor += dtSeconds;
       if (extraQualityFor >= EXTRA_QUALITY_SECONDS) {
@@ -700,32 +822,9 @@ function calibrate(dtSeconds: number): void {
   calibrationFrames += 1;
   if (calibrationSeconds < CALIBRATION_SECONDS) return;
 
-  // ── ⚠ HELD THE CADENCE FOR THE WHOLE WINDOW → THERE IS NOTHING TO SOLVE ──
-  // This is the ordinary outcome on a machine that is coping, and it has to return without touching
-  // the ratio. Every frame in the window cost exactly one cadence period because that is what the cap
-  // asked for, so the square law below would be solving against a number the site chose rather than
-  // one the machine reported — and it would come out low, and it would come out low again on the next
-  // section, for the rest of the session. The ratio the burn-in decided stands.
-  if (isCadenceCapping() && !cadenceMissedDuringWindow) {
-    if (activePipeline) calibratedPipelines.add(activePipeline);
-    phase = 'locked';
-    if (telemetryEnabled) {
-      console.log(
-        `%c[pixels] CADENCE HELD (${activePipeline})%c ratio ${pixelRatio.toFixed(2)} stands — ` +
-          `${calibrationFrames} frames, none late.` +
-          `\n  Nothing to solve: a capped frame that arrives on time reports the cap, not the machine.` +
-          ` Only a slipped cadence can move this now.`,
-        'color:#5bd6a0;font-weight:700',
-        'color:#888',
-      );
-    }
-    return;
-  }
-
   const measuredFrameMs = calibrationMilliseconds / calibrationFrames;
   // Same square law the probe uses, but against a REAL frame instead of one pipeline on a quiet stage.
-  const targetFrameMs = calibrationTargetFrameMilliseconds();
-  const sustainable = calibrationRatio * Math.sqrt(targetFrameMs / measuredFrameMs);
+  const sustainable = calibrationRatio * Math.sqrt(CALIBRATION_TARGET_FRAME_MS / measuredFrameMs);
   const solved = sustainable * (1 - CALIBRATION_SAFETY_FRACTION);
   const from = pixelRatio;
 
@@ -746,9 +845,7 @@ function calibrate(dtSeconds: number): void {
         (calibratedPipelines.size < 2
           ? ` — holding here until the other scene is measured too.`
           : ` — both scenes measured, locked for the session.`) +
-        `\n  priority "${RESOLUTION_PRIORITY}" → a ${targetFrameMs.toFixed(1)} ms frame, ` +
-        `${PRIORITY_CADENCE_HEADROOM[RESOLUTION_PRIORITY].toFixed(2)}× inside the ` +
-        `${TARGET_FRAME_RATE} fps cadence` +
+        `\n  priority "${RESOLUTION_PRIORITY}" → aiming for ${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps` +
         `\n  measured ${measuredFrameMs.toFixed(1)} ms/frame (${(1000 / measuredFrameMs).toFixed(0)} fps)` +
         ` at ratio ${calibrationRatio.toFixed(2)}, over ${calibrationFrames} frames` +
         `\n  sustains ${sustainable.toFixed(2)}, less ${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}%` +
@@ -790,6 +887,14 @@ function watchForEmergency(dtSeconds: number, fps: number): void {
     ? Math.sqrt(EMERGENCY_PIXEL_FACTOR)
     : Math.sqrt(1 / EMERGENCY_PIXEL_FACTOR);
   pixelRatio = Math.min(ceil, Math.max(floor, pixelRatio * factor));
+  // ⚠ THE STAR MOVES WITH IT. Once the allocator has given the star its own number, this valve stops
+  // being the whole picture: an emergency cut would otherwise halve the field's pixels while the star
+  // — which the allocator may have handed a large share of the frame precisely because the machine
+  // looked capable — carried on at full price. The valve exists for a machine that is drowning, and a
+  // drowning machine has to be able to put down the heaviest thing it is holding.
+  if (sunPixelRatio !== null) {
+    sunPixelRatio = Math.min(sunCeiling(), Math.max(floor, sunPixelRatio * factor));
+  }
   emergencyDirection = wantsDown ? 'down' : 'up';
   emergencyMoves += 1;
   emergencySlowFor = 0;

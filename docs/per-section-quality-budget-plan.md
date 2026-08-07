@@ -1,7 +1,10 @@
 # Per-section quality budget — plan
 
-> **Status:** **STEPS 1–4 BUILT** 2026-08-07, unverified on a real machine — see §7 for the test
-> protocol. Steps 5–7 are still proposed and step 5 is the gate on step 7.
+> **Status:** **STEPS 1–4 BUILT** 2026-08-07 and since measured (§7 ran; `sun · bloom` came back at
+> **4.4–7.9 ms per call** against the 9–22 ms this was sized on — half, but far above the 3 ms that
+> would have flipped the priority, so the order of work stood).
+> **§8 — THE ALLOCATOR — BUILT** 2026-08-07, unverified on a real machine.
+> Steps 6–7 shipped as part of it; a deck burn-in and the §7e context-switch experiment remain open.
 > v1 2026-08-07 · **v2** same day, after a red-team pass · **v3** same day,
 > after verifying the tone-mapping claim v2's headline step rested on.
 >
@@ -326,7 +329,7 @@ already are (§5 item 7 for the re-arm trap). Leave everything in §1e alone —
 | **The 1080 cap** | Makes the marks and hulls ~17 % softer to fund the star; §2.1–2.3 fund it without that. Keep as a *fallback lever* — one line on `MAX_DRAWING_BUFFER_MEGAPIXELS`. ⚠ If ever used, note it only applies when the **probe lands**: `pixelBudgetCeil` stays `Infinity` on a refused probe (`adaptivePixelRatio.ts:414`), so a refused probe silently disables it. |
 | **Contact takes the cap back** | A 150–400 ms reallocation of both composers while the visitor stands still reading the FAQ, to buy ratio 1.18 → 1.42 on machines where the cap binds at all. |
 | **Half-res bloom source** (v1) | Drops `sunParticles` grains between texels → twinkling glow. Note §2.1 decimates the source *in time*, not in resolution — that is a different thing and has no such failure. |
-| **Per-section sun ratio** | Unnecessary and risky. The section where the star is most expensive relative to its neighbours (hero) is the one where nothing else draws; the sections where it would compete (chamber, contact) are the ones where it is already frozen. One number, decided in the loader. |
+| **Per-section sun ratio** | Unnecessary and risky. The section where the star is most expensive relative to its neighbours (hero) is the one where nothing else draws; the sections where it would compete (chamber, contact) are the ones where it is already frozen. One number, decided in the loader. **⚠ Partly superseded 2026-08-07 — see §8.** The ruling stands on the thing it was ruling on (a ratio that CHANGES as you scroll, putting a reallocation at a section boundary). What §8 builds is still *one number, decided in the loader* — it is only the way that number is arrived at that changed. |
 
 ### Considered and rejected
 
@@ -613,3 +616,108 @@ or `SUN_CANVAS_HEADROOM`). Re-read `sun · bloom` at station 3.
 Revert the canvas size afterwards — it is a probe, not a change. ⚠ `SUN_CANVAS_HEADROOM` is shared
 with `CAMERA_FIT_MARGIN`; change one and the star renders a different size, which is fine for a
 measurement and wrong for anything else.
+
+---
+
+## 8 · The allocator — what §0 actually asked for
+
+> **Added 2026-08-07**, after steps 1–4 shipped and §7's measurement came back. This is the brief in
+> §0 read literally, and it supersedes the mechanism §3 dropped without reopening the ruling §3 made.
+
+### 8a · What the brief turned out to mean
+
+§0 was read as *"cap the ships at 1080 and give the remainder to the sun"*, and §3 dropped that
+because §2.1–2.3 could fund the star without making anything softer. The clarification:
+
+> *"Not fixed values. If the device can handle more, the sun can get the highest. I'm at the services
+> section, the ship is on high and there is still more to give and performance is great — then I give
+> the rest to the sun. As much quality as I can with as much smooth as I can (30 fps), with a priority
+> on models."*
+
+**1080 was never the point; it was an example of a mechanism.** The ask is a *greedy allocator*: the
+section's models take what they can afford, and whatever the frame has left over goes to the star. On
+a strong machine the models hit their own ceiling early and the star ends up with a large share; on a
+weak one the models take nearly all of it and the star sits near its floor. No number is fixed
+anywhere.
+
+### 8b · Why this needs a measurement nothing on the site could take
+
+The split between the star and the scene behind it was *"decided by their canvas areas and nothing
+else"* (§1a). To budget it you need the star's **cost**, and no span can see it: WebGL is
+asynchronous, so timing around `bloom.render` measures submission, and `unaccounted` — GPU execution —
+is 70–95 % of every frame on this site. Both subjects live inside that number.
+
+The only instrument that can separate them is a **difference between two sets of drawing things**. So
+the loader's burn-in now runs two phases:
+
+```
+   phase A     field draws, star dark      →  field + fixed cost
+   phase B     field draws, star lit       →  field + star + fixed cost
+                              B − A        →  THE STAR, measured
+```
+
+That is why `SUN_DRAW_PERMIT_EVENT` had to exist: the star used to be permitted by `BURN_IN_EVENT`
+itself, so there was no window in which the field drew alone.
+
+### 8c · The solve
+
+Cost is the square of the ratio, so a pipeline measured at `c` ms while drawn at `r` costs
+`c × (r'/r)²` anywhere else. Budget is `1000/30` less the 10 % safety fraction — **30.0 ms**. Then, in
+priority order:
+
+```
+   1 · reserve the star's FLOOR        the centrepiece is never starved to nothing
+   2 · models take the rest            up to their OWN ceiling, never past it
+   3 · star takes what remains         up to its own ceiling
+```
+
+**Step 2 capping at the ceiling is what makes step 3 mean anything.** A machine strong enough to run
+the field at full density has real budget left, and all of it goes to the star — which is the brief's
+*"if the device can handle more, the sun can get the highest"*, as an outcome of measurement rather
+than as a constant.
+
+### 8d · Two deliberate conservatisms, both in the same direction
+
+- `fieldMilliseconds` carries the **fixed** cost (compositor, blend layers, DOM) as well as the
+  field's, and scaling the whole thing by `(r'/r)²` over-charges the field for pixels the fixed part
+  never spends.
+- The star is measured at **full rate**, but through services and works it draws at `SUN_IDLE_STRIDE`
+  — every other frame — so it really spends half of what it is budgeted.
+
+Both land the allocation under budget rather than over, which is the correct direction for a number
+that is applied once. The star's 2× margin is also what makes the **hero** safe without a separate
+measurement: there it draws at full rate, but the field is not drawing at all, so the whole of
+`fieldSpent` is free.
+
+### 8e · What else had to change
+
+| | |
+|---|---|
+| **`PRIORITY_TARGET_FPS` 50 → 30** | Every solve on the site aimed at a 20 ms frame. Against 33.3 ms that is √(33.3÷20) = **1.29× the ratio, 1.67× the pixels**, on every machine with room above the floor. Largest single quality change in the file, and it is one number. |
+| **The burn-in stopped refusing** | Measured: `0 usable frames in 2545 ms`, and on another load `0 in 15786 ms`. Not a sampler bug — the loader had 15 long tasks totalling 4.7 s running through it, so frames were 850 ms. Now: wait for the main thread to go quiet, then reject *individual* insane frames instead of abandoning the reading. It is the sole source of truth for both ratios now, so it could not stay optional. |
+| **§2.6's `driftActive` split** | Shipped as part of this, because it had to be. `applySize` is blocked while `choreographyActive`, and `assembling` was true for the whole loader wait — so the star had no clear frame to apply a new ratio on, and any allocation would have landed as a sharpness pop on the centrepiece. |
+
+### 8f · Not in this either
+
+| dropped | why |
+|---|---|
+| **A deck burn-in** | The fleet would get its own ratio instead of inheriting the field's. Costs a third loader phase, and buys nothing for the *star*: the star's one ratio is set by whichever section binds hardest, which is always works (heavier). So the deck inheriting works is safe, and only the deck's own sharpness is left on the table. The obvious next step. |
+| **Per-section star ratio** | Still rejected, still for §3's reason — a reallocation at a section boundary. The allocator solves the star against the section where it competes hardest and holds one number. |
+| **Timer queries** (`EXT_disjoint_timer_query_webgl2`) | Would measure both subjects directly and make the two-phase dance unnecessary. Missing on plenty of drivers, so it cannot be the shipping path — but as a *diagnostic* it would confirm this whole model in one reading. |
+
+### 8g · What to read on the console
+
+```
+[pixels] ALLOCATED a 30.0 ms frame (30 fps, less 10% safety), models first.
+  measured   field 12.4 ms @ 1.15  ·  star 6.1 ms @ 1.15 (33% of the frame)
+  1 · reserved the star's floor          6.1 ms
+  2 · models  1.15 → 1.44  spending 19.5 ms, bound by the measurement
+  3 · star    1.15 → 1.71  from the 10.5 ms left (35% of the budget), bound by the measurement
+```
+
+Then per section, on the `[frame]` gauge line: **`ratio`** (the field's) and **`sun ratio`** (the
+star's). Those two numbers together are the entire output of this system.
+
+⚠ If `[pixels] split REFUSED` appears instead, the two phases did not separate credibly and everything
+falls back to one number for the whole frame — exactly the behaviour before this section existed. The
+line says which of the three credibility checks failed.

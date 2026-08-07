@@ -38,7 +38,6 @@ import {
   profileNow,
   profileSpan,
 } from '@/lib/frameProfiler';
-import { shouldDrawThisFrame } from '@/lib/renderClock';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
@@ -1259,9 +1258,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const departWindow = (curveWindow: [number, number], value: number) =>
       THREE.MathUtils.clamp((value - curveWindow[0]) / (curveWindow[1] - curveWindow[0]), 0, 1);
 
-    /** When this scene last actually PAINTED. See the same field in `useWorksField` for why. */
-    let previousPaintAt = 0;
-    const renderFrame = (timestamp = performance.now()) => {
+    const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
       const loopStartedAt = profileNow();
       // See the works field: three resets `info` on every `render()`, so a composer's many passes all
@@ -1451,11 +1448,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const parkedAtWorks = departState.current >= DECK_PARKED_THRESHOLD;
       const handoffActive = departState.current > 0.001 && departState.current < 0.999;
       const isDrawing = deckShouldRender && !document.hidden && !parkedAtWorks;
-      // Section-live vs. cadence-due, kept apart for the same reason as the works field: `!isDrawing`
-      // below picks the frame an expensive reallocation is hidden on, and a cadence skip is a frame the
-      // fleet is very much on screen for.
-      const isPainting = isDrawing && shouldDrawThisFrame(timestamp);
-      if (isPainting) {
+      if (isDrawing) {
         profileMeasure('deck · render', () => composer.render(), true);
         profileGauge('deck draws', renderer.info.render.calls);
         // Also published here, not only from the works field — otherwise the whole fleet section
@@ -1490,12 +1483,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           ratioPendingSeconds = 0;
           // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
           // (gated-off) frames can never fake headroom and trick it into ramping the resolution up.
-          // ⚠ Draw to draw, NOT `frameTimer.lastRawDelta()`. That is tick to tick, and under the shared
-          // cadence most ticks are skips — it would report the panel's refresh rate as the site's frame
-          // rate and hand the controller a machine twice as fast as the one it is running on.
-          if (isPainting && previousPaintAt > 0) {
-            sampleFrame((timestamp - previousPaintAt) / 1000, 'deck');
-          }
+          // Raw by name rather than by luck: this loop happens to be unclamped today (see its
+          // frameTimer), so `deltaSeconds` would work — but the moment anyone adds a max delta here
+          // for the tab-restore reason, the controller would go blind exactly as the works field did.
+          if (isDrawing) sampleFrame(frameTimer.lastRawDelta(), 'deck');
         } else {
           // Queued. Sampling deliberately stops — measuring at the old ratio while the controller
           // believes it is already at the new one would feed it a lie and make it over-climb.
@@ -1509,10 +1500,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           }
         }
       }
-
-      // After the sampling above, so it reads the interval this frame closed rather than opens.
-      if (isPainting) previousPaintAt = timestamp;
-      else if (!isDrawing) previousPaintAt = 0;
 
       profileSpan('deck · loop', profileNow() - loopStartedAt);
     };

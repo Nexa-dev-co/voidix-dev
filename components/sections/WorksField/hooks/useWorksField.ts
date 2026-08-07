@@ -54,11 +54,13 @@ import {
 import {
   getControllerFps,
   getPixelRatio,
+  getSunPixelRatio,
   hasEarnedExtraQuality,
   noteRatioApplied,
   RATIO_APPLY_GRACE_SECONDS,
   reportBurnIn,
   reportProbedFrameCost,
+  reportSectionCosts,
   sampleFrame,
 } from '@/lib/adaptivePixelRatio';
 import {
@@ -68,7 +70,6 @@ import {
   profileSpan,
 } from '@/lib/frameProfiler';
 import { measureGpuFrameCost } from '@/lib/gpuProbe';
-import { shouldDrawThisFrame } from '@/lib/renderClock';
 import { detectKtx2Support } from '@/lib/modelLoading';
 import { getDeviceTier, isLowPowerDevice, type DeviceTier } from '@/lib/deviceTier';
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
@@ -77,6 +78,7 @@ import {
   BURN_IN_DONE_EVENT,
   BURN_IN_EVENT,
   INTRO_MARKER_SELECTOR,
+  SUN_DRAW_PERMIT_EVENT,
 } from '@/components/effects/IntroSequence/introEvents';
 import { SLATE_200, SLATE_400, SLATE_800 } from '@/lib/coolPalette';
 
@@ -166,10 +168,60 @@ const CROSSING_IDLE_EPSILON = 0.001;
  * composers, and that frame is the cost of switching resolutions rather than the cost of holding one.
  */
 const BURN_IN_DISCARD_FRAMES = 3;
-/** Enough samples for a median to mean something. A 60 fps machine reaches this in ~0.2 s. */
-const BURN_IN_TARGET_SAMPLES = 12;
-/** Below this the reading is thrown away and the runtime calibration handles it instead. */
-const BURN_IN_MIN_SAMPLES = 6;
+/** Enough samples for a median to mean something, PER PHASE. A 30 fps machine reaches this in ~0.3 s. */
+const BURN_IN_TARGET_SAMPLES = 9;
+/** Below this the phase is thrown away and the runtime calibration handles it instead. */
+const BURN_IN_MIN_SAMPLES = 5;
+
+/**
+ * Above this, a frame carried a long task and is not evidence about rendering.
+ *
+ * ⚠ THIS IS HALF THE FIX FOR A BURN-IN THAT REFUSED ON EVERY WARM LOAD. Measured on a dpr 2.5 laptop:
+ * `burn-in REFUSED — only 0 usable frames in 2545 ms`, and on another load `0 usable frames in
+ * 15786 ms`. Nothing was wrong with the sampler; the loader simply had 15 long tasks totalling 4.7 s
+ * running through it, so individual frames were 850 ms and in one case ~5 s. Counting those as frame
+ * times would have reported a 0.2 fps machine — which is why they were never counted — but throwing
+ * the WHOLE reading away because of them is how the measurement came to never happen at all.
+ *
+ * Rejecting the individual frame and carrying on is what a median wants anyway.
+ */
+const BURN_IN_SANE_FRAME_MS = 120;
+/**
+ * How long to wait for the main thread to go quiet before sampling starts.
+ *
+ * The other half of the same fix. The stage is cued when both scenes report *warm*, which on a warm
+ * cache is well before the mark build (measured: 1548 ms) and the model decodes have drained out of
+ * the task queue. Warm means "compiled", not "finished" — so this waits for the machine to actually be
+ * doing nothing before it starts asking how fast it is.
+ */
+const BURN_IN_SETTLE_MAX_MS = 800;
+/** Consecutive sane frames that count as "the main thread has gone quiet". */
+const BURN_IN_CALM_FRAMES = 3;
+/**
+ * Per-phase sampling deadline.
+ *
+ * ⚠ Sized so SETTLE + two PHASES fit inside `BURN_IN_WAIT_MAX_MS` (2.5 s in IntroSequence), past which
+ * the loader stops waiting and the finale plays over a burn-in still rendering works frames — the exact
+ * thing the finale is given a quiet GPU to avoid. 800 + 600 + 600 = 2000, leaving margin.
+ */
+const BURN_IN_PHASE_MAX_MS = 600;
+/**
+ * The smallest star cost worth believing, in ms.
+ *
+ * Two medians taken a few hundred milliseconds apart differ by a couple of tenths on a quiet machine.
+ * Below this floor the difference between the phases is jitter, and handing it to the allocator as
+ * "what the star costs" would divide by very nearly nothing and hand the star its ceiling.
+ */
+const MIN_CREDIBLE_STAR_MS = 0.6;
+/**
+ * The largest share of the frame the star may claim before the split is disbelieved.
+ *
+ * The star is genuinely the most expensive surface per pixel on this page, so a large share is not by
+ * itself suspicious — but a phase A that got lucky (or a phase B that caught a stall the sane-frame
+ * filter let through at 119 ms) can put it near 1, and the field would then be allocated almost
+ * nothing. This is a bound on the failure, not a claim about the star.
+ */
+const MAX_CREDIBLE_STAR_SHARE = 0.8;
 /**
  * ⚠ A HARD CEILING IN TIME, and it is not decoration. This stage is capped by `BURN_IN_WAIT_MAX_MS`
  * (2.5 s) in IntroSequence, and past that the gate stops waiting and moves on regardless. A burn-in
@@ -207,19 +259,8 @@ const CHAMBER_SMOOTHING = 0.09; // per-frame ease toward the scrubbed target, as
  * progress does walk this back toward 1 on its own, but `chamberState.current` EASES, so a hard flick
  * out of the room leaves the room's value lagging its target by ~180 ms while the finale is already
  * under way. Excluding the return states the real condition instead of relying on a race.
- *
- * ── ⚠ CUT 2 → 1 WHEN THE SHARED CADENCE LANDED, AND IT IS NOT A CLIMBDOWN ────────────────────────
- * This stride is a multiplier on the page's frame rate, not a frame rate. It was authored against an
- * uncapped loop, where a maximum of 2 (stride 3) meant the display's feed ran at ~20 fps out of ~60.
- * Under `lib/renderClock` the loop itself delivers 30, so the SAME constant would have quietly meant
- * 10 fps — and the room's camera is scrubbed by scroll, so a 10 fps feed inside a picture the visitor
- * is dragging is exactly the "two-frame-old camera" the window below exists to prevent.
- *
- * 1 (stride 2) restores the authored ratio: the display updates at half the page's rate, ~15 fps,
- * which is what a slow starfield behind an angled panel was always being asked to do. The saving is
- * unchanged as a FRACTION, and the fraction is what §2.3 of the plan measured.
  */
-const CHAMBER_SPACE_STRIDE_MAX = 1;
+const CHAMBER_SPACE_STRIDE_MAX = 2;
 /**
  * The window is keyed to the PULL-BACK, not chosen by taste.
  *
@@ -2138,31 +2179,93 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // ends up uniformly soft.
       const smaaWasEnabled = smaaPass.enabled;
       smaaPass.enabled = false;
-      const frameSamples: number[] = [];
       const burnStartedAt = performance.now();
-      let previousFrameAt = 0;
 
-      try {
-        for (let frame = 0; frame < BURN_IN_MAX_FRAMES; frame += 1) {
+      /**
+       * Draw works frames until the main thread stops throwing long tasks at us.
+       *
+       * ⚠ It KEEPS DRAWING while it waits, deliberately. The point is to reach the state the
+       * measurement will be taken in — a warm pipeline on a settled GPU — not to idle beside it. An
+       * empty wait would hand phase A its own first-draw costs all over again.
+       */
+      const waitForQuietMainThread = async () => {
+        let calmFrames = 0;
+        let previousFrameAt = 0;
+        while (performance.now() - burnStartedAt < BURN_IN_SETTLE_MAX_MS) {
           await nextWarmupFrame();
           if (disposed) return;
           const frameAt = performance.now();
           drawWarmupFrame();
-          // The first frames carry the reallocation and the first draw after a state change — the cost
-          // of arriving at this resolution rather than the cost of holding it.
-          if (frame >= BURN_IN_DISCARD_FRAMES && previousFrameAt > 0) {
-            frameSamples.push(frameAt - previousFrameAt);
+          if (previousFrameAt > 0 && frameAt - previousFrameAt <= BURN_IN_SANE_FRAME_MS) {
+            calmFrames += 1;
+          } else {
+            calmFrames = 0;
           }
           previousFrameAt = frameAt;
-          if (frameSamples.length >= BURN_IN_TARGET_SAMPLES) break;
-          if (frameAt - burnStartedAt >= BURN_IN_MAX_MS) break;
+          if (calmFrames >= BURN_IN_CALM_FRAMES) return;
         }
+      };
 
-        if (frameSamples.length < BURN_IN_MIN_SAMPLES) {
+      /**
+       * One phase: draw real works frames and return the MEDIAN interval, or null if too few were
+       * usable to mean anything.
+       *
+       * Median, not mean: one garbage collection inside the window is worth sixteen real frames at
+       * 25 fps, and the mean would carry it straight into the solve.
+       */
+      const samplePhase = async (): Promise<number | null> => {
+        const samples: number[] = [];
+        const phaseStartedAt = performance.now();
+        let previousFrameAt = 0;
+        let discarded = 0;
+        for (let frame = 0; frame < BURN_IN_MAX_FRAMES; frame += 1) {
+          await nextWarmupFrame();
+          if (disposed) return null;
+          const frameAt = performance.now();
+          drawWarmupFrame();
+          const interval = previousFrameAt > 0 ? frameAt - previousFrameAt : 0;
+          previousFrameAt = frameAt;
+          // The first frames carry the reallocation and the first draw after a state change — the cost
+          // of arriving at this resolution rather than the cost of holding it.
+          //
+          // ⚠ In phase B these also absorb the STAR's first frame, which is the expensive one: the
+          // permit sets `forceRender`, and if the probe moved the shared ratio since the star was
+          // built, its own `applySize` — a bloom pyramid reallocation — lands on that same frame. Three
+          // is enough for both because the permit is dispatched immediately before this call, so the
+          // star's first draw can only fall inside them.
+          if (discarded < BURN_IN_DISCARD_FRAMES) {
+            discarded += 1;
+            continue;
+          }
+          // ⚠ Reject the frame, do not abandon the phase. See BURN_IN_SANE_FRAME_MS.
+          if (interval > 0 && interval <= BURN_IN_SANE_FRAME_MS) samples.push(interval);
+          if (samples.length >= BURN_IN_TARGET_SAMPLES) break;
+          if (frameAt - phaseStartedAt >= BURN_IN_PHASE_MAX_MS) break;
+        }
+        if (samples.length < BURN_IN_MIN_SAMPLES) return null;
+        samples.sort((left, right) => left - right);
+        return samples[Math.floor(samples.length / 2)];
+      };
+
+      try {
+        await waitForQuietMainThread();
+        if (disposed) return;
+
+        // ── Phase A · the field alone. The star has not been permitted to draw yet. ──
+        const fieldOnlyMs = await samplePhase();
+        if (disposed) return;
+
+        // ── The star joins, and phase B measures both. B − A is what the star costs. ──
+        // Dispatched even if phase A refused: the measurement is optional, the star appearing is not.
+        window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
+        const fieldAndStarMs = await samplePhase();
+        if (disposed) return;
+
+        if (fieldAndStarMs === null) {
           if (telemetryEnabled) {
             console.log(
-              `%c[pixels] burn-in REFUSED%c only ${frameSamples.length} usable frames in ` +
-                `${(performance.now() - burnStartedAt).toFixed(0)} ms (needs ${BURN_IN_MIN_SAMPLES}).` +
+              `%c[pixels] burn-in REFUSED%c not enough usable frames in ` +
+                `${(performance.now() - burnStartedAt).toFixed(0)} ms (needs ${BURN_IN_MIN_SAMPLES} per phase).` +
                 `\n  The runtime calibration will decide instead — expect a CALIBRATED line per scene.`,
               'color:#e0b341;font-weight:700',
               'color:#888',
@@ -2171,13 +2274,46 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           return;
         }
 
-        // Median, not mean: one garbage collection inside the window is worth sixteen real frames at
-        // 25 fps, and the mean would carry it straight into the solve.
-        frameSamples.sort((left, right) => left - right);
-        reportBurnIn(
-          frameSamples[Math.floor(frameSamples.length / 2)],
-          renderer.getPixelRatio(),
-        );
+        // ── Hand the allocator the split, if we got one ──
+        //
+        // ⚠ THREE THINGS HAVE TO HOLD, and each of them is a way the split can be quietly wrong rather
+        // than obviously broken. A split that fails any of them is simply not reported, and the
+        // allocator falls back to sizing everything off one number exactly as it did before.
+        //
+        //   1 · REDUCED MOTION draws the star from mount (`drawingPermitted = reduceMotion` in
+        //       SunModelCanvas — that path has no held beat and would otherwise show an empty box
+        //       where the star goes). So phase A already contains the star, B − A is noise around
+        //       zero, and the allocator would conclude the star is free and hand it the ceiling.
+        //   2 · Phase A must be the FASTER of the two. If it came out slower — a long task landing in
+        //       it, the GPU still settling, thermal drift — the star's cost solves negative.
+        //   3 · The difference must be big enough to be a measurement rather than jitter. Two medians
+        //       taken a few hundred milliseconds apart differ by a few tenths of a millisecond on a
+        //       quiet machine; below that floor we are reading noise and calling it the star.
+        const starMilliseconds = fieldOnlyMs === null ? 0 : fieldAndStarMs - fieldOnlyMs;
+        const splitIsCredible =
+          !prefersReducedMotion() &&
+          fieldOnlyMs !== null &&
+          starMilliseconds >= MIN_CREDIBLE_STAR_MS &&
+          starMilliseconds <= fieldAndStarMs * MAX_CREDIBLE_STAR_SHARE;
+        if (splitIsCredible && fieldOnlyMs !== null) {
+          reportSectionCosts({
+            fieldMilliseconds: fieldOnlyMs,
+            starMilliseconds,
+            fieldRatio: renderer.getPixelRatio(),
+            starRatio: getSunPixelRatio(),
+          });
+        } else if (telemetryEnabled) {
+          console.log(
+            `%c[pixels] split REFUSED%c field ${fieldOnlyMs?.toFixed(1) ?? '—'} ms, ` +
+              `both ${fieldAndStarMs.toFixed(1)} ms → star ${starMilliseconds.toFixed(2)} ms.` +
+              `\n  Not a credible separation${prefersReducedMotion() ? ' (reduced motion — the star draws from mount)' : ''};` +
+              ` falling back to one number for the whole frame.`,
+            'color:#e0b341;font-weight:700',
+            'color:#888',
+          );
+        }
+
+        reportBurnIn(fieldAndStarMs, renderer.getPixelRatio());
         if (getPixelRatio() !== appliedPixelRatio) {
           // Allocate what it decided, here, behind the veil — so this section's first real frame is
           // already at its final resolution and never re-sizes in front of anyone.
@@ -2198,8 +2334,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         if (msaaRaised) drawWarmupFrame(); // rebuild the disposed targets now, not on the first real frame
       } finally {
         smaaPass.enabled = smaaWasEnabled;
-        // ⚠ Unconditional. The intro's finale is waiting on this.
-        if (!disposed) window.dispatchEvent(new Event(BURN_IN_DONE_EVENT));
+        // ⚠ Both unconditional, and for the same reason: the loader is holding on us. The finale waits
+        // on the done event, and the STAR waits on the permit — so a throw anywhere above must not be
+        // able to leave a dark square where the site's centrepiece goes. `permitDrawing` is idempotent,
+        // so re-firing a permit already sent between the phases costs nothing.
+        if (!disposed) {
+          window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
+          window.dispatchEvent(new Event(BURN_IN_DONE_EVENT));
+        }
       }
     };
     const onBurnInRequested = () => void runBurnIn();
@@ -2415,18 +2557,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     const streakDirection = new THREE.Vector3(0, 0, 1);
     let hasPreviousCameraPosition = false;
     let warp = 0;
-    /**
-     * When this scene last actually PAINTED, for the resolution controller.
-     *
-     * ⚠ Not `frameTimer.lastRawDelta()` any more, and the difference is the whole reason this exists.
-     * That measures tick to tick, and under the shared cadence most ticks are skips — so on a 60 Hz
-     * panel drawing every other tick it would report 16.7 ms, the controller would read 60 fps on a
-     * site delivering 30, and both of its one-way latches (`EMERGENCY_FAST_FPS`, `EXTRA_QUALITY_FPS`)
-     * would fire within seconds of the first stop. Draw to draw is the only interval that describes a
-     * frame this scene actually paid for.
-     */
-    let previousPaintAt = 0;
-    const renderFrame = (timestamp = performance.now()) => {
+    const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
       const loopStartedAt = profileNow();
       // Accumulate across every pass this frame rather than being reset by each `render()` — see the
@@ -2743,21 +2874,6 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         chamberState.engaged && roomRaw > CHAMBER_ENGAGE_EPSILON && roomRaw < CHAMBER_SCRUB_END;
 
       const isDrawing = worksShouldRender && !document.hidden;
-      /**
-       * `isDrawing` says this SECTION is live; this says the shared cadence wants a picture on this
-       * tick. They are deliberately two variables rather than one.
-       *
-       * ⚠ Everything below that reads `!isDrawing` means "the visitor is not looking at this scene" and
-       * uses it to pick a frame nobody can see for an expensive reallocation — the MSAA raise and the
-       * pixel-ratio apply, both of which stall for 150–400 ms. A cadence skip is NOT that: the field is
-       * on screen, one frame between two drawn ones, and dropping a composer reallocation into it would
-       * put a visible hitch in the middle of a section rather than hide one at the edge of it.
-       *
-       * The state above this line still runs every tick, on purpose. It is scroll-derived and cheap
-       * (~0.2 ms), and running it every tick means the frame we DO paint carries the freshest possible
-       * scroll position instead of one that is a tick stale.
-       */
-      const isPainting = isDrawing && shouldDrawThisFrame(timestamp);
 
       // ── Stop paying the compositor for a canvas nobody can see ──
       // `worksShouldRender` is the section's own gate — false through the hero and the whole fleet,
@@ -2772,7 +2888,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       // Hoisted out of the draw block because the resolution controller below has to know whether this
       // frame did the full job before it decides whether the NEXT one's timing means anything.
       let spaceRenderedThisFrame = true;
-      if (isPainting) {
+      if (isDrawing) {
         // Geometry AA follows the room, because the room is the only thing stage 2 ever draws that has
         // geometry. Toggling `enabled` is all this needs: EffectComposer recomputes which pass is the
         // last ENABLED one on every render, so `OutputPass` takes over drawing to the canvas by itself
@@ -2869,13 +2985,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // could not see this section running below 20 fps, which is where it spends its whole time
           // on the machines this exists for. See `FrameTimer.lastRawDelta`.
           //
-          // ⚠ …and only frames whose PREVIOUS PAINTED frame did the full job. Once the chamber's space
-          // stride engages, two painted frames in three are cheap by construction and would read as
-          // headroom the site does not have. Both consumers latch on that and neither ever un-latches
-          // — see `spaceRenderedLastFrame`.
-          if (isPainting && spaceRenderedLastFrame && previousPaintAt > 0) {
-            sampleFrame((timestamp - previousPaintAt) / 1000, 'works');
-          }
+          // ⚠ …and only frames whose PREVIOUS frame did the full job. `lastRawDelta` measures the frame
+          // before this one, so once the chamber's space stride engages, two frames in three are cheap
+          // by construction and would read as headroom the site does not have. Both consumers latch on
+          // that and neither ever un-latches — see `spaceRenderedLastFrame`.
+          if (isDrawing && spaceRenderedLastFrame) sampleFrame(frameTimer.lastRawDelta(), 'works');
         } else {
           // Queued. Sampling deliberately stops here — measuring at one ratio while the controller
           // believes it is at another feeds it a lie.
@@ -2902,19 +3016,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         }
       }
 
-      // Last, so the controller above reads the PREVIOUS painted frame's answer rather than this one's.
-      // Only updated on frames we painted: an unpainted frame's timing is already excluded from
-      // sampling, and letting it write here would make the first frame back look like it followed a
-      // full one.
-      if (isPainting) {
-        spaceRenderedLastFrame = spaceRenderedThisFrame;
-        previousPaintAt = timestamp;
-      } else if (!isDrawing) {
-        // The section has gone away. The next paint is on the far side of a crossing or a whole lap,
-        // and that gap is not a frame cost — clearing this makes the first paint back un-sampleable
-        // rather than sampled as a several-second frame.
-        previousPaintAt = 0;
-      }
+      // Last, so the controller above reads the PREVIOUS frame's answer rather than this one's. Only
+      // updated on frames we drew: an undrawn frame's timing is already excluded from sampling, and
+      // letting it write here would make the first frame back look like it followed a full one.
+      if (isDrawing) spaceRenderedLastFrame = spaceRenderedThisFrame;
 
       profileSpan('works · loop', profileNow() - loopStartedAt);
     };
