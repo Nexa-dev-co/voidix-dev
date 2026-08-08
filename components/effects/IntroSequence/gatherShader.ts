@@ -112,9 +112,23 @@ export const SUN_BODY_FILL = 0.723 / SUN_CANVAS_HEADROOM;
  * Horizontal framing nudge, as a fraction of the sun camera's frame HALF-height. Positive moves the sun
  * left. Lives here rather than in SunModelCanvas because the dust has to move with it: the field
  * converges on the "o", so a sun nudged off the glyph's centre would stop being concentric with the
- * stream falling into it. Both sides read this one number. See SunModelCanvas for why it is not zero.
+ * stream falling into it. Both sides read this one number — and so does `sunParticles`, whose rings
+ * would otherwise orbit a point the star no longer occupies.
+ *
+ * ── ⚠ 0.05 → 0 ON 2026-08-08, BECAUSE THE THING IT CORRECTED FOR IS GONE ─────────────────────────
+ * It was hand-tuned against a model whose bounding box was dragged 0.174 units off-axis by the `flare`
+ * discs and the `blowout` planes. `SUN_OMITTED_PARTS` no longer ships either group, and SunModelCanvas
+ * now takes its centre from the geometry that actually DRAWS — measured at x = +0.0003, i.e. already
+ * on the spin axis. Two corrections for an asymmetry that no longer exists would have stacked: the
+ * centring alone was leaving the star 0.174 units right, and this was pushing it a further ~11 px left
+ * of the canvas centre.
+ *
+ * ⚠ If the glow still reads off-centre by eye, this is the dial — the geometry is symmetric to within
+ * 0.0003 units, so anything remaining is the brightness distribution, not the model, and only an eye
+ * can judge it. Positive moves the sun left; one unit here is a full frame half-height, so useful
+ * values are hundredths.
  */
-export const SUN_FRAMING_NUDGE_X = 0.05;
+export const SUN_FRAMING_NUDGE_X = 0;
 
 /** Starting values for the tunable uniforms. Plain data — no engine types. */
 export const GATHER_DEFAULTS = {

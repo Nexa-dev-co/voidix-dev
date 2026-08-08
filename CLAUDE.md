@@ -403,6 +403,30 @@ way, or a restored scroll position moves things while the loader is still up.
 model a deleted editor authored, and its constants ARE that editor's "Peaceful" stage. This file is
 now the only copy of them.
 
+⚠ **The star does not ship all of that model. `SUN_OMITTED_PARTS` drops two of its four groups**
+(2026-08-08): the 8 spun `flare` discs and the 20 `blowout` hot-spot planes. Measured `sun · bloom`
+**2.00 → 0.87 ms**, a 57 % cut, and the star was the largest single span on the page — 42–47 % of the
+hero's frame on a dpr 2.5 laptop.
+
+- ⚠ **The cost is per DRAW CALL, ~0.02 ms each, not per pixel.** Three groups with completely
+  different areas came out within 10 % of each other per draw; projected area predicted none of it.
+  `sunBloom` renders the scene **twice**, so every mesh is submitted twice. That is why the fix is a
+  shorter mesh list and not a resolution knob. (On the dpr 2.5 laptop the same call costs 16–19 ms and
+  the limit there is GPU fill instead — fewer meshes wins in both.)
+- ⚠ **`sunouter` — the 11 translucent shells — is NOT omitted and must not be.** It is the star's
+  ATMOSPHERE: the core is an opaque ball and those shells are what make it read as burning. They are
+  also what a procedural plasma shader would REPLACE, one animated surface for eleven static ones. To
+  be superseded, never simply deleted. `SUN_ABLATION_KEEP_SHELLS` stays at 0 and exists to measure that.
+- **Hiding is not removing** — the geometry still downloads. After the texture cap below it is worth
+  ~15 KB, so it is not worth the GLB rebuild that would break `compareModels`' mesh table.
+- ⚠ Omitting `flare` also **skips its recentre-and-spin setup**. `flareSpins` would otherwise keep
+  rebuilding quaternions for eight invisible discs every frame — hiding the draw while keeping the
+  work is the one way this cull could have cost more than it saved.
+
+**Its textures are capped at 512²** (`buildModels.mjs` recipe, same day): the maps were 2048² on a star
+that never exceeds ~250 device pixels across. **1346 KB → 505 KB, −62 %.** Bytes and VRAM only — it
+cannot move `sun · bloom`, for the per-draw-call reason above.
+
 It is driven through exactly **three nested elements, one owner each** — sharing one between two
 owners is how you get a sun that jumps:
 

@@ -6,6 +6,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createFrameTimer } from '@/lib/frameTimer';
 import { profileGauge, profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
+import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import {
   getSunPixelRatio,
   RATIO_APPLY_GRACE_SECONDS,
@@ -167,6 +168,72 @@ const SUN_IDLE_STRIDE = 2;
  * black stage for the same reason and by the same rule.
  */
 const SUN_GLOW_STRIDE = 2;
+
+// ── DIAGNOSTIC: which parts of the star are allowed to draw ──────────────────────────────────────
+/**
+ * The star's cost is not its model and not its textures — it is a stack of double-sided, alpha-blended
+ * meshes. `fractured_sun.glb` holds four groups, and the instance counts are what matter — the file
+ * has 36 meshes across 76 NODES, so several are instanced many times:
+ *
+ *     sunouter    11 instances   transparent shells, α 0.82, 2.00 across   ← the ATMOSPHERE
+ *     blowout     20 instances   small planes, 0.55×0.62×0.10              ← blown-out hot spots
+ *     flare        8 instances   flat discs, 0.86×0.86×0.14, spun per frame ← the radiating discs
+ *     sun_inner / magma          opaque — the 1.93 core and the ten shard cells
+ *
+ * ── ⚠ THE COST IS PER DRAW CALL, NOT PER PIXEL, AND THAT WAS A SURPRISE ──────────────────────────
+ * Measured on a dpr 1.1 desktop at 144 fps, `sun · bloom` per call, by hiding one group at a time:
+ *
+ *     all                2.00 ms      —
+ *     −flare             1.65 ms      −0.35 over 16 draws   = 0.0219 ms/draw
+ *     −flare −blowout    0.87 ms      −0.78 over 40 draws   = 0.0195 ms/draw
+ *     shells 11 → 3      1.65 ms      −0.35 over 16 draws   = 0.0219 ms/draw
+ *
+ * Three groups with completely different geometry, the same cost per draw to within 10 %. Projected
+ * AREA predicts none of it: `blowout` and `flare` cover near-identical area and differ 2.2× in cost,
+ * while the shells cover 4× the area of `flare` for the same cost. `sun · bloom` wraps
+ * `bloom.render` in wall clock, so what it measures is CPU submission — and every mesh is submitted
+ * twice, because `sunBloom` renders the scene twice per drawn frame.
+ *
+ * ⚠ On the dpr 2.5 laptop the same call costs 16–19 ms and the bottleneck there is GPU fill, not
+ * submission. Different machine, different limit — but fewer meshes wins in both, which is the whole
+ * reason this list exists rather than a resolution knob.
+ *
+ * ── Why `sunouter` is NOT in the list ──
+ * It is the sun's ATMOSPHERE. The core is an opaque ball; those eleven layered translucent shells over
+ * it are what make it read as burning rather than as a rock. They are also the thing a procedural
+ * plasma shader would REPLACE — one animated surface instead of eleven static ones — so they should be
+ * superseded, never simply deleted. `SUN_ABLATION_KEEP_SHELLS` stays for measuring that, at 0.
+ *
+ * ⚠ HIDING IS NOT REMOVING. This buys frame time only; the geometry and its textures are still
+ * downloaded. Reclaiming those means rebuilding the GLB, which changes the mesh table `compareModels`
+ * asserts on — a separate, deliberate pass.
+ */
+type SunPartMaterial = 'flare' | 'blowout' | 'sunouter';
+/**
+ * Parts of the star that do not ship. Decided 2026-08-08 from the table above — 2.00 → 0.87 ms, a
+ * 57 % cut, and the largest saving available without touching the atmosphere.
+ *
+ * Empty restores the star exactly as authored; that is the whole revert.
+ */
+const SUN_OMITTED_PARTS: readonly SunPartMaterial[] = ['flare', 'blowout'];
+/** DIAGNOSTIC. Keep only the N LARGEST `sunouter` shells. 0 = keep all, and that is the shipping value. */
+const SUN_ABLATION_KEEP_SHELLS = 0;
+
+/**
+ * What the ablation is doing, for the console capture.
+ *
+ * ⚠ Built from the values, with no `=== 0` anywhere. The first cut compared both constants against 0
+ * to decide the word "all" — and a find-and-replace of `0` → `3` while setting up a run caught the
+ * comparison too, so a `shells:3` capture reported itself as `all`. The ablation had run correctly; the
+ * label lied about it. A diagnostic that can disagree with what it measured is worse than none.
+ */
+const SUN_ABLATION_LABEL =
+  [
+    ...SUN_OMITTED_PARTS.map((name) => `-${name}`),
+    SUN_ABLATION_KEEP_SHELLS > 0 ? `shells:${SUN_ABLATION_KEEP_SHELLS}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ') || 'all';
 
 // ── Assembly ──
 // The shards do not just slide outward — they arrive from deep space: scattered far behind the sun in
@@ -970,7 +1037,14 @@ export default function SunModelCanvas() {
 
       // Flares are FLAT discs, and their geometry centre is offset from the mesh origin — spinning about
       // the origin would orbit them. Recentre each so it turns in place like a coin on a table.
+      //
+      // ⚠ Skipped entirely when the flares are omitted. `SUN_OMITTED_PARTS` only sets `visible = false`,
+      // and an invisible mesh still gets its geometry cloned here and its quaternion rebuilt every frame
+      // by `flareSpins` below. Hiding the draw while keeping the work is the one way this cull could
+      // have quietly cost more than it saved.
+      const flaresOmitted = SUN_OMITTED_PARTS.includes('flare');
       modelRoot.traverse((object) => {
+        if (flaresOmitted) return;
         if (!(object instanceof THREE.Mesh)) return;
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         if (!materials.some((material) => material.name === 'flare')) return;
@@ -1002,19 +1076,101 @@ export default function SunModelCanvas() {
       );
       spinner.add(modelRoot);
 
-      // Put the model's centre ON the spinner's axis.
-      //
-      // Without this the idle spin does not turn the sun in place, it ORBITS it: spinner.rotation.y turns
-      // about the world origin and the model's content is centred 0.174 units off it, which swings the
-      // sun ±11px sideways over each 58-second turn. That slow drift is what reads as "not centred" —
-      // the sun is only in the middle twice per minute.
-      //
-      // Measured in world space (Box3 always is) and converted back into the spinner's frame, because the
-      // spinner has already been turning for however long the model took to download.
+      // World matrices, for everything below. Both the ablation's per-shell sizing and the centring
+      // read world-space boxes, and `Box3` is always world space — so this has to happen once, here,
+      // after the model is parented and before either of them looks at it.
       spinner.updateMatrixWorld(true);
+
+      // ── The ablation — see SUN_OMITTED_PARTS ──
+      //
+      // ⚠ Runs BEFORE the centring below, and that ordering is load-bearing. It used to run after, so
+      // that `Box3.setFromObject` (which does NOT skip invisible objects) framed the star identically
+      // whether parts were hidden or not — the right property for a DIAGNOSTIC being A/B'd. It is the
+      // wrong one for a shipping decision: the box then centres the star on geometry that no longer
+      // draws.
+      //
+      // Measured, world space, after MODEL_ROTATION:
+      //
+      //     all meshes            centre x  -0.1741      ← what the star was centred on
+      //     shipping geometry     centre x  +0.0003
+      //     sunouter halo         centre x  +0.0003
+      //     opaque core + shards  centre x  -0.0001
+      //
+      // The flares and the blowout planes were the ONLY thing off-axis. Everything that still ships is
+      // already centred to within 0.0003 of the spin axis.
+      //
+      // ⚠ Hiding a MESH, never one of `coronaParts`. Those are the model root's own children and their
+      // `visible` is written every frame from `coronaGrowth`; anything set here would be overwritten on
+      // the next tick. Visibility in three is hierarchical, so a hidden mesh stays hidden when an
+      // ancestor is shown — which is exactly the behaviour this needs.
+      if (SUN_OMITTED_PARTS.length > 0 || SUN_ABLATION_KEEP_SHELLS > 0) {
+        modelRoot.updateMatrixWorld(true);
+        const shells: { mesh: THREE.Mesh; size: number }[] = [];
+        let hidden = 0;
+        modelRoot.traverse((object) => {
+          if (!(object instanceof THREE.Mesh)) return;
+          const names = (Array.isArray(object.material) ? object.material : [object.material]).map(
+            (material) => material.name,
+          );
+          if (names.some((name) => SUN_OMITTED_PARTS.includes(name as SunPartMaterial))) {
+            object.visible = false;
+            hidden += 1;
+            return;
+          }
+          if (SUN_ABLATION_KEEP_SHELLS > 0 && names.includes('sunouter')) {
+            const extent = new THREE.Box3().setFromObject(object).getSize(new THREE.Vector3());
+            shells.push({ mesh: object, size: Math.max(extent.x, extent.y, extent.z) });
+          }
+        });
+        // Largest first, then drop everything past the keep count. The big shells carry the rim and the
+        // silhouette; the small inner ones are the ones sitting behind ~99 % opacity.
+        shells
+          .sort((left, right) => right.size - left.size)
+          .slice(SUN_ABLATION_KEEP_SHELLS)
+          .forEach(({ mesh }) => {
+            mesh.visible = false;
+            hidden += 1;
+          });
+        if (telemetryEnabled) {
+          console.log(
+            `%c[voidix] sun ablation%c ${SUN_ABLATION_LABEL} — ${hidden} meshes hidden` +
+              `${shells.length > 0 ? `, ${SUN_ABLATION_KEEP_SHELLS} of ${shells.length} shells kept` : ''}.` +
+              `\n  Read \`sun · bloom\` per call on the hero; the gauge line carries \`sun parts\`.`,
+            'color:#e0b341;font-weight:700',
+            'color:#888',
+          );
+        }
+      }
+
+      // ── Put the model's centre ON the spinner's axis ──
+      //
+      // Without this the idle spin does not turn the sun in place, it ORBITS it: `spinner.rotation.y`
+      // turns about the world origin, so content centred off that axis swings sideways over each
+      // 58-second turn. That slow drift is what reads as "not centred" — the sun would be in the middle
+      // only twice a minute. Converted back into the spinner's frame because the spinner has already
+      // been turning for however long the model took to download.
+      //
+      // TWO boxes, and they are deliberately different:
+      //
+      //   `box`        every mesh, hidden ones included → the RADIUS, and therefore how big the star
+      //                renders. Kept whole on purpose: `SUN_BODY_FILL` in gatherShader describes the
+      //                margin around the body as "flares and empty margin", so the authored framing
+      //                already treats them as padding. Fitting to the visible geometry instead would
+      //                render the star 3.7 % larger and quietly re-compose the hero.
+      //   `drawnBox`   only what actually draws → the CENTRE. This is the fix: centring on geometry
+      //                that no longer renders put the star 0.174 units off its own spin axis.
+      //
+      // `Box3.setFromObject` has no visibility check, so the second box is built by hand.
       const box = new THREE.Box3().setFromObject(modelRoot);
       const sphere = box.getBoundingSphere(new THREE.Sphere());
-      const centre = box.getCenter(new THREE.Vector3());
+      const drawnBox = new THREE.Box3();
+      modelRoot.traverse((object) => {
+        if (!(object instanceof THREE.Mesh) || !object.visible) return;
+        drawnBox.expandByObject(object);
+      });
+      // A star with nothing visible cannot be centred on anything — fall back rather than translate by
+      // the empty box's Infinity. Only reachable if every group is omitted at once.
+      const centre = (drawnBox.isEmpty() ? box : drawnBox).getCenter(new THREE.Vector3());
       spinner.worldToLocal(centre);
       modelRoot.position.sub(centre);
 
@@ -1024,10 +1180,13 @@ export default function SunModelCanvas() {
       // Panning (moving the camera and its aim point together) rather than rotating, so the sun shifts
       // across the frame without the perspective skewing.
       //
-      // The nudge is not zero because the model is not visually symmetric about its own bounding box: the
-      // big `sunouter` glow sphere sits at x≈0 while the fractured cells sit at x≈-0.25, so the bright
-      // halo — which is what actually reads as the sun — sits right of the geometric centre the box
-      // gives us. SUN_FRAMING_NUDGE_X corrects for that, and the dust reads the same constant.
+      // ⚠ SUN_FRAMING_NUDGE_X IS NOW 0, and this comment used to explain why it was not. It said the
+      // model is not visually symmetric about its own bounding box — that the halo sits right of the
+      // geometric centre. Measured, that is not what was happening: `sunouter` and the opaque core are
+      // BOTH centred at x ≈ 0.000, and the whole 0.174 offset came from the flare discs and the blowout
+      // planes dragging the bounding box left. Neither ships, and the centring above now reads the
+      // drawn geometry, so there is nothing left to correct. See the constant for the dial if the glow
+      // still reads off by eye.
       const fitDistance =
         (sphere.radius / Math.sin(THREE.MathUtils.degToRad(CAMERA_FOV * 0.5))) * CAMERA_FIT_MARGIN;
       const frameHalfHeight = fitDistance * Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV * 0.5));
@@ -1446,6 +1605,10 @@ export default function SunModelCanvas() {
       // What the star is costing right now, in the profiler's own report. 1 on the hero and through
       // every authored beat; SUN_IDLE_STRIDE while it is a background object behind another scene.
       profileGauge('sun stride', inBlackStage && !choreographyActive ? SUN_IDLE_STRIDE : 1);
+      // ⚠ Every capture carries the configuration that produced it. Four ablation runs produce four
+      // logs that are otherwise indistinguishable, and a number you cannot attribute is not a
+      // measurement.
+      profileGauge('sun parts', SUN_ABLATION_LABEL);
       // The star's OWN resolution, beside the field's `ratio` gauge — the two together are the whole
       // output of the allocator, and the only way to see at a glance whether the star was handed the
       // headroom the models left it. Reads `appliedPixelRatio`, not `getSunPixelRatio()`: what these
