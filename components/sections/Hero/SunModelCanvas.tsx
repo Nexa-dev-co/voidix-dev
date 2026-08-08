@@ -213,7 +213,14 @@ type SunPartMaterial = 'flare' | 'blowout' | 'sunouter';
  * Parts of the star that do not ship. Decided 2026-08-08 from the table above — 2.00 → 0.87 ms, a
  * 57 % cut, and the largest saving available without touching the atmosphere.
  *
- * Empty restores the star exactly as authored; that is the whole revert.
+ * ⚠ EMPTYING THIS IS NOT THE WHOLE REVERT, and an earlier version of this line claimed it was. Two
+ * other things moved on the same day BECAUSE these groups left, and both would have to move back:
+ *
+ *   `SUN_FRAMING_NUDGE_X`   0.05 → 0   it existed to correct for the asymmetry these two caused
+ *   the centring below      now reads the drawn geometry, not the full bounding box
+ *
+ * Restore this list alone and the star draws its flares again while being framed as though it had
+ * none — off-centre, differently from before. Revert all three or none.
  */
 const SUN_OMITTED_PARTS: readonly SunPartMaterial[] = ['flare', 'blowout'];
 /** DIAGNOSTIC. Keep only the N LARGEST `sunouter` shells. 0 = keep all, and that is the shipping value. */
@@ -1157,10 +1164,20 @@ export default function SunModelCanvas() {
       //                margin around the body as "flares and empty margin", so the authored framing
       //                already treats them as padding. Fitting to the visible geometry instead would
       //                render the star 3.7 % larger and quietly re-compose the hero.
-      //   `drawnBox`   only what actually draws → the CENTRE. This is the fix: centring on geometry
-      //                that no longer renders put the star 0.174 units off its own spin axis.
+      //   `drawnBox`   the meshes that were not INDIVIDUALLY hidden → the CENTRE. This is the fix:
+      //                centring on geometry that no longer renders put the star 0.174 units off its
+      //                own spin axis.
       //
       // `Box3.setFromObject` has no visibility check, so the second box is built by hand.
+      //
+      // ⚠ "not individually hidden" is deliberately narrower than "visible on screen", and the
+      // difference is load-bearing at exactly this moment. `positionShards(0, 0)` has already run, so
+      // every entry in `coronaParts` is `visible = false` for the whole loader — the star lights
+      // inside its closing shell. Testing ancestor visibility would therefore centre on the ten
+      // shards alone and hand a different answer depending on WHEN this ran. Testing each mesh's own
+      // flag asks the question we actually mean: what does this build ship? Measured, the two agree
+      // to 0.0004 units here (shards -0.0001, shipping +0.0003) — but only one of them stays right
+      // if `CORONA_APPEAR` or the load order ever moves.
       const box = new THREE.Box3().setFromObject(modelRoot);
       const sphere = box.getBoundingSphere(new THREE.Sphere());
       const drawnBox = new THREE.Box3();
@@ -1293,11 +1310,13 @@ export default function SunModelCanvas() {
       // without it.
       if (!reduceMotion) {
         sunParticles = createSunParticles(particleFrameExtent(), renderer.getPixelRatio());
-        // Centred on the VISIBLE star, not on the model's geometric origin. The camera is panned by
-        // SUN_FRAMING_NUDGE_X because the bright halo sits off the bounding box's centre, so the
-        // thing that reads as the sun is at x = panX. Rings left at the origin would orbit a point
-        // 5% of the frame off from the star they are supposed to be circling. The loader's dust
-        // applies this same correction, for the same reason.
+        // Centred on wherever the camera is actually aimed, not on the model's geometric origin —
+        // rings left at the origin while the camera is panned would orbit a point the star does not
+        // occupy. The loader's dust applies the same correction, from the same constant.
+        //
+        // ⚠ `panX` is 0 as of 2026-08-08 (SUN_FRAMING_NUDGE_X went to 0), so this is currently an
+        // identity. It stays because it is the correction, not a constant: the moment the nudge is
+        // touched, this and the dust have to move with it.
         sunParticles.object.position.x = panX;
         scene.add(sunParticles.object);
       }

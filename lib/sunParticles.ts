@@ -75,8 +75,12 @@ const PARTICLE_COUNT = 1400;
  * live frame extent, which is what makes the whole thing resize-safe.
  *
  * Leave real headroom under that ceiling: the whole field is shifted sideways by the framing pan
- * (`SUN_FRAMING_NUDGE_X`, 5% of the frame), so a ring sitting flush against the edge would clip on
- * one side only. The widest ring here reaches ~0.54 of the frame, which is comfortable.
+ * (`SUN_FRAMING_NUDGE_X`), so a ring sitting flush against the edge would clip on one side only. The
+ * widest ring here reaches ~0.54 of the frame, which is comfortable.
+ *
+ * ⚠ That pan is 0 as of 2026-08-08 — it was 5% of the frame, and the asymmetry it corrected for went
+ * with the `flare` and `blowout` groups. So the headroom is not currently being spent on anything.
+ * Keep it anyway: it is what makes the rings safe if the nudge is ever reintroduced by eye.
  *
  * `tilt` and `yaw` are DEGREES and define the orbital plane. Rings 0 and 1 carry opposite tilts and
  * counter-rotate — that is what draws the X.

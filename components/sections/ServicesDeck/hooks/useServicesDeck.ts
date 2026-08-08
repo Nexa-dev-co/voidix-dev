@@ -971,6 +971,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     let disposed = false;
     let warmupStarted = false;
     let warmupFrame = 0;
+    /** Program cache keys present at the end of the warm-up — see the diagnostic in `prewarmPipeline`. */
+    let warmedProgramKeys: Set<string> | null = null;
+    /** Latches after the first drawn frame has been compared against them. */
+    let programDiffReported = false;
     const nextWarmupFrame = () =>
       new Promise<void>((resolve) => {
         warmupFrame = requestAnimationFrame(() => resolve());
@@ -1012,6 +1016,28 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         // Forces the bloom + SMAA passes to compile, and — the expensive part — allocates the
         // composer's targets, so neither lands on the frame the fleet is first revealed.
         composer.render();
+        // ── ⚠ DIAGNOSTIC: did this warm-up actually cover the frame the reveal will draw? ──
+        //
+        // A Chrome trace of the hero → services boundary found ONE real hitch: a 69 ms task, 67 ms of
+        // it inside `FunctionCall`, and the sampler charged 55 % of what it could sample to
+        // `getProgramInfoLog` — reached through `renderFrame` → `RenderPass.render` → `setProgram`.
+        // That call blocks the main thread until the driver finishes LINKING a shader program, so a
+        // program is being built on the deck's first real render despite everything above.
+        //
+        // Which program is not known. `applyShipLighting` only tweens light colours and intensities,
+        // which are not part of three's program cache key; there are no shadows, no `onBeforeCompile`
+        // and no material swaps. So rather than guess a fourth time, record the key set here and diff
+        // it against the first drawn frame — three keys every program by a string that spells out
+        // exactly which features it was built for, so the diff names the cause outright.
+        //
+        // ⚠ Gated on telemetry. three's cache keys are long concatenations of every program
+        // parameter, so ~9 of them is several KB held for the whole session — pointless in a build
+        // that can never print them.
+        if (telemetryEnabled) {
+          warmedProgramKeys = new Set(
+            (renderer.info.programs ?? []).map((program) => program.cacheKey),
+          );
+        }
       } catch {
         // A failed compile is not a reason to trap the loader; whatever failed compiles on first draw.
       } finally {
@@ -1450,6 +1476,26 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const isDrawing = deckShouldRender && !document.hidden && !parkedAtWorks;
       if (isDrawing) {
         profileMeasure('deck · render', () => composer.render(), true);
+        // ── ⚠ DIAGNOSTIC, one shot: what did the warm-up miss? ──
+        // Compared AFTER the draw, because the missing program is created BY that draw — checking
+        // before it would compare the warmed set against itself and report nothing. See the snapshot
+        // in `prewarmPipeline` for what this is chasing.
+        if (!programDiffReported && warmedProgramKeys !== null && telemetryEnabled) {
+          programDiffReported = true;
+          const added = (renderer.info.programs ?? [])
+            .map((program) => program.cacheKey)
+            .filter((key) => !warmedProgramKeys!.has(key));
+          console.log(
+            added.length === 0
+              ? `%c[voidix] deck programs%c first drawn frame added NONE — the ${warmedProgramKeys.size} warmed` +
+                  ` programs covered it, so the link stall is coming from somewhere else.`
+              : `%c[voidix] deck programs%c first drawn frame added ${added.length} of ` +
+                  `${renderer.info.programs?.length ?? 0} — THE WARM-UP MISSED THESE:\n` +
+                  added.map((key) => `  ${key}`).join('\n'),
+            'color:#e0b341;font-weight:700',
+            'color:#888',
+          );
+        }
         profileGauge('deck draws', renderer.info.render.calls);
         // Also published here, not only from the works field — otherwise the whole fleet section
         // reports no ratio and no controller reading, which is exactly the span where the first step
