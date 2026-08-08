@@ -42,6 +42,7 @@ import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
+import { createSunPlasma, type SunPlasma } from './sunPlasma';
 import { warmSceneMaterials } from '@/lib/warmScene';
 import { SLATE_400 } from '@/lib/coolPalette';
 import {
@@ -222,7 +223,7 @@ type SunPartMaterial = 'flare' | 'blowout' | 'sunouter';
  * Restore this list alone and the star draws its flares again while being framed as though it had
  * none — off-centre, differently from before. Revert all three or none.
  */
-const SUN_OMITTED_PARTS: readonly SunPartMaterial[] = ['flare', 'blowout'];
+const SUN_OMITTED_PARTS: readonly SunPartMaterial[] = ['flare', 'blowout', 'sunouter'];
 /** DIAGNOSTIC. Keep only the N LARGEST `sunouter` shells. 0 = keep all, and that is the shipping value. */
 const SUN_ABLATION_KEEP_SHELLS = 0;
 
@@ -616,6 +617,11 @@ export default function SunModelCanvas() {
     // Built only once the model has loaded — the ring radii are fractions of the visible frame, which
     // isn't known until the camera has been fitted to the model.
     let sunParticles: ReturnType<typeof createSunParticles> | null = null;
+    /**
+     * The star's burning surface. Null under reduced motion, where a churning field is exactly the
+     * ambient movement that setting asks us not to run — the crust and its emissive still read.
+     */
+    let plasma: SunPlasma | null = null;
     /**
      * Visible half-height at the sun's own distance, set when the camera is fitted. The particle
      * rings are sized against this so they can never spill past the canvas edge — which is what drew
@@ -1217,6 +1223,22 @@ export default function SunModelCanvas() {
       // off-screen at that depth".
       const frameHalfPerUnit = Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV * 0.5));
 
+      // ── The plasma surface, in place of the eleven `sunouter` shells ──
+      //
+      // Added as a child of `modelRoot` and BEFORE `coronaParts` is built below, which is the whole
+      // trick: it is picked up by that list automatically, so `positionShards` scales it from nothing
+      // at CORONA_APPEAR exactly like every other non-shard part. Miss this and the star burns on
+      // screen for the entire download and the loader's finale has nothing left to reveal.
+      //
+      // ⚠ Added AFTER the framing above, so it cannot move the camera fit. Its radius matches the
+      // shells it replaces, so the bounding box is unchanged either way — but that is a property of
+      // today's numbers, not a guarantee, and the framing should not depend on a constant in another
+      // file. See `sunPlasma.ts` for what PLASMA_RADIUS chooses.
+      if (!reduceMotion) {
+        plasma = createSunPlasma();
+        modelRoot.add(plasma.mesh);
+      }
+
       // The ten fracture shards are Groups at the model root; their local positions carry the real
       // assembly offsets, so "outward" is measured entirely within that one frame.
       const shardObjects = modelRoot.children.filter((child) =>
@@ -1575,6 +1597,10 @@ export default function SunModelCanvas() {
       // across it flickered them on and off. The freeze is meant to stop paying for a frame nobody can
       // see; it must never CHANGE the frame it freezes on, or scrubbing back across the threshold pops.
       sunParticles?.update(elapsed, ringForm, ringWorksForm);
+      // The burning surface, on the same two ramps everything else in this file reads — so it is a
+      // pure function of scroll progress and reverses for free, like the rest of the star. Three
+      // uniform writes; the work is all in the fragment shader.
+      plasma?.update(elapsed, cracks, collapse);
 
       // Demand-render: only draw while the image is actually changing — while the state ramp eases,
       // while the star still turns, or while the shards are still arriving.
@@ -1707,6 +1733,7 @@ export default function SunModelCanvas() {
         materials.forEach((material) => material.dispose());
       });
       sunParticles?.dispose();
+      plasma?.dispose();
       bloom.dispose();
       environmentTexture.dispose();
       pmrem.dispose();
