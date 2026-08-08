@@ -87,7 +87,15 @@ const MIN_PIXEL_RATIO = 0.75;
  */
 const MAX_COMPOSITE_UPSCALE = 2.17;
 
-const SUPERSAMPLE_CEIL = 1.5; // the most a 1× panel may ever be allowed — and only if PROBED able
+/**
+ * The most a 1× panel could ever be allowed, if anything were allowed to supersample.
+ *
+ * ⚠ NOTHING SPENDS IT, and the comment here used to imply otherwise ("only if PROBED able"). The
+ * field's `ceil` includes `deviceRatio`, so it is capped at native and never reaches this; `sunCeiling`
+ * now does the same, deliberately, and its header records why a probe-gated exception was rejected.
+ * All this constant does today is keep `hardwareCeil` off the floor on a low-density display.
+ */
+const SUPERSAMPLE_CEIL = 1.5;
 const MAX_PIXEL_RATIO = 2;    // hard cap (retina native)
 const MAX_SANE_DT = 0.5;      // ignore absurd deltas (tab-restore, breakpoints)
 const EMA_ALPHA = 0.1;        // smoothing on the measured frame time (rejects one-frame spikes)
@@ -275,6 +283,53 @@ const EXTRA_QUALITY_SECONDS = 4;
  */
 const EXTRA_QUALITY_BURN_IN_SURPLUS = 1.25;
 
+/**
+ * How much sharper than the section's models the star may ever be allocated.
+ *
+ * ── ⚠ WHY A CAP EXISTS AT ALL: THE STAR'S MEASUREMENT IS A LOWER BOUND ───────────────────────────
+ * The burn-in's phase B does not measure the star this site actually draws. It runs before
+ * `SUN_ASSEMBLE_EVENT`, and `SunModelCanvas` has already called `positionShards(0, 0)` at model-land,
+ * which resolves `coronaGrowth` to 0 and sets `visible = false` on every one of `coronaParts` — the
+ * core sphere, the outer glow, the flares and the twenty corona planes. `sunParticles` is at
+ * `ringForm` 0, collapsed into its launch knot.
+ *
+ * So phase B times TEN TUMBLING SHARDS, several straddling the frame edge. And the corona is not
+ * incidental to the star's cost, it IS the cost — twenty additive overlapping planes are the overdraw
+ * that `docs/per-section-quality-budget-plan.md` §1c blames for a 0.28 Mpx canvas reaching 9–22 ms.
+ *
+ *     starMilliseconds  understated  →  starSolved  overstated by its square root
+ *
+ * `MIN_CREDIBLE_STAR_MS` guards the NOISE version of this ("would divide by very nearly nothing and
+ * hand the star its ceiling") at 0.6 ms. A shard-only star measuring 1.5 ms passes it comfortably and
+ * the conclusion is wrong anyway. The check asks *is this a real difference*; it cannot ask *is this
+ * the star we are budgeting for*.
+ *
+ * ── ⚠ HOW BAD IT ACTUALLY IS, WHICH IS LESS THAN IT SOUNDS ───────────────────────────────────────
+ * Worked on the log's own example (field 12.4 ms @ 1.15, real star 6.1 ms, measured 1.5 ms, dpr 2.5):
+ * the star clamps to its ceiling of 2.0 and then costs 18.5 ms where 4.5 was budgeted — **4× its
+ * allocation**. But it draws at `SUN_IDLE_STRIDE`, so it spends 9.2, and the frame lands at 28.1 ms
+ * against a 33.3 budget. THE FRAME SURVIVES. The bias is ~2× after the square root and the stride is a
+ * 2× margin, and they very nearly cancel.
+ *
+ * That is the honest severity: the error does not blow the budget, it EATS THE MARGINS — both of the
+ * conservatisms §8d earmarked for other jobs, including the one meant to absorb the chamber, which is
+ * measured with SMAA off and never re-checked with the room in frame.
+ *
+ * ── What this constant is therefore for ──
+ * Two things, and it would be worth having for the second even if the measurement were perfect:
+ *
+ *   1 · a bound on an upper bound. Using `starSolved` directly spends a number we know is inflated.
+ *   2 · COMPOSITING COHERENCE. The star is composited over the fleet and the marks. Past roughly this
+ *       much extra density it stops reading as "sharper" and starts reading as pasted on — a crisp
+ *       star over a soft field is a compositing error, not a quality win.
+ *
+ * ⚠ It bites hardest exactly where it should: on a 1× panel, where `ceil` holds the field to native
+ * 1.0 while `sunCeiling()` would let the star supersample. Elsewhere (dpr 2 – 2.5) it trims only a few
+ * hundredths, because the field's own ceiling is already close. Remove the bias — see §3's options for
+ * measuring the star in its real state — and this can be relaxed or dropped.
+ */
+const STAR_RAISE_OVER_MODELS = 1.35; // 1.35 on the ratio is 1.82 on the pixels
+
 // ── State ──────────────────────────────────────────────────────────────────────────────────────────
 
 type ControllerPhase = 'calibrating' | 'locked';
@@ -308,6 +363,14 @@ let ceil = 1;
 let floor = MIN_PIXEL_RATIO;
 let pixelRatio = 1;
 let hardwareCeil = 1;
+/**
+ * The panel's own density, unmodified.
+ *
+ * Kept separately because `hardwareCeil` has already been raised to `SUPERSAMPLE_CEIL` on a 1× display
+ * and can therefore no longer answer "what is native here" — which is the question `sunCeiling()` needs
+ * to ask.
+ */
+let deviceRatioNative = 1;
 let pixelBudgetCeil = Infinity;
 let probed = false;
 let probedAffordableRatio: number | null = null;
@@ -375,6 +438,7 @@ function ensureInitialised(): void {
   if (initialised) return;
   initialised = true;
   const deviceRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  deviceRatioNative = deviceRatio;
   hardwareCeil = Math.min(MAX_PIXEL_RATIO, Math.max(deviceRatio, SUPERSAMPLE_CEIL));
   floor = Math.max(MIN_PIXEL_RATIO, deviceRatio / MAX_COMPOSITE_UPSCALE);
 
@@ -647,12 +711,24 @@ export function reportSectionCosts(split: SectionCostSplit): void {
     fieldRatio * Math.sqrt(fieldBudget / fieldMilliseconds) * (1 - CALIBRATION_SAFETY_FRACTION);
   const newFieldRatio = Math.min(ceil, Math.max(floor, fieldSolved));
 
-  // ── 3 · The star takes the remainder ──
+  // ── 3 · The star takes the remainder, bounded by what the models got ──
   const fieldSpent = costAt(fieldMilliseconds, fieldRatio, newFieldRatio);
   const remainingMs = Math.max(0, budgetMs - fieldSpent);
   const starSolved =
     starRatio * Math.sqrt(remainingMs / starMilliseconds) * (1 - CALIBRATION_SAFETY_FRACTION);
-  const newStarRatio = Math.min(starCeil, Math.max(starFloor, starSolved));
+  // ⚠ `starSolved` is an upper bound, not a value — phase B measured the star without its corona. See
+  // STAR_RAISE_OVER_MODELS for the whole finding and for the compositing argument that would justify
+  // this cap even with a perfect measurement.
+  //
+  // ⚠ The floor is applied to the ALLOWANCE as well as to the solve, so it holds however the two
+  // ceilings move. Today it cannot bind here — `newFieldRatio >= floor` and `starFloor === floor`, so
+  // the allowance is at least `floor × 1.35` — but that is an invariant across three other constants
+  // rather than something this line should be relying on.
+  const starAllowance = Math.max(
+    starFloor,
+    Math.min(starCeil, newFieldRatio * STAR_RAISE_OVER_MODELS),
+  );
+  const newStarRatio = Math.min(starAllowance, Math.max(starFloor, starSolved));
 
   const fieldFrom = pixelRatio;
   const starFrom = getSunPixelRatio();
@@ -670,6 +746,16 @@ export function reportSectionCosts(split: SectionCostSplit): void {
   if (telemetryEnabled) {
     const boundBy = (solved: number, low: number, high: number) =>
       solved > high ? 'its ceiling' : solved < low ? 'the floor' : 'the measurement';
+    // The star has a third thing that can bind it, and reporting a capped star as "the measurement"
+    // would hide the one number this line exists to expose.
+    const starBoundBy =
+      starSolved < starFloor
+        ? 'the floor'
+        : starSolved > starAllowance
+          ? starAllowance < starCeil
+            ? `the models (×${STAR_RAISE_OVER_MODELS})`
+            : 'its ceiling'
+          : 'the measurement';
     const starShare = ((budgetMs - fieldSpent) / budgetMs) * 100;
     console.log(
       `%c[pixels] ALLOCATED%c a ${budgetMs.toFixed(1)} ms frame ` +
@@ -683,9 +769,16 @@ export function reportSectionCosts(split: SectionCostSplit): void {
         `  spending ${fieldSpent.toFixed(1)} ms, bound by ${boundBy(fieldSolved, floor, ceil)}` +
         `\n  3 · star    ${starFrom.toFixed(2)} → ${newStarRatio.toFixed(2)}` +
         `  from the ${remainingMs.toFixed(1)} ms left (${starShare.toFixed(0)}% of the budget),` +
-        ` bound by ${boundBy(starSolved, starFloor, starCeil)}` +
+        ` bound by ${starBoundBy}` +
+        (starSolved > starAllowance
+          ? `  (wanted ${starSolved.toFixed(2)})`
+          : '') +
         `\n  ⚠ the star is budgeted at FULL rate; through services and works it draws at` +
         ` SUN_IDLE_STRIDE, so it actually spends half of this.` +
+        `\n  ⚠ the star's ${starMilliseconds.toFixed(1)} ms is a LOWER BOUND — phase B runs before the` +
+        ` assembly, so the corona is not drawn.` +
+        `\n     Compare it against \`sun · bloom\` per call on the hero at the same ratio;` +
+        ` the quotient is the bias. See STAR_RAISE_OVER_MODELS.` +
         `\n  surplus ${surplus.toFixed(2)}× — extras ` +
         `${extraQualityEarned ? 'EARNED' : `not earned (needs ${EXTRA_QUALITY_BURN_IN_SURPLUS}×)`}.`,
       'color:#5bd6a0;font-weight:700',
@@ -723,9 +816,35 @@ export function getProbedAffordableRatio(): number | null {
  * ~0.21 Mpx of CSS pixels against the field's ~1.5, so even at 2× it is under a megapixel and the
  * budget has nothing to say about it. What bounds the star in practice is the measurement, which is
  * the intent — its cost is overdraw, not area.
+ *
+ * ── ⚠ A SECOND ASYMMETRY, WHICH WAS NOT INTENDED ─────────────────────────────────────────────────
+ * This used to be `min(hardwareCeil, MAX_PIXEL_RATIO)` and omitted `deviceRatio`, which the field's
+ * `ceil` includes. `hardwareCeil` is `min(2, max(deviceRatio, SUPERSAMPLE_CEIL))`, so on a **1×
+ * panel** it is 1.5 — and the star could therefore be allocated 1.5 while the field was held to native
+ * 1.0 by that same `deviceRatio` term. The star SUPERSAMPLED on the one class of machine least able to
+ * afford it, and that is the regime the biased measurement above escapes into.
+ *
+ * So the star is capped at NATIVE, by the same term the field is capped by. On a 1× panel there is no
+ * sharpness above native to win anyway — only supersample antialiasing, at 2.25× the pixels, on the
+ * most overdraw-heavy surface on the site, against a field that stays at 1.0 and would then be visibly
+ * softer than the thing composited over it.
+ *
+ * ⚠ Gating it on `SUPERSAMPLE_CEIL`'s *"only if PROBED able"* was tried here first and REJECTED, and
+ * the reason is in this file's own header: the probe has an **eightfold spread across four loads of
+ * the same page** (0.5 ms → 3.91, 7.5 ms → 1.01). A binary gate on a number that unstable supersamples
+ * the star on some loads and not others, which is precisely the failure CLAUDE.md refuses for MSAA —
+ * *"AA that differs between two loads of the same page is worse than not having it"* — and resolution
+ * is more visible than AA. If the site ever wants to supersample the star, that should be a decision
+ * written down, not an emergent property of a coin flip.
+ *
+ * The cost is real and narrow: a strong machine on a 1080p panel leaves some quality unspent. On a weak
+ * one the same unspent budget becomes frame-rate headroom, which is the better outcome there.
+ *
+ * ⚠ Changes NOTHING on a dpr 2 or 2.5 panel, where both readings are 2. Only displays below
+ * `SUPERSAMPLE_CEIL` are affected, which is the case it exists for.
  */
 function sunCeiling(): number {
-  return Math.max(floor, Math.min(hardwareCeil, MAX_PIXEL_RATIO));
+  return Math.max(floor, Math.min(hardwareCeil, MAX_PIXEL_RATIO, deviceRatioNative));
 }
 
 /** What is left after the resolution has taken its share. `1` means fully spent. */

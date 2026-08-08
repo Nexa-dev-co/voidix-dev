@@ -551,6 +551,16 @@ sits near its floor. Solved once, in the loader, behind the veil. Full rationale
   (the star draws from mount, so phase A already contains it), phase A slower than B (the star solves
   negative), and a difference too small to be anything but jitter. Failing any of them logs
   `[pixels] split REFUSED` and falls back to one number for the whole frame.
+- ⚠ **…and none of the three catches the one that is actually wrong: `starMilliseconds` IS A LOWER
+  BOUND.** Both phases run before `SUN_ASSEMBLE_EVENT`, and `positionShards(0, 0)` at model-land has
+  already set `visible = false` on every one of `coronaParts` — the core sphere, the outer glow, the
+  flares and the twenty corona planes. **Phase B times ten tumbling shards.** The corona is not part of
+  the star's cost, it *is* the cost. The checks ask *is this a real difference*; they cannot ask *is
+  this the star we are budgeting for*. `STAR_RAISE_OVER_MODELS` bounds the damage, `sunCeiling()` is
+  capped at native so a 1× panel cannot supersample the star past a field held to 1.0, and
+  `docs/per-section-quality-budget-plan.md` §9 has the arithmetic and the three ways to fix it
+  properly. Severity, honestly: it does not blow the frame — the bias and `SUN_IDLE_STRIDE` nearly
+  cancel — it **eats both conservatisms below**, including the one reserved for the chamber.
 - **Two conservatisms, both deliberate, both the same direction**: `fieldMilliseconds` carries the
   fixed cost so scaling it over-charges the field; and the star is measured at full rate while through
   services and works it draws at `SUN_IDLE_STRIDE`. The second is also what makes the **hero** safe
@@ -558,7 +568,10 @@ sits near its floor. Solved once, in the loader, behind the veil. Full rationale
 - ⚠ **The star having its own ratio is NOT a return to what `SunModelCanvas`'s header warns about.**
   The old `min(devicePixelRatio, 2)` had measured nothing while the renderer beside it had; this one is
   the remainder of a measured frame. The star still may not out-vote the field about how fast the
-  machine is — it may only spend what the field did not need.
+  machine is — it may only spend what the field did not need, and never more than
+  `STAR_RAISE_OVER_MODELS` (1.35×) of what the models got. That cap earns its place twice: the solve it
+  bounds is inflated (above), and past ~1.35× density a star composited over softer marks stops reading
+  as sharper and starts reading as pasted on.
 - ⚠ **The emergency valve moves BOTH ratios.** A drowning machine has to be able to put down the
   heaviest thing it is holding, and after allocation that may well be the star.
 - **Read it on the console:** `[pixels] ALLOCATED` in the loader, then the `ratio` and **`sun ratio`**
