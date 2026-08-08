@@ -5,6 +5,7 @@ import {
 } from '@/components/effects/FluidCursor/fluidConfig';
 import { createFluidSimulation } from '@/components/effects/FluidCursor/fluidSimulation';
 import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
+import { profileGauge, profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 
 /**
@@ -256,6 +257,43 @@ export function useFluidCursor(
 
     const renderFrame = () => {
       animationFrame = requestAnimationFrame(renderFrame);
+      const loopStartedAt = profileNow();
+
+      // ── ⚠ THE GAUGE IS THE IMPORTANT HALF HERE, NOT THE SPANS ───────────────────────────────────
+      //
+      // This effect was the only heavy per-frame thing on the hero with no instrument on it at all,
+      // which mattered because the hero measured 21–32 fps with `unaccounted` at 31.7 ms and nothing
+      // in the breakdown to charge it to.
+      //
+      // But the spans below can only ever see the SIMULATION, and the sim is not the suspect. The
+      // suspect is the thing `setTrailComposited` above is written about: **two full-screen layers,
+      // one of them `mix-blend-mode: difference`, composited every frame whether or not anything is
+      // drawn in them** — and compositing happens off our thread, so it lands in `unaccounted` by
+      // construction and no span can reach it. On the hero neither canvas is ever hidden, because that
+      // only happens at the black stage.
+      //
+      // So report the layer AREA and whether the sim ran at all. The two readings answer different
+      // questions and together they are decisive:
+      //
+      //     ink 4.27+1.07 Mpx idle   ·  spans ~0   →  the sim is not the cost. Those two layers are
+      //                                               being blended for nothing — hiding them while
+      //                                               idle is then free, since `clearTrail` has
+      //                                               already emptied them.
+      //     ink … active             ·  spans real →  it is the solve, and the pressure iterations
+      //                                               or the canvas density are the dial.
+      //
+      // `idle` is last frame's verdict — it is decided below, after the clock is read. Over a
+      // three-second report window that is not a distinction that can matter.
+      profileGauge(
+        'ink',
+        !isHeroVisible || document.hidden
+          ? 'off-hero'
+          : inVoid
+            ? 'uncomposited'
+            : `${((inkCanvas.width * inkCanvas.height) / 1e6).toFixed(2)}` +
+              `+${((invertCanvas.width * invertCanvas.height) / 1e6).toFixed(2)} Mpx` +
+              `${isIdle ? ' idle' : ' active'}`,
+      );
 
       // Idle the whole sim while the hero is off screen, or the tab is backgrounded — nothing to
       // draw, no work.
@@ -283,11 +321,19 @@ export function useFluidCursor(
           isIdle = true;
           clearTrail();
         }
+        // ⚠ Recorded on the idle path too, and it is not a formality: `resizeCanvases` above runs
+        // every frame regardless, and it reads `window.innerWidth/innerHeight`. A still hero is this
+        // loop's DEFAULT state, so if that read is ever forcing layout, this is the span that shows it.
+        profileSpan('ink · loop', profileNow() - loopStartedAt);
         return;
       }
       isIdle = false;
 
-      simulation.frame(deltaSeconds, (now - startTime) / 1000);
+      profileMeasure(
+        'ink · sim',
+        () => simulation.frame(deltaSeconds, (now - startTime) / 1000),
+        true,
+      );
 
       // Copy the ink silhouette into the invert layer as a solid white mask,
       // keeping only the alpha. With mix-blend-mode: difference this inverts the
@@ -296,13 +342,25 @@ export function useFluidCursor(
       // ⚠ Drawn to the invert canvas's OWN size, not 1:1. The two backing stores are deliberately at
       // different densities (see MAX_INVERT_PIXEL_RATIO), so an unscaled `drawImage` would paint a
       // 2× ink canvas into a 1× mask and invert only the top-left quarter of the screen.
-      invertContext.setTransform(1, 0, 0, 1, 0, 0);
-      invertContext.clearRect(0, 0, invertCanvas.width, invertCanvas.height);
-      invertContext.globalCompositeOperation = 'source-over';
-      invertContext.drawImage(inkCanvas, 0, 0, invertCanvas.width, invertCanvas.height);
-      invertContext.globalCompositeOperation = 'source-in';
-      invertContext.fillStyle = '#ffffff';
-      invertContext.fillRect(0, 0, invertCanvas.width, invertCanvas.height);
+      //
+      // Timed separately from the solve because it is a CROSS-CONTEXT copy — WebGL canvas into a 2D
+      // one — which is a different kind of expensive from the simulation and has its own dial
+      // (`MAX_INVERT_PIXEL_RATIO`). If the two spans disagree, they point at different fixes.
+      profileMeasure(
+        'ink · mask',
+        () => {
+          invertContext.setTransform(1, 0, 0, 1, 0, 0);
+          invertContext.clearRect(0, 0, invertCanvas.width, invertCanvas.height);
+          invertContext.globalCompositeOperation = 'source-over';
+          invertContext.drawImage(inkCanvas, 0, 0, invertCanvas.width, invertCanvas.height);
+          invertContext.globalCompositeOperation = 'source-in';
+          invertContext.fillStyle = '#ffffff';
+          invertContext.fillRect(0, 0, invertCanvas.width, invertCanvas.height);
+        },
+        true,
+      );
+
+      profileSpan('ink · loop', profileNow() - loopStartedAt);
     };
     renderFrame();
 
