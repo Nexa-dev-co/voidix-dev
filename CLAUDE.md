@@ -201,10 +201,14 @@ Everything ships working from ~360px phones to large desktops **in the same chan
 app/
   layout.tsx        # fonts, Navbar, metadata
   globals.css       # tokens + every component's CSS
-  page.tsx          # the ONLY public route
+  page.tsx          # the site: the one pinned journey
+  about/page.tsx    # ┐ the DOCUMENT routes (added 2026-08-06). Ordinary native scroll — no pin,
+  careers/page.tsx  # ┘ no WebGL, no scene. See "Two kinds of route" below.
 
 components/
   layout/Navbar/
+  layout/PageShell/  # the document routes' frame: field, masthead, orbit rail, footer
+  pages/             # ⚠ a ROUTE's content (About/, Careers/) — not a homepage section
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
     ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial
@@ -225,6 +229,39 @@ scripts/
   optimizeTextures.mjs  # `npm run optimize:textures` — the standalone maps, which no GLB contains
 docs/               # living design + state docs
 ```
+
+### Two kinds of route — and `/` is only one of them
+
+**Added 2026-08-06.** For most of this project's life the homepage was the only page, and a lot of
+the code below was written on that assumption. It no longer holds.
+
+| | `/` | `/about`, `/careers` |
+|---|---|---|
+| scroll | ONE pinned ScrollTrigger; every section is an overlay inside it | native, ordinary document flow |
+| 3D | four scenes | none |
+| libraries | gsap + ScrollTrigger + three | none used (⚠ gsap still *ships* — see below) |
+| copy | in a content file per section | same convention: `aboutContent.ts`, `careersContent.ts` |
+| CSS | `globals.css` | `globals.css`, the `.doc-*` block at the end |
+
+**The rules in this file about the pin, the crossings and the scene budget apply to `/` only.** The
+right way to honour "one pin" for a page that is genuinely prose is to keep it out of the pin
+entirely — not to build a second one. See `docs/about-careers-plan.md`.
+
+⚠ **Three things in the shared chrome were written assuming one route, and all three have been
+fixed** — check them before adding a fourth route:
+1. `useNavbarAnimation` waited on `REVEAL_EVENT`, which only `IntroSequence` fires. Off the homepage
+   the bar was invisible until a 7.2 s fallback lapsed. It now takes an `isHomepage` prop.
+2. `.nav-root` is a fixed full-width strip at z-9999 and a transparent box still hit-tests — it ate
+   every click across the top of a document page. Now `pointer-events: none`, with its controls
+   taking their own back.
+3. The navbar's `/#work` hrefs went nowhere: **nothing read `location.hash`**, despite a comment
+   claiming the pin picked it up on arrival. `useHeroAnimation`'s reveal now consumes it through
+   `requestSection`.
+
+⚠ **Two known costs on the document routes, both measured and both deferred deliberately:** the
+root layout preloads ~2.1 MB of star/Draco/Basis on *every* route, and the navbar's static `import
+gsap` puts ~69 KB of unused animation library on both pages. `docs/about-careers-plan.md` §1e and §6
+have the numbers and the fixes.
 
 **Component file convention:** each component lives in its own folder named after it, holding its
 `.tsx` plus everything it owns (config, events, sub-hooks, shaders). A component that owns a WebGL
@@ -493,6 +530,51 @@ the fan is up. Don't "restore" the drag, and don't collapse it to one tap either
 are ready), so a new section's meter works with zero navbar changes. Entrance plays on
 `REVEAL_EVENT`, items converging from the four directions in their `data-enter`.
 
+## The quality allocator — models first, the star gets the rest
+
+**Added 2026-08-07.** The site is sized for **30 fps**, and the frame is spent in priority order: a
+section's **models take what they can afford, up to their own ceiling**, and whatever is left goes to
+**the star**. Nothing is a fixed value — a strong machine runs the field at full density, leaves real
+budget over, and the star ends up high; a weak one gives the models nearly everything and the star
+sits near its floor. Solved once, in the loader, behind the veil. Full rationale in
+`docs/per-section-quality-budget-plan.md` §8.
+
+- ⚠ **`PRIORITY_TARGET_FPS` is 30, not 50.** Every solve used to aim at a 20 ms frame; against 33.3 ms
+  that is √(33.3÷20) = **1.29× the ratio, 1.67× the pixels** on any machine with room above the floor.
+  One number, and the largest quality change in the file. **Lower target fps means MORE pixels** — so
+  `'quality'` is the *slowest* setting on that dial, not the fastest.
+- ⚠ **The star's cost can only be measured as a DIFFERENCE.** WebGL is asynchronous, `unaccounted` is
+  70–95 % of every frame, and both subjects live inside it. So the burn-in runs **two phases** — field
+  alone, then field + star — and `B − A` is the star. That is why `SUN_DRAW_PERMIT_EVENT` exists: the
+  star used to be permitted by `BURN_IN_EVENT` itself, leaving no window where the field drew alone.
+- ⚠ **Three credibility checks, and each guards a way the split goes quietly wrong**: reduced motion
+  (the star draws from mount, so phase A already contains it), phase A slower than B (the star solves
+  negative), and a difference too small to be anything but jitter. Failing any of them logs
+  `[pixels] split REFUSED` and falls back to one number for the whole frame.
+- **Two conservatisms, both deliberate, both the same direction**: `fieldMilliseconds` carries the
+  fixed cost so scaling it over-charges the field; and the star is measured at full rate while through
+  services and works it draws at `SUN_IDLE_STRIDE`. The second is also what makes the **hero** safe
+  without its own measurement — there the star is at full rate, but the field is not drawing at all.
+- ⚠ **The star having its own ratio is NOT a return to what `SunModelCanvas`'s header warns about.**
+  The old `min(devicePixelRatio, 2)` had measured nothing while the renderer beside it had; this one is
+  the remainder of a measured frame. The star still may not out-vote the field about how fast the
+  machine is — it may only spend what the field did not need.
+- ⚠ **The emergency valve moves BOTH ratios.** A drowning machine has to be able to put down the
+  heaviest thing it is holding, and after allocation that may well be the star.
+- **Read it on the console:** `[pixels] ALLOCATED` in the loader, then the `ratio` and **`sun ratio`**
+  gauges per section. Those two numbers are the whole output of the system.
+
+⚠ **The burn-in stopped refusing, and it had to.** Measured: `0 usable frames in 2545 ms`, and on
+another load `0 in 15786 ms` — not a sampler bug, the loader simply had 15 long tasks totalling 4.7 s
+running through it. It now waits for a quiet main thread and rejects *individual* insane frames instead
+of abandoning the whole reading. It is the sole source of truth for both ratios now.
+
+⚠ **`driftActive` and `assemblyFlightActive` are separate flags** (`SunModelCanvas`), and were one.
+The drift is delta-timed idle tumbling with no authored landing — it must force a draw but must **not**
+block a reallocation. It was true for the entire loader wait, so the star had no clear frame to apply
+a new ratio on, and any allocation would have landed as a sharpness pop on the centrepiece
+(`sunParticles` changes grain size with the ratio, so not a subtle one).
+
 ## Performance systems
 
 These exist and are load-bearing — don't reinvent them:
@@ -500,7 +582,7 @@ These exist and are load-bearing — don't reinvent them:
 | `lib/` | Job |
 |---|---|
 | `gpuProbe.ts` | Times **one real frame** of a real pipeline with a GPU drain either side of it. Used once, on the works field's warm-up render — a render that had to happen anyway, so the measurement is nearly free. |
-| `adaptivePixelRatio.ts` | The shared resolution. **Native by default; above native has to be EARNED — and the probe only sets the CAP, it never starts you there.** It used to land straight on the measured ceiling, and since the probe times one works frame on a quiet stage while the real frame also carries the sun, the compositor and the blend layers, that meant the controller walked the ratio back down on nearly every load. Starting at `min(ceiling, 1)` and letting the controller climb costs the same reallocation in the opposite direction — sharpening rather than giving up. Also runs a live controller on real frame times for the rest of the session. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. ⚠ **A ratio is not a cost — `MAX_DRAWING_BUFFER_MEGAPIXELS` is.** `hardwareCeil` rises with `devicePixelRatio`, which is backwards: a 4K laptop at 250% scaling was handed ratio 2.0 *because* its panel is dense, drew 5.26 Mpx, put the render targets over 700 MB and ran at 20 fps. The budget caps the pixels the ratio actually implies. |
+| `adaptivePixelRatio.ts` | **The quality allocator** (`reportSectionCosts`, added 2026-08-07) plus the shared resolution. **Native by default; above native has to be EARNED — and the probe only sets the CAP, it never starts you there.** It used to land straight on the measured ceiling, and since the probe times one works frame on a quiet stage while the real frame also carries the sun, the compositor and the blend layers, that meant the controller walked the ratio back down on nearly every load. Starting at `min(ceiling, 1)` and letting the controller climb costs the same reallocation in the opposite direction — sharpening rather than giving up. Also runs a live controller on real frame times for the rest of the session. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. ⚠ **A ratio is not a cost — `MAX_DRAWING_BUFFER_MEGAPIXELS` is.** `hardwareCeil` rises with `devicePixelRatio`, which is backwards: a 4K laptop at 250% scaling was handed ratio 2.0 *because* its panel is dense, drew 5.26 Mpx, put the render targets over 700 MB and ran at 20 fps. The budget caps the pixels the ratio actually implies. |
 | `warmScene.ts` | Compiles a scene's programs **and uploads its maps** on an idle frame. Both halves are needed: `compile()` builds programs only, and three uploads a texture on first *draw*. |
 | `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size — shrinking one invalidates them exactly as much as growing one.** |
 | `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones, and **reacts to resize** — unmounting an effect is cheap and reversible. It is no longer the source of `lowPower`. |
@@ -539,29 +621,45 @@ breathes and collapses across those spans, and the works backdrop is transparent
 full-resolution 4× MSAA HalfFloat target is ~83 MB on a 1512×982 panel at ratio 1, so a two-composer
 scene at `samples: 4` is ~330 MB before anything else. Count them before adding one.
 
-**Antialiasing, as it stands** (2026-08-04, `docs/lag-and-freeze-diagnosis.md` §8c):
+**Antialiasing, as it stands** (revised 2026-08-06; `docs/performance-cost-inventory.md` §6):
 
 | composer | potato | low / mid / high | earned |
 |---|---|---|---|
-| works · **space** | 0 | 2 | **4**, from the probe |
+| works · **space** | 0 | **0** | **4**, from the burn-in |
 | works · **screen** | 0 | 0 | — |
 | deck | 0 + SMAA | 0 + SMAA | — |
+
+⚠ **`low`/`mid`/`high` went 2 → 0 on 2026-08-06, and it was a PURCHASE, not a saving.** It paid for
+`MAX_COMPOSITE_UPSCALE` 2.5 → 2.17, which raises the resolution floor 15 % — the only dial that can
+lift quality on a machine whose burn-in lands under the floor, which on a 4K laptop at 250 % scaling
+is every machine. See the rule immediately below, which this reverses.
+
+⚠ **The `earned` column is now decided in the LOADER**, not four seconds into the fleet. It used to
+require `hasEarnedExtraQuality()` — 50 fps held for four seconds — which by construction cannot be
+satisfied before the first visible frame, so the raise was always a mid-session `dispose()` and
+reallocation of both ping-pong targets on the first lap and never again. `reportBurnIn` now grants the
+licence from its own measured surplus (`solved ÷ spent >= 1.25`).
 
 ⚠ **RESOLUTION IS THE PRIORITY; SAMPLES ARE THE LEFTOVER.** Below native the whole frame softens —
 type, textures, every edge. Dropping MSAA only stair-steps geometric silhouettes, and SMAA covers much
 of that for a fraction of the memory. **Nothing may trade resolution away to keep samples.**
 
 That is enforced by *when* each is decided, not by a comment: `deviceTier` sets a floor that does not
-include 4×, and the works field raises to 4 only in its warm-up, **after** `gpuProbe` has run and
-`adaptivePixelRatio` has settled the ratio — so the samples come out of measured leftover headroom
-(`getProbedAffordableRatio() >= 1.25`). An earlier cut had `high: 4` at construction; a machine that
+include 4×, and the works field raises to 4 only once the **burn-in** has run and `adaptivePixelRatio`
+has settled the ratio — so the samples come out of measured leftover headroom (the burn-in's own
+surplus, `solved ÷ spent >= 1.25`). An earlier cut had `high: 4` at construction; a machine that
 *looked* strong then allocated ~166 MB on a guess and paid for it by dropping resolution. That is the
 same failure `adaptivePixelRatio`'s header records being rewritten to stop making.
 
 - **works · screen is always 0.** For the whole of works it draws one pixel-aligned fullscreen quad
   carrying an already-resolved texture. Its `SMAAPass` is likewise enabled only for the chamber.
-- **works · space can never be 0 above `potato`** — stage 2's SMAA is gated to the chamber, so this is
-  the only AA the marks, debris and starfield get.
+- ⚠ **works · space USED to say "can never be 0 above `potato`"** — because stage 2's SMAA is gated to
+  the chamber, so this was the only AA the marks, debris and starfield got. **That is now 0 anyway**,
+  deliberately, and the rule above it is what decides between them: spending samples to BUY resolution
+  is *"resolution is the priority"* read forwards. What it costs is real and should be named — through
+  the works BROWSING span the marks and debris have no geometric antialiasing at all. If that reads as
+  harsh, **un-gate `smaaPass` for the browsing span** (~12 MB of lookup textures, no per-sample
+  bandwidth) rather than putting the samples back.
 - **The deck never earns MSAA**, deliberately: the probe is taken once, in the works hook, and reading
   it from here would usually work and occasionally not (on a cached reload both scenes warm on the same
   signal and the order is whichever effect registered first). AA that differs between two loads of the
@@ -583,7 +681,13 @@ the numbers — is in `docs/lag-and-freeze-diagnosis.md`.
 ## Nothing is configurable at runtime
 
 **Deleted 2026-08-02, deliberately and by request.** There are no authoring routes, no `?tune`, no
-`lil-gui`, no knob schemas, no writable tuning handles. One route ships: `/`.
+`lil-gui`, no knob schemas, no writable tuning handles.
+
+⚠ This section used to end "One route ships: `/`", and that is no longer true — `/about` and
+`/careers` shipped 2026-08-06. **The rule it was standing for is untouched**, and it was never about
+the route count: no route on this site exposes a tuning surface, and neither of the new ones has a
+single knob, query parameter or editor in it. They are content pages. Do not read them as a
+precedent for bringing an authoring route back.
 
 What went: `/sun-lab` (the fractured-sun + black-hole editor), `/letters` and
 `/letters/transition/[strategy]` (the glyph testbed and the mark→mark comparison rig),

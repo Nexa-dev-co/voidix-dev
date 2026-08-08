@@ -12,6 +12,7 @@ import {
 } from '@/components/effects/ConstellationFrame/constellationConfig';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
+import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const REVEAL_FALLBACK_MS = 7000;
@@ -97,7 +98,9 @@ export function useConstellationFrame(canvasRef: RefObject<HTMLCanvasElement | n
     const context = canvas.getContext('2d');
     if (!context) return;
 
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // Through the helper, not `matchMedia` directly — the answer now includes an in-page override
+    // (see lib/motionPreference.ts) and a raw query read would silently ignore it.
+    const reduceMotion = prefersReducedMotion();
     const lowPower =
       window.matchMedia('(pointer: coarse)').matches || window.innerWidth < LOW_POWER_MAX_WIDTH;
     const config: ConstellationConfig = lowPower

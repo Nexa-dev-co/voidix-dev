@@ -16,10 +16,15 @@ export interface LoaderModule {
   feed: ModuleFeed;
 }
 
+// ⚠ Every gated source gets a row. When `chamber` and `singularity` joined the gate they were the two
+// heaviest things the loader waits on after the fleet, and an instrument that does not show what is
+// being waited for is worse than no instrument — it reports a stall in something it has never named.
 export const LOADER_MODULES: LoaderModule[] = [
   { label: 'Accretion', feed: 'combined' },
   { label: 'Fleet', feed: 'deck' },
   { label: 'Field', feed: 'works' },
+  { label: 'Chamber', feed: 'chamber' },
+  { label: 'Singularity', feed: 'singularity' },
   { label: 'Core Shell', feed: 'shell' },
 ];
 
@@ -35,13 +40,17 @@ export const MODULE_STATES = {
 export type ModuleState = (typeof MODULE_STATES)[keyof typeof MODULE_STATES];
 
 /**
- * Rough total download the entry pulls, in bytes — the fleet's vessels plus the field's basalt texture.
+ * Rough total download the entry pulls, in bytes.
+ *
+ * Measured off `public/models` on 2026-08-06, now that the gate carries all five sources: the fleet's
+ * four vessels (5.66 MB), the star (1.35), the field's surfaces and outlines (~0.90), the table (0.48)
+ * and the black hole (2.37) — ~10.8 MB, rounded up for the fonts, the chunks and the two decoders.
  *
  * Only used to turn a progress rate into a throughput readout, so it needs to be the right order of
- * magnitude, not exact. **Re-measure this if either scene's assets change size**, for the same reason
+ * magnitude, not exact. **Re-measure this if any scene's assets change size**, for the same reason
  * SOURCE_WEIGHTS in assetLoadProgress has to be re-weighed.
  */
-export const TOTAL_PAYLOAD_BYTES = 12 * 1024 * 1024;
+export const TOTAL_PAYLOAD_BYTES = 11.5 * 1024 * 1024;
 
 /** Throughput is differentiated progress, which is spiky; smooth it hard or the number is unreadable. */
 export const THROUGHPUT_SMOOTHING_PER_SECOND = 2.2;

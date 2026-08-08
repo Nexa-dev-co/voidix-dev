@@ -11,6 +11,14 @@ export interface GatherInitMessage {
   width: number;
   height: number;
   pixelRatio: number;
+  /**
+   * How many grains to draw — decided on the main thread from `getDeviceTier()`.
+   *
+   * ⚠ It cannot be decided in the worker. The tier asks `matchMedia`, which does not exist there, and
+   * a worker that guessed would be a second quality authority disagreeing with the one the whole site
+   * allocates against.
+   */
+  particleCount: number;
 }
 
 export interface GatherResizeMessage {

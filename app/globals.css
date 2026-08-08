@@ -216,6 +216,21 @@ body {
   mix-blend-mode: difference;
   /* White is the difference identity we invert from: white − cream = dark, white − black = white. */
   color: #fff;
+  /* ⚠ REQUIRED SINCE THE SITE GREW DOCUMENT ROUTES, and it is not a tidy-up.
+     This is a fixed, full-width, 4.5rem strip at z-9999 — and a transparent box still hit-tests. On
+     the homepage that was harmless: the bar spans the whole width but so does the pinned hero, and
+     nothing underneath the top 4.5rem is clickable anyway. On `/about` and `/careers` real content
+     scrolls under it, so without this the bar is an invisible guillotine taking every click along the
+     top of the page. It is exactly what used to happen on the deleted lab routes.
+     The controls take their own clicks back below. */
+  pointer-events: none;
+}
+
+/* The bar's actual controls — the logo, the nav list, the CTA, the phone's dial button. Each is
+   content-sized (the bar is `space-between`), so this hands the pointer back to the things that want
+   it without restoring the full-width strip. */
+.nav-root > * {
+  pointer-events: auto;
 }
 
 /* Non-blended sibling carrying the brand cyan so it never inverts. Mirrors the bar's
@@ -1532,6 +1547,7 @@ body {
   .nav-dial-mark {
     display: block;
   }
+
 }
 
 /* ─── Services Deck — the four-craft fleet (homepage) ────────────── */
@@ -1589,6 +1605,18 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* ⚠ `visibility`, NOT `opacity` — and that distinction is the whole point of this class.
+   `.services-deck` and `.works-field` are both `opacity: 0` when off screen, which stops them being
+   SEEN and does nothing whatsoever about their cost: an element at zero opacity is still rasterized
+   and still composited, just multiplied by nothing. On a dpr 2.5 panel each of these canvases is a
+   3820×1745 layer the compositor blends every frame while the scene inside it is deliberately not
+   drawing. `visibility: hidden` is what actually takes it out.
+   Measured symptom: `unaccounted` sitting at 60–90 ms a frame with 143 draw calls, an idle main
+   thread, and a resolution the controller had proven changes nothing. */
+.is-uncomposited {
+  visibility: hidden;
 }
 
 .deck-canvas:active {
@@ -2271,13 +2299,22 @@ body {
   }
 }
 
+/* The sweep is ambient motion with nothing to report — exactly what this setting asks us to drop.
+   The track stays, so the card keeps its composition.
+
+   ⚠ Stated twice, OS and visitor, and unlike most of the reduced-motion blocks in this file this one
+   genuinely needs it: the blanket rule at the bottom only collapses DURATIONS, and `opacity: 0` is
+   not a duration. A rule that merely says `animation: none` is already covered down there. */
 @media (prefers-reduced-motion: reduce) {
-  /* The sweep is ambient motion with nothing to report — exactly what this setting asks us to drop.
-     The track stays, so the card keeps its composition. */
-  .section-jump-scan::after {
+  :root:not([data-motion='full']) .section-jump-scan::after {
     animation: none;
     opacity: 0;
   }
+}
+
+:root[data-motion='reduced'] .section-jump-scan::after {
+  animation: none;
+  opacity: 0;
 }
 
 /* The filter lives in an SVG that must be in the document but must never take space or catch a click. */
@@ -2288,12 +2325,18 @@ body {
   pointer-events: none;
 }
 
+/* A crawling, displaced edge is exactly the kind of involuntary motion this setting asks us to drop.
+   The flood still happens (it is the transition, not decoration) — it just has a clean edge.
+
+   ⚠ The other rule the blanket cannot cover: `filter` is not a duration either. */
 @media (prefers-reduced-motion: reduce) {
-  /* A crawling, displaced edge is exactly the kind of involuntary motion this setting asks us to drop.
-     The flood still happens (it is the transition, not decoration) — it just has a clean edge. */
-  .loop-veil-cream {
+  :root:not([data-motion='full']) .loop-veil-cream {
     filter: none;
   }
+}
+
+:root[data-motion='reduced'] .loop-veil-cream {
+  filter: none;
 }
 
 /* ─── Contact ───────────────────────────────────────────────────────
@@ -2850,7 +2893,12 @@ body {
     padding-top: var(--footer-row-pad);
   }
 
-  /* Shared row geometry — the brand line and each link group are the same object. */
+  /* Shared row geometry — the brand line and each link group are the same object.
+     ⚠ THE NUMBER OF THESE ROWS IS A HEIGHT BUDGET, and it went from three to four on 2026-08-06 when
+     the `Studio` group (About, Careers) was added to `CONTACT_FOOTER_GROUPS`. Each row costs its own
+     padding plus one line — about 36px at this width — out of the ~150px this whole block exists to
+     have clawed back. `Studio` holds two short links and fits one row, so the cost is exactly one row.
+     Adding a FIFTH group is not free and should be measured on a 360×640 phone before it ships. */
   .contact-footer-brand,
   .contact-footer-group {
     display: flex;
@@ -4187,6 +4235,195 @@ body {
 }
 
 
+/* ─── The loader's way out ────────────────────────────────────────────
+   ⚠ TOP, not bottom, and the placement is the only thing about this that took any thought. The
+   loader's lower half is fully spoken for — `.loader-modules` grows up from ~4.8rem across the full
+   width, the throughput sits under it, the fill meter is on the frame's edge, and `.intro-motion-prompt`
+   already occupies the clear band above those. On a slow load on a phone BOTH offers can be up at
+   once, so they cannot share a lane. Everything between the wordmark row and the centre is empty.
+
+   ⚠ `fixed`, and a SIBLING of the intro's root — that root is `aria-hidden` with
+   `pointer-events: none`, and neither can be undone from a descendant. Same reason as the motion
+   offer. Above the veil (z 10000) so it can be pressed. */
+.intro-skip {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: clamp(4.5rem, 12vh, 7rem);
+  z-index: 10001;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  max-width: min(92vw, 32rem);
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  text-wrap: balance;
+  /* No entrance to drive: it mounts only once the wait has already been judged long, so it simply
+     arrives. A fade would be one more thing competing with the counter for attention. */
+}
+
+.intro-skip-copy {
+  color: var(--fg);
+  opacity: 0.55;
+}
+
+/* An underlined phrase rather than a button. This is an aside offering an alternative, not a decision
+   the loader is waiting on — the motion offer is that, and it looks like it. */
+.intro-skip-action {
+  flex-shrink: 0;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+  border-bottom: 1px solid rgb(var(--accent-rgb) / 0.45);
+  transition: border-color 0.25s ease;
+}
+
+.intro-skip-action:hover {
+  border-bottom-color: var(--accent);
+}
+
+.intro-skip-action:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0.3rem;
+}
+
+/* A ~310px measure cannot hold the sentence and the link on one line. */
+@media (max-width: 30em) {
+  .intro-skip {
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    text-align: center;
+  }
+}
+
+/* ─── The loader's motion offer ───────────────────────────────────────
+   ⚠ `fixed`, not `absolute`. This element is a SIBLING of the intro's root rather than a child of it,
+   because that root is `aria-hidden` with `pointer-events: none` and this is the one thing on the
+   loader meant to be read aloud and pressed. It therefore has no positioned ancestor to hang from.
+
+   ⚠ Above the veil (z 10000) and level with the sun, which cannot reach down here — the star flies
+   between the "o" and the hero square, both of which are centre-stage.
+
+   ⚠ The lane is chosen AROUND `.loader-modules`, not around the corner readouts. An earlier revision
+   sat at `bottom: 3.25rem` on the reasoning that the bottom-left is the throughput line and the
+   bottom-right is the ghost counter — which is true and irrelevant, because the four telemetry rows
+   grow upward from ~4.8rem across the full width and this landed straight through them. On a 390px
+   phone the copy was rendered over "STREAMING 55%". Anything moved into this area has to clear
+   `.loader-modules` first. */
+.intro-motion-prompt {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: clamp(11rem, 24vh, 14rem);
+  z-index: 10001;
+  width: min(92vw, 30rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: clamp(1rem, 3vw, 1.3rem);
+  /* A surface, not floating text. It sits over a live scene and it is asking a question the loader
+     is waiting on — reading as part of the telemetry is exactly what went wrong before. */
+  border: 1px solid var(--border);
+  background: rgb(0 0 0 / 0.82);
+  backdrop-filter: blur(6px);
+  font-family: var(--font-dm-sans), sans-serif;
+  text-align: left;
+  /* Revealed by the loader adding `.is-offered`, and taken away again before the handoff. Hidden
+     rather than merely transparent so it can never take a press while invisible. */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.5s ease,
+    visibility 0s linear 0.5s;
+}
+
+/* Pressed, and the reload has not torn the page down yet. */
+.intro-motion-prompt[data-committing="true"] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.intro-motion-prompt.is-offered {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 0.5s ease,
+    visibility 0s;
+}
+
+/* ⚠ `--fg`, not `--muted`. The old copy colour was 0.38 alpha off-white on near-black — around 3:1,
+   under the 4.5:1 floor this file sets for small text, on the one element whose entire purpose is
+   accessibility. */
+.intro-motion-title {
+  margin: 0;
+  color: var(--fg);
+  font-size: var(--fs-small);
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.intro-motion-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ⚠ `min-height: 44px` is not padding taste. The previous control was an underlined word at
+   `padding: 0.25rem 0` — about a 28px target — which is the accessibility control itself failing the
+   target-size guidance it exists to serve. Both answers are real buttons for the same reason: an
+   underlined word reads as "the alternative", and there is no default here. */
+.intro-motion-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-height: 44px;
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  background: none;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    border-color 0.25s ease,
+    background-color 0.25s ease;
+}
+
+.intro-motion-option:hover {
+  border-color: rgb(var(--accent-rgb) / 0.5);
+  background: rgb(var(--accent-rgb) / 0.05);
+}
+
+.intro-motion-option:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.intro-motion-option-label {
+  color: var(--accent);
+  font-size: var(--fs-small);
+  letter-spacing: 0.02em;
+}
+
+.intro-motion-option-detail {
+  color: var(--fg);
+  opacity: 0.72;
+  font-size: var(--fs-micro);
+  line-height: 1.4;
+}
+
+/* Said out loud rather than discovered: one of the two answers restarts the page, because the value
+   it changes was captured at construction by everything that reads it. */
+.intro-motion-option-note {
+  color: var(--muted);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .loader-throughput {
   position: absolute;
   left: clamp(1.6rem, 4vw, 2.6rem);
@@ -4237,13 +4474,1183 @@ body {
   }
 }
 
+/* ═══ THE DOCUMENT PAGES — /about and /careers ═══════════════════════
+   Everything from here to the reduced-motion block is the two routes that are NOT the homepage.
+
+   ⚠ READ THIS BEFORE ADDING TO IT. These pages are deliberately the opposite of the rest of this
+   stylesheet. Nothing here is an overlay in a pin, nothing is absolutely positioned into a viewport,
+   nothing is waiting on a scroll progress variable, and nothing sits in front of a canvas. They are
+   documents on native scroll. If a rule below starts needing `position: absolute; inset: 0` you have
+   probably wandered back into the homepage's idiom by accident.
+
+   What they share with the rest of the site is everything else: the same tokens, the same fluid type
+   scale, the same hairlines, the same habit of numbering things, and — for the footer — the same link
+   data. See docs/about-careers-plan.md.
+
+   ⚠ THERE IS A THIRD BREAKPOINT IN HERE, AT 64em, AND IT ANSWERS A DIFFERENT QUESTION.
+   The site's two are 51.25em ("is this narrow") and 30em ("is this a true phone"), and both are about
+   how much room the CONTENT has. 64em is about whether there is a GUTTER to stand an instrument in,
+   which is a question only these pages ask — a 900px window has plenty of room for the prose and none
+   to spare beside it. Do not reuse it for content, and do not fold the rail into 51.25em: at 900px the
+   rail would sit on top of the first word of every line. */
+
+/* ── The field ──
+   The backdrop, and the one place these pages get to be atmospheric. Two layers of stars and a single
+   amber bloom low and to the left — the light of a star that is somewhere off this page.
+
+   ⚠ CSS GRADIENTS, NOT A CANVAS, and that is a budget decision rather than a shortcut. This site can
+   draw a beautiful starfield; it also already spends its entire GPU budget on four real scenes one
+   route away, and a visitor opening /about has usually just come from them. Three gradients composite
+   for free. See docs/about-careers-plan.md §6. */
+/* ⚠ z-index 0 with the content lifted to 1, NOT a negative z-index on this. A negative index would
+   put the field in the root stacking context's below-flow layer, which works right up until any
+   ancestor gains a transform or an opacity and quietly becomes a stacking context — at which point the
+   field disappears behind its own parent. Two positive layers cannot fail that way. */
+.doc-field {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.doc-field-stars {
+  position: absolute;
+  /* Oversized and offset, so the drift below never walks an edge into frame. */
+  inset: -10%;
+  display: block;
+}
+
+/* Fine dust — the layer that reads as depth rather than as dots. Several stops per tile at different
+   offsets so the repeat does not announce itself as a grid. */
+.doc-field-stars--fine {
+  background-image:
+    radial-gradient(1px 1px at 18% 24%, rgb(var(--fg-rgb) / 0.22), transparent),
+    radial-gradient(1px 1px at 63% 12%, rgb(var(--fg-rgb) / 0.18), transparent),
+    radial-gradient(1px 1px at 41% 71%, rgb(var(--fg-rgb) / 0.2), transparent),
+    radial-gradient(1px 1px at 86% 58%, rgb(var(--fg-rgb) / 0.14), transparent),
+    radial-gradient(1px 1px at 8% 88%, rgb(var(--fg-rgb) / 0.16), transparent),
+    radial-gradient(1px 1px at 74% 91%, rgb(var(--fg-rgb) / 0.12), transparent);
+  background-size: 260px 260px;
+  animation: doc-field-drift 150s linear infinite;
+}
+
+/* The near layer: fewer, larger, and one of them warm — the ramp's job is to keep a trace of the star
+   in everything, even at 8% alpha. */
+.doc-field-stars--coarse {
+  background-image:
+    radial-gradient(1.6px 1.6px at 31% 39%, rgb(var(--fg-rgb) / 0.16), transparent),
+    radial-gradient(1.6px 1.6px at 79% 17%, rgb(var(--heat-800-rgb) / 0.14), transparent),
+    radial-gradient(1.6px 1.6px at 56% 82%, rgb(var(--fg-rgb) / 0.12), transparent);
+  background-size: 430px 430px;
+  /* Slower and the other way, so the two layers separate into depth instead of sliding as one sheet. */
+  animation: doc-field-drift-slow 240s linear infinite;
+}
+
+.doc-field-bloom {
+  position: absolute;
+  left: -20vw;
+  bottom: -35vh;
+  width: 90vw;
+  height: 90vh;
+  background: radial-gradient(
+    closest-side,
+    rgb(var(--heat-600-rgb) / 0.09),
+    rgb(var(--heat-400-rgb) / 0.04) 55%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+@keyframes doc-field-drift {
+  to {
+    transform: translate3d(-260px, -130px, 0);
+  }
+}
+
+@keyframes doc-field-drift-slow {
+  to {
+    transform: translate3d(215px, -215px, 0);
+  }
+}
+
+/* ── The page ── */
+.doc-page {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100svh;
+  /* The same top expression `.deck-overlay` and `.contact-section` use, so the first line of type on
+     all three surfaces starts on the same rule. */
+  padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.25rem, 5vw, 5rem) clamp(3rem, 6vh, 5rem);
+}
+
+/* Lifted above the field — see the note on `.doc-field`. */
+.doc-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 76rem;
+  margin: 0 auto;
+}
+
+/* ── The masthead ── */
+.doc-masthead {
+  padding-bottom: clamp(3rem, 9vh, 6.5rem);
+}
+
+.doc-masthead-eyebrow {
+  color: rgb(var(--accent-rgb) / 0.85);
+}
+
+.doc-masthead-title {
+  margin-top: clamp(1rem, 2.5vh, 1.75rem);
+  font-weight: 800;
+  font-size: clamp(2.1rem, 6.4vw, 5.1rem);
+  line-height: 0.99;
+  letter-spacing: -0.035em;
+  color: var(--fg);
+  max-width: 18ch;
+}
+
+/* ⚠ One span per SENTENCE, and `block` is what makes that mean anything — the title is authored as an
+   array precisely so a 360px screen can wrap each sentence on its own terms instead of inheriting a
+   `<br/>` somebody chose while looking at a desktop. `balance` then evens whatever lines it needs. */
+.doc-masthead-line {
+  display: block;
+  text-wrap: balance;
+}
+
+.doc-masthead-rule {
+  display: block;
+  width: clamp(4rem, 10vw, 8rem);
+  height: 1px;
+  margin-top: clamp(1.25rem, 3vh, 2rem);
+  background: linear-gradient(90deg, var(--accent), rgb(var(--accent-rgb) / 0));
+}
+
+/* Hung into the right half rather than centred under the title. Everything stacked on one axis is the
+   template look; the offset sets the page against a diagonal, which is the composition the deck's head
+   and the works head already use. */
+.doc-masthead-lead {
+  max-width: 46ch;
+  margin-top: clamp(1.5rem, 4vh, 2.5rem);
+  margin-left: auto;
+  font-size: var(--fs-body);
+  line-height: 1.75;
+  color: var(--muted);
+}
+
+/* ── The body: rail gutter + the flow ── */
+.doc-body {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(1.5rem, 3vw, 3rem);
+}
+
+.doc-flow {
+  /* ⚠ `min-width: 0`. A flex child's default `min-width: auto` refuses to shrink below its content's
+     intrinsic width, and this column holds a phase track and long unbroken role titles — without it
+     the whole page grows a horizontal scrollbar rather than the track wrapping. */
+  min-width: 0;
+  flex: 1;
+}
+
+/* ── The orbit rail ──
+   The gutter instrument. Geometry in components/layout/PageShell/railGeometry.ts — nothing about the
+   arc's shape may be restated here or the drawn path and the placed nodes will drift.
+
+   Sticky rather than fixed: it belongs to the body of the document, so it should arrive with the first
+   section and leave with the last, rather than hovering over the masthead and the footer as well. */
+/* ⚠ `position: sticky` survives this page's ancestors, and that is worth stating because it very nearly
+   does not. `body` carries `overflow-x: hidden`, which normally turns an element into a scroll
+   container and leaves sticky descendants sticking to a box that never scrolls. It does not here: `html`
+   has no overflow of its own, so per the propagation rule the viewport takes body's value and body's own
+   used overflow becomes `visible`. Put an `overflow` on any wrapper between here and `<body>` and the
+   rail stops sticking — it degrades to sitting at the top of the body and scrolling away, which is
+   ungainly rather than broken, but it is not the design. */
+.doc-rail {
+  flex: 0 0 clamp(4.5rem, 7vw, 6.5rem);
+  align-self: flex-start;
+  position: sticky;
+  top: 22vh;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.doc-rail-arc-wrap {
+  position: relative;
+  /* ⚠ MUST match RAIL_VIEW_BOX. The nodes are placed in the SVG's own user units through a percentage
+     of this box, which is only the same point as the drawn arc while the box has the viewBox's exact
+     aspect ratio. Change one and the stations slide off their own orbit. */
+  aspect-ratio: 60 / 600;
+  height: min(30rem, 58svh);
+}
+
+.doc-rail-arc {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.doc-rail-track {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+/* The travelled portion. `pathLength="1"` on the element normalises the arc to one unit, so the dash
+   pair is literally "how far you have come, and the rest" with no arc-length arithmetic. */
+.doc-rail-travelled {
+  stroke: rgb(var(--accent-rgb) / 0.55);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: calc(1 - var(--doc-progress, 0));
+}
+
+.doc-rail-body {
+  fill: var(--accent);
+  filter: drop-shadow(0 0 4px rgb(var(--accent-rgb) / 0.7));
+}
+
+.doc-rail-node {
+  position: absolute;
+  /* The node's point, in the SVG's units, as a fraction of this box — see the aspect-ratio note. */
+  left: calc(var(--node-x) * 100% / 60);
+  top: calc(var(--node-y) * 100% / 600);
+  /* 2.75rem = 44px, the tap target the orbit dial's facets were sized to. The dot inside is tiny; the
+     press target is not. */
+  width: 2.75rem;
+  height: 2.75rem;
+  margin: -1.375rem 0 0 -1.375rem;
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.doc-rail-node-dot {
+  width: 0.3rem;
+  height: 0.3rem;
+  border-radius: 50%;
+  background: rgb(var(--fg-rgb) / 0.22);
+  transition:
+    background-color 0.35s ease,
+    transform 0.35s ease;
+}
+
+/* Everything behind you stays lit — the rail reads as a journey travelled rather than as one lamp
+   sliding down a strip. */
+.doc-rail-node[data-passed='true'] .doc-rail-node-dot {
+  background: rgb(var(--accent-rgb) / 0.75);
+}
+
+.doc-rail-node[data-active='true'] .doc-rail-node-dot {
+  background: var(--accent);
+  transform: scale(1.7);
+}
+
+.doc-rail-node-number {
+  position: absolute;
+  right: 100%;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  color: rgb(var(--fg-rgb) / 0.24);
+  transition: color 0.35s ease;
+}
+
+.doc-rail-node[data-passed='true'] .doc-rail-node-number {
+  color: rgb(var(--fg-rgb) / 0.45);
+}
+
+.doc-rail-node[data-active='true'] .doc-rail-node-number {
+  color: var(--accent);
+}
+
+.doc-rail-node:hover .doc-rail-node-dot,
+.doc-rail-node:focus-visible .doc-rail-node-dot {
+  background: var(--accent);
+}
+
+/* The phone's form of the same number: one hairline under the navbar. Hidden until the gutter goes
+   away at 64em — both are always rendered and CSS picks, so there is no second scroll listener and
+   nothing to resynchronise when a window crosses the breakpoint.
+
+   ⚠ `position: fixed` works here because nothing between this and the root is transformed. That is
+   only true on these pages — inside the homepage's pin it would not be (see FaqHologram). */
+.doc-rail-hairline {
+  display: none;
+  position: fixed;
+  top: 4.5rem;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 40;
+  background: linear-gradient(90deg, var(--accent), rgb(var(--heat-800-rgb) / 0.55));
+  transform-origin: left center;
+  transform: scaleX(var(--doc-progress, 0));
+}
+
+/* ── A numbered section ── */
+.doc-section {
+  padding: clamp(2.5rem, 7vh, 5rem) 0;
+  border-top: 1px solid var(--border);
+}
+
+.doc-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.doc-section-head {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: clamp(1.5rem, 4vh, 2.5rem);
+}
+
+.doc-section-number {
+  font-family: var(--font-syne), sans-serif;
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.doc-section-title {
+  color: rgb(var(--fg-rgb) / 0.85);
+  white-space: nowrap;
+}
+
+/* Draws itself left to right as the section arrives — the section's own entrance, before any of its
+   content moves. */
+.doc-section-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.35), rgb(var(--accent-rgb) / 0));
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.is-revealed .doc-section-rule {
+  transform: scaleX(1);
+}
+
+/* Prose holds a comfortable measure; a track or a grid takes the whole column. */
+.doc-section-body {
+  max-width: 62ch;
+}
+
+.doc-section[data-wide='true'] .doc-section-body {
+  max-width: none;
+}
+
+/* ── Prose ── */
+.doc-prose {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.doc-paragraph {
+  font-size: var(--fs-body);
+  line-height: 1.85;
+  color: rgb(var(--fg-rgb) / 0.72);
+}
+
+/* Breaks the rule between the paragraphs rather than sitting under them — a pull quote that follows
+   the prose is just a bigger sentence. */
+.doc-quote {
+  margin-top: clamp(1.75rem, 4vh, 2.75rem);
+  padding-left: clamp(1rem, 2.5vw, 1.75rem);
+  border-left: 2px solid rgb(var(--accent-rgb) / 0.5);
+}
+
+.doc-quote-text {
+  font-weight: 700;
+  font-size: clamp(1.05rem, 2.1vw, 1.6rem);
+  line-height: 1.32;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+
+/* ── Claim rows ──
+   ⚠ ROWS ON A RULE, NOT CARDS IN A GRID. Four bordered boxes in a 2×2 is the feature grid the brief
+   names as an anti-reference; rows are what the fleet's detail, the FAQ list and the works panel
+   already are. */
+.doc-claims {
+  list-style: none;
+}
+
+.doc-claim {
+  display: flex;
+  gap: clamp(0.85rem, 2.5vw, 1.75rem);
+  padding: clamp(1.1rem, 2.5vh, 1.6rem) 0;
+  border-top: 1px solid var(--border);
+  position: relative;
+}
+
+.doc-claim:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* The edge lights on hover — the same gesture the works panel and the FAQ rows make. */
+.doc-claim::before {
+  content: '';
+  position: absolute;
+  left: calc(clamp(0.85rem, 2.5vw, 1.75rem) * -0.5);
+  top: 0.9rem;
+  bottom: 0.9rem;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.doc-claim:hover::before {
+  opacity: 0.6;
+}
+
+.doc-claim-index {
+  flex-shrink: 0;
+  padding-top: 0.15rem;
+  font-family: var(--font-syne), sans-serif;
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.1em;
+  color: rgb(var(--accent-rgb) / 0.55);
+  transition: color 0.3s ease;
+}
+
+.doc-claim:hover .doc-claim-index {
+  color: var(--accent);
+}
+
+.doc-claim-title {
+  font-weight: 700;
+  font-size: clamp(1.05rem, 1.9vw, 1.45rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+
+.doc-claim-backing {
+  margin-top: 0.6rem;
+  max-width: 58ch;
+  font-size: var(--fs-body);
+  line-height: 1.75;
+  color: var(--muted);
+}
+
+/* ── The phase track ──
+   The orbit rail laid sideways: one line running through the row with a marker per phase. */
+.doc-track {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: clamp(1.25rem, 3vw, 2rem);
+  list-style: none;
+}
+
+.doc-track-phase {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-track-span {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: rgb(var(--accent-rgb) / 0.7);
+}
+
+.doc-track-name {
+  margin-top: 0.4rem;
+  font-weight: 700;
+  font-size: clamp(1rem, 1.6vw, 1.3rem);
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+
+/* The marker, and the line it sits on. The line is drawn by the marker's own ::after so it can never
+   be a rule under the row that the markers happen to sit near — it passes THROUGH them. */
+.doc-track-marker {
+  position: relative;
+  height: 1px;
+  margin: 0.95rem 0;
+  background: var(--border);
+}
+
+.doc-track-marker::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin: -0.2rem 0 0 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.doc-track-detail {
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+/* ── The instruments ──
+   Telemetry, in the language of the hero's HUD: tiny uppercase kickers over large figures. */
+.doc-instruments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 1px;
+  list-style: none;
+  background: var(--border);
+  border: 1px solid var(--border);
+}
+
+/* The 1px gap above IS the rule between cells — the grid's own background shows through. One
+   declaration instead of a border on three sides of every cell and a reset on the edges. */
+.doc-instrument {
+  padding: clamp(1rem, 2.5vh, 1.4rem) clamp(0.85rem, 2vw, 1.25rem);
+  background: var(--bg);
+}
+
+.doc-instrument-label {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: rgb(var(--fg-rgb) / 0.3);
+}
+
+.doc-instrument-value {
+  margin-top: 0.5rem;
+  font-weight: 700;
+  font-size: clamp(1.05rem, 2vw, 1.5rem);
+  letter-spacing: -0.02em;
+  color: var(--accent);
+  /* Figures line up in a row of readouts rather than dancing by digit width. */
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-note {
+  margin-top: 1.25rem;
+  max-width: 56ch;
+  font-size: var(--fs-tiny);
+  line-height: 1.7;
+  color: rgb(var(--fg-rgb) / 0.3);
+}
+
+/* ── Capability chips ──
+   Same object as the fleet's `.deck-detail-tags`, restated here rather than shared because these pages
+   deliberately import no homepage CSS. Keep them looking alike. */
+.doc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.doc-chip {
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.05em;
+  color: rgb(var(--fg-rgb) / 0.55);
+}
+
+.doc-chips--quiet .doc-chip {
+  border-color: rgb(var(--fg-rgb) / 0.08);
+  color: rgb(var(--fg-rgb) / 0.4);
+}
+
+/* ── Open roles ── */
+.doc-roles {
+  list-style: none;
+}
+
+.doc-role {
+  border-top: 1px solid var(--border);
+}
+
+.doc-role:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-role-heading {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.doc-role-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.85rem, 2.5vw, 1.75rem);
+  /* Comfortably past 44px at every width — this is the page's main control and a role you have to aim
+     at is a role that does not get opened. */
+  padding: clamp(1.1rem, 2.6vh, 1.6rem) 0;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.doc-role-index {
+  flex-shrink: 0;
+  font-family: var(--font-syne), sans-serif;
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.1em;
+  color: rgb(var(--accent-rgb) / 0.55);
+  transition: color 0.3s ease;
+}
+
+.doc-role-toggle:hover .doc-role-index,
+.doc-role-toggle:focus-visible .doc-role-index,
+.doc-role[data-open='true'] .doc-role-index {
+  color: var(--accent);
+}
+
+.doc-role-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.doc-role-title {
+  font-weight: 700;
+  font-size: clamp(1rem, 1.8vw, 1.4rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+
+.doc-role-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+}
+
+.doc-role-meta-sep {
+  color: rgb(var(--fg-rgb) / 0.2);
+}
+
+/* A plus that becomes a minus: two bars, one of which turns. Cheaper than swapping an icon, and the
+   turn is what says the row OPENS rather than navigates. */
+.doc-role-sign {
+  position: relative;
+  flex-shrink: 0;
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.doc-role-sign-bar {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  margin-top: -0.5px;
+  background: rgb(var(--fg-rgb) / 0.45);
+  transition:
+    transform 0.4s cubic-bezier(0.2, 0.7, 0.2, 1),
+    background-color 0.3s ease;
+}
+
+.doc-role-sign-bar:last-child {
+  transform: rotate(90deg);
+}
+
+.doc-role[data-open='true'] .doc-role-sign-bar {
+  background: var(--accent);
+}
+
+.doc-role[data-open='true'] .doc-role-sign-bar:last-child {
+  transform: rotate(0deg);
+}
+
+/* ⚠ THE OPEN/CLOSE IS `grid-template-rows: 0fr → 1fr`, and it is the only technique that animates to
+   CONTENT height without measuring it. `height: auto` cannot be transitioned; a `max-height` guess is
+   wrong in both directions — too small clips the longest role, too large makes the shortest one open
+   with a dead pause after its content has already arrived. */
+.doc-role-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  /* ⚠ Removes it from the tab order AND the accessibility tree while closed — a clipped panel still
+     contains a focusable Apply button, so without this, tabbing lands inside a collapsed role with the
+     focus ring drawn on nothing. The delay holds it visible until the collapse has finished playing;
+     on the way open it is instant (see the open state). */
+  visibility: hidden;
+  transition:
+    grid-template-rows 0.45s cubic-bezier(0.2, 0.7, 0.2, 1),
+    visibility 0s linear 0.45s;
+}
+
+.doc-role[data-open='true'] .doc-role-panel {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows 0.45s cubic-bezier(0.2, 0.7, 0.2, 1),
+    visibility 0s linear 0s;
+}
+
+/* ⚠ REQUIRED. A zero-height grid row does not clip its own content — without this the collapsed
+   panel's text simply paints over the row below it. */
+.doc-role-panel-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.doc-role-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: clamp(1.25rem, 3vw, 2.5rem);
+  padding-top: 0.35rem;
+}
+
+.doc-role-column-title {
+  margin-bottom: 0.65rem;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: rgb(var(--fg-rgb) / 0.3);
+}
+
+.doc-role-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  list-style: none;
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+/* A hairline tick rather than a bullet — a disc reads as a shopping list, and this page is trying not
+   to read like a job board. */
+.doc-role-list li {
+  position: relative;
+  padding-left: 1rem;
+}
+
+.doc-role-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.72em;
+  width: 0.45rem;
+  height: 1px;
+  background: rgb(var(--accent-rgb) / 0.55);
+}
+
+.doc-role-bonus {
+  margin-top: clamp(1.25rem, 3vh, 1.75rem);
+}
+
+.doc-role-apply {
+  margin: clamp(1.5rem, 3.5vh, 2rem) 0 clamp(1.5rem, 3.5vh, 2rem);
+}
+
+/* ── The close ── */
+.doc-close,
+.doc-open-application {
+  padding-top: clamp(2.5rem, 6vh, 4rem);
+}
+
+.doc-close {
+  border-top: 1px solid var(--border);
+  margin-top: clamp(2rem, 5vh, 3.5rem);
+}
+
+.doc-close-title {
+  font-weight: 800;
+  font-size: clamp(1.5rem, 3.4vw, 2.6rem);
+  line-height: 1.06;
+  letter-spacing: -0.03em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+
+.doc-close-lead {
+  max-width: 48ch;
+  margin-top: 0.9rem;
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.doc-close-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(0.85rem, 2.5vw, 1.75rem);
+  margin-top: clamp(1.5rem, 3.5vh, 2.25rem);
+}
+
+.doc-close-link {
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition:
+    color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.doc-close-link:hover,
+.doc-close-link:focus-visible {
+  color: var(--fg);
+  border-bottom-color: rgb(var(--fg-rgb) / 0.3);
+  outline: none;
+}
+
+/* ── The document footer ──
+   Same link data as the contact section's (see PageFooter), different budget entirely: that one is
+   squeezed into a shared pinned viewport, this one has a document's worth of room. */
+.doc-footer {
+  margin-top: clamp(3.5rem, 9vh, 6rem);
+  padding-top: clamp(1.5rem, 3.5vh, 2.25rem);
+  border-top: 1px solid var(--border);
+}
+
+.doc-footer-top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+}
+
+.doc-footer-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.doc-footer-mark {
+  font-weight: 700;
+  font-size: clamp(1.1rem, 2vw, 1.5rem);
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+
+.doc-footer-note {
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+}
+
+.doc-footer-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+}
+
+.doc-footer-group-title {
+  margin-bottom: 0.6rem;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: rgb(var(--fg-rgb) / 0.28);
+}
+
+.doc-footer-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  list-style: none;
+}
+
+.doc-footer-link {
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition:
+    color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.doc-footer-link:hover,
+.doc-footer-link:focus-visible {
+  color: var(--fg);
+  border-bottom-color: rgb(var(--fg-rgb) / 0.3);
+  outline: none;
+}
+
+.doc-footer-base {
+  margin-top: clamp(2rem, 5vh, 3rem);
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-micro);
+  color: rgb(var(--fg-rgb) / 0.26);
+}
+
+/* ── Focus ──
+   These pages have far more keyboard-reachable things on them than any homepage section does, so the
+   ring is stated once here rather than per control. Amber, offset, and it never moves layout. */
+.doc-page a:focus-visible,
+.doc-page button:focus-visible {
+  outline: 1px solid rgb(var(--accent-rgb) / 0.8);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* ── The reveal ──
+   One class, added once by an IntersectionObserver, and every bit of the motion is a CSS transition on
+   it. That is what lets these routes carry no animation library at all, and it is also why reduced
+   motion needs no branch anywhere: the blanket rule at the bottom of this file has already collapsed
+   every transition below to nothing, so the content simply is where it belongs.
+
+   ⚠ It reveals ONCE. `useScrollReveal` unobserves on the way out — a section that re-animates every
+   time it passes the fold turns scrolling back up the page into a slideshow. */
+.doc-masthead-line,
+.doc-masthead-rule,
+.doc-masthead-lead,
+.doc-section-head,
+.doc-paragraph,
+.doc-quote,
+.doc-claim,
+.doc-track-phase,
+.doc-instrument,
+.doc-chip,
+.doc-note,
+.doc-role,
+.doc-close-title,
+.doc-close-lead,
+.doc-close-actions,
+.doc-footer-top,
+.doc-footer-base {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 0.75s cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 0.75s cubic-bezier(0.2, 0.7, 0.2, 1),
+    clip-path 0.75s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: calc(var(--reveal-index, 0) * 60ms);
+}
+
+/* The title wipes up under its own mask as well as travelling — the one place on these pages where the
+   motion is doing more than presenting, because it is the first thing seen. */
+.doc-masthead-line {
+  clip-path: inset(0 0 105% 0);
+}
+
+.is-revealed .doc-masthead-line,
+.is-revealed .doc-masthead-rule,
+.is-revealed .doc-masthead-lead,
+.is-revealed .doc-section-head,
+.is-revealed .doc-paragraph,
+.is-revealed .doc-quote,
+.is-revealed .doc-claim,
+.is-revealed .doc-track-phase,
+.is-revealed .doc-instrument,
+.is-revealed .doc-chip,
+.is-revealed .doc-note,
+.is-revealed .doc-role,
+.is-revealed .doc-close-title,
+.is-revealed .doc-close-lead,
+.is-revealed .doc-close-actions,
+.is-revealed .doc-footer-top,
+.is-revealed .doc-footer-base {
+  opacity: 1;
+  transform: none;
+}
+
+.is-revealed .doc-masthead-line {
+  /* Negative bottom inset, not 0: a descender on the last line sits below the text box, and an exact
+     0 clips the tail off a lowercase g. */
+  clip-path: inset(0 0 -25% 0);
+}
+
+/* ⚠ THE SAFETY NET. If the observer never runs — no JavaScript, a crawler, an old browser — every
+   selector above would leave a page of invisible copy. `:has()` is not involved and neither is JS:
+   this is the plain fact that without the script the class never lands, so the page must be legible
+   in that state. `useScrollReveal` also reveals outright if IntersectionObserver is missing; this
+   covers the case where the script does not run at all. */
+@media (scripting: none) {
+  .doc-masthead-line,
+  .doc-masthead-rule,
+  .doc-masthead-lead,
+  .doc-section-head,
+  .doc-paragraph,
+  .doc-quote,
+  .doc-claim,
+  .doc-track-phase,
+  .doc-instrument,
+  .doc-chip,
+  .doc-note,
+  .doc-role,
+  .doc-close-title,
+  .doc-close-lead,
+  .doc-close-actions,
+  .doc-footer-top,
+  .doc-footer-base {
+    opacity: 1;
+    transform: none;
+    clip-path: none;
+  }
+
+  .doc-section-rule {
+    transform: scaleX(1);
+  }
+}
+
+/* ── No gutter, no rail ──
+   See the header: 64em is not one of the site's content breakpoints, it is the width below which there
+   is no room to stand an instrument BESIDE the prose. The same progress becomes a hairline. */
+@media (max-width: 64em) {
+  .doc-rail-arc-wrap {
+    display: none;
+  }
+
+  /* Collapsed to nothing, but still IN the tree — it is what holds the hairline, and the hairline is
+     `position: fixed`, so it does not care what size its parent is. `static` rather than `sticky`
+     because a zero-width sticky box is pure overhead. */
+  .doc-rail {
+    flex: 0 0 0;
+    position: static;
+  }
+
+  .doc-rail-hairline {
+    display: block;
+  }
+}
+
+/* ── Narrow ──
+   The site's main breakpoint. Everything here is about the prose, not about the gutter. */
+@media (max-width: 51.25em) {
+  .doc-masthead-lead {
+    margin-left: 0;
+  }
+
+  /* ⚠ THE TRACK ROTATES; IT DOES NOT SCROLL SIDEWAYS. Four phases across a 360px screen is 90px each,
+     which fits neither "6–24 weeks" nor a sentence — and an overflow-x scroller would break the site's
+     rule that the page body never scrolls horizontally, while hiding the last phase from anyone who
+     does not notice it can be dragged. Vertical loses nothing. */
+  .doc-track {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .doc-track-phase {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 1rem;
+    padding-bottom: 1.5rem;
+  }
+
+  /* The marker becomes the vertical line down the left, still passing THROUGH each phase rather than
+     sitting beside it. */
+  .doc-track-marker {
+    grid-row: 1 / 4;
+    grid-column: 1;
+    width: 1px;
+    height: auto;
+    margin: 0.35rem 0 0;
+    background: var(--border);
+  }
+
+  .doc-track-marker::before {
+    left: 50%;
+    top: 0.25rem;
+    margin-left: -0.2rem;
+  }
+
+  .doc-track-span,
+  .doc-track-name,
+  .doc-track-detail {
+    grid-column: 2;
+  }
+
+  .doc-track-name {
+    margin-top: 0.2rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .doc-footer-top {
+    flex-direction: column;
+  }
+}
+
+/* ── The true phone ──
+   30em, the same breakpoint the contact section uses. A 390px portrait phone and an 800px landscape
+   tablet are not the same problem. */
+@media (max-width: 30em) {
+  .doc-page {
+    /* The navbar is 4.5rem; clear it and stop paying for the desktop's shoulder. */
+    padding-top: 5.5rem;
+  }
+
+  .doc-masthead {
+    padding-bottom: 2.5rem;
+  }
+
+  /* ⚠ FOUR ACROSS DOES NOT FIT. At 360px each readout gets about 70px of column, and "Fully documented"
+     needs rather more than that. Two by two, with the figure allowed to wrap. */
+  .doc-instruments {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .doc-claim {
+    gap: 0.75rem;
+  }
+
+  .doc-role-toggle {
+    gap: 0.75rem;
+  }
+
+  /* The chips are the one place a long entry can force the page wider than the screen. */
+  .doc-chip {
+    max-width: 100%;
+  }
+}
+
 /* ─── Reduced motion ─────────────────────────────────────────────── */
+/* ── The blanket rule, and the TWO ways it can be asked for ──
+   ⚠ The same declarations twice, and it is not duplication. The media query is the OPERATING SYSTEM
+   asking. The attribute is the VISITOR asking, through the loader's offer — and the two disagree
+   often enough to matter: a phone with no OS flag whose owner pressed "Reduce motion" gives the media
+   query nothing to match, so without the second selector every CSS animation on the site would keep
+   running while the JavaScript half quietly obeyed.
+
+   `data-motion` carries the RESOLVED answer (see lib/motionPreference.ts), which is also what makes
+   `:not([data-motion='full'])` work in the other direction: an explicit "show me all of it" needs a
+   way OUT of the media query on a machine whose OS asks for reduced motion.
+
+   ⚠ Before the JavaScript runs there is no attribute at all — and no attribute matches
+   `:not([data-motion='full'])`, so the OS setting still governs the very first paint. That ordering
+   is what stops a reduced-motion visitor seeing a flash of animation before the module initialises. */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  :root:not([data-motion='full']) *,
+  :root:not([data-motion='full']) *::before,
+  :root:not([data-motion='full']) *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+:root[data-motion='reduced'] *,
+:root[data-motion='reduced'] *::before,
+:root[data-motion='reduced'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
 }

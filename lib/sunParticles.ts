@@ -351,6 +351,12 @@ export interface SunParticles {
    * on resize is what keeps the rings inside the canvas at any aspect.
    */
   setFrameExtent(halfExtent: number): void;
+  /**
+   * The renderer's current pixel ratio. Point sizes are computed in device pixels, so this has to
+   * follow the canvas — the sun's ratio is no longer fixed at construction now that it shares the
+   * adaptive controller with the heavy scenes.
+   */
+  setPixelRatio(pixelRatio: number): void;
   dispose(): void;
 }
 
@@ -505,10 +511,14 @@ export function createSunParticles(
     geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), halfExtent * 4);
   };
 
+  const setPixelRatio = (nextPixelRatio: number) => {
+    material.uniforms.uPixelRatio.value = nextPixelRatio;
+  };
+
   const dispose = () => {
     geometry.dispose();
     material.dispose();
   };
 
-  return { object, update, setFrameExtent, dispose };
+  return { object, update, setFrameExtent, setPixelRatio, dispose };
 }

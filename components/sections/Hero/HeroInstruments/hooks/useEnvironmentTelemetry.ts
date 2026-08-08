@@ -1,5 +1,6 @@
 import { useEffect, type RefObject } from 'react';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
+import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import {
@@ -266,22 +267,50 @@ export function useEnvironmentTelemetry({ panelRef }: EnvironmentTelemetryRefs) 
     };
 
     let hasStarted = false;
+    let inVoid = false;
+
+    // See useCoreTelemetry for why a resume re-seeds rather than just re-arming. Same two hazards:
+    // `lastFrameTime = 0` takes the loop's own re-seed path, and `travelledSinceFrame` would otherwise
+    // deliver a journey's worth of cursor travel in one frame — here that spikes Cursor Influence and
+    // Field Distortion together. The orb is re-measured because the pin transforms the hero square and
+    // the layout it sits in may have changed while nobody was watching.
+    const startLoop = () => {
+      if (inVoid || animationFrameId !== 0) return;
+      measureOrb();
+      lastFrameTime = 0;
+      travelledSinceFrame = 0;
+      animationFrameId = requestAnimationFrame(frame);
+    };
+
     const startTelemetry = () => {
       if (hasStarted) return;
       hasStarted = true;
-      measureOrb();
       pointerSurface.addEventListener('pointermove', handlePointerMove as EventListener, { passive: true });
       pointerSurface.addEventListener('pointerdown', handlePointerDown as EventListener, { passive: true });
       window.addEventListener('pointerup', handlePointerUp, { passive: true });
       window.addEventListener('resize', measureOrb);
-      animationFrameId = requestAnimationFrame(frame);
+      startLoop();
     };
+
+    // The HUD only exists on the hero — suspended for the whole black stage, re-armed when the page
+    // comes back to the hero, INCLUDING after the teleport. See useCoreTelemetry's note.
+    const onBlackStage = (event: Event) => {
+      inVoid = readBlackStageActive(event);
+      if (inVoid) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      } else if (hasStarted) {
+        startLoop();
+      }
+    };
+    window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     window.addEventListener(REVEAL_EVENT, startTelemetry);
     const fallbackTimeout = window.setTimeout(startTelemetry, REVEAL_FALLBACK_MS);
 
     return () => {
       window.removeEventListener(REVEAL_EVENT, startTelemetry);
+      window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       window.clearTimeout(fallbackTimeout);
       pointerSurface.removeEventListener('pointermove', handlePointerMove as EventListener);
       pointerSurface.removeEventListener('pointerdown', handlePointerDown as EventListener);

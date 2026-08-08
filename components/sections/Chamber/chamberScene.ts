@@ -50,8 +50,9 @@ import {
 // The podium and its ring portal are gone on purpose: the hologram no longer floats over a plinth
 // across the room, it sits with the table. What fills the space behind it is the ground (below), which
 // costs no download at all.
-// Exported so the rung-3 prefetch has ONE source for this path rather than a copy that can drift —
-// see lib/prefetchWhenAssetsReady.ts.
+// Exported so nothing else has to hold a second copy of this path. The rung-3 PREFETCH that used to
+// be the reason is gone (it only warmed the HTTP cache, which left the parse, the upload and the
+// compile in the crossing) — `useWorksField` now BUILDS this room during the loader instead.
 export const TABLE_MODEL = '/models/table.glb';
 
 const FOV = 45;
@@ -194,11 +195,30 @@ interface ChamberOptions {
   environment: THREE.Texture | null;
   /** Fired once there's something to draw, so the host can start drawing it. */
   onReady?: () => void;
+  /**
+   * Download fraction, 0..1 — this room is a GATED SOURCE now (see lib/assetLoadProgress).
+   *
+   * ⚠ Called on every progress event, including the ones carrying no usable total. A server that
+   * sends no `Content-Length` cannot move the fraction at all, and the loader's stall detector
+   * measures ACTIVITY rather than the number for exactly that reason: silence has to mean dead, not
+   * merely uncounted.
+   */
+  onProgress?: (fraction: number) => void;
+  /**
+   * Nothing more is coming — loaded, or failed and not going to.
+   *
+   * ⚠ Deliberately separate from `onReady`, which means "there is something to draw" and must NOT
+   * fire for a room with no table in it. The loader holds its finale on this one, so it has to be
+   * answered on the failure path too or a 404 costs every visitor the full stall window.
+   */
+  onSettled?: () => void;
 }
 
 export function createChamberScene({
   environment,
   onReady,
+  onProgress,
+  onSettled,
 }: ChamberOptions): ChamberScene {
   const scene = new THREE.Scene();
   scene.environment = environment;
@@ -389,9 +409,13 @@ export function createChamberScene({
         scene.add(group);
         assign(group, pivot);
         onReady?.();
+        onSettled?.();
       },
-      undefined,
-      (error) => console.error(`Failed to load ${path}`, error),
+      (event) => onProgress?.(event.total > 0 ? event.loaded / event.total : 0),
+      (error) => {
+        console.error(`Failed to load ${path}`, error);
+        onSettled?.();
+      },
     );
   };
 

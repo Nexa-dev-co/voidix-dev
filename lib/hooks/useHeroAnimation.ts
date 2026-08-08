@@ -19,11 +19,14 @@ import {
 import {
   GOTO_SECTION_EVENT,
   readGotoSection,
+  requestSection,
 } from "@/lib/sectionNavigation";
+import { findNavItem } from "@/components/layout/Navbar/navItems";
 import {
   BLACK_STAGE_EVENT,
   type BlackStageDetail,
 } from "@/lib/blackStageEvent";
+import { profileGauge } from "@/lib/frameProfiler";
 import {
   JUMP_ARRIVED_EVENT,
   JUMP_BEGIN_EVENT,
@@ -759,10 +762,19 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       loop: enterLoop,
     };
     let currentStage: Stage = "fill";
+    // Published once up front too — `setStage` returns early on a no-op, so without this the very
+    // first reports (the hero, which is the one section that is only ever ARRIVED at by starting
+    // there) would carry no section at all.
+    profileGauge("section", currentStage);
     const setStage = (stage: Stage) => {
       if (stage === currentStage) return;
       const fromStage = currentStage;
       currentStage = stage;
+      // ⚠ The profiler prints one breakdown every three seconds and, until now, nothing in it said
+      // WHICH section the frame belonged to — so a report read off a laptop was un-attributable the
+      // moment the page had been scrolled. Per-section cost is the whole question this instrument
+      // exists to answer. Free in production: `profileGauge` folds away with `telemetryEnabled`.
+      profileGauge("section", stage);
       enterStage[stage](fromStage);
 
       // ⚠ Published from HERE — the boundary — and not from `enterServices`.
@@ -1313,7 +1325,29 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       hasRevealed = true;
       createTransition();
       playHeroEntrance();
+      consumeArrivalHash();
     };
+
+    // ── Arriving from another route with a section in the URL ──
+    // `/about` and `/careers` render the same navbar, and off the homepage its items fall through to
+    // their real `/#work` hrefs. Something has to be listening on this side or those four links are
+    // links that appear to do nothing — which is what they did until the site had a second route to
+    // click them from. (`Navbar.tsx` has claimed in a comment since it was written that "the pin picks
+    // it up on arrival"; this is the first time that has been true.)
+    //
+    // It goes through `requestSection` rather than seeking directly, so an arrival gets the identical
+    // treatment a click gets: the distance-scaled glide, and the cover if it is far enough to be worth
+    // hiding. Called from inside `runReveal` because the pin must EXIST first — `goToStop` no-ops
+    // without it, which would leave a covered jump sitting on a black screen.
+    function consumeArrivalHash() {
+      const key = window.location.hash.slice(1);
+      if (!key || !findNavItem(key)) return;
+      // Drop the hash before travelling. It has been spent, and leaving it in the URL means a reload —
+      // or the loop's teleport back to the hero — silently re-triggering the journey to a section the
+      // visitor has since scrolled away from.
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      requestSection(key);
+    }
 
     // ── The teleport ──
     // Runs with the screen already black, so the order below is about what must be TRUE by the next

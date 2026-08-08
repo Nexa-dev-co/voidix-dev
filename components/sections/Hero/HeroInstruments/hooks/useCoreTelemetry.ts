@@ -1,5 +1,6 @@
 import { useEffect, type RefObject } from 'react';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
+import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import {
   STABILITY_FLOOR,
@@ -145,18 +146,58 @@ export function useCoreTelemetry({ panelRef }: CoreTelemetryRefs) {
     };
 
     let hasStarted = false;
+    let inVoid = false;
+
+    // Resuming is not just "call rAF again" — three counters have to be re-seeded or the first frame
+    // back lies. `lastFrameTime = 0` takes the loop's own re-seed path (dt AND the fps window);
+    // `frameCount` would otherwise carry frames from before the pause into a window that now starts
+    // `now`, reporting a frame rate the machine never reached; and `travelledSinceFrame` would hand a
+    // whole journey's worth of cursor travel to one frame and slam Energy Output to 100%.
+    const startLoop = () => {
+      if (inVoid || animationFrameId !== 0) return;
+      lastFrameTime = 0;
+      frameCount = 0;
+      travelledSinceFrame = 0;
+      animationFrameId = requestAnimationFrame(frame);
+    };
+
     const startTelemetry = () => {
       if (hasStarted) return;
       hasStarted = true;
       pointerSurface.addEventListener('pointermove', handlePointerMove as EventListener, { passive: true });
-      animationFrameId = requestAnimationFrame(frame);
+      startLoop();
     };
+
+    // ── The HUD only exists on the hero ──
+    // Past the fill boundary a full-black scene owns the page and both panels are off screen, but this
+    // loop kept running for the whole journey — a rAF, a viewport read and DOM writes every frame,
+    // competing for exactly the frames the works field can least spare. The fluid cursor and the
+    // constellation are already gated on this same event.
+    //
+    // ⚠ It has to RE-ARM, and the case that catches you is the TELEPORT: the loop's `scrollTo(0)` puts
+    // the visitor back on the hero, the stage machine publishes `active: false`, and without this the
+    // readouts sit frozen wherever contact left them for the whole second lap.
+    //
+    // The pointermove listener deliberately stays attached while suspended. It is O(1), and detaching
+    // it would leave `lastPointer*` stale, so the first move back would measure a jump across the
+    // screen instead of a frame's worth of travel.
+    const onBlackStage = (event: Event) => {
+      inVoid = readBlackStageActive(event);
+      if (inVoid) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      } else if (hasStarted) {
+        startLoop();
+      }
+    };
+    window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     window.addEventListener(REVEAL_EVENT, startTelemetry);
     const fallbackTimeout = window.setTimeout(startTelemetry, REVEAL_FALLBACK_MS);
 
     return () => {
       window.removeEventListener(REVEAL_EVENT, startTelemetry);
+      window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       window.clearTimeout(fallbackTimeout);
       pointerSurface.removeEventListener('pointermove', handlePointerMove as EventListener);
       cancelAnimationFrame(animationFrameId);

@@ -1,60 +1,111 @@
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 
 /**
- * Shared dynamic resolution for the heavy WebGL scenes (the services fleet + the works field).
+ * Shared render resolution for the heavy WebGL scenes (the services fleet + the works field).
  *
- * Two mechanisms, and they answer different questions.
+ * ── THREE PHASES, AND ONLY ONE OF THEM MOVES ─────────────────────────────────────────────────────
  *
- *  1 · **A measurement, once, at the loader.** `reportProbedFrameCost` is handed the real cost of one
- *      real frame of the works field (see `lib/gpuProbe.ts`) and SOLVES for the ratio this machine can
- *      afford. That decides the ceiling and where we start.
- *  2 · **A live controller, for the rest of the session.** `sampleFrame(dt)` watches real frame times
- *      while those scenes are drawing and eases the shared ratio between the floor and that ceiling,
- *      so thermal throttling or a heavier section is still caught.
+ *   1 · PROBE      — `reportProbedFrameCost` times one drained frame of the works pipeline during the
+ *                    loader (see `lib/gpuProbe.ts`) and solves a CEILING from it. What the machine
+ *                    *says* it can do.
+ *   2 · CALIBRATE  — the first few seconds of real rendering are measured, and the ratio this machine
+ *                    *actually* sustains is solved from that, minus a safety margin. Set once.
+ *   3 · LOCKED     — that number holds for the session. Nothing eases, nothing steps, nothing
+ *                    oscillates. One coarse emergency move exists and is deliberately hard to reach.
  *
- * Scenes call `sampleFrame(dt)` on frames they actually rendered (so idle frames never fake headroom)
- * and read `getPixelRatio()` each frame, re-sizing their renderer + composer when it changes.
+ * ── Why the eased controller was removed ─────────────────────────────────────────────────────────
+ * This module used to run a live controller for the whole session: step down 0.2 when slow, step up
+ * when fast, with a dead zone and a soft ceiling meant to make it settle. It did not settle. Measured
+ * on a dpr 2.5 laptop, one session:
  *
- * ── Why the measurement had to exist ─────────────────────────────────────────────────────────────
- * This module used to guess UPWARD: it let any machine climb to 1.5× — 2.25× the pixels and 2.25× the
- * render-target memory, through bloom and post — and relied on the controller to claw that back. Two
- * problems. The claw-back only happens after the composers have already been reallocated at the
- * larger size, on precisely the machine that could not afford it. And the controller's dead zone
- * (below) is wide enough that a laptop holding 38 fps never trips it, so the guess was never
- * corrected — it just sat there being slow. Rendering above native is now something a GPU has to
- * earn on the evidence of its own frame time.
+ *     27.2s  STEPPED DOWN 1.68 → 1.48        35.3s  STEPPED DOWN 1.48 → 1.28
+ *     41.2s  STEPPED DOWN 1.28 → 1.25        44.3s  GAVE BACK    1.25 → 1.68
+ *     79.0s  STEPPED DOWN 1.68 → 1.48        82.7s  GAVE BACK    1.48 → 1.68
  *
- * ⚠ CLAUDE.md used to state that nothing on this site picks quality from measured performance, and
- * pointed at a deleted `performanceTier.ts` as the thing that had tried. This is that capability,
- * rebuilt deliberately — but it is NOT that design. `performanceTier` classified into 'low' | 'high'
- * off the live controller's own samples, which is circular; this solves a ratio from a single
- * independent measurement taken before the first real frame is ever drawn.
+ * Every one of those is a full composer reallocation — the bloom pyramid, the ping-pong targets, the
+ * SMAA buffers — and the visitor watches the site change sharpness, repeatedly, forever. The reason it
+ * could never converge is structural rather than a matter of tuning: the site's frame cost is
+ * dominated by which SECTION is on screen, and the controller kept reading that as a verdict on the
+ * resolution it had just changed. Four separate attempts to make the trial reliable (raw deltas, a
+ * per-pipeline verdict, anchoring the trial to the apply, abandoning contaminated trials) each fixed a
+ * real bug and none of them fixed that.
  *
- * The live controller is deliberately biased toward smoothness: it drops quickly but climbs slowly,
- * and leaves a dead zone between the two frame-rate thresholds, so it settles instead of oscillating.
+ * A measurement taken ONCE, on real frames, and then honoured, has none of that failure mode.
+ *
+ * ── ⚠ Why the probe cannot simply be the answer ──────────────────────────────────────────────────
+ * Because it is not reproducible. Four loads of the same page on the same machine:
+ *
+ *     0.5 ms → affordable 3.91      2.3 ms → affordable 1.82
+ *     3.0 ms → affordable 1.60      7.5 ms → affordable 1.01
+ *
+ * An eightfold spread, because it runs seconds after `buildField` has spent two seconds burning the
+ * CPU and the machine has not settled. It also times the works pipeline ALONE, on a quiet stage, while
+ * the real frame carries the sun's own canvas and bloom, the compositor and its blend layers. It is a
+ * useful upper bound and a terrible target — so it sets the ceiling, and the calibration decides where
+ * inside that ceiling we actually sit.
+ *
+ * Scenes call `sampleFrame(dt)` on frames they actually rendered, and read `getPixelRatio()` each
+ * frame, re-sizing renderer + composer when it changes.
  */
 
-// ── The range ──
-// The floor is genuinely BELOW native. That is the point of having one: on a weak GPU at dpr 1 a floor
-// of 1 leaves the controller with no move left — it detects the slowness and can do nothing about it,
-// which is the state this module spent its whole life in. 0.75 is ~44% fewer pixels; visibly softer,
-// and the only thing left to give on the machines that reach it.
+// ── The range ──────────────────────────────────────────────────────────────────────────────────────
+
+/** The absolute lowest, for a 1× panel where there is genuinely nothing else left to give. */
 const MIN_PIXEL_RATIO = 0.75;
-const SUPERSAMPLE_CEIL = 1.5;  // the most a 1× panel may ever be allowed — and only if PROBED able
-const MAX_PIXEL_RATIO = 2;     // hard cap (retina native)
-const STEP = 0.2;               // how far the ratio moves per adjustment
-// ⚠ 45, not 30. The old value left a 28 fps-wide band (30–58) in which the controller measured the
-// slowness, agreed it was slow, and did nothing — and 35–45 fps is exactly where a struggling laptop
-// sits. "Cinematic floor" is a defensible stance for a film; it is not one for a site whose scroll is
-// scrubbed over 1.8 s, where anything under ~45 stops reading as smooth and starts reading as lag.
-const SLOW_FPS = 45;            // sustained below this → step down
-const FAST_FPS = 58;            // sustained above this → step up (dead zone 45–58 = hold, no change)
-const SETTLE_DOWN_SECONDS = 0.8; // react to slowness fairly quickly (protect the frame rate)
-const SETTLE_UP_SECONDS = 2;     // …reclaim sharpness after a shorter-but-still-cautious calm stretch
-const RECENT_STEP_UP_SECONDS = 3.5; // a drop this soon after a step-up means that level was too costly
-const SOFT_CEIL_PROBE_SECONDS = 20; // after this long pinned + calm, cautiously re-test one step higher
-const EMA_ALPHA = 0.1;           // smoothing on the measured frame time (rejects one-frame spikes)
-const MAX_SANE_DT = 0.5;         // ignore absurd deltas (tab-restore, breakpoints)
+
+/**
+ * The most the browser may be asked to blow the render up when it composites it.
+ *
+ * ⚠ THE FLOOR HAS TO BE RELATIVE TO THE PANEL, and `MIN_PIXEL_RATIO` alone is not. 0.75 is 75 % of a
+ * 1× display's density — softer, but honest. On a dpr 2.5 laptop it is 30 %, which the compositor then
+ * scales up 3.3×, and that is not "softer", that is smeared. The same constant means two completely
+ * different pictures.
+ *
+ * Capping the upscale keeps the meaning constant across displays, so the sub-native move weak 1×
+ * machines need survives while dense panels are protected from the smear.
+ *
+ * ── ⚠ TIGHTENED 2.5 → 2.17 ON 2026-08-06, AS A DELIBERATE QUALITY PURCHASE ──────────────────────
+ *
+ * This is the ONLY dial that can raise quality on a machine whose burn-in lands under the floor, and
+ * on a 4K laptop at 250 % scaling that is every machine. Measured there: the burn-in solved 0.64 and
+ * was clamped up to a floor of exactly 1.00, so the site rendered at 40 % of the panel's density —
+ * and `RESOLUTION_PRIORITY` was completely inert, because all three of its settings solve below 1.00
+ * too. Making the frame cheaper would not have helped either: the solve would still land under the
+ * floor and still clamp to it.
+ *
+ *     dpr 2.5   floor 1.00 → 1.15      dpr 3   floor 1.20 → 1.38
+ *     dpr 2     floor 0.80 → 0.92      dpr 1   floor 0.75 (unchanged, held by MIN_PIXEL_RATIO)
+ *
+ * ⚠ IT COSTS +32 % PIXELS, because cost is the square of the ratio. That was funded rather than
+ * simply spent — `BLOOM_MSAA_SAMPLES_BY_TIER` in `useWorksField` went to 0 and the fluid cursor's ink
+ * canvas came down to 1.25 in the same change. See `docs/performance-cost-inventory.md` §6.
+ *
+ * ⚠ IT RAISES THE FLOOR ON PHONES TOO, by the same proportion, and phones can least afford it — a
+ * dpr 3 handset goes 1.20 → 1.38. That is not scoped away here on purpose: one constant, one meaning.
+ * If it bites, the fix is to read `isLowPowerDevice()` when computing the floor rather than to move
+ * this number back, or the desktop purchase goes with it.
+ */
+const MAX_COMPOSITE_UPSCALE = 2.17;
+
+const SUPERSAMPLE_CEIL = 1.5; // the most a 1× panel may ever be allowed — and only if PROBED able
+const MAX_PIXEL_RATIO = 2;    // hard cap (retina native)
+const MAX_SANE_DT = 0.5;      // ignore absurd deltas (tab-restore, breakpoints)
+const EMA_ALPHA = 0.1;        // smoothing on the measured frame time (rejects one-frame spikes)
+
+/**
+ * How long a queued resolution change may wait for an idle frame before it is applied anyway.
+ *
+ * Both heavy scenes only re-size while they are NOT being drawn, because reallocating a composer
+ * stalls a frame and a stall hidden behind a running tween makes the motion jump. But `useWorksField`
+ * hosts the chamber AND the contact singularity, so it has NO idle frame between works and the
+ * teleport — a change queued there would wait a whole lap. So: take an idle frame if one comes, and
+ * otherwise take the hitch.
+ *
+ * Far less load-bearing than it was, now that the ratio is set once rather than eased continuously.
+ */
+export const RATIO_APPLY_GRACE_SECONDS = 1.5;
+
+// ── Phase 1 · the probe ────────────────────────────────────────────────────────────────────────────
 
 /**
  * How much of a frame the heaviest scene may spend, in milliseconds — the budget the probe solves
@@ -69,188 +120,306 @@ const MAX_SANE_DT = 0.5;         // ignore absurd deltas (tab-restore, breakpoin
 const PIPELINE_FRAME_BUDGET_MS = 9;
 
 /**
- * Smallest frame worth believing, in megapixels (~224²).
+ * How much of that budget is deliberately LEFT UNSPENT.
  *
- * A section measured before its first resize is drawing into a 1×1 buffer, which is instant and says
- * nothing about the machine. `> 0` would let that through.
+ * ⚠ EXPRESSED AGAINST COST, NOT AGAINST THE RATIO. Cost scales with the SQUARE of the ratio, so
+ * trimming the ratio by 15 % would remove 28 % of the pixels — nearly double the intended margin.
+ * Applied here, to milliseconds, 15 % is 15 %: the solve targets 7.65 ms instead of 9.
  */
+const SAFETY_HEADROOM_FRACTION = 0.15;
+const SPENDABLE_FRAME_BUDGET_MS = PIPELINE_FRAME_BUDGET_MS * (1 - SAFETY_HEADROOM_FRACTION);
+
+/** Smallest frame worth believing, in megapixels (~224²). A 1×1 buffer says nothing about a machine. */
 const MIN_PROBE_MEGAPIXELS = 0.05;
 
 /**
  * The most pixels the heavy scenes may ever be asked to draw into, whatever the ratio works out as.
  *
- * ⚠ THE RATIO IS NOT THE COST. THE PIXEL COUNT IS. Everything else in this module reasons in ratios,
- * and a ratio means nothing without a panel behind it:
+ * ⚠ THE RATIO IS NOT THE COST. THE PIXEL COUNT IS:
  *
  *     ratio 1.5 on a 1080p panel     →  3.1 Mpx
  *     ratio 2.0 on a 4K laptop       →  5.3 Mpx      ← 70 % more work, from a smaller-looking number
  *
- * `hardwareCeil` is `min(2, max(devicePixelRatio, 1.5))`, so a dense panel RAISES the ceiling — which
- * is exactly backwards. A 4K screen is a reason to render at a lower ratio, not a licence to render at
- * a higher one, because the CSS viewport is small and every ratio point costs four times what it costs
- * on a 1× panel.
+ * `hardwareCeil` rises with `devicePixelRatio`, which is exactly backwards — a 4K screen is a reason
+ * to render at a LOWER ratio, because the CSS viewport is small and every ratio point costs four times
+ * what it costs on a 1× panel. Found on a 4K laptop at 250 % scaling: `affordable 3.87`, ceiling
+ * clamped to 2.0, a 5.26 Mpx drawing buffer, render targets over 700 MB, 20 fps.
  *
- * This was found on a 4K laptop at 250 % scaling: dpr 2.5, a 1528 px CSS viewport, `affordable 3.87`
- * from the probe, ceiling clamped to 2.0 — and a 5.26 Mpx drawing buffer that put the render targets
- * over 700 MB and the frame rate at 20 fps. The probe was not wrong about the GPU. It was answering a
- * question about ratios while the machine was failing on pixels.
- *
- * 3 Mpx is a little over a 1080p frame at 1.2×, and it keeps the site's render targets near 290 MB —
- * roughly where an integrated GPU stops evicting. It is a ceiling, not a target: a small window on the
- * same machine still renders at whatever ratio the probe allows.
+ * 3 Mpx is a little over a 1080p frame at 1.2×, and keeps the render targets near 290 MB — roughly
+ * where an integrated GPU stops evicting.
  */
 const MAX_DRAWING_BUFFER_MEGAPIXELS = 3;
 
-let initialised = false;
-let ceil = 1;
-let floor = MIN_PIXEL_RATIO; // lowest density we'll drop to
-let softCeil = 1;           // dynamic cap ≤ ceil; lowered when a higher level proves too expensive, so
-                            // the controller settles instead of oscillating in and out of it
-let pixelRatio = 1;
-/** The most this panel could ever justify — the probe's own upper bound. */
-let hardwareCeil = 1;
-/** True once a believable measurement has been acted on, so a second scene's probe cannot re-decide. */
-let probed = false;
-/**
- * The ratio the probe solved this machine could afford — BEFORE it was clamped to the panel's own
- * density or to the floor.
- *
- * Kept separately from `ceil` because the two answer different questions and the clamps destroy the
- * one we need here. A desktop that measured able to afford 2.4× is capped to `ceil = 1` by its 1×
- * panel, and reading `ceil` back would say "native, same as everyone" about a machine with 5× the
- * headroom of the laptop next to it. The unclamped number is the only honest capability signal the
- * site takes, and it is what decides whether MSAA is affordable — see `getProbedAffordableRatio`.
- */
-let probedAffordableRatio: number | null = null;
-let emaFrameSeconds = 1 / 60;
-let slowFor = 0;
-let fastFor = 0;
-let elapsed = 0;            // accumulated sampled time, for the oscillation + probe windows
-let lastStepUpAt = -Infinity;
-let lastSoftCeilProbeAt = 0;
+// ── Phase 2 · the calibration ──────────────────────────────────────────────────────────────────────
 
 /**
- * ── ⚠ RESOLUTION IS ONLY A LEVER IF THE FRAME IS FILL-BOUND, AND OFTEN IT IS NOT ────────────────
+ * Sampled seconds thrown away before the measurement starts.
  *
- * This controller's whole premise is that fewer pixels means more frames. That is true of a GPU
- * saturated by fill, and false of a frame dominated by JavaScript, draw-call submission, or the
- * compositor — and when it is false, every step down is quality given away for nothing.
- *
- * Measured on a 4K laptop, both steps taken within a few seconds of each other:
- *
- *     [pixels] STEPPED DOWN 1.00 → 0.80  (−36% pixels)  at ~32 fps
- *     [pixels] STEPPED DOWN 0.80 → 0.75  (−12% pixels)  at ~26 fps
- *
- * A third of the pixels gone and the frame rate got WORSE. The controller then sat at the floor for
- * the rest of the session, rendering at ~30 % of that panel's native density — which is what "the
- * ships look low quality now" actually was.
- *
- * So a step down is now a HYPOTHESIS, and it gets checked. If the frame rate does not answer within
- * `STEP_DOWN_VERDICT_SECONDS`, the pixels go back and this controller stops cutting them for the rest
- * of the session. It cannot fix a frame that is not fill-bound, and the honest thing to do about a
- * lever that does not work is to stop pulling it.
- *
- * A genuinely fill-bound machine sees the gain, keeps `fillBound` true, and behaves exactly as before.
+ * The first frames after the loader are not the site running — they are the tail of it starting: the
+ * last texture uploads, the first compiles, the mark buffers being handed to the GPU. The profiler
+ * routinely logs 300–500 ms frames in that window. Measuring there would report every machine as far
+ * weaker than it is and cut the resolution on the strength of it.
  */
-let fillBound = true;
-let awaitingStepDownVerdict = false;
-let lastStepDownAt = -Infinity;
-let fpsBeforeStepDown = 0;
-/** Long enough for the EMA to have absorbed the new resolution, short enough to not sit ugly. */
-const STEP_DOWN_VERDICT_SECONDS = 1.5;
-/** The frame rate has to improve by at least this much for the pixels to have been worth giving up. */
-const STEP_DOWN_MIN_GAIN = 1.08;
+const CALIBRATION_WARMUP_SECONDS = 1;
+
+/** Sampled seconds the measurement is averaged over. Long enough to cross a stop, short enough to be early. */
+const CALIBRATION_SECONDS = 3;
 
 /**
- * ── Extras are bought with OBSERVED frame rate, at full resolution, or not at all ────────────────
+ * One frame may not contribute more than this to the calibration mean.
  *
- * The rule, stated by the person who has to look at it: *quality over MSAA — we can have MSAA if the
- * frame rate is above 50 at high quality.* Both halves matter and the second is the one that keeps
- * getting lost.
- *
- * The probe cannot answer this. It times one pipeline on a quiet stage before the site exists, and its
- * spread on a single machine was ninefold (see `gpuProbe`). Worse, spending its number on samples is
- * how the resolution came to be traded away for MSAA twice in one day — first against the raw ratio,
- * then against a "spare capacity" that turned out to be what the memory cap was withholding.
- *
- * Sustained frame rate has none of those problems. It is the real thing, measured on the real site, at
- * the real resolution, over seconds rather than one draw.
- *
- * ⚠ `pixelRatio >= effectiveCeil` is the "at high quality" half, and it is not optional. A machine
- * holding 55 fps because it has already given up a third of its pixels has not earned anything — it is
- * coping. Extras are only ever bought on top of full quality, never instead of it.
+ * A garbage collection or a composer reallocation inside the window is not the steady-state cost of
+ * the frame, and at 25 fps a single 400 ms sample is worth sixteen real ones.
  */
+const CALIBRATION_MAX_SAMPLE_MS = 200;
+
+/**
+ * ── ⚠ THE ONE DIAL. What this site is willing to trade, and in which direction. ───────────────────
+ *
+ * Resolution and frame rate are the same budget spent two ways, and there is no measurement that can
+ * tell you which one matters more — that is a decision about the site, not about the machine. This is
+ * where it is written down, so it is one word rather than an archaeology dig through four constants.
+ *
+ *   'quality'    — hold the pixels, accept 24 fps. Sharpest, and the first to drop a frame.
+ *   'smoothness' — aim for 40, and give up whatever resolution that costs.
+ *   'balanced'   — 30. The rate this site is authored to, and what everything below is sized against.
+ *
+ * ⚠ LOWER TARGET FPS MEANS MORE PIXELS. The two are the same budget spent two ways, so 'quality' is
+ * the SLOWEST setting, not the fastest. That reads backwards at a glance and is worth saying out loud.
+ *
+ * ── ⚠ RETARGETED 50 → 30 ON 2026-08-07 ───────────────────────────────────────────────────────────
+ * 'balanced' was 50, so every solve on the site aimed at a 20 ms frame. Against a 30 fps budget that
+ * is a 33.3 ms frame, and since cost is the square of the ratio the difference is worth
+ * √(33.3 ÷ 20) = **1.29× the ratio, or 1.67× the pixels, on every machine with room above the floor.**
+ * It is the single largest quality change available to this file and it is one number.
+ *
+ * 30 is not a compromise here — it is what the site is FOR. Every crossing is a scrubbed cinematic
+ * and nothing on the page is timed in frames, so the visitor's experience of 30 vs 50 is a slightly
+ * softer sample of a camera move against a visibly sharper image. The brief asks for as much quality
+ * as the machine can give at 30, and this is where that number is written down.
+ *
+ * ⚠ IT CANNOT PUSH PAST THE FLOOR, and on a dense panel the floor is usually what binds. If this is
+ * set to 'quality' and the picture is still softer than you want, the constant you actually want is
+ * `MAX_COMPOSITE_UPSCALE` above — that is what decides how far below your display's density the site
+ * is ever allowed to render, and no target frame rate can override it.
+ */
+type ResolutionPriority = 'quality' | 'balanced' | 'smoothness';
+const RESOLUTION_PRIORITY: ResolutionPriority = 'balanced';
+
+const PRIORITY_TARGET_FPS: Record<ResolutionPriority, number> = {
+  quality: 24,
+  balanced: 30,
+  smoothness: 40,
+};
+
+/** The frame time the calibration solves toward. Lower target fps → more pixels kept. */
+const CALIBRATION_TARGET_FRAME_MS = 1000 / PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY];
+
+/**
+ * Held back from whatever the machine proved it could sustain.
+ *
+ * A frame rate is an average, and what a visitor notices is the tail. A machine set to land exactly on
+ * what it measured drops a frame every time anything varies — a collection, a texture upload, a
+ * heavier moment in the scroll — because it had nothing spare to absorb it.
+ */
+const CALIBRATION_SAFETY_FRACTION = 0.1;
+
+// ── Phase 3 · the one emergency move ───────────────────────────────────────────────────────────────
+
+/**
+ * ⚠ These exist so a badly wrong calibration is survivable, NOT so the controller comes back.
+ *
+ * Every threshold here is deliberately far outside anything normal: the frame rate has to be dire (or
+ * excellent) and stay that way for six seconds, the move is coarse rather than a nudge, there are at
+ * most two of them in a session, and once one has gone in a direction the opposite direction is locked
+ * out for good. That last rule is what makes oscillation impossible by construction rather than by
+ * tuning — which is the thing four rounds of tuning never achieved.
+ */
+const EMERGENCY_SLOW_FPS = 22;
+const EMERGENCY_FAST_FPS = 58;
+const EMERGENCY_SETTLE_SECONDS = 6;
+/** A move halves or doubles the PIXELS — so the ratio moves by √2, not by a 0.2 nudge. */
+const EMERGENCY_PIXEL_FACTOR = 0.5;
+const MAX_EMERGENCY_MOVES = 2;
+/** One frame may not contribute more than this to the settle clock, so a single stall cannot trip it. */
+const SETTLE_SAMPLE_CAP_SECONDS = 0.1;
+
+// ── Extras (MSAA), bought with observed frame rate at full quality ─────────────────────────────────
+
 const EXTRA_QUALITY_FPS = 50;
-/** Long enough that a quiet stretch between sections cannot pass for headroom. */
 const EXTRA_QUALITY_SECONDS = 4;
+
+/**
+ * How much MORE ratio the burn-in's solve had to be worth than the ratio we actually took, before an
+ * extra may be bought with the difference.
+ *
+ * ── ⚠ Why the licence can be granted here at all ─────────────────────────────────────────────────
+ * The runtime version of this test — 50 fps held for four seconds — is a good test and it cannot
+ * possibly be met before the first visible frame. So on a first lap the raise it gates (4× MSAA on
+ * the space stage) was BY CONSTRUCTION a mid-session `dispose()` and reallocation of both composer
+ * ping-pong targets, several seconds into the fleet. It is one of the few remaining things a second
+ * lap gets for free that a first lap pays for, which is the whole complaint this work exists to
+ * answer.
+ *
+ * The burn-in already produces the number that licence was standing in for: a median frame cost at a
+ * known ratio, taken on real pipelined frames with the star drawing alongside. If the ratio it solves
+ * is clipped by the ceiling, the machine proved it could afford more than the site is able to spend —
+ * and THAT surplus, not a guess, is what buys the extra.
+ *
+ * ⚠ 1.25 on the RATIO is 1.56 on the PIXELS, and pixels are what an extra costs. It is deliberately
+ * the same figure CLAUDE.md records for the probe-based version of this gate.
+ *
+ * ⚠ It cannot spend resolution. The ratio is already assigned by the time this is consulted, and the
+ * rule this module exists to enforce is that resolution is the priority and samples are the leftover.
+ * A surplus of exactly 1 means there was no leftover, and nothing is bought.
+ */
+const EXTRA_QUALITY_BURN_IN_SURPLUS = 1.25;
+
+// ── State ──────────────────────────────────────────────────────────────────────────────────────────
+
+type ControllerPhase = 'calibrating' | 'locked';
+
+/**
+ * The two heavy scenes, measured separately — because they are not the same load.
+ *
+ * ⚠ THE SITE MUST BE SIZED FOR ITS HEAVIEST SCENE, and the first one a visitor reaches is the lighter
+ * one. Measured on a dpr 2.5 laptop at the same ratio: the fleet ran 23–26 fps, the works field 13–17.
+ * A single calibration taken on the fleet is therefore optimistic by nearly half, and works pays for
+ * it for the rest of the visit.
+ *
+ * So each scene gets ONE measurement the first time it draws, and the settled ratio is the LOWER of
+ * them. Two changes per session, both inside the first few seconds of each section, then nothing
+ * moves again. Relying on the emergency valve instead would cost the same two changes and make the
+ * second one a blunt halving rather than a measurement.
+ */
+type PipelineKey = 'deck' | 'works';
+
+let initialised = false;
+/**
+ * ⚠ Starts CALIBRATING, not waiting for the probe.
+ *
+ * The probe is a nice-to-have: it narrows the ceiling. If it never arrives — the works warm-up throws,
+ * a context is lost, the reading is refused — a controller that waited for it would sit at its default
+ * ratio for the whole session with no measurement ever taken, and say nothing about it. Calibrating
+ * unconditionally means the only thing a missing probe costs is a slightly loose ceiling.
+ */
+let phase: ControllerPhase = 'calibrating';
+let ceil = 1;
+let floor = MIN_PIXEL_RATIO;
+let pixelRatio = 1;
+let hardwareCeil = 1;
+let pixelBudgetCeil = Infinity;
+let probed = false;
+let probedAffordableRatio: number | null = null;
+
+/**
+ * The star's OWN resolution, once the allocator has solved one. `null` until then, and while it is
+ * null the star tracks the shared ratio exactly as it always did.
+ *
+ * ⚠ `SunModelCanvas`'s header records why the star was brought UNDER the shared ratio in the first
+ * place — it was the last renderer answering to nothing, and on a dpr 2.5 laptop it drew at 2.0 with
+ * MSAA while the field beside it drew at 1.01, costing 10–21 ms. Giving it its own number again is not
+ * a return to that. The old number was `min(devicePixelRatio, 2)` — a guess that had measured nothing.
+ * This one is what is left of a 30 fps frame after the section's models have taken theirs, from a
+ * measurement of the star's actual marginal cost. The objection was never "the star should not have
+ * its own ratio"; it was "two renderers cannot both guess how fast the machine is".
+ */
+let sunPixelRatio: number | null = null;
+
+let emaFrameSeconds = 1 / 60;
+let dropNextSample = false;
+
+let calibrationWarmupSeconds = 0;
+let calibrationSeconds = 0;
+let calibrationMilliseconds = 0;
+let calibrationFrames = 0;
+/** The ratio the calibration frames were actually drawn at. */
+let calibrationRatio = 1;
+/** Which scene's frames are arriving right now. */
+let activePipeline: PipelineKey | null = null;
+/** Scenes that have had their one measurement. */
+const calibratedPipelines = new Set<PipelineKey>();
+
+let emergencySlowFor = 0;
+let emergencyFastFor = 0;
+let emergencyMoves = 0;
+/** Once a move has gone one way, the other way is closed for the session. */
+let emergencyDirection: 'none' | 'down' | 'up' = 'none';
+
 let extraQualityFor = 0;
 let extraQualityEarned = false;
 
-/**
- * Say out loud when the site changes how many pixels it draws — development only.
- *
- * This is the quietest thing that happens on the whole site and one of the most consequential. It is
- * also half the answer to "why is the lap after Travel in Time so much smoother": a first pass that
- * struggles steps this DOWN, `softCeil` then stops it climbing back, and every later lap renders
- * fewer pixels. That reads as the site warming up. It is the site giving up resolution.
- *
- * Nothing resets it on the loop, deliberately — see the module header. Being able to watch it happen
- * is what turns that from a surprise into a decision.
- */
-function logRatioChange(what: string, from: number, fps: number, note: string): void {
+function logPixels(what: string, body: string, good = false): void {
   if (!telemetryEnabled) return;
-  const megapixelChange = ((pixelRatio * pixelRatio) / (from * from) - 1) * 100;
   console.log(
-    `%c[pixels] ${what}%c ${from.toFixed(2)} → ${pixelRatio.toFixed(2)}` +
-      ` (${megapixelChange > 0 ? '+' : ''}${megapixelChange.toFixed(0)}% pixels)` +
-      ` at ~${fps.toFixed(0)} fps${note}` +
-      `\n  floor ${floor}, ceiling ${ceil.toFixed(2)}, soft ceiling ${softCeil.toFixed(2)}`,
-    what.startsWith('STEP') ? 'color:#ff5c5c;font-weight:700' : 'color:#5bd6a0;font-weight:700',
+    `%c[pixels] ${what}%c ${body}`,
+    good ? 'color:#5bd6a0;font-weight:700' : 'color:#ff5c5c;font-weight:700',
     'color:#888',
   );
+}
+
+/**
+ * Throw away whatever has been measured so far and start the window again.
+ *
+ * ⚠ Called when the probe lands, because the probe can move `pixelRatio` — and a calibration whose
+ * frames were drawn at two different resolutions is not a measurement of either.
+ */
+function resetCalibration(): void {
+  calibrationWarmupSeconds = 0;
+  calibrationSeconds = 0;
+  calibrationMilliseconds = 0;
+  calibrationFrames = 0;
 }
 
 function ensureInitialised(): void {
   if (initialised) return;
   initialised = true;
   const deviceRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-  // The most this panel could ever justify: its own density, or a little super-sampling on a 1× panel
-  // — but ONLY as a bound the probe is allowed to reach, never as a starting assumption.
   hardwareCeil = Math.min(MAX_PIXEL_RATIO, Math.max(deviceRatio, SUPERSAMPLE_CEIL));
-  floor = MIN_PIXEL_RATIO;
-  // Until something is measured, native is the answer. Rendering above native is a real cost paid for
-  // a subtle gain and nothing yet says this machine can afford it; rendering below it is a real
-  // quality loss and nothing yet says it is needed.
+  floor = Math.max(MIN_PIXEL_RATIO, deviceRatio / MAX_COMPOSITE_UPSCALE);
+
+  // ── ⚠ THE BUFFER BUDGET APPLIES EVEN WITHOUT A PROBE ────────────────────────────────────────────
+  // `pixelBudgetCeil` used to stay `Infinity` until `reportProbedFrameCost` solved it from the frame it
+  // measured — so a REFUSED probe silently removed `MAX_DRAWING_BUFFER_MEGAPIXELS` from the system
+  // altogether. `docs/per-section-quality-budget-plan.md` §3 flags exactly this, and it is the one
+  // constant standing between a 4K laptop at 250 % scaling and the 5.26 Mpx / 700 MB / 20 fps case its
+  // own header records.
   //
-  // Floored as well as capped, so `floor <= ceil` holds even on a browser zoomed far enough out to
-  // report a device ratio under the floor — otherwise the controller would have a range it cannot sit in.
-  ceil = Math.max(floor, Math.min(MAX_PIXEL_RATIO, deviceRatio));
-  softCeil = ceil;
-  pixelRatio = Math.min(ceil, 1);
+  // ⚠ Retargeting to 30 fps WIDENED that hole rather than leaving it where it was. The solve is
+  // `ratio × √(budget ÷ measured)`, so the frame time at which a machine reaches an unbounded ceiling
+  // of 2.0 moved from ~4.0 ms to ~6.1 ms — a materially larger band of machines. A hole nobody falls
+  // into is a footnote; this change made it wider, so it gets closed here.
+  //
+  // The heavy scenes are full-viewport, so the viewport IS their CSS area. The probe refines this with
+  // the canvas it actually measured; this is the floor of correctness underneath it.
+  const viewportMegapixels =
+    typeof window !== 'undefined'
+      ? (window.innerWidth * window.innerHeight) / 1_000_000
+      : 0;
+  if (viewportMegapixels > 0) {
+    pixelBudgetCeil = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / viewportMegapixels);
+  }
+
+  ceil = Math.max(floor, Math.min(MAX_PIXEL_RATIO, deviceRatio, pixelBudgetCeil));
+  // Until something is measured, native — never above it, and never below the floor.
+  pixelRatio = Math.min(ceil, Math.max(floor, 1));
 }
 
 /**
  * Hand the controller a real measurement of one frame of the heaviest pipeline, and let it solve for
- * the density this machine can actually hold.
+ * the CEILING this machine may sit under.
  *
  * Cost scales with pixel count, which scales with the SQUARE of the ratio — so if the probe drew
  * `megapixels` in `milliseconds` at `probeRatio`, the ratio that lands on budget is
  *
  *     affordable = probeRatio × √(budget ÷ measured)
  *
- * A machine that drew the field in 4 ms at 1× can afford 1.5×. One that took 22 ms can afford 0.64 and
- * gets the floor. Both answers arrive before a single visible frame has been drawn, which is the whole
- * point: the expensive configuration is never allocated on a machine that cannot hold it.
- *
- * Ignored when `milliseconds` is null — `gpuProbe` reports null rather than a number it does not
- * believe, and native then stands, which is the safe answer either way.
- *
  * ⚠ `megapixels` is a VALIDITY GUARD, not a term in the solve. The budget is already "this pipeline,
  * on this canvas, at this ratio", so the frame's area is baked into `milliseconds` — but a reading
- * taken off a 1×1 canvas (a section measured before its first resize) would be meaninglessly fast and
- * has to be thrown out rather than believed.
+ * taken off a 1×1 canvas has to be thrown out rather than believed.
  *
- * Called once, from the works field's warm-up. Later calls are ignored so two scenes cannot argue.
+ * ⚠ This sets a CEILING and starts the calibration. It does NOT decide where we render — see the
+ * module header for the eightfold spread that makes it unfit to be a destination.
  */
 export function reportProbedFrameCost(
   milliseconds: number | null,
@@ -261,13 +430,9 @@ export function reportProbedFrameCost(
   if (probed) return;
 
   // ── ⚠ A REFUSED PROBE HAS TO SAY SO ──
-  // Both of these used to be silent early returns, and that made the instrument useless on exactly
-  // the machines it exists for: a weak laptop reported nothing, and the console gave no way to tell
-  // "the warm-up never ran" apart from "it ran and the reading was thrown out". The only visible
-  // symptom was a `ceiling` that happened to equal the device pixel ratio — which is what the
-  // UNPROBED default also looks like.
-  //
-  // Silence is the one thing a diagnostic may never do when it fails.
+  // Both of these used to be silent early returns, which made the instrument useless on exactly the
+  // machines it exists for: the only visible symptom was a ceiling that happened to equal the device
+  // pixel ratio — which is what the UNPROBED default also looks like.
   const rejection =
     milliseconds === null
       ? 'unbelievable reading — see MIN/MAX_BELIEVABLE_MILLISECONDS in gpuProbe'
@@ -281,37 +446,33 @@ export function reportProbedFrameCost(
     if (telemetryEnabled) {
       console.log(
         `[voidix] gpu probe REFUSED: ${rejection}` +
-          `\n  native stands — ceiling ${ceil.toFixed(2)}, and nothing downstream may earn an upgrade.`,
+          `\n  native stands as the ceiling — the calibration below still runs and still decides.`,
       );
     }
+    // A refused probe costs us the ceiling, not the measurement that matters — the calibration was
+    // already running and carries on untouched, since nothing moved the ratio.
     return;
   }
   probed = true;
 
-  // Narrowed by the rejection ladder above — `milliseconds === null` is the first case it catches.
   const believableMilliseconds = milliseconds as number;
-  const affordable = probeRatio * Math.sqrt(PIPELINE_FRAME_BUDGET_MS / believableMilliseconds);
+  const affordable = probeRatio * Math.sqrt(SPENDABLE_FRAME_BUDGET_MS / believableMilliseconds);
   probedAffordableRatio = affordable;
 
-  // ── The pixel ceiling, which no ratio can express ──
-  // The probe reports the area it drew AND the ratio it drew at, so the CSS-pixel area falls out —
-  // and from that, the ratio at which this particular viewport hits the buffer budget. On a 4K panel
-  // that lands well below `hardwareCeil`; on a 1080p one it never binds at all.
+  // The probe reports the area it drew AND the ratio it drew at, so the CSS-pixel area falls out — and
+  // from that, the ratio at which this particular viewport hits the buffer budget.
   const cssMegapixels = megapixels / (probeRatio * probeRatio);
-  const pixelBudgetRatio = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / cssMegapixels);
+  pixelBudgetCeil = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / cssMegapixels);
 
-  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetRatio, affordable));
-  softCeil = ceil;
+  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetCeil, affordable));
+  // ⚠ Clamped DOWN to the new ceiling, never raised to it. Landing on the probe's number is the
+  // "guess upward and claw back" mistake this module was rewritten to stop making — and the probe's
+  // eightfold spread (see the header) is exactly why. The calibration below is what may raise it, and
+  // it will have measured a real frame before it does.
+  pixelRatio = Math.min(ceil, pixelRatio);
+  // The ratio may have just moved, so any frames already banked were drawn at the old one.
+  resetCalibration();
 
-  // ── Say what was decided ──
-  // This one measurement sets the resolution every heavy scene runs at for the whole session, and its
-  // effect is silent: a site that is uniformly soft and a site that is uniformly slow look like
-  // "something is wrong" rather than like a number. Reading it should not require adding a log first.
-  // Stripped from the public build by the bundler's dead-code elimination.
-  //
-  // ⚠ A dev server is the WRONG place to read this. The probe times one real frame, and on a dev
-  // build that frame is competing with an unminified bundle and StrictMode's second scene. A preview
-  // is where the number means something — which is why the gate is `telemetryEnabled`.
   if (telemetryEnabled) {
     console.log(
       `[voidix] gpu probe: ${believableMilliseconds.toFixed(1)} ms for ${megapixels.toFixed(2)} Mpx ` +
@@ -319,118 +480,278 @@ export function reportProbedFrameCost(
         `\n  bound by ${
           ceil === floor
             ? 'the floor'
-            : pixelBudgetRatio < Math.min(hardwareCeil, affordable)
-              ? `the ${MAX_DRAWING_BUFFER_MEGAPIXELS} Mpx buffer budget (this viewport hits it at ${pixelBudgetRatio.toFixed(2)})`
+            : pixelBudgetCeil < Math.min(hardwareCeil, affordable)
+              ? `the ${MAX_DRAWING_BUFFER_MEGAPIXELS} Mpx buffer budget (hit at ${pixelBudgetCeil.toFixed(2)})`
               : hardwareCeil < affordable
                 ? `the panel (hardware max ${hardwareCeil})`
                 : 'the measurement'
         }` +
-        `\n  drawing buffer at the ceiling: ${(cssMegapixels * ceil * ceil).toFixed(2)} Mpx` +
-        ` (floor ${floor}, hardware max ${hardwareCeil})`,
+        `\n  this is a CEILING, not a destination — calibrating against real frames next.`,
     );
   }
-  // ── ⚠ NEVER START ABOVE NATIVE. The ceiling is a CAP, not a destination. ────────────────────────
+}
+
+/**
+ * The loader's burn-in: the median cost of real, pipelined frames of the works pipeline, measured
+ * during the loader with everything else already running.
+ *
+ * ── ⚠ WHY THIS EXISTS ALONGSIDE `reportProbedFrameCost` ──────────────────────────────────────────
+ * They measure different things and only one of them is the frame the visitor gets.
+ *
+ * `gpuProbe` times three DRAINED frames — `gl.finish()` either side — of the works pipeline ALONE, on
+ * a quiet stage: no pipelining, no star, no compositor. Its spread across four loads of the same page
+ * on one machine was eightfold (0.5 / 2.3 / 3.0 / 7.5 ms → affordable 3.91 / 1.82 / 1.60 / 1.01).
+ * That is why it may set a ceiling and must never pick a destination.
+ *
+ * This is rAF-to-rAF across real frames, with the star's own context rendering alongside (it
+ * auto-rotates throughout the loader) and the compositor doing real work. It costs the loader up to
+ * ~1.5 s, taken deliberately: the first lap is then right from its first frame instead of being
+ * corrected four seconds into the fleet, which is what "it feels heavy the first time" was.
+ *
+ * ⚠ What it measures is not exactly the works section, and the two errors run opposite ways. The
+ * loader's dust field is composited during the burn-in and will not be there later (over-counts); the
+ * works canvas and the section's own DOM are not (under-counts). Comparable layer counts, so the net
+ * is small — and `CALIBRATION_SAFETY_FRACTION` is sized to absorb exactly this sort of drift.
+ *
+ * ⚠ It marks BOTH scenes calibrated. The runtime per-scene calibration stays as the fallback for a
+ * burn-in that never ran — a lost context, a scene that failed to build, too few usable samples — and
+ * must not run on top of one that did.
+ */
+export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): void {
+  ensureInitialised();
+  if (phase === 'locked') return;
+  if (!(medianFrameMilliseconds > 0) || !(ratio > 0)) return;
+
+  const sustainable = ratio * Math.sqrt(CALIBRATION_TARGET_FRAME_MS / medianFrameMilliseconds);
+  const solved = sustainable * (1 - CALIBRATION_SAFETY_FRACTION);
+  const from = pixelRatio;
+
+  pixelRatio = Math.min(ceil, Math.max(floor, solved));
+  phase = 'locked';
+  calibratedPipelines.add('works');
+  calibratedPipelines.add('deck');
+
+  // What the machine proved it could afford, over what the site was able to spend. See the constant.
+  const surplus = solved / pixelRatio;
+  if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
+  if (telemetryEnabled) {
+    const bound =
+      solved > ceil ? 'the probe ceiling' : solved < floor ? 'the floor' : 'the measurement';
+    console.log(
+      `%c[pixels] BURN-IN%c ${from.toFixed(2)} → ${pixelRatio.toFixed(2)} — decided during the loader,` +
+        ` locked before the first visible frame.` +
+        `\n  priority "${RESOLUTION_PRIORITY}" → aiming for ${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps` +
+        `\n  measured ${medianFrameMilliseconds.toFixed(1)} ms/frame ` +
+        `(${(1000 / medianFrameMilliseconds).toFixed(0)} fps) at ratio ${ratio.toFixed(2)}` +
+        `\n  sustains ${sustainable.toFixed(2)}, less ` +
+        `${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}% safety → ${solved.toFixed(2)}, ` +
+        `bound by ${bound}` +
+        `\n  floor ${floor.toFixed(2)}, ceiling ${ceil.toFixed(2)} — runtime calibration stood down;` +
+        ` only ${EMERGENCY_SLOW_FPS}–${EMERGENCY_FAST_FPS} fps for ${EMERGENCY_SETTLE_SECONDS}s moves this.` +
+        `\n  surplus ${surplus.toFixed(2)}× over what was spent — extras ` +
+        `${extraQualityEarned ? 'EARNED, decided here rather than four seconds into the fleet' : `not earned (needs ${EXTRA_QUALITY_BURN_IN_SURPLUS}×)`}.`,
+      'color:#5bd6a0;font-weight:700',
+      'color:#888',
+    );
+  }
+}
+
+/** What the burn-in's two phases separated out. All four are needed to solve anything. */
+export interface SectionCostSplit {
+  /** Median frame ms with the FIELD drawing and the star dark. Contains the fixed cost too. */
+  fieldMilliseconds: number;
+  /** The star's own marginal cost, in ms — phase B minus phase A, at full draw rate. */
+  starMilliseconds: number;
+  /** The ratio the field was drawn at while it was measured. */
+  fieldRatio: number;
+  /** The ratio the star was drawn at while it was measured. */
+  starRatio: number;
+}
+
+/**
+ * ── THE QUALITY ALLOCATOR ────────────────────────────────────────────────────────────────────────
+ *
+ * Spend a 30 fps frame across the two things that share it, in priority order: **the section's models
+ * take what they can afford, and whatever is left goes to the star.**
+ *
+ * This is the thing `docs/per-section-quality-budget-plan.md` §1a says is missing — *"the split
+ * between the star and the scene behind it is decided by their canvas areas and nothing else — no
+ * budget, no priority, no section"* — and it supersedes §3's "Per-section sun ratio: unnecessary and
+ * risky". §3 was ruling on a design that changed the star's ratio AS YOU SCROLLED, which would put a
+ * composer reallocation at a section boundary. Nothing here does that: all of it is solved once, in
+ * the loader, behind the veil, and then held for the session exactly like every other number in this
+ * file.
+ *
+ * ── How the split is obtained at all ──
+ * WebGL is asynchronous, so no span around a render call measures what the GPU spends — `unaccounted`
+ * is 70–95 % of every frame on this site and both subjects live inside it. The only instrument that
+ * can see them is a DIFFERENCE between two sets of drawing things, which is why the burn-in now runs
+ * two phases and why the star's draw permit had to be moved off `BURN_IN_EVENT`.
+ *
+ * ── The solve ──
+ * Cost is the square of the ratio, so a pipeline measured at `c` ms while drawn at `r` costs
+ * `c × (r'/r)²` at any other ratio. Then, in order:
+ *
+ *     1.  reserve the star's FLOOR      — the centrepiece is never starved to nothing
+ *     2.  the models take the rest      — up to their own ceiling, never past it
+ *     3.  the star takes what remains   — up to its own ceiling
+ *
+ * Step 2 capping at the ceiling is what makes step 3 meaningful: on a machine strong enough to run the
+ * field at full density there is real budget left over, and the star gets all of it. That is the
+ * brief's *"if the device can handle more, the sun can get the highest"* — as an outcome of
+ * measurement rather than as a fixed value anywhere.
+ *
+ * ── ⚠ Two deliberate conservatisms, both in the same direction ──
+ * `fieldMilliseconds` contains the FIXED cost (compositor, blend layers, DOM) as well as the field's,
+ * and scaling the whole thing by `(r'/r)²` therefore over-charges the field for pixels the fixed part
+ * never spends. And the star is measured at FULL rate here, while in the two sections where it
+ * actually competes it draws at `SUN_IDLE_STRIDE` — every other frame — so its real cost there is half
+ * what is budgeted for it.
+ *
+ * Both make the allocation land under the budget rather than over it, which is the correct direction
+ * for a number that can only be applied once. The star's 2× margin is also what makes the HERO safe
+ * without a separate measurement: there the star draws at full rate, but the field is not drawing at
+ * all, so the whole of `fieldSpent` is free.
+ */
+export function reportSectionCosts(split: SectionCostSplit): void {
+  ensureInitialised();
+  if (phase === 'locked') return;
+  const { fieldMilliseconds, starMilliseconds, fieldRatio, starRatio } = split;
+  if (!(fieldMilliseconds > 0) || !(starMilliseconds > 0)) return;
+  if (!(fieldRatio > 0) || !(starRatio > 0)) return;
+
+  // The frame every section is being sized to fit inside.
   //
-  // This was `pixelRatio = ceil` — land on the measurement rather than climb to it — justified on the
-  // grounds that a step-up reallocates every composer and paying that stall to reach a level we had
-  // just MEASURED as affordable was a stall for nothing.
-  //
-  // The measurement is not that good, and every log said so. The probe times ONE works-field frame on
-  // a quiet stage; the real frame also carries the sun's own canvas and bloom, the compositor, and the
-  // blend layers over the top. `PIPELINE_FRAME_BUDGET_MS` assumes all of that fits in the ~7.7 ms it
-  // leaves spare, and on a 4K laptop it was out by roughly six times. So landing on the ceiling meant
-  // the controller walked it straight back down, on essentially every load:
-  //
-  //     gpu probe: 0.6 ms → affordable 3.87, ceiling 2.00
-  //     [pixels] STEPPED DOWN 2.00 → 1.80 at ~20 fps
-  //     [pixels] STEPPED DOWN 1.80 → 1.60 at ~22 fps
-  //
-  // Which is precisely what this module's own header says does not work — *"the claw-back only happens
-  // after the expensive configuration has already been allocated on the machine that could not afford
-  // it"*. Landing on an optimistic number IS guessing upward; it just has a number attached.
-  //
-  // So: start at native or at the ceiling, whichever is LOWER, and let the live controller climb into
-  // anything above it. The reallocation the old comment wanted to avoid happens either way — the
-  // difference is its direction. Climbing reads as the site sharpening; walking down reads as it
-  // giving up, which is the thing that was actually being reported.
-  //
-  // ── …and then it was put BACK, once the verdict existed ──
-  //
-  // Starting at native was a workaround for having no way to tell whether a step down helped. It cost
-  // real quality to buy that safety: on a dpr-2.5 panel, 1.0 is ~40 % of the panel's density, and the
-  // site visibly opened softer than it had the day before. Reported as exactly that.
-  //
-  // `fillBound` is the proper fix. A cut is now a hypothesis that gets checked, and a machine that
-  // cannot convert pixels into frames takes ONE step and gets them back. With that in place, landing on
-  // the ceiling is safe again — and it is the better default, because on the machines where the probe
-  // IS right (which is most of them) it arrives at full quality immediately instead of spending four
-  // seconds climbing into it.
-  //
-  // ⚠ A machine measured as NOT capable still starts below native. `ceil` carries that; nothing here
-  // raises it.
-  pixelRatio = ceil;
+  // ⚠ THE SAFETY MARGIN IS APPLIED TO THE RATIO BELOW, NOT TO THIS BUDGET, AND THE TWO ARE NOT THE
+  // SAME THING. Cost is the square of the ratio, so 10 % off the ratio is 19 % off the pixels while
+  // 10 % off the budget is 10 % off the pixels — nearly double the margin, from the same constant.
+  // `SAFETY_HEADROOM_FRACTION` above argues the milliseconds reading is the more honest one, and it is
+  // probably right; but `reportBurnIn` and `calibrate` have both always taken it off the ratio, and
+  // those are the two paths that run whenever this one does not. A visitor must not get a measurably
+  // different picture depending on which solver happened to answer, so this matches its siblings.
+  // Changing the convention is a one-line change in three places, and it belongs in its own pass.
+  const budgetMs = 1000 / PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY];
+
+  const starFloor = floor;
+  const starCeil = sunCeiling();
+
+  // ── 1 · Reserve the star's floor ──
+  const costAt = (measuredMs: number, measuredRatio: number, wantedRatio: number) =>
+    measuredMs * (wantedRatio / measuredRatio) ** 2;
+  const starFloorCost = costAt(starMilliseconds, starRatio, starFloor);
+
+  // ── 2 · The models take what they can afford, capped by their own ceiling ──
+  const fieldBudget = Math.max(0, budgetMs - starFloorCost);
+  const fieldSolved =
+    fieldRatio * Math.sqrt(fieldBudget / fieldMilliseconds) * (1 - CALIBRATION_SAFETY_FRACTION);
+  const newFieldRatio = Math.min(ceil, Math.max(floor, fieldSolved));
+
+  // ── 3 · The star takes the remainder ──
+  const fieldSpent = costAt(fieldMilliseconds, fieldRatio, newFieldRatio);
+  const remainingMs = Math.max(0, budgetMs - fieldSpent);
+  const starSolved =
+    starRatio * Math.sqrt(remainingMs / starMilliseconds) * (1 - CALIBRATION_SAFETY_FRACTION);
+  const newStarRatio = Math.min(starCeil, Math.max(starFloor, starSolved));
+
+  const fieldFrom = pixelRatio;
+  const starFrom = getSunPixelRatio();
+  pixelRatio = newFieldRatio;
+  sunPixelRatio = newStarRatio;
+  phase = 'locked';
+  calibratedPipelines.add('works');
+  calibratedPipelines.add('deck');
+
+  // Same licence the burn-in grants, on the same evidence: what the machine proved it could afford
+  // over what the site was able to spend. ⚠ Read off the FIELD, because that is what the samples buy.
+  const surplus = fieldSolved / newFieldRatio;
+  if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
+  if (telemetryEnabled) {
+    const boundBy = (solved: number, low: number, high: number) =>
+      solved > high ? 'its ceiling' : solved < low ? 'the floor' : 'the measurement';
+    const starShare = ((budgetMs - fieldSpent) / budgetMs) * 100;
+    console.log(
+      `%c[pixels] ALLOCATED%c a ${budgetMs.toFixed(1)} ms frame ` +
+        `(${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps), models first, each ratio less ` +
+        `${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}% safety.` +
+        `\n  measured   field ${fieldMilliseconds.toFixed(1)} ms @ ${fieldRatio.toFixed(2)}` +
+        `  ·  star ${starMilliseconds.toFixed(1)} ms @ ${starRatio.toFixed(2)}` +
+        ` (${((starMilliseconds / (fieldMilliseconds + starMilliseconds)) * 100).toFixed(0)}% of the frame)` +
+        `\n  1 · reserved the star's floor          ${starFloorCost.toFixed(1)} ms` +
+        `\n  2 · models  ${fieldFrom.toFixed(2)} → ${newFieldRatio.toFixed(2)}` +
+        `  spending ${fieldSpent.toFixed(1)} ms, bound by ${boundBy(fieldSolved, floor, ceil)}` +
+        `\n  3 · star    ${starFrom.toFixed(2)} → ${newStarRatio.toFixed(2)}` +
+        `  from the ${remainingMs.toFixed(1)} ms left (${starShare.toFixed(0)}% of the budget),` +
+        ` bound by ${boundBy(starSolved, starFloor, starCeil)}` +
+        `\n  ⚠ the star is budgeted at FULL rate; through services and works it draws at` +
+        ` SUN_IDLE_STRIDE, so it actually spends half of this.` +
+        `\n  surplus ${surplus.toFixed(2)}× — extras ` +
+        `${extraQualityEarned ? 'EARNED' : `not earned (needs ${EXTRA_QUALITY_BURN_IN_SURPLUS}×)`}.`,
+      'color:#5bd6a0;font-weight:700',
+      'color:#888',
+    );
+  }
+}
+
+/**
+ * The star's resolution.
+ *
+ * Until the allocator has run this is the shared ratio capped at the panel — byte-for-byte what
+ * `SunModelCanvas` used to compute for itself, so a load where the split never arrives behaves
+ * exactly as it did before.
+ */
+export function getSunPixelRatio(): number {
+  ensureInitialised();
+  return sunPixelRatio ?? Math.min(pixelRatio, MAX_PIXEL_RATIO);
 }
 
 /**
  * What the probe found this machine could afford, unclamped — or `null` if it never produced a
- * believable reading (see `gpuProbe`, which returns null rather than a number it does not trust).
- *
- * ⚠ This is a CAPABILITY figure, not a resolution. `1.0` means "this machine can hold the heaviest
- * pipeline at native and has nothing spare"; `1.4` means it has roughly twice the pixel budget it is
- * using. It is deliberately not clamped to the panel, because a 1× monitor caps what is worth
- * RENDERING without saying anything about what the GPU can afford — and MSAA is bought out of that
- * headroom rather than out of the resolution.
- *
- * **Resolution is the priority; samples are the leftover.** Rendering below native softens the whole
- * frame — type, textures, every edge — while dropping MSAA only stair-steps geometric silhouettes,
- * and SMAA covers much of that for a fraction of the memory. So nothing on this site may trade
- * resolution away to keep samples, and the way that is enforced is that samples are only ever raised
- * from a measurement taken AFTER the ratio has been settled.
- *
- * `null` must be read as "not earned". A machine we could not measure is not a machine we may guess
- * about — the whole reason this module stopped guessing upward is in the header.
+ * believable reading. A CAPABILITY figure, not a resolution.
  */
 export function getProbedAffordableRatio(): number | null {
   return probedAffordableRatio;
 }
 
 /**
- * What is left AFTER the resolution has taken its share — the number anything else must be paid from.
+ * The most resolution the star may ever be given.
  *
- * ⚠ Read this, not `getProbedAffordableRatio`, before granting any extra. The probe's raw figure is
- * spent the instant it arrives: `reportProbedFrameCost` LANDS on the ceiling it solves, so a machine
- * that measured 1.32 is immediately rendering at 1.32 and has nothing spare. Comparing an extra
- * against the raw number therefore spends the same headroom twice.
- *
- * That is not hypothetical — it shipped for an afternoon. A laptop measured `affordable 1.32`, took
- * all of it as resolution, was then granted 4× MSAA against that same 1.32, fell to 23 fps and gave
- * the resolution straight back:
- *
- *     gpu probe: affordable 1.32, ceiling 1.32
- *     msaa: earned 4x
- *     [pixels] STEPPED DOWN 1.32 -> 1.12 at ~25 fps
- *     [pixels] STEPPED DOWN 1.12 -> 0.92 at ~23 fps
- *
- * Expressed as a multiple: `1` means "fully spent on pixels, nothing to give", `2.8` means "could
- * have drawn nearly three times the pixels it settled for". The gap opens when the PANEL is the
- * binding constraint rather than the GPU — a 1× monitor caps `ceil` at 1.5 however fast the card is,
- * and that surplus is real and is exactly what an extra should be bought with.
+ * The panel's own ceiling, same as the field's — but deliberately NOT `pixelBudgetCeil`, and that is
+ * the one asymmetry worth naming. That budget exists because a full-viewport drawing buffer at a high
+ * ratio is where render-target memory explodes (§`MAX_DRAWING_BUFFER_MEGAPIXELS`). The star's canvas is
+ * ~0.21 Mpx of CSS pixels against the field's ~1.5, so even at 2× it is under a megapixel and the
+ * budget has nothing to say about it. What bounds the star in practice is the measurement, which is
+ * the intent — its cost is overdraw, not area.
  */
+function sunCeiling(): number {
+  return Math.max(floor, Math.min(hardwareCeil, MAX_PIXEL_RATIO));
+}
+
+/** What is left after the resolution has taken its share. `1` means fully spent. */
 export function getProbedSpareCapacity(): number | null {
   if (probedAffordableRatio === null || ceil <= 0) return null;
   return probedAffordableRatio / ceil;
 }
 
 /**
- * True once this machine has held `EXTRA_QUALITY_FPS` at its full resolution for long enough to mean
- * it — the only gate anything optional may be switched on behind.
- *
- * Latched: it is a licence, not a live reading. Something that allocated on the strength of it must
- * not be torn down again the moment a scroll dips the frame rate, because the tearing down is itself
- * a stall. If conditions genuinely worsen, the resolution controller is what responds.
+ * True once this machine has held `EXTRA_QUALITY_FPS` for long enough to mean it, at its settled
+ * resolution — the only gate anything optional may be switched on behind. Latched: a licence, not a
+ * live reading.
  */
 export function hasEarnedExtraQuality(): boolean {
   return extraQualityEarned;
+}
+
+/**
+ * The frame rate THIS CONTROLLER believes it is seeing, for cross-checking against a real measurement.
+ *
+ * Worth exposing because the two disagreeing is what hid the clamped-delta bug for so long: the frame
+ * profiler reported 9–18 fps while this module was acting on a number pinned at its input's clamp. If
+ * these two ever drift apart again, something is lying to `sampleFrame`.
+ */
+export function getControllerFps(): number {
+  return 1 / emaFrameSeconds;
 }
 
 /** The current shared pixel ratio. Read once per frame; apply to renderer + composer when it moves. */
@@ -440,113 +761,184 @@ export function getPixelRatio(): number {
 }
 
 /**
- * Feed one real render frame time (seconds). Call only on frames a heavy scene actually drew, so idle
- * (gated-off) frames can't trick the controller into ramping the resolution up.
+ * Tell the controller that a scene has just re-allocated at a new ratio, so the frame carrying that
+ * stall is not counted as evidence about the new ratio.
+ *
+ * Applying a ratio rebuilds a composer, its bloom pyramid and its ping-pong targets — the profiler
+ * logs those as frames of 150–400 ms — and the very next frame is the first one sampled at the new
+ * ratio. Counting it would charge the new resolution with the cost of switching to it.
  */
-export function sampleFrame(dtSeconds: number): void {
+export function noteRatioApplied(): void {
+  dropNextSample = true;
+}
+
+/**
+ * Feed one real render frame time (seconds). Call only on frames a heavy scene actually drew, so idle
+ * (gated-off) frames can't fake headroom.
+ *
+ * ⚠ Pass the RAW delta, never a clamped animation delta. `useWorksField` clamps at 0.05 s so a
+ * tab-restore cannot fling the animation, and feeding that clamp here made this module unable to
+ * perceive anything slower than 20 fps — on a section that runs at 9. See `FrameTimer.lastRawDelta`.
+ */
+export function sampleFrame(dtSeconds: number, pipeline: PipelineKey): void {
   ensureInitialised();
   if (dtSeconds <= 0 || dtSeconds > MAX_SANE_DT) return;
-  elapsed += dtSeconds;
+  // The reallocation's own stall — see `noteRatioApplied`.
+  if (dropNextSample) {
+    dropNextSample = false;
+    return;
+  }
+
+  // ── A scene we have never measured has just taken over ──
+  // Only one heavy scene draws at a time, so this is a handover rather than a clash. The incoming one
+  // gets its own measurement, and the warm-up skip inside `calibrate` means the crossing that brought
+  // it here is not what gets measured.
+  if (pipeline !== activePipeline) {
+    activePipeline = pipeline;
+    if (phase === 'calibrating') {
+      // ⚠ ANY handover restarts the window, not just one that arms it. Across the services→works
+      // crossing BOTH scenes draw — the craft flies out over the field fading in — so the pipeline
+      // alternates frame to frame. Without this, a window could complete on a mix of the two and be a
+      // measurement of neither. Restarting means the window only ever closes on a settled section.
+      resetCalibration();
+    } else if (!calibratedPipelines.has(pipeline)) {
+      phase = 'calibrating';
+      resetCalibration();
+    }
+  }
+
   emaFrameSeconds += (dtSeconds - emaFrameSeconds) * EMA_ALPHA;
   const fps = 1 / emaFrameSeconds;
 
-  if (fps < SLOW_FPS) {
-    slowFor += dtSeconds;
-    fastFor = 0;
-  } else if (fps > FAST_FPS) {
-    fastFor += dtSeconds;
-    slowFor = 0;
-  } else {
-    slowFor = 0;
-    fastFor = 0;
-  }
-
-  const effectiveCeil = Math.min(ceil, softCeil);
-
-  // ── Has this machine earned an extra, on top of full quality? ──
-  if (!extraQualityEarned) {
-    if (fps >= EXTRA_QUALITY_FPS && pixelRatio >= effectiveCeil) {
+  // ── Extras, on top of whatever resolution we settled at ──
+  if (!extraQualityEarned && phase === 'locked') {
+    if (fps >= EXTRA_QUALITY_FPS) {
       extraQualityFor += dtSeconds;
       if (extraQualityFor >= EXTRA_QUALITY_SECONDS) {
         extraQualityEarned = true;
-        if (telemetryEnabled) {
-          console.log(
-            `%c[pixels] EARNED EXTRA QUALITY%c held ${fps.toFixed(0)} fps at ratio ` +
-              `${pixelRatio.toFixed(2)} (its ceiling) for ${EXTRA_QUALITY_SECONDS}s` +
-              `\n  anything optional may now be switched on — the resolution is already paid for.`,
-            'color:#5bd6a0;font-weight:700',
-            'color:#888',
-          );
-        }
+        logPixels(
+          'EARNED EXTRA QUALITY',
+          `held ${fps.toFixed(0)} fps at ratio ${pixelRatio.toFixed(2)} for ` +
+            `${EXTRA_QUALITY_SECONDS}s — anything optional may now be switched on.`,
+          true,
+        );
       }
     } else {
-      // Any dip, or any resolution given up, and the clock restarts. This has to mean SUSTAINED.
       extraQualityFor = 0;
     }
   }
 
-  // ── Did the last step down actually buy anything? ──
-  // If it did not, this frame is not fill-bound and every pixel given up from here is pure loss.
-  if (awaitingStepDownVerdict && elapsed - lastStepDownAt >= STEP_DOWN_VERDICT_SECONDS) {
-    awaitingStepDownVerdict = false;
-    if (fps < fpsBeforeStepDown * STEP_DOWN_MIN_GAIN) {
-      fillBound = false;
-      const from = pixelRatio;
-      pixelRatio = Math.min(effectiveCeil, pixelRatio + STEP);
-      logRatioChange(
-        'GAVE BACK',
-        from,
-        fps,
-        ` — cutting ${((1 - (from * from) / (pixelRatio * pixelRatio)) * -100).toFixed(0)}% of the` +
-          ` pixels changed nothing (${fpsBeforeStepDown.toFixed(0)} → ${fps.toFixed(0)} fps).` +
-          `\n  This frame is not fill-bound; resolution is not the lever. Holding here.`,
-      );
-      slowFor = 0;
-      fastFor = 0;
-    }
+  if (phase === 'calibrating') {
+    calibrate(dtSeconds);
+    return;
+  }
+  if (phase === 'locked') watchForEmergency(dtSeconds, fps);
+}
+
+/**
+ * Measure what this machine ACTUALLY sustains, solve the ratio from it, set it once, and stop.
+ *
+ * ⚠ Every sample that reaches here is already known to be at `pixelRatio`, because the scenes only
+ * call `sampleFrame` on frames where their applied ratio equals the controller's. That is what makes
+ * the solve valid without any extra bookkeeping about when the apply landed.
+ */
+function calibrate(dtSeconds: number): void {
+  if (calibrationWarmupSeconds < CALIBRATION_WARMUP_SECONDS) {
+    calibrationWarmupSeconds += dtSeconds;
+    return;
+  }
+  if (calibrationFrames === 0) calibrationRatio = pixelRatio;
+
+  calibrationSeconds += dtSeconds;
+  calibrationMilliseconds += Math.min(dtSeconds * 1000, CALIBRATION_MAX_SAMPLE_MS);
+  calibrationFrames += 1;
+  if (calibrationSeconds < CALIBRATION_SECONDS) return;
+
+  const measuredFrameMs = calibrationMilliseconds / calibrationFrames;
+  // Same square law the probe uses, but against a REAL frame instead of one pipeline on a quiet stage.
+  const sustainable = calibrationRatio * Math.sqrt(CALIBRATION_TARGET_FRAME_MS / measuredFrameMs);
+  const solved = sustainable * (1 - CALIBRATION_SAFETY_FRACTION);
+  const from = pixelRatio;
+
+  // ⚠ `Math.min(pixelRatio, …)` on the SECOND scene: a measurement may only ever lower the settled
+  // ratio, never raise it. The site has to be sized for its heaviest section, and a later scene
+  // measuring faster than an earlier one means the earlier one was the constraint — not that we now
+  // have room. Without this, reaching a light section would undo the cut the heavy one earned.
+  const measured = Math.min(ceil, Math.max(floor, solved));
+  pixelRatio = calibratedPipelines.size === 0 ? measured : Math.min(pixelRatio, measured);
+  if (activePipeline) calibratedPipelines.add(activePipeline);
+  phase = 'locked';
+
+  if (telemetryEnabled) {
+    const bound =
+      solved > ceil ? 'the probe ceiling' : solved < floor ? 'the floor' : 'the measurement';
+    console.log(
+      `%c[pixels] CALIBRATED (${activePipeline})%c ${from.toFixed(2)} → ${pixelRatio.toFixed(2)}` +
+        (calibratedPipelines.size < 2
+          ? ` — holding here until the other scene is measured too.`
+          : ` — both scenes measured, locked for the session.`) +
+        `\n  priority "${RESOLUTION_PRIORITY}" → aiming for ${PRIORITY_TARGET_FPS[RESOLUTION_PRIORITY]} fps` +
+        `\n  measured ${measuredFrameMs.toFixed(1)} ms/frame (${(1000 / measuredFrameMs).toFixed(0)} fps)` +
+        ` at ratio ${calibrationRatio.toFixed(2)}, over ${calibrationFrames} frames` +
+        `\n  sustains ${sustainable.toFixed(2)}, less ${(CALIBRATION_SAFETY_FRACTION * 100).toFixed(0)}%` +
+        ` safety → ${solved.toFixed(2)}, bound by ${bound}` +
+        `\n  floor ${floor.toFixed(2)}, ceiling ${ceil.toFixed(2)} — nothing steps from here unless the` +
+        ` frame rate goes outside ${EMERGENCY_SLOW_FPS}–${EMERGENCY_FAST_FPS} fps for ${EMERGENCY_SETTLE_SECONDS}s.`,
+      'color:#5bd6a0;font-weight:700',
+      'color:#888',
+    );
+  }
+}
+
+/** The survival valve. See the constant block — it is meant to be hard to reach and impossible to loop. */
+function watchForEmergency(dtSeconds: number, fps: number): void {
+  if (emergencyMoves >= MAX_EMERGENCY_MOVES) return;
+  const settleSeconds = Math.min(dtSeconds, SETTLE_SAMPLE_CAP_SECONDS);
+
+  if (fps < EMERGENCY_SLOW_FPS) {
+    emergencySlowFor += settleSeconds;
+    emergencyFastFor = 0;
+  } else if (fps > EMERGENCY_FAST_FPS) {
+    emergencyFastFor += settleSeconds;
+    emergencySlowFor = 0;
+  } else {
+    emergencySlowFor = 0;
+    emergencyFastFor = 0;
+    return;
   }
 
-  // ⚠ `!awaitingStepDownVerdict` — ONE step at a time while a cut is on trial.
-  //
-  // Without it the controller reached the floor before it ever learned the lever does not work:
-  // `SETTLE_DOWN_SECONDS` (0.8) is shorter than `STEP_DOWN_VERDICT_SECONDS` (1.5), so the second cut
-  // fired first and reset the verdict clock onto itself. The measured result was 1.00 → 0.80 → 0.75
-  // with no verdict in between — every pixel given away, then judged.
-  //
-  // Now a cut is a single hypothesis: take one step, wait for the frame rate to answer, and either
-  // continue or put it back. At most one step of quality is ever on trial.
-  if (fillBound && !awaitingStepDownVerdict && slowFor >= SETTLE_DOWN_SECONDS && pixelRatio > floor) {
-    // A drop this soon after a step-up means that higher level was too expensive — cap below it so we
-    // don't climb straight back into it. This turns endless oscillation into a single detect-and-settle.
-    const recap = elapsed - lastStepUpAt < RECENT_STEP_UP_SECONDS;
-    if (recap) {
-      softCeil = Math.max(floor, pixelRatio - STEP);
-    }
-    const from = pixelRatio;
-    pixelRatio = Math.max(floor, pixelRatio - STEP);
-    logRatioChange('STEPPED DOWN', from, fps, recap ? ` — and capped here (that level cost too much)` : '');
-    // Watch this one. If the frame rate does not answer, the next block puts the pixels back.
-    lastStepDownAt = elapsed;
-    fpsBeforeStepDown = fps;
-    awaitingStepDownVerdict = true;
-    slowFor = 0;
-    fastFor = 0;
-  } else if (fillBound && fastFor >= SETTLE_UP_SECONDS && pixelRatio < effectiveCeil) {
-    const from = pixelRatio;
-    pixelRatio = Math.min(effectiveCeil, pixelRatio + STEP);
-    lastStepUpAt = elapsed;
-    logRatioChange('stepped up', from, fps, '');
-    slowFor = 0;
-    fastFor = 0;
-  } else if (
-    // Pinned at the soft ceiling and calm for a long stretch → cautiously lift the cap to re-test a
-    // higher level (conditions may have improved). If it's still too costly the block above re-caps it.
-    softCeil < ceil &&
-    pixelRatio >= softCeil &&
-    fastFor > 0 &&
-    elapsed - lastSoftCeilProbeAt > SOFT_CEIL_PROBE_SECONDS
-  ) {
-    softCeil = Math.min(ceil, softCeil + STEP);
-    lastSoftCeilProbeAt = elapsed;
+  const wantsDown = emergencySlowFor >= EMERGENCY_SETTLE_SECONDS && pixelRatio > floor;
+  const wantsUp = emergencyFastFor >= EMERGENCY_SETTLE_SECONDS && pixelRatio < ceil;
+  // ⚠ One direction per session. This is what makes a loop impossible rather than unlikely.
+  if (wantsDown && emergencyDirection === 'up') return;
+  if (wantsUp && emergencyDirection === 'down') return;
+  if (!wantsDown && !wantsUp) return;
+
+  const from = pixelRatio;
+  const factor = wantsDown
+    ? Math.sqrt(EMERGENCY_PIXEL_FACTOR)
+    : Math.sqrt(1 / EMERGENCY_PIXEL_FACTOR);
+  pixelRatio = Math.min(ceil, Math.max(floor, pixelRatio * factor));
+  // ⚠ THE STAR MOVES WITH IT. Once the allocator has given the star its own number, this valve stops
+  // being the whole picture: an emergency cut would otherwise halve the field's pixels while the star
+  // — which the allocator may have handed a large share of the frame precisely because the machine
+  // looked capable — carried on at full price. The valve exists for a machine that is drowning, and a
+  // drowning machine has to be able to put down the heaviest thing it is holding.
+  if (sunPixelRatio !== null) {
+    sunPixelRatio = Math.min(sunCeiling(), Math.max(floor, sunPixelRatio * factor));
   }
+  emergencyDirection = wantsDown ? 'down' : 'up';
+  emergencyMoves += 1;
+  emergencySlowFor = 0;
+  emergencyFastFor = 0;
+  extraQualityFor = 0;
+
+  logPixels(
+    wantsDown ? 'EMERGENCY CUT' : 'EMERGENCY RAISE',
+    `${from.toFixed(2)} → ${pixelRatio.toFixed(2)} — ${fps.toFixed(0)} fps held for ` +
+      `${EMERGENCY_SETTLE_SECONDS}s, well outside the calibrated range.` +
+      `\n  ${emergencyMoves}/${MAX_EMERGENCY_MOVES} moves used; only "${emergencyDirection}" is` +
+      ` permitted for the rest of the session.`,
+    !wantsDown,
+  );
 }

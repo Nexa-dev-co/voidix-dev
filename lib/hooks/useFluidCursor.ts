@@ -5,8 +5,29 @@ import {
 } from '@/components/effects/FluidCursor/fluidConfig';
 import { createFluidSimulation } from '@/components/effects/FluidCursor/fluidSimulation';
 import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
+import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 
-const MAX_DEVICE_PIXEL_RATIO = 2;
+/**
+ * The INK canvas's density cap.
+ *
+ * ── ⚠ 2 → 1.25 ON 2026-08-06, TO FUND A RESOLUTION INCREASE ELSEWHERE ───────────────────────────
+ * At 2 on a dpr 2.5 panel this canvas is 3072 × 1408 — **4.33 megapixels of fullscreen fluid
+ * simulation**, running a 20-iteration pressure solve and a fullscreen display pass every frame, and
+ * then being copied cross-context into the invert canvas below. On the first screen a visitor sees.
+ *
+ * It was the last renderer on the site answering to nothing: not `adaptivePixelRatio`, not
+ * `deviceTier`, not this file's own reasoning — the note on `MAX_INVERT_PIXEL_RATIO` below already
+ * called that copy *"the most expensive per-frame path on the first screen a visitor sees, spent on a
+ * soft-edged blob"*, capped the INVERT canvas, and left the larger source canvas at full density.
+ *
+ * 1.25 removes ~61 % of those pixels. The argument is the same one that capped the invert layer and
+ * it applies here with only slightly less force: the ink is a dark blob with a multi-pixel gradient
+ * edge and a scatter of stars. There is very little in it a second device pixel resolves.
+ *
+ * ⚠ Not below 1.25. The stars ARE point-like, and at 1 they begin to shimmer as they twinkle across
+ * the pixel grid. If this needs to go lower, drop `STAR_FILL_RATIO` with it.
+ */
+const MAX_DEVICE_PIXEL_RATIO = 1.25;
 /**
  * The INVERT layer's own density cap, deliberately below the ink's.
  *
@@ -71,7 +92,10 @@ export function useFluidCursor(
     const inkCanvas = inkCanvasRef.current;
     const invertCanvas = invertCanvasRef.current;
     if (!inkCanvas || !invertCanvas) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // Through the helper, not `matchMedia` directly — see lib/motionPreference.ts. Returning here
+    // means no WebGL context is ever created, which is the point: hiding it would leave the rAF
+    // loops running.
+    if (prefersReducedMotion()) return;
 
     const invertContext = invertCanvas.getContext('2d');
     if (!invertContext) return;

@@ -22,9 +22,17 @@ import * as THREE from 'three';
  * adds nothing and stays fully transparent. Only where the star actually glows does alpha rise,
  * so the halo appears over the cream and the canvas box never does.
  *
- * The cost is rendering the scene twice per DRAWN frame. That is affordable here and nowhere else:
- * the canvas is small, the model is ~10k verts, and `SunModelCanvas` is demand-rendered — it draws
- * nothing at all for the whole services → works → chamber span.
+ * The cost is rendering the scene twice per DRAWN frame, on the most overdraw-heavy surface on the
+ * site (twenty additive corona planes over a fractured shell). That used to be justified by the star
+ * drawing "nothing at all for the whole services → works → chamber span" — which stopped being true
+ * when the cracked star was given a collapse to play across the handoff. It now draws alongside the
+ * fleet AND alongside the works field, so the second render is paid for most of the journey.
+ *
+ * Hence `refreshGlow`. Steps 4 and 5 — the base image and the composite — run on every drawn frame
+ * and are untouched. Steps 1–3, which only ever feed the glow, may run on alternate frames: the mip
+ * chain simply keeps its last contents, so the halo is at most one frame stale. At the star's idle
+ * 11°/s that is 0.18° of lag on a wide blurred glow. The caller decides, and the rule it uses is
+ * "never while anything is CHOREOGRAPHED" — see SunModelCanvas.
  */
 
 // The sun's authored "Peaceful" bloom. This is now the only copy of it;
@@ -142,8 +150,14 @@ const COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
 `;
 
 export interface SunBloom {
-  /** Draw one frame: the scene to the canvas, then its glow on top. Replaces `renderer.render`. */
-  render(scene: THREE.Scene, camera: THREE.Camera): void;
+  /**
+   * Draw one frame: the scene to the canvas, then its glow on top. Replaces `renderer.render`.
+   *
+   * `refreshGlow` false reuses the previous frame's mip chain instead of re-deriving it — half the
+   * scene renders, an identical base image, a halo one frame behind. Default true; see the header for
+   * when it is safe to pass false.
+   */
+  render(scene: THREE.Scene, camera: THREE.Camera, refreshGlow?: boolean): void;
   setSize(width: number, height: number): void;
   /**
    * Re-grade the glow.
@@ -266,38 +280,43 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
     }
   };
 
-  const render = (scene: THREE.Scene, camera: THREE.Camera) => {
+  const render = (scene: THREE.Scene, camera: THREE.Camera, refreshGlow = true) => {
     const previousTarget = renderer.getRenderTarget();
     const previousAutoClear = renderer.autoClear;
-
-    // 1. The scene into a target — the glow's source, never shown.
+    // Set here rather than inside step 1, because step 4 depends on it and step 1 is now optional.
     renderer.autoClear = true;
-    renderer.setRenderTarget(sceneTarget);
-    renderer.render(scene, camera);
 
-    // 2. Bright pass, straight into the first mip (which also downsamples it by half).
-    brightMaterial.uniforms.tScene.value = sceneTarget.texture;
-    drawQuad(brightMaterial, mipTargets[0]);
+    // Steps 1–3 exist ONLY to fill the mip chain. Skipping them leaves the previous frame's chain in
+    // place, which step 5 then composites unchanged — the whole of what `refreshGlow` costs.
+    if (refreshGlow) {
+      // 1. The scene into a target — the glow's source, never shown.
+      renderer.setRenderTarget(sceneTarget);
+      renderer.render(scene, camera);
 
-    // 3. Blur each mip, then downsample it into the next — so each level is progressively wider.
-    for (let level = 0; level < MIP_COUNT; level += 1) {
-      const target = mipTargets[level];
-      const scratch = blurTargets[level];
+      // 2. Bright pass, straight into the first mip (which also downsamples it by half).
+      brightMaterial.uniforms.tScene.value = sceneTarget.texture;
+      drawQuad(brightMaterial, mipTargets[0]);
 
-      blurMaterial.uniforms.tSource.value = target.texture;
-      blurMaterial.uniforms.uDirection.value.set(1 / target.width, 0);
-      drawQuad(blurMaterial, scratch);
+      // 3. Blur each mip, then downsample it into the next — so each level is progressively wider.
+      for (let level = 0; level < MIP_COUNT; level += 1) {
+        const target = mipTargets[level];
+        const scratch = blurTargets[level];
 
-      blurMaterial.uniforms.tSource.value = scratch.texture;
-      blurMaterial.uniforms.uDirection.value.set(0, 1 / target.height);
-      drawQuad(blurMaterial, target);
-
-      // Seed the next (smaller) level from this blurred one.
-      const next = mipTargets[level + 1];
-      if (next) {
         blurMaterial.uniforms.tSource.value = target.texture;
         blurMaterial.uniforms.uDirection.value.set(1 / target.width, 0);
-        drawQuad(blurMaterial, next);
+        drawQuad(blurMaterial, scratch);
+
+        blurMaterial.uniforms.tSource.value = scratch.texture;
+        blurMaterial.uniforms.uDirection.value.set(0, 1 / target.height);
+        drawQuad(blurMaterial, target);
+
+        // Seed the next (smaller) level from this blurred one.
+        const next = mipTargets[level + 1];
+        if (next) {
+          blurMaterial.uniforms.tSource.value = target.texture;
+          blurMaterial.uniforms.uDirection.value.set(1 / target.width, 0);
+          drawQuad(blurMaterial, next);
+        }
       }
     }
 

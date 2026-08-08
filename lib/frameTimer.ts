@@ -25,6 +25,23 @@ export interface FrameTimer {
   tick: () => number;
   /** Total seconds since the first tick. Reading NEVER advances anything. */
   elapsed: () => number;
+  /**
+   * The most recent delta with NO clamp applied. Reading never advances anything.
+   *
+   * ── ⚠ FOR MEASUREMENT. NEVER FOR INTEGRATION. ────────────────────────────────────────────────────
+   * Integrating this is what the clamp exists to prevent: a tab-restore hands you a delta of several
+   * seconds and an animation steps that far in one frame.
+   *
+   * But a clamp is a lie told deliberately, and it must not reach anything that is trying to find out
+   * how fast the machine is. `adaptivePixelRatio.sampleFrame` was fed the CLAMPED value for its whole
+   * life, and `useWorksField` clamps at 0.05 s — so the resolution controller could not perceive a
+   * frame slower than 20 fps, on a section measured at 9–18 fps. Its "has this step down helped?"
+   * test compares two frame rates and needs an 8 % difference; both were pinned at the clamp, so the
+   * answer was *always* "cutting the pixels changed nothing", and the controller switched itself off
+   * on precisely the machines it exists for. The log that caught it shows 16 → 29 fps across a cut the
+   * controller then described as no change.
+   */
+  lastRawDelta: () => number;
 }
 
 /**
@@ -43,6 +60,7 @@ export function createFrameTimer(
   let lastMilliseconds = 0;
   let started = false;
   let elapsedSeconds = 0;
+  let rawDeltaSeconds = 0;
 
   return {
     tick: () => {
@@ -56,8 +74,10 @@ export function createFrameTimer(
       const rawSeconds = (now - lastMilliseconds) / 1000;
       lastMilliseconds = now;
       elapsedSeconds += rawSeconds;
+      rawDeltaSeconds = rawSeconds;
       return Math.min(rawSeconds, maxDeltaSeconds);
     },
     elapsed: () => elapsedSeconds,
+    lastRawDelta: () => rawDeltaSeconds,
   };
 }

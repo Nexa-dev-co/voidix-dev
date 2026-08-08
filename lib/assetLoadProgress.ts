@@ -20,8 +20,43 @@
 // a hero with a HOLE where its star should be, and the star faded in 30–60 s later when its download
 // finally finished behind 5.3 MB of vessels nobody needed yet. The counter was lying by ~17 % of the
 // page's weight, about the one asset the page cannot open without.
-const EXPECTED_SOURCES = ['deck', 'works', 'sun'] as const;
+//
+// ⚠ `chamber` and `singularity` joined them on 2026-08-06, and that is a change of KIND, not just of
+// count. Everything above is on the wire because the opening needs it. Those two are not: the room is
+// a minute of scrolling away and the black hole is two. They are here because of what happens when
+// they are NOT here — `ensureChamber()` fires at HANDOFF_PROGRESS and `ensureSingularity()` at
+// CHAMBER_PROGRESS, so on a first visit `table.glb` is parsed, built and compiled DURING the
+// services→works crossing and `black_hole.glb` (2.37 MB, the largest asset on the site) during the
+// works→chamber reveal. `prefetchWhenAssetsReady` put those bytes in the HTTP cache, which removed
+// the download from the crossing and nothing else: the parse, the geometry upload, the material
+// compile and the first draw all still landed mid-scrub. That is what "heavy the first time, smooth
+// on the second lap" was.
+//
+// The price is honest and it is the one the brief accepted: a cold first visit now downloads ~10.8 MB
+// before the hero instead of ~7.9 MB. `SkipToLite` is the way out for anyone who cannot afford it.
+const ENTRY_SOURCES = ['deck', 'works', 'sun'] as const;
+const PREFLIGHT_SOURCES = ['chamber', 'singularity'] as const;
+const EXPECTED_SOURCES = [...ENTRY_SOURCES, ...PREFLIGHT_SOURCES] as const;
 export type AssetSource = (typeof EXPECTED_SOURCES)[number];
+
+/**
+ * The same list, exported, so the intro's gate can ask about every source rather than hard-coding
+ * three strings a second time. Naming a set of sections in two files is how one of them gets a fourth
+ * added and the other does not.
+ */
+export const ASSET_SOURCES: readonly AssetSource[] = EXPECTED_SOURCES;
+
+/**
+ * The sources that go on the wire FIRST — the ones the opening itself is made of.
+ *
+ * ⚠ It exists because rung 3 cannot be started by a check that includes rung 3. `useWorksField` only
+ * builds the chamber and the contact star once these are in (so they compete with neither the star
+ * nor the fleet), and `prefetchWhenAssetsReady` waits on the same signal. Asking `areAssetsReady()`
+ * there instead would be a deadlock: the two would each be waiting for the other.
+ */
+export function areEntrySourcesReady(): boolean {
+  return ENTRY_SOURCES.every((source) => (progressBySource.get(source) ?? 0) >= 1);
+}
 
 // Weight the combined progress by each source's rough download weight so the counter climbs at an
 // honest pace — an unweighted average would leap to 50% the instant the lighter source finished, then
@@ -41,7 +76,47 @@ export type AssetSource = (typeof EXPECTED_SOURCES)[number];
 // Not the raw byte ratio (deck would take 0.70): the works source's last stretch is not a download at
 // all — it covers preparing the outlines and CUTTING four marks, real CPU time the visitor waits
 // through (see WORKS_TEXTURE_SHARE in useWorksField). The extra weight pays for that.
-const SOURCE_WEIGHTS: Record<AssetSource, number> = { deck: 0.62, works: 0.2, sun: 0.18 };
+//   chamber      ~0.48 MB — table.glb, plus building the room, its ground shader and the display rig
+//   singularity  ~2.37 MB — black_hole.glb (fractured_sun is already in cache by the time it asks)
+//
+// ⚠ RE-WEIGHED 2026-08-06 when the last two joined. Byte shares of the 10.76 MB total are
+// deck .53 / works .08 / sun .13 / chamber .04 / singularity .22; what is below moves weight from the
+// deck to `works` for the same reason it always did, and rounds the rest to the bytes.
+const SOURCE_WEIGHTS: Record<AssetSource, number> = {
+  deck: 0.47,
+  works: 0.16,
+  sun: 0.12,
+  chamber: 0.05,
+  singularity: 0.2,
+};
+
+/**
+ * The last slice of the counter, reserved for the work that happens AFTER the last byte lands.
+ *
+ * ── ⚠ Why the counter used to lie at exactly the wrong moment ────────────────────────────────────
+ * This value was the download fraction and nothing else, so the loader reached 100 % the instant the
+ * bytes were in — and then held, visibly, for everything that still had to happen before the site
+ * could open: two scenes compiling their programs, allocating composers, uploading every map, and now
+ * the burn-in that measures what this machine can actually sustain (up to 1.5 s on its own).
+ *
+ * A counter that reads 100 % and then makes you wait is the exact dishonesty the weighting at the top
+ * of this file exists to prevent — it was just being honest about one half of the wait and silent
+ * about the other.
+ *
+ * ⚠ Re-weigh this the same way as SOURCE_WEIGHTS, and for the same reason: it is a guess at the
+ * proportion of the wait, and the burn-in changed that proportion once already.
+ */
+const WARMUP_SHARE = 0.15;
+
+/**
+ * The warm fraction, high-watermarked.
+ *
+ * ⚠ Monotonic BY FORCE, and it has to be. The fraction below is measured over the sources that have
+ * ARRIVED, because a source still downloading cannot be expected to have compiled — which means its
+ * denominator GROWS as the load proceeds. Without the watermark, one source arriving unwarmed after
+ * another had already warmed would drop the fraction and walk the counter backwards.
+ */
+let warmHighWater = 0;
 
 const progressBySource = new Map<AssetSource, number>();
 const warmedSources = new Set<AssetSource>();
@@ -147,13 +222,54 @@ export function areArrivedWarmupsDone(): boolean {
   );
 }
 
-/** Combined 0..1 across every expected source, weighted by download size (missing source = 0). */
+/**
+ * Combined 0..1 across every expected source, weighted by download size (missing source = 0).
+ *
+ * ⚠ DOWNLOADS ONLY, and it has to stay that way. `useLoaderTelemetry` samples the DELTAS of this to
+ * compute the throughput readout in KB/s — so folding the warm-up into it would have the counter
+ * report several hundred phantom kilobytes the moment a scene finished compiling. The wait's other
+ * half lives in `getEntryProgress` instead.
+ */
 export function getAssetProgress(): number {
   let progress = 0;
   for (const source of EXPECTED_SOURCES) {
     progress += (progressBySource.get(source) ?? 0) * SOURCE_WEIGHTS[source];
   }
   return progress;
+}
+
+/**
+ * How close the page is to being ENTERABLE, 0..1 — the number the loader's counter should show.
+ *
+ * ── ⚠ Why it is the COMBINED download and no longer the star's ───────────────────────────────────
+ * It was the star's, on the reasoning that the gate waited for the star alone — so a counter on the
+ * combined total would have handed off at "18" and the visitor would have watched it fail to finish.
+ * That reasoning was correct and its premise is now gone: the gate waits for every source (see
+ * `isGateSatisfied` in IntroSequence), because a site that opens while the fleet is still streaming is
+ * a site that opens before it is loaded. The counter follows the gate; it always did.
+ *
+ * ── ⚠ …and why it is not the downloads alone either ──────────────────────────────────────────────
+ * Because the last byte stopped being the end of the wait. After it the two scenes still compile their
+ * programs, allocate composers, upload every map, and run the burn-in that decides the session's
+ * resolution — up to 1.5 s on its own. A counter that reads 100 and then makes you wait through all of
+ * that is exactly the dishonesty the weighting in this file exists to prevent; it was simply being
+ * honest about one half of the wait and silent about the other.
+ */
+export function getEntryProgress(): number {
+  // Measured over what has ARRIVED, mirroring `areArrivedWarmupsDone` — the gate does not wait for a
+  // scene that is still downloading to have compiled, so the counter must not either.
+  let arrivedWeight = 0;
+  let warmWeight = 0;
+  for (const source of EXPECTED_SOURCES) {
+    if (!isSourceLoaded(source)) continue;
+    arrivedWeight += SOURCE_WEIGHTS[source];
+    if (warmedSources.has(source)) warmWeight += SOURCE_WEIGHTS[source];
+  }
+  if (arrivedWeight > 0) {
+    warmHighWater = Math.max(warmHighWater, warmWeight / arrivedWeight);
+  }
+
+  return getAssetProgress() * (1 - WARMUP_SHARE) + warmHighWater * WARMUP_SHARE;
 }
 
 /** One source's own 0..1 fraction (0 if it hasn't reported yet) — for per-module loader readouts. */

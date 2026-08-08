@@ -25,7 +25,20 @@ import {
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
 import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
-import { getPixelRatio, sampleFrame } from '@/lib/adaptivePixelRatio';
+import {
+  getControllerFps,
+  getPixelRatio,
+  noteRatioApplied,
+  RATIO_APPLY_GRACE_SECONDS,
+  sampleFrame,
+} from '@/lib/adaptivePixelRatio';
+import {
+  profileGauge,
+  profileMeasure,
+  profileNow,
+  profileSpan,
+} from '@/lib/frameProfiler';
+import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
 import { SLATE_600 } from '@/lib/coolPalette';
@@ -435,6 +448,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     detectKtx2Support(renderer);
     // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
+    if (telemetryEnabled) renderer.info.autoReset = false;
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES
     // does — the fleet read flat/grey under ACES. OutputPass applies this after the composer.
     renderer.toneMapping = THREE.NeutralToneMapping;
@@ -1205,6 +1219,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // whenever the adaptive controller shifts the ratio. Defined before the render loop so the loop
     // can call it without a forward reference.
     let appliedPixelRatio = getPixelRatio();
+    /** How long the controller's ratio has differed from the one actually allocated. */
+    let ratioPendingSeconds = 0;
+    /** Mirrors the `.is-uncomposited` class, so the DOM is touched only when it changes. */
+    let canvasUncomposited = false;
     // How far the flight's camera pulls back on a narrow frame, at its far end. Held here beside the
     // aspect it is derived from rather than recomputed in the loop, so the two can't disagree — and
     // read ONLY by the handoff below. The fleet's own resting shot is deliberately not touched by it
@@ -1218,6 +1236,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const height = canvas.clientHeight || canvas.offsetHeight;
       if (!width || !height) return;
       const ratio = getPixelRatio();
+      if (ratio !== appliedPixelRatio) noteRatioApplied();
       appliedPixelRatio = ratio;
       camera.aspect = width / height;
       portraitScale = portraitPullbackScale(camera.aspect);
@@ -1241,6 +1260,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
+      const loopStartedAt = profileNow();
+      // See the works field: three resets `info` on every `render()`, so a composer's many passes all
+      // vanish except the last unless it is accumulated by hand.
+      if (telemetryEnabled) renderer.info.reset();
 
       const deltaSeconds = frameTimer.tick();
       const elapsed = frameTimer.elapsed();
@@ -1425,7 +1448,25 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const parkedAtWorks = departState.current >= DECK_PARKED_THRESHOLD;
       const handoffActive = departState.current > 0.001 && departState.current < 0.999;
       const isDrawing = deckShouldRender && !document.hidden && !parkedAtWorks;
-      if (isDrawing) composer.render();
+      if (isDrawing) {
+        profileMeasure('deck · render', () => composer.render(), true);
+        profileGauge('deck draws', renderer.info.render.calls);
+        // Also published here, not only from the works field — otherwise the whole fleet section
+        // reports no ratio and no controller reading, which is exactly the span where the first step
+        // down happens and where the last log left us guessing.
+        profileGauge('ratio', renderer.getPixelRatio());
+        profileGauge('fps(ctrl)', getControllerFps());
+      }
+
+      // ── Stop paying the compositor for a canvas nobody can see ──
+      // Only while PARKED behind works, which is the longest span on the site (works → chamber →
+      // contact) and the one case where this canvas is provably covered rather than merely faded.
+      // Deliberately not tied to `isDrawing`: that also goes false on a hidden tab and during the
+      // fill, where the deck is mid-reveal and must stay composited. See `.is-uncomposited`.
+      if (parkedAtWorks !== canvasUncomposited) {
+        canvasUncomposited = parkedAtWorks;
+        canvas.classList.toggle('is-uncomposited', parkedAtWorks);
+      }
 
       // ── Adaptive resolution: only ever re-sized while this scene is NOT being drawn ──
       // Applying a new pixel ratio reallocates the whole composer (the UnrealBloom target pyramid +
@@ -1439,16 +1480,28 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       if (!handoffActive && !swapActive) {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
+          ratioPendingSeconds = 0;
           // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
           // (gated-off) frames can never fake headroom and trick it into ramping the resolution up.
-          if (isDrawing) sampleFrame(deltaSeconds);
-        } else if (!isDrawing) {
-          applyRendererSize();
+          // Raw by name rather than by luck: this loop happens to be unclamped today (see its
+          // frameTimer), so `deltaSeconds` would work — but the moment anyone adds a max delta here
+          // for the tab-restore reason, the controller would go blind exactly as the works field did.
+          if (isDrawing) sampleFrame(frameTimer.lastRawDelta(), 'deck');
+        } else {
+          // Queued. Sampling deliberately stops — measuring at the old ratio while the controller
+          // believes it is already at the new one would feed it a lie and make it over-climb.
+          ratioPendingSeconds += deltaSeconds;
+          // The fleet does get idle frames (it parks behind works), but not while it is being
+          // browsed — four stops with wide crossings between them is a long time to hold a queued
+          // change. Same rule as the works field; see RATIO_APPLY_GRACE_SECONDS.
+          if (!isDrawing || ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS) {
+            applyRendererSize();
+            ratioPendingSeconds = 0;
+          }
         }
-        // Else: a change is queued but we're on screen — hold it, and deliberately STOP sampling
-        // until it lands. Measuring at the old ratio while the controller believes it's already at
-        // the new one would feed it a lie and make it over-climb.
       }
+
+      profileSpan('deck · loop', profileNow() - loopStartedAt);
     };
     renderFrame();
 

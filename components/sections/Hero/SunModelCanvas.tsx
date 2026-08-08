@@ -5,9 +5,16 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { detectKtx2Support, getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { createFrameTimer } from '@/lib/frameTimer';
+import { profileGauge, profileMeasure, profileNow, profileSpan } from '@/lib/frameProfiler';
+import {
+  getSunPixelRatio,
+  RATIO_APPLY_GRACE_SECONDS,
+} from '@/lib/adaptivePixelRatio';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
+  INTRO_ACTIVE_EVENT,
+  SUN_DRAW_PERMIT_EVENT,
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
   SUN_FORMING_EVENT,
@@ -30,6 +37,7 @@ import {
   BLOOM_RADIUS,
   BLOOM_THRESHOLD,
 } from './sunBloom';
+import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
@@ -99,7 +107,66 @@ const CAMERA_FOV = 45;
 const CAMERA_FIT_MARGIN = 0.575 * SUN_CANVAS_HEADROOM;
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
+
+/**
+ * The star's resolution — the SHARED adaptive one, capped by this canvas's own limit.
+ *
+ * ── ⚠ Why it stopped being `min(devicePixelRatio, 2)` ────────────────────────────────────────────
+ * It was the only heavy renderer on the page not answering to `adaptivePixelRatio`, and on a dpr 2.5
+ * laptop that meant the star drew at **2.0 with MSAA while the works field beside it drew at 1.01** —
+ * roughly four times the pixel density of the scene it sits in front of. The frame profiler found it
+ * costing 10–21 ms, the largest measured span on the page during works, against a cost table in
+ * CLAUDE.md that rates the sun BELOW the fleet.
+ *
+ * Two renderers arguing about how expensive the machine is cannot both be right, and the one that has
+ * actually measured something should win.
+ *
+ * ── ⚠ AND IT NOW HAS ITS OWN NUMBER AGAIN — WHICH IS NOT A RETURN TO THE ABOVE ──────────────────
+ * `reportSectionCosts` gives the star a ratio of its own, but the reasoning that took the old one away
+ * is untouched: what was wrong with `min(devicePixelRatio, 2)` was that it had measured NOTHING while
+ * the renderer beside it had. The new number is the remainder of a 30 fps frame after the section's
+ * models have taken theirs, solved from a measurement of this canvas's own marginal cost (the burn-in
+ * draws one phase with this canvas dark and one with it lit, and the difference is us).
+ *
+ * The star is still not allowed to out-vote the field about how fast the machine is. It is allowed to
+ * spend what the field did not need.
+ *
+ * ⚠ The cap stays. `getSunPixelRatio()` clamps to the same `MAX_PIXEL_RATIO` of 2 that this constant
+ * names, so the two cannot drift; it is kept here because `particleFrameExtent` and the camera fit are
+ * reasoned about in terms of it.
+ */
+const sunPixelRatio = () => Math.min(getSunPixelRatio(), MAX_DEVICE_PIXEL_RATIO);
 const MAX_FRAME_SECONDS = 0.05;
+
+// ── How often the star is actually drawn ─────────────────────────────────────────────────────────
+/**
+ * Frames between draws while nothing is CHOREOGRAPHED **and a black scene owns the page**.
+ *
+ * ⚠ THE BLACK-STAGE HALF IS THE POINT, not a refinement of it. This is per-section budgeting, and the
+ * sections differ in what the star IS:
+ *
+ *   hero      the star is the subject, at full size, and NOTHING else on the page is drawing.
+ *             There is no contention to resolve, so striding here would buy nothing and cost the one
+ *             screen where the star has to be perfect. Full rate.
+ *   services  behind the fleet at z-index −1, with the deck's own renderer wanting the frame.
+ *   works     behind the marks, with the heaviest scene on the site wanting the frame.
+ *             `AUTO_ROTATE_DEGREES_PER_SECOND` is 11 — 0.37° of turn in a 30 fps frame, on a
+ *             background object. It cannot be seen; the fleet and the marks in front of it can.
+ *   chamber   already frozen outright by `covered`. This never reaches it.
+ *
+ * `preserveDrawingBuffer` (see the renderer) is what makes a skipped frame keep compositing the last
+ * image rather than showing an undefined one — the mechanism this rides on already existed for the
+ * demand-render gate.
+ */
+const SUN_IDLE_STRIDE = 2;
+/**
+ * Drawn frames between refreshes of the bloom's SOURCE (sunBloom steps 1–3).
+ *
+ * Counted in DRAWN frames, not in loop frames, so it composes with the stride above instead of
+ * multiplying against it in some way nobody could predict from either constant alone. Gated on the
+ * black stage for the same reason and by the same rule.
+ */
+const SUN_GLOW_STRIDE = 2;
 
 // ── Assembly ──
 // The shards do not just slide outward — they arrive from deep space: scattered far behind the sun in
@@ -399,11 +466,29 @@ export default function SunModelCanvas() {
     // un-preserved buffer's contents are undefined once we stop rendering.
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      /**
+       * ── ⚠ OFF, and this is the one change in the perf pass that wants eyes on it ────────────────
+       *
+       * MSAA on the DEFAULT framebuffer, on the one context that also sets `preserveDrawingBuffer`.
+       * That pair is the expensive one: the driver has to resolve the multisample buffer and then
+       * keep the result rather than discarding it, every frame, on a canvas that is 3 Mpx at this
+       * ratio and 6.7 Mpx of device pixels once composited. The profiler had `sun · bloom` at 9–22 ms
+       * — the largest measured span on the page whenever the star draws.
+       *
+       * What it buys is small here, for two reasons specific to this canvas. The star goes through a
+       * bloom pass, so its bright edges are already soft; MSAA only ever helped the shards' hard
+       * silhouette against the transparent background. And the canvas renders BELOW the panel's
+       * density (ratio ~1.68 on a dpr 2.5 display), so the browser upscales it on composite, which
+       * softens those silhouettes anyway.
+       *
+       * If the star's edges crawl as it turns, this is the line — put it back and we find the frame
+       * time somewhere else.
+       */
+      antialias: false,
       alpha: true,
       preserveDrawingBuffer: true,
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_DEVICE_PIXEL_RATIO));
+    renderer.setPixelRatio(sunPixelRatio());
     // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads —
     // the loader throws rather than guessing. See lib/modelLoading.ts.
     detectKtx2Support(renderer);
@@ -484,10 +569,16 @@ export default function SunModelCanvas() {
      */
     const particleFrameExtent = () =>
       frameHalfHeightAtSun * Math.min(1, camera.aspect || 1);
+    /** The ratio these buffers were actually allocated at — see the loop's follow-up below. */
+    let appliedPixelRatio = sunPixelRatio();
     const applySize = () => {
       const width = canvas.clientWidth || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
       if (!width || !height) return;
+      // Also the re-entry point for a ratio change, so the controller has one thing to call.
+      const ratio = sunPixelRatio();
+      appliedPixelRatio = ratio;
+      renderer.setPixelRatio(ratio);
       renderer.setSize(width, height, false);
       // The bloom's targets follow the canvas, or the glow is sampled at the wrong scale.
       bloom.setSize(width, height);
@@ -495,6 +586,9 @@ export default function SunModelCanvas() {
       camera.updateProjectionMatrix();
       // Re-fit the rings to the new frame — this is what keeps them from clipping on resize.
       sunParticles?.setFrameExtent(particleFrameExtent());
+      // Point sizes are computed in DEVICE pixels, so they have to follow the ratio too — otherwise
+      // the grains change apparent size the moment the controller moves.
+      sunParticles?.setPixelRatio(ratio);
       forceRender = true;
     };
     const observer = new ResizeObserver(applySize);
@@ -542,15 +636,43 @@ export default function SunModelCanvas() {
     const applyCovered = () => {
       const wasCovered = covered;
       covered = revealProgress >= SUN_COVERED_CHAMBER_PROGRESS;
+      if (wasCovered === covered) return;
       // Uncovering has to draw again: the sun stopped redrawing while it was hidden, so without this
       // scrolling back out of the room would reveal the stale frame it froze on.
-      if (wasCovered && !covered) forceRender = true;
+      if (!covered) forceRender = true;
+      // ── …and stop COMPOSITING it, not just drawing it ──
+      // `covered` already stops the render. It does nothing about the layer: the reveal fades this
+      // canvas to `opacity: 0`, and a zero-opacity canvas is still rasterized and blended every frame
+      // — a full-screen layer, at device resolution, for the whole of the chamber and contact, showing
+      // a star that has been deliberately faded out. Same trap `useFluidCursor` documents for its two
+      // canvases, and the same fix.
+      //
+      // ⚠ `visibility`, not `display: none`. `applySize` reads `clientWidth/clientHeight` off this
+      // element; display-none reports zero and would resize the drawing buffer to nothing.
+      canvas.classList.toggle('is-uncomposited', covered);
     };
     const onChamberProgress = (event: Event) => {
       revealProgress = readChamberProgress(event);
       applyCovered();
     };
     window.addEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+
+    // ── Is another scene competing for the frame? ──
+    // False on the hero and its fill, where the star is the subject and nothing else draws; true from
+    // the fleet to the bottom of the page. The ONLY thing it gates is how often the star is drawn (see
+    // SUN_IDLE_STRIDE) — not what it looks like, not when it is allowed to move. Keyed off the black
+    // stage rather than the deck's reveal because a navbar jump reaches works without entering the
+    // fleet; see lib/blackStageEvent.ts.
+    let inBlackStage = false;
+    const onBlackStage = (event: Event) => {
+      const active = readBlackStageActive(event);
+      if (active === inBlackStage) return;
+      inBlackStage = active;
+      // Coming back to the hero, draw immediately rather than up to one strided frame later — this is
+      // also the teleport's path home, where the star has a whole re-gather to play.
+      if (!active) forceRender = true;
+    };
+    window.addEventListener(BLACK_STAGE_EVENT, onBlackStage);
 
     // ── The loop landed at the top ──
     // The pin has jumped to progress 0, so every target below is already home while our own eased copies
@@ -601,11 +723,53 @@ export default function SunModelCanvas() {
     // drops the orbital ring entirely, and snaps the state ramp instead of easing it.
     const reduceMotion = prefersReducedMotion();
     let assembly = 0;
+    /**
+     * ── ⚠ THE STAR DOES NOT DRAW WHILE THE LOADER IS WAITING ─────────────────────────────────────
+     *
+     * It used to draw every frame from the moment the model landed until the reveal: ten shards
+     * drifting, `sunParticles`, and a bloom pass, on a canvas `SUN_CANVAS_HEADROOM` larger than the
+     * hero square PER AXIS — 6.76× its area. The profiler note above puts `sun · bloom` at 10–21 ms,
+     * the largest measured span on the page. On a slow connection the loader was paying that for a
+     * minute, on the frames where the GPU process was already decoding textures and compiling two
+     * scenes, and it is most of why the loading screen itself was reported as laggy.
+     *
+     * ⚠ THIS REVERSES THE REASONING BEHIND `ASSEMBLY_ENTRY_MARGIN_MIN/MAX`, deliberately. The shards
+     * were moved INTO frame to wait, because "on a slow load that left the loader with nothing on it
+     * but dust for a minute, and the star arriving from nowhere at the end". That was correct, and its
+     * premise is gone: the loader's wait is now filled by the gather field's held drawings, and the
+     * whole finale — wordmark, star, assembly — sits on the far side of the gate (see IntroSequence).
+     * If the drawings are ever removed, this decision has to be revisited with them.
+     *
+     * ⚠ It is permitted at the BURN-IN, not at the reveal, and that is load-bearing. The burn-in's
+     * only claim over `gpuProbe` is that it measures the frame the visitor actually gets — which
+     * includes this canvas rendering alongside the works field. Letting it start one stage early costs
+     * ~1.5 s of star and keeps the measurement honest.
+     *
+     * ⚠ AND IT DOES NOT APPLY UNDER REDUCED MOTION. That path has no held beat and no drawings — the
+     * gather field opts out of WebGL entirely — and it reveals the sun layer from its first frame, at
+     * z-index 10001, ABOVE the veil. Withholding the render there would put an empty box on screen
+     * where the star is meant to be, for the whole download. The reduced-motion loader is a counter
+     * and a star, exactly as it was.
+     */
+    let drawingPermitted = reduceMotion;
+    const permitDrawing = () => {
+      if (drawingPermitted) return;
+      drawingPermitted = true;
+      forceRender = true;
+    };
+    // ⚠ Not `BURN_IN_EVENT` any more. The burn-in measures this canvas by drawing one phase without it
+    // and one with it, so the star has to stay dark until the field has had its phase alone — see
+    // SUN_DRAW_PERMIT_EVENT for the three independent things that guarantee this still fires.
+    window.addEventListener(SUN_DRAW_PERMIT_EVENT, permitDrawing);
+
     let modelReady = false;
     let assemblyCued = false;
     let forceAssembled = false;
     const cueAssembly = () => {
       assemblyCued = true;
+      // Belt and braces: whatever cued it — the intro, a missing loader, the fallback timer — the
+      // flight must never run behind a canvas that is not being drawn. It is the loader's finale.
+      permitDrawing();
     };
     // The intro cues this when the load hits 100%, and holds its own handoff until we answer with
     // SUN_ASSEMBLED_EVENT — so the flight is the loader's finale and is always watched start to finish.
@@ -619,6 +783,8 @@ export default function SunModelCanvas() {
     // sun in pieces forever. Armed from the model's landing (see ASSEMBLE_CUE_FALLBACK_MS) — until
     // then there is nothing to assemble and nothing this could be late for.
     let cueFallbackTimer = 0;
+    /** The heartbeat listener that keeps re-arming it, held so teardown can remove it. */
+    let introHeartbeatListener: (() => void) | null = null;
     const onReveal = () => {
       forceAssembled = true;
       cueAssembly(); // past the point of waiting for a cue that clearly is not coming
@@ -987,7 +1153,25 @@ export default function SunModelCanvas() {
       modelReady = true; // the one-shot assembly starts on the next frame after the cue
       // There is now something to assemble, so the backstop starts counting. See
       // ASSEMBLE_CUE_FALLBACK_MS for why this is armed here rather than at page load.
-      cueFallbackTimer = window.setTimeout(cueAssembly, ASSEMBLE_CUE_FALLBACK_MS);
+      //
+      // ⚠ RE-ARMED ON EVERY INTRO HEARTBEAT, and without that this is a hole straight through the
+      // gate. The intro now waits for EVERY source, not just this one — so the star can land in eight
+      // seconds and the fleet keep streaming for another thirty. A one-shot timer measured from the
+      // landing would fire in the middle of that, assemble the star while the loader was still
+      // counting, and — because `SUN_ASSEMBLED_EVENT` is what releases the intro's last pause — hand
+      // off to a site whose fleet had not arrived. Which is exactly the "it starts before the loading
+      // finishes" report.
+      //
+      // The hero's own reveal fallback already solves this the same way (see
+      // REVEAL_FALLBACK_WITH_INTRO_MS): while the loader is beating, nothing is stuck, so the backstop
+      // has nothing to protect against. It only means anything once the beat stops.
+      const armCueFallback = () => {
+        window.clearTimeout(cueFallbackTimer);
+        cueFallbackTimer = window.setTimeout(cueAssembly, ASSEMBLE_CUE_FALLBACK_MS);
+      };
+      armCueFallback();
+      window.addEventListener(INTRO_ACTIVE_EVENT, armCueFallback);
+      introHeartbeatListener = armCueFallback;
       applySize();
       forceRender = true;
       reportAssetProgress('sun', 1);
@@ -1044,8 +1228,13 @@ export default function SunModelCanvas() {
     let collapse = 0;
     let wasAnimating = true;
     let animationFrame = 0;
+    /** Loop frames, for SUN_IDLE_STRIDE. */
+    let loopFrameCounter = 0;
+    /** Frames actually DRAWN, for SUN_GLOW_STRIDE. */
+    let drawnFrameCounter = 0;
     const animate = () => {
       animationFrame = requestAnimationFrame(animate);
+      const loopStartedAt = profileNow();
       const delta = frameTimer.tick();
 
       // Ease our own copy of the scrubbed targets, so the choreography can't be outrun by a fast
@@ -1056,8 +1245,9 @@ export default function SunModelCanvas() {
       ringWorksForm += (targetRingWorks - ringWorksForm) * stateEase;
       collapse += (targetCollapse - collapse) * stateEase;
       const elapsed = frameTimer.elapsed();
-      // The star always turns; it only stops once the works field has covered it completely.
-    const moving = !covered;
+      // The star always turns — once it is allowed to be seen at all. It stops again only once the
+      // works field has covered it completely.
+      const moving = drawingPermitted && !covered;
 
       // ── Waiting: the pieces drift, and they are ON SCREEN while they do it ──
       //
@@ -1070,10 +1260,34 @@ export default function SunModelCanvas() {
       // Now it runs every frame until the cue, at arrival 0 — where `receding` is 1, so the orbit, the
       // float and the per-shard spin are all at full strength and the magma is at full ASSEMBLY_HEAT.
       // The pieces read as the largest, hottest debris in the same flow the dust belongs to.
-      let assembling = false;
-      if (modelReady && !assemblyCued && !reduceMotion) {
+      /**
+       * ── ⚠ THE DRIFT AND THE FLIGHT ARE TWO DIFFERENT KINDS OF MOTION, AND WERE ONE FLAG ─────────
+       *
+       * Both used to set a single `assembling`, which fed `choreographyActive`, which BLOCKS a
+       * resolution change. And the drift is true for the entire loader wait — so the star had no clear
+       * frame anywhere between the burn-in and the hero, and any ratio the allocator gave it could only
+       * land in front of the visitor as a sharpness pop on the site's centrepiece (`sunParticles`
+       * changes grain size with it, so it is not a subtle one).
+       *
+       * The distinction is the one the rule below already draws for everything else:
+       *
+       *   · DRIFT  — delta-timed idle tumbling with no authored landing. A stall inside it is invisible.
+       *              Must force a draw; must NOT block a reallocation.
+       *   · FLIGHT — a one-shot beat that has to land exactly where it was authored to. A stall lets it
+       *              advance behind the stall and finish somewhere else. Blocks everything.
+       *
+       * Splitting them is a correctness fix in its own right, quite apart from the allocator.
+       */
+      let driftActive = false;
+      let assemblyFlightActive = false;
+      // ⚠ `drawingPermitted` gates the DRIFT as well as the render, not just the render. The pieces
+      // tumble on a delta-timed clock with no authored landing, so skipping it while nothing is on
+      // screen changes nothing anyone can see — and leaving it running would keep the canvas drawing,
+      // which is one of the two things that force a draw below. Gating one without the other would
+      // have saved nothing at all.
+      if (modelReady && !assemblyCued && !reduceMotion && drawingPermitted) {
         positionShards(0, elapsed);
-        assembling = true; // keep drawing: something on this canvas is moving
+        driftActive = true; // keep drawing: something on this canvas is moving
       }
 
       // Assembly: a one-shot flight in from deep space, run once the model is here AND the intro has
@@ -1085,7 +1299,7 @@ export default function SunModelCanvas() {
         const wasBeforeForming = assembly < CORONA_APPEAR;
         assembly = Math.min(1, assembly + delta * rate);
         positionShards(assembly, elapsed);
-        assembling = true;
+        assemblyFlightActive = true;
         // The star has just lit inside the shell. The gathering field withdraws from around it on this,
         // rather than on the CUE — the cue is only the intro asking, and on a slow load the model may
         // not have arrived to answer it. See SUN_FORMING_EVENT.
@@ -1194,18 +1408,95 @@ export default function SunModelCanvas() {
       // buys back only the tail: once the reveal has faded the sun out, `moving` goes false and this
       // holds one frozen frame for the rest of the room.
       // `wasAnimating` draws the one final settled frame; `forceRender` covers resize / tab-restore.
-      const animating =
+      // ── Split in two, because "is anything moving" and "is anything CHOREOGRAPHED" are different ──
+      // The ramps and the shard flight are authored beats: a stall inside one lets it advance behind
+      // the stall and land somewhere else. The idle turn is not — it is delta-timed and constant, so a
+      // dropped frame in the middle of it is invisible. Only the first kind may block a reallocation;
+      // see where this is used below.
+      const choreographyActive =
         Math.abs(targetCracks - cracks) > STATE_SETTLE_EPSILON ||
         Math.abs(targetRingForm - ringForm) > STATE_SETTLE_EPSILON ||
         Math.abs(targetRingWorks - ringWorksForm) > STATE_SETTLE_EPSILON ||
         Math.abs(targetCollapse - collapse) > STATE_SETTLE_EPSILON ||
-        moving ||
-        assembling;
-      if (!document.hidden && (animating || wasAnimating || forceRender)) {
-        bloom.render(scene, camera);
+        assemblyFlightActive;
+      // ⚠ `driftActive` is here and NOT in `choreographyActive`, and that is the whole point of the
+      // split above: the drift must keep the canvas drawing, and must not hold the resolution hostage
+      // for the length of the download.
+      const animating = choreographyActive || driftActive || moving;
+
+      // ── ONE RULE: an authored beat runs at full rate; everything else may stride ──
+      //
+      // `choreographyActive` is that rule, and it is the same discriminator the reallocation below
+      // uses for the same reason. The cracks, the ring, the shard flight and above all the COLLAPSE
+      // are scrubbed under the visitor's finger, so a decimated one steps against the scroll. The idle
+      // turn is delta-timed and constant; a dropped frame in it is invisible.
+      //
+      // ⚠ It also covers a subtlety that has nothing to do with motion: `bloom.setGrade` lerps the
+      // bright pass's `uThreshold` during the collapse, and that uniform lives inside the very pass
+      // SUN_GLOW_STRIDE skips. One rule, both problems.
+      //
+      // Counters are read BEFORE they increment so frame 0 always draws with a full glow — starting on
+      // a skipped glow would composite an empty mip chain and flash the star in without its halo.
+      const paintThisFrame =
+        !inBlackStage ||
+        choreographyActive ||
+        forceRender ||
+        loopFrameCounter % SUN_IDLE_STRIDE === 0;
+      loopFrameCounter += 1;
+      // What the star is costing right now, in the profiler's own report. 1 on the hero and through
+      // every authored beat; SUN_IDLE_STRIDE while it is a background object behind another scene.
+      profileGauge('sun stride', inBlackStage && !choreographyActive ? SUN_IDLE_STRIDE : 1);
+      // The star's OWN resolution, beside the field's `ratio` gauge — the two together are the whole
+      // output of the allocator, and the only way to see at a glance whether the star was handed the
+      // headroom the models left it. Reads `appliedPixelRatio`, not `getSunPixelRatio()`: what these
+      // buffers were actually allocated at, never what the controller currently wishes they were.
+      profileGauge('sun ratio', appliedPixelRatio);
+
+      // ⚠ `drawingPermitted` is checked here as well as inside `moving`, and it has to be: the three
+      // state ramps in `choreographyActive` settle on their own and `forceRender` is set by resize and
+      // tab-restore, so either could ask for a draw while the loader is still waiting.
+      if (drawingPermitted && !document.hidden && paintThisFrame && (animating || wasAnimating || forceRender)) {
+        // ⚠ The star is a SECOND WebGL context and it draws alongside the field for the whole of
+        // services and works (see CLAUDE.md — `covered` only goes true at the chamber reveal). It is
+        // therefore one of the prime suspects for the frame time the works probe cannot see, and it
+        // has never been measured separately from it.
+        const refreshGlow =
+          !inBlackStage || choreographyActive || drawnFrameCounter % SUN_GLOW_STRIDE === 0;
+        drawnFrameCounter += 1;
+        profileMeasure('sun · bloom', () => bloom.render(scene, camera, refreshGlow), true);
         forceRender = false;
       }
-      wasAnimating = animating;
+      // ⚠ Only a frame the stride let through may consume this. `wasAnimating` exists to draw the ONE
+      // final settled frame after motion stops — and if the frame where `animating` goes false happens
+      // to be one the stride skipped, clearing it here would mean that frame is never drawn by anyone.
+      // The star would hold a pose 16 ms short of where the scroll actually left it, which is exactly
+      // the kind of thing that only shows up as "it doesn't quite land right".
+      if (paintThisFrame) wasAnimating = animating;
+
+      // ── Follow the shared controller, on a frame with no authored beat running ──
+      //
+      // ⚠ `choreographyActive`, NOT `animating`, and the difference is the whole thing. `animating`
+      // includes `moving`, which is `!covered` — true for the ENTIRE hero, fleet and works, because
+      // the star turns the whole way. Gating on it meant the star kept whatever ratio it was built
+      // with (the pre-probe 1.0) for the entire visible journey, which on a dpr 2.5 panel is 40 % of
+      // the display's density on the site's centrepiece, for the whole session.
+      //
+      // What must block a reallocation is an AUTHORED beat — the state ramps and the shard flight —
+      // because those advance behind a stall and land in the wrong place, exactly like the works hop.
+      // The idle turn is delta-timed and constant; losing a frame of it cannot be seen.
+      //
+      // ⚠ Still no grace period, unlike the two heavy scenes. Those draw continuously and can go a
+      // whole lap without a clear frame, so they have to take the hitch eventually. This one settles
+      // between every beat, so a clear frame always arrives on its own.
+      // ⚠ THE ALLOCATOR'S NUMBER ARRIVES THROUGH HERE, AND THE WINDOW IT USES IS NARROW. It is set at
+      // the end of the burn-in's phase B; the assembly is cued later, from the finale timeline, after
+      // the gate opens and the wordmark resolves. The frames in between are DRIFT frames — and drift
+      // no longer counts as choreography (see `driftActive`), so this fires in them. If the assembly
+      // were ever cued closer to `BURN_IN_DONE_EVENT`, the flight would run at the old ratio and snap
+      // to the new one on landing: a sharpness pop on the centrepiece, at the handoff.
+      if (sunPixelRatio() !== appliedPixelRatio && !choreographyActive) applySize();
+
+      profileSpan('sun · loop', profileNow() - loopStartedAt);
     };
     animate();
 
@@ -1217,10 +1508,15 @@ export default function SunModelCanvas() {
       window.removeEventListener(HERO_SERVICES_PROGRESS_EVENT, onHeroServicesProgress);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
+      window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       window.removeEventListener(LOOP_RESET_EVENT, onLoopReset);
       window.removeEventListener(SUN_REGATHER_EVENT, onRegather);
       window.removeEventListener(REVEAL_EVENT, onReveal);
+      window.removeEventListener(SUN_DRAW_PERMIT_EVENT, permitDrawing);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
+      if (introHeartbeatListener) {
+        window.removeEventListener(INTRO_ACTIVE_EVENT, introHeartbeatListener);
+      }
       window.clearTimeout(cueFallbackTimer);
       modelRoot?.traverse((object) => {
         if (!(object instanceof THREE.Mesh)) return;

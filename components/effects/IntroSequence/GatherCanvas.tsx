@@ -1,13 +1,25 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { getSourceProgress, isSourceLoaded } from "@/lib/assetLoadProgress";
+import { getAssetProgress } from "@/lib/assetLoadProgress";
+import { createPageEtaEstimator } from "./downloadEta";
 import { prefersReducedMotion } from "@/lib/prefersReducedMotion";
-import { createDownloadEtaEstimator } from "./downloadEta";
+import { getDeviceTier } from "@/lib/deviceTier";
 import { GatherRenderer } from "./gatherRenderer";
-import { SUN_IN_O_RATIO, SUN_BODY_FILL, SUN_FRAMING_NUDGE_X } from "./gatherShader";
+import {
+  SUN_IN_O_RATIO,
+  SUN_BODY_FILL,
+  SUN_FRAMING_NUDGE_X,
+  GATHER_COUNT_BY_TIER,
+} from "./gatherShader";
 import type { GatherMessage } from "./gatherMessages";
-import { IGNITE_EVENT, SUN_FORMING_EVENT, SUN_ASSEMBLED_EVENT } from "./introEvents";
+import {
+  IGNITE_EVENT,
+  SUN_FORMING_EVENT,
+  SUN_ASSEMBLED_EVENT,
+  FINALE_EVENT,
+  MINIMUM_LOADER_MS,
+} from "./introEvents";
 
 // The loader's gathering field — matter falling together into the star the page opens on.
 //
@@ -24,7 +36,19 @@ import { IGNITE_EVENT, SUN_FORMING_EVENT, SUN_ASSEMBLED_EVENT } from "./introEve
 /** The empty span the sun overlays in the wordmark — the point everything converges on. */
 const O_SLOT_SELECTOR = ".intro-o-slot";
 
-const MAX_DEVICE_PIXEL_RATIO = 2;
+/**
+ * ⚠ WAS 2, and 2 was the loader's largest avoidable cost.
+ *
+ * This field is fullscreen additive point sprites: its cost is very nearly pure fill rate, so it
+ * scales with the SQUARE of this number. At 2 on a dpr-2 laptop it draws four times the CSS pixels —
+ * on the one canvas that must keep moving while the GPU process is also uploading textures and
+ * compiling two scenes, which is precisely when it was reported as laggy.
+ *
+ * Dropping to 1.5 removes 44% of those pixels and costs almost nothing visible, because point size is
+ * already multiplied by `uPixelRatio` (see the shader): the grains keep their apparent size and only
+ * their edges soften. On a field of dust, on near-black, at a 3.4 px grain.
+ */
+const MAX_DEVICE_PIXEL_RATIO = 1.5;
 // Re-measuring the "o" every frame would force a synchronous layout while GSAP writes styles to that same
 // subtree. It only moves on resize, so a periodic check is plenty.
 const MEASURE_INTERVAL_MS = 250;
@@ -57,19 +81,41 @@ const SUN_RADIUS_PER_GLYPH = (SUN_IN_O_RATIO * SUN_BODY_FILL) / 2;
  */
 const CLEARING_MAX_MS = 3000;
 
+// ── ⚠ THE FIELD NO LONGER OPENS BY GATHERING INTO THE CIRCLE ─────────────────────────────────────
+//
+// There is no onset delay at all now, and there used to be two different ones. First an ETA test
+// (`SHAPE_ONSET_ETA_SECONDS`, 10 s then 4 s) that only showed the drawings on a slow load; then a
+// short fixed beat, so the stream could establish itself before the first drawing gathered.
+//
+// Both of them meant the loader OPENED on the flow — dust converging into the "o" — which is the one
+// thing that should be its ENDING. The convergence on the star is the loader's last gesture: it comes
+// after the drawings, on FINALE_EVENT, and runs under the wordmark straight into the shard assembly.
+// Opening with it spends the gesture before there is anything to gather into, and on a warm cache it
+// was most of what the visitor saw.
+//
+// So the field gathers from its first frame: the grains fly out of their scattered start points
+// directly into the first drawing. `downloadEta.ts` is still here — it paces the cycle below, and
+// `SkipToLite` reads it — it simply no longer decides WHETHER there are drawings.
+
 /**
- * How far away the star has to look before the dust starts gathering into forms.
+ * How many drawings the field aims to get through in the wait it expects.
  *
- * The loader now waits for the star for as long as the star keeps arriving rather than giving up on a
- * deadline (see IntroSequence's gate), which on a weak connection means a minute or more on screen.
- * The stream alone cannot carry that — it is the same picture at second 3 and second 70 — so past this
- * estimate the field starts holding shapes instead.
- *
- * ⚠ Checked against the ESTIMATE, not against elapsed time, and that is the whole point of measuring:
- * a fast connection is already finished by the time a stopwatch would have fired, so it never sees a
- * form at all and its loader is exactly what it was.
+ * The cycle length is solved from this rather than fixed, because "how long should a shape last" has
+ * no answer without "how long is this person going to be here". Four is one full pass through the
+ * bake, so a visitor on a fast connection sees every drawing once and a visitor on a slow one sees
+ * them repeat rather than crawl.
  */
-const SHAPE_ONSET_ETA_SECONDS = 10;
+const SHAPES_PER_EXPECTED_WAIT = 4;
+/**
+ * The bounds the solved cycle is clamped into.
+ *
+ * The floor is the real constraint: below it the crossing (which is itself ~1.3 s at
+ * SHAPE_GATHER_PER_SECOND) eats the hold, and a drawing that is never still long enough to be read
+ * is a churn rather than a sequence. The ceiling only binds on a genuinely slow connection, where
+ * repeating four drawings slowly beats repeating them quickly.
+ */
+const SHAPE_CYCLE_MIN_SECONDS = 2.8;
+const SHAPE_CYCLE_MAX_SECONDS = 7;
 
 /**
  * Workers already attached to a canvas, so a re-run of the effect reuses one instead of transferring
@@ -97,6 +143,8 @@ export default function GatherCanvas() {
     if (prefersReducedMotion()) return;
 
     const pixelRatio = Math.min(window.devicePixelRatio, MAX_DEVICE_PIXEL_RATIO);
+    // Read here and passed through: `getDeviceTier` needs `matchMedia`, which a worker does not have.
+    const particleCount = GATHER_COUNT_BY_TIER[getDeviceTier()];
     const canvasSize = () => ({
       width: canvas.clientWidth || 1,
       height: canvas.clientHeight || 1,
@@ -149,13 +197,13 @@ export default function GatherCanvas() {
         const { width, height } = canvasSize();
         // Transferred, not copied — after this the main thread can never draw to this canvas again.
         post(
-          { type: "init", canvas: offscreen, width, height, pixelRatio },
+          { type: "init", canvas: offscreen, width, height, pixelRatio, particleCount },
           [offscreen],
         );
         WORKERS_BY_CANVAS.set(canvas, { worker, teardownTimer: 0 });
       }
     } else {
-      fallback = new GatherRenderer(canvas, pixelRatio);
+      fallback = new GatherRenderer(canvas, pixelRatio, particleCount);
       const { width, height } = canvasSize();
       fallback.resize(width, height);
       const loop = () => {
@@ -170,34 +218,80 @@ export default function GatherCanvas() {
     // already in this file: the field, its inputs, and the star's progress. One estimator, sampled on
     // the same tick that posts progress.
     //
-    // Releases on the star LANDING rather than on the assembly cue, so the dust is back in its stream
-    // through the warm-up beat and well before the shards fly — the finale is the flow's, not a shape's.
-    const starEta = createDownloadEtaEstimator("sun");
-    let shapeHold = 0;
+    // ── When the shapes let go ──
+    // The rule this file has always held is that THE FINALE IS THE FLOW'S, not a shape's: the dust has
+    // to be back in its stream before the shards fly. That is unchanged and must stay.
+    //
+    // ⚠ What changed is where the wait ends. It used to release on the star LANDING, on the reasoning
+    // that the warm-up beat after it was short. It is not any more — the two scenes compile, allocate
+    // and now run a burn-in of up to 1.5 s (see `reportBurnIn`), so releasing at the landing left the
+    // field back to plain dust for seconds while the loader was still visibly working.
+    //
+    // Releasing when the ARRIVED warm-ups are done instead puts the release at the start of
+    // `ASSEMBLY_LEAD_MS` — the held beat the intro already inserts before the flight. So the shapes
+    // cover the whole wait, and the dust still gets its full second of stream before the first shard
+    // moves. Both rules satisfied, rather than one traded for the other.
+    const pageEta = createPageEtaEstimator();
+    // Starts at 1: the field gathers from its first frame. See the block above for what opening on
+    // the stream instead used to cost.
+    let shapeHold = 1;
+    let shapeCycleSeconds = 0;
+
+    /**
+     * Pace the sequence to the wait the visitor is actually in for.
+     *
+     * The expected wait is the LONGER of the download estimate and the loader's own minimum — the
+     * minimum is what binds on a warm cache, where the download is over before the drawings have
+     * finished and the loader is being held open on purpose (see MINIMUM_LOADER_MS).
+     */
+    const resolveShapeCycle = () => {
+      const remaining = pageEta.secondsRemaining();
+      const expectedWait = Math.max(MINIMUM_LOADER_MS / 1000, remaining ?? 0);
+      shapeCycleSeconds = Math.min(
+        SHAPE_CYCLE_MAX_SECONDS,
+        Math.max(SHAPE_CYCLE_MIN_SECONDS, expectedWait / SHAPES_PER_EXPECTED_WAIT),
+      );
+    };
+    /**
+     * ⚠ SET BY THE INTRO, not worked out here.
+     *
+     * This used to ask `areAssetsReady() && areArrivedWarmupsDone()` — a faithful reading of "the wait
+     * is over" that stopped being true when the wait stopped being a function of the assets. The
+     * loader holds its finale for a minimum (see MINIMUM_LOADER_MS), and on a warm cache that is
+     * several seconds during which this would already have let go: plain stream, nothing on screen,
+     * waiting for a wordmark that is not allowed to arrive yet.
+     *
+     * The rule it was protecting is unchanged and is the one that must not move — THE FINALE IS THE
+     * FLOW'S, the dust has to be back in its stream before the first shard flies. FINALE_EVENT is
+     * cued a whole wordmark ahead of the assembly, which is more margin than the release needs.
+     */
+    let finaleBegun = false;
+    const onFinale = () => {
+      finaleBegun = true;
+    };
+    window.addEventListener(FINALE_EVENT, onFinale);
+
     const resolveShapeHold = () => {
-      starEta.sample();
-      if (isSourceLoaded("sun")) {
-        shapeHold = 0;
-        return;
-      }
-      // Latched: once the wait has been judged long, it stays long. Without this the estimate
-      // wobbling either side of the threshold would gather and release the whole field repeatedly.
-      if (shapeHold === 0) {
-        const remaining = starEta.secondsRemaining();
-        if (remaining !== null && remaining >= SHAPE_ONSET_ETA_SECONDS) shapeHold = 1;
-      }
+      pageEta.sample();
+      resolveShapeCycle();
+      if (finaleBegun) shapeHold = 0;
     };
 
-    // The field's density tracks the STAR, like the loader's counter — it is what the gate waits for,
-    // so it is what the loader should be reporting. Using the whole page's weighted total would leave
-    // the field thin at the very moment the star lands and the assembly plays.
+    // ── The field's density tracks THE WHOLE PAGE ──
+    // It tracked the star, on the stated reasoning that the star "is what the gate waits for, so it is
+    // what the loader should be reporting". That reasoning is kept and its premise has changed: the
+    // gate now holds for every source (see `isGateSatisfied` in IntroSequence). Left on the star, the
+    // field would reach full density around 18 % of the way through the download and then sit there
+    // for the rest of it — dense, still, and saying nothing — which is the same lie the counter was
+    // just taken off the star to stop telling.
     const sendUpdate = () => {
       resolveShapeHold();
       const measured = measureTarget();
       const update = {
         type: "update" as const,
-        progress: getSourceProgress("sun"),
+        progress: getAssetProgress(),
         shapeHold,
+        shapeCycleSeconds,
         ...measured,
       };
       if (worker) post(update);
@@ -220,7 +314,14 @@ export default function GatherCanvas() {
     // Progress is cheap to read, so it goes often. Measuring the "o" forces a layout, so it goes rarely.
     const sendProgress = () => {
       resolveShapeHold();
-      const update = { type: "update" as const, progress: getSourceProgress("sun"), shapeHold };
+      // Same reading as `sendUpdate` — the whole page, not the star. Two call sites, one source of
+      // truth, or the field's density would flicker between two different ideas of "how far in".
+      const update = {
+        type: "update" as const,
+        progress: getAssetProgress(),
+        shapeHold,
+        shapeCycleSeconds,
+      };
       if (worker) post(update);
       else fallback?.update(update);
     };
@@ -258,9 +359,26 @@ export default function GatherCanvas() {
       window.clearTimeout(clearingFallback);
       clearingFallback = window.setTimeout(() => setClearing(0), CLEARING_MAX_MS);
     };
+    /**
+     * ── The star is whole: the field's work is done ──────────────────────────────────────────────
+     *
+     * ⚠ It used to flow BACK in here — the clearing eased to 0 and the dust returned around the
+     * finished star. That was right while the field was the loader's backdrop and had a whole
+     * download still to narrate. It is not any more: everything this field exists to do is finished
+     * at the moment the last shard lands. The drawings carried the wait, the convergence on the "o"
+     * carried the ending, and what follows is the wordmark and the flight into the hero — which the
+     * dust has no part in. Left running it is set dressing on a scene that has ended, and it is
+     * competing for the frames the flight is delta-timed against.
+     *
+     * The clearing is released at the same time so that the two are not fighting over the same
+     * grains on the way out; the presence fade is what is actually seen.
+     */
     const onAssembleEnd = () => {
       window.clearTimeout(clearingFallback);
       setClearing(0);
+      const update = { type: "update" as const, presence: 0 };
+      if (worker) post(update);
+      else fallback?.update(update);
     };
     window.addEventListener(SUN_FORMING_EVENT, onSunForming);
     window.addEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
@@ -270,6 +388,7 @@ export default function GatherCanvas() {
       window.clearInterval(measureTimer);
       window.removeEventListener("resize", resize);
       window.removeEventListener(IGNITE_EVENT, onIgnite);
+      window.removeEventListener(FINALE_EVENT, onFinale);
       window.removeEventListener(SUN_FORMING_EVENT, onSunForming);
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onAssembleEnd);
       window.clearTimeout(clearingFallback);

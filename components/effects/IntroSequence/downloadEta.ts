@@ -1,4 +1,9 @@
-import { getSourceProgress, type AssetSource } from '@/lib/assetLoadProgress';
+import {
+  getAssetProgress,
+  getSourceProgress,
+  type AssetSource,
+} from '@/lib/assetLoadProgress';
+import { TOTAL_PAYLOAD_BYTES } from './LoaderTelemetry/loaderModules';
 
 /**
  * How much longer a source has left, estimated from how fast its own fraction is moving.
@@ -34,11 +39,28 @@ export interface DownloadEtaEstimator {
   sample: () => void;
   /** Seconds remaining, or `null` while that cannot honestly be answered yet. */
   secondsRemaining: () => number | null;
+  /**
+   * Measured throughput in BYTES per second, or `null` under the same conditions as above.
+   *
+   * ⚠ Derived, not measured — this module differentiates a FRACTION, so the only way to a byte rate
+   * is to multiply by what the whole payload weighs. It is therefore exactly as accurate as
+   * `TOTAL_PAYLOAD_BYTES`, which is a rounded figure re-measured by hand whenever the models change.
+   * Good to the order of magnitude, which is all a "is this connection slow" test needs; do not build
+   * anything on it that wants a real number.
+   */
+  bytesPerSecond: () => number | null;
 }
 
-export function createDownloadEtaEstimator(source: AssetSource): DownloadEtaEstimator {
+/**
+ * The estimator proper, over any monotonic 0..1 reader.
+ *
+ * Generalised from "one source" when the gate stopped waiting for one source. Nothing in the maths
+ * below ever cared which fraction it was differentiating — it only cared that the fraction was
+ * monotonic, which is guaranteed for both a single source and the weighted total.
+ */
+function createEtaEstimator(readProgress: () => number): DownloadEtaEstimator {
   const startedAt = performance.now();
-  const startProgress = getSourceProgress(source);
+  const startProgress = readProgress();
 
   let lastAt = startedAt;
   let lastProgress = startProgress;
@@ -46,7 +68,7 @@ export function createDownloadEtaEstimator(source: AssetSource): DownloadEtaEsti
 
   const sample = () => {
     const now = performance.now();
-    const progress = getSourceProgress(source);
+    const progress = readProgress();
     const elapsedSeconds = (now - lastAt) / 1000;
     if (elapsedSeconds <= 0) return;
 
@@ -64,14 +86,43 @@ export function createDownloadEtaEstimator(source: AssetSource): DownloadEtaEsti
         : ratePerSecond + (instantRate - ratePerSecond) * RATE_EMA_ALPHA;
   };
 
+  /** True once there is enough of a sample for either answer below to mean anything. */
+  const isBelievable = () => {
+    if ((performance.now() - startedAt) / 1000 < MIN_SAMPLE_SECONDS) return false;
+    if (readProgress() - startProgress < MIN_SAMPLE_FRACTION) return false;
+    return ratePerSecond >= MIN_BELIEVABLE_RATE;
+  };
+
   const secondsRemaining = () => {
-    const progress = getSourceProgress(source);
+    const progress = readProgress();
     if (progress >= 1) return 0;
-    if ((performance.now() - startedAt) / 1000 < MIN_SAMPLE_SECONDS) return null;
-    if (progress - startProgress < MIN_SAMPLE_FRACTION) return null;
-    if (ratePerSecond < MIN_BELIEVABLE_RATE) return null;
+    if (!isBelievable()) return null;
     return (1 - progress) / ratePerSecond;
   };
 
-  return { sample, secondsRemaining };
+  const bytesPerSecond = () => {
+    if (!isBelievable()) return null;
+    // Fractions per second × what a whole fraction weighs. See the interface for why this is only
+    // ever an order-of-magnitude figure.
+    return ratePerSecond * TOTAL_PAYLOAD_BYTES;
+  };
+
+  return { sample, secondsRemaining, bytesPerSecond };
+}
+
+/** How much longer ONE source has left. */
+export function createDownloadEtaEstimator(source: AssetSource): DownloadEtaEstimator {
+  return createEtaEstimator(() => getSourceProgress(source));
+}
+
+/**
+ * How much longer the WHOLE PAGE has left — the weighted total across every gate source.
+ *
+ * ⚠ This is the one to use for anything about the visitor's wait, now that the gate holds for every
+ * source rather than for the star alone (see `isGateSatisfied` in IntroSequence). The star is ~18 % of
+ * the weighted download and lands early; an estimate built on it would have said "four seconds" while
+ * the fleet still had 5.3 MB to go, which is how the shape onset came to almost never fire.
+ */
+export function createPageEtaEstimator(): DownloadEtaEstimator {
+  return createEtaEstimator(getAssetProgress);
 }
