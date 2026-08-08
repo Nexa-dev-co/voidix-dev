@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { HEAT_200, HEAT_600, HEAT_950 } from '@/lib/heatPalette';
+import { HEAT_100, HEAT_400, HEAT_600, HEAT_800, HEAT_950 } from '@/lib/heatPalette';
 
 /**
  * The star's burning surface, procedurally.
@@ -68,8 +68,22 @@ const PLASMA_SEGMENTS = 64;
  * still moves the star, which is the whole point of there being one anchor.
  */
 const COLOR_CORE = HEAT_950; // white-hot brightest granules — the value COLLAPSE_CORE_LIGHT already uses
-const COLOR_MID = HEAT_600; // ⭐ THE ANCHOR — the sun's own light
-const COLOR_DEEP = HEAT_200; // the throat of things — convection troughs
+const COLOR_HOT = HEAT_800; // brushed warm metal — the step below white
+const COLOR_BODY = HEAT_600; // ⭐ THE ANCHOR — the sun's own light
+/**
+ * The convection lanes, and they are a PAIR rather than one colour.
+ *
+ * The original had a single deep stop and the troughs stayed that colour forever. But this star
+ * cracks: `coreLight`'s comment describes *"amber escaping through widening gaps, then white-hot
+ * compression"*, and until now that was done entirely by a light and an emissive map on the crust
+ * while the surface itself stayed cold in the lanes.
+ *
+ * So the lanes ride the ramps. At rest they are char — barely-glowing matter between granules. As
+ * Cracks and Collapse rise they go molten, which is the star lighting from WITHIN rather than merely
+ * getting brighter. Costs one `mix`, no extra noise.
+ */
+const COLOR_LANE_COLD = HEAT_100; // char
+const COLOR_LANE_HOT = HEAT_400; // the spiral — molten, still clearly below the body
 
 // ── Surface tuning, carried over from the original ───────────────────────────────────────────────
 /** Size of the convection cells. */
@@ -106,8 +120,10 @@ const FRAGMENT_SHADER = /* glsl */ `
 
   uniform float uTime;
   uniform vec3  uColorCore;
-  uniform vec3  uColorMid;
-  uniform vec3  uColorDeep;
+  uniform vec3  uColorHot;
+  uniform vec3  uColorBody;
+  uniform vec3  uColorLaneCold;
+  uniform vec3  uColorLaneHot;
   uniform float uNoiseScale;
   uniform float uFlowSpeed;
   uniform float uContrast;
@@ -117,10 +133,32 @@ const FRAGMENT_SHADER = /* glsl */ `
   // Restless-state drama: extra flare energy and harder granulation.
   const float INTENSITY_FLARE_BOOST    = 2.6;
   const float INTENSITY_CONTRAST_BOOST = 0.5;
-  // The collapse goes further than the cracks ever do, on both counts, and speeds the churn.
+  const float INTENSITY_LANE_HEAT      = 0.7;  // how far Cracks alone lights the lanes
+
+  // ── The collapse ─────────────────────────────────────────────────────────────
+  // It goes further than Cracks on every axis, and one of these is not just "more".
   const float COLLAPSE_FLARE_BOOST     = 4.5;
   const float COLLAPSE_FLOW_BOOST      = 3.2;
+  const float COLLAPSE_CONTRAST_BOOST  = 1.1;
   const float COLLAPSE_WHITEN          = 0.55;
+  const float COLLAPSE_RIM_BOOST       = 2.2;
+  /**
+   * The granulation gets FINER as the star crushes in — the same surface features carried onto a
+   * smaller sphere. This is the figure-skater effect the rotation already has (see
+   * COLLAPSE_ROTATE_DEGREES_PER_SECOND in SunModelCanvas), applied to the surface as well, and it is
+   * what stops the collapse reading as the star simply getting brighter and faster.
+   */
+  const float COLLAPSE_SCALE_GAIN      = 1.6;
+
+  // ── Depth ────────────────────────────────────────────────────────────────────
+  /**
+   * Looking INTO the star at the centre of the disc, where the line of sight goes deepest through the
+   * hot body. The complement of limb darkening rather than a repeat of the rim, and between them the
+   * sphere stops reading as a lit ball and starts reading as a volume. Free — it reuses the same
+   * fresnel term the limb and rim already need.
+   */
+  const float CORE_DEPTH_POWER         = 2.2;
+  const float CORE_DEPTH_INTENSITY     = 0.5;
 
   const int   FBM_OCTAVES        = 5;
   const float FBM_INITIAL_AMP    = 0.5;
@@ -129,8 +167,11 @@ const FRAGMENT_SHADER = /* glsl */ `
   const float WARP_FREQUENCY     = 1.6;
   const float WARP_STRENGTH      = 0.35;
 
-  const float HEAT_DEEP_EDGE     = 0.05;
-  const float HEAT_MID_EDGE      = 0.55;
+  // Four ramp segments, not two. A star's temperature gradient is not linear, and mixing straight
+  // from the lanes to the anchor left the mid-tones a flat wash of one colour across most of the disc.
+  const float HEAT_LANE_EDGE     = 0.05;
+  const float HEAT_BODY_EDGE     = 0.48;
+  const float HEAT_HOT_EDGE      = 0.74;
 
   const float FLARE_FREQUENCY    = 2.1;
   const float FLARE_SHARPNESS    = 3.0;
@@ -221,32 +262,49 @@ const FRAGMENT_SHADER = /* glsl */ `
 
     // 1. Domain-warp the sample point so the plasma swirls and churns instead of just scrolling past
     //    — this is what reads as turbulent convection.
-    vec3 sampleCoord = spherePoint * uNoiseScale;
+    // The field TIGHTENS as the star crushes in — see COLLAPSE_SCALE_GAIN.
+    vec3 sampleCoord = spherePoint * uNoiseScale * (1.0 + uCollapse * COLLAPSE_SCALE_GAIN);
     float warp = snoise(sampleCoord * WARP_FREQUENCY + vec3(0.0, 0.0, flow));
     vec3 churned = sampleCoord + warp * WARP_STRENGTH;
 
     // 2. Granulation — layered noise gives the boiling convection cells.
     float granulation = fbm(churned + vec3(flow * 0.15, -flow * 0.1, flow * 0.05));
     float heat = clamp(granulation * 0.5 + 0.5, 0.0, 1.0);
-    heat = pow(heat, uContrast + uIntensity * INTENSITY_CONTRAST_BOOST);
+    heat = pow(heat, uContrast
+                   + uIntensity * INTENSITY_CONTRAST_BOOST
+                   + uCollapse * COLLAPSE_CONTRAST_BOOST);
 
     // 3. Surface flares — sharp, faster-moving hot spots layered over the body.
     float flarePattern = fbm(churned * FLARE_FREQUENCY - vec3(flow * 0.3));
     float flares = pow(clamp(flarePattern, 0.0, 1.0), FLARE_SHARPNESS);
 
-    // 4. Map heat onto the star's colour ramp: deep trough, body, white-hot core.
-    vec3 color = mix(uColorDeep, uColorMid, smoothstep(HEAT_DEEP_EDGE, HEAT_MID_EDGE, heat));
-    color = mix(color, uColorCore, smoothstep(HEAT_MID_EDGE, 1.0, heat));
+    // 4. THE INSIDE. The lanes between granules are the thinnest part of the surface, so they are
+    //    where a star that is coming apart shows its interior. At rest they are char; as Cracks and
+    //    Collapse rise they go molten, which reads as the star lighting from within rather than
+    //    merely getting brighter. One mix, no extra noise.
+    float laneHeat = clamp(uIntensity * INTENSITY_LANE_HEAT + uCollapse, 0.0, 1.0);
+    vec3 lanes = mix(uColorLaneCold, uColorLaneHot, laneHeat);
+
+    // 5. Four ramp segments: lanes, body, hot, white-hot core.
+    vec3 color = mix(lanes, uColorBody, smoothstep(HEAT_LANE_EDGE, HEAT_BODY_EDGE, heat));
+    color = mix(color, uColorHot, smoothstep(HEAT_BODY_EDGE, HEAT_HOT_EDGE, heat));
+    color = mix(color, uColorCore, smoothstep(HEAT_HOT_EDGE, 1.0, heat));
     color += uColorCore * flares * FLARE_INTENSITY
            * (1.0 + uIntensity * INTENSITY_FLARE_BOOST + uCollapse * COLLAPSE_FLARE_BOOST);
 
-    // 5. Limb darkening, then a thin hot chromosphere rim back at the edge so the silhouette glows
-    //    rather than going flat — fresnel against the camera.
-    float fresnel = 1.0 - max(dot(normalize(vViewNormal), normalize(vViewDirection)), 0.0);
+    // 6. Volume. THREE fresnel terms doing three different jobs, off one dot product:
+    //    · depth      — the centre of the disc, where the line of sight runs deepest through hot body
+    //    · limb       — darker toward the edge, which is what real stars do and what stops it reading
+    //                   as a lit ball
+    //    · chromosphere — a thin hot rim back at the silhouette so the edge glows rather than dies
+    float facing = max(dot(normalize(vViewNormal), normalize(vViewDirection)), 0.0);
+    float fresnel = 1.0 - facing;
+    color += uColorCore * pow(facing, CORE_DEPTH_POWER) * CORE_DEPTH_INTENSITY * heat;
     color *= mix(1.0, LIMB_DARKEN_FLOOR, pow(fresnel, LIMB_DARKEN_POWER));
-    color += uColorMid * pow(fresnel, RIM_POWER) * RIM_INTENSITY;
+    color += uColorBody * pow(fresnel, RIM_POWER) * RIM_INTENSITY
+           * (1.0 + uCollapse * COLLAPSE_RIM_BOOST);
 
-    // 6. The collapse crushes the whole ramp toward the core colour — temperature, not exposure.
+    // 7. The collapse crushes the whole ramp toward the core colour — temperature, not exposure.
     color = mix(color, uColorCore, uCollapse * COLLAPSE_WHITEN);
 
     gl_FragColor = vec4(color, 1.0);
@@ -287,8 +345,10 @@ export function createSunPlasma(): SunPlasma {
     uniforms: {
       uTime: { value: 0 },
       uColorCore: { value: new THREE.Color(COLOR_CORE) },
-      uColorMid: { value: new THREE.Color(COLOR_MID) },
-      uColorDeep: { value: new THREE.Color(COLOR_DEEP) },
+      uColorHot: { value: new THREE.Color(COLOR_HOT) },
+      uColorBody: { value: new THREE.Color(COLOR_BODY) },
+      uColorLaneCold: { value: new THREE.Color(COLOR_LANE_COLD) },
+      uColorLaneHot: { value: new THREE.Color(COLOR_LANE_HOT) },
       uNoiseScale: { value: NOISE_SCALE },
       uFlowSpeed: { value: FLOW_SPEED },
       uContrast: { value: SURFACE_CONTRAST },
