@@ -7,12 +7,33 @@
 
 import type { DisciplineId } from '@/lib/enquirySubjects';
 
-// Model → service assignment. Each ship is one line — swap a path to reassign a
-// vessel. The carousel shows one craft at a time, so every bay gets a distinct hull.
-const WEB_VESSEL        = '/models/spaceship.glb';
-const MOBILE_VESSEL     = '/models/spaceship3.glb';
-const ENTERPRISE_VESSEL = '/models/cargo_spaceship.glb';
-const AI_VESSEL         = '/models/star_aventure_spaceship_starship_fighter.glb';
+/**
+ * THE HERO — the one craft that is ever actually built.
+ *
+ * The deck used to fly four models, swapped through portal gates. It draws four and builds one: every
+ * stop gathers its craft out of dust as a flat plan-view drawing, and only the LAST of them goes
+ * further — turning out of plan view into three dimensions, wireframing, and skinning into this hull.
+ * Stops 01–03 are drawings and never anything else, so they need no geometry at all.
+ *
+ * ⚠ The other three craft still EXIST — as point clouds in `public/deck-drawings.bin`, traced from
+ * the models that used to ship. Their GLBs are gone (2.1 MB + 196 KB + 2.9 MB against a 153 KB bake
+ * that carries all four drawings), which is **5.2 MB off the loader's critical path** and the largest
+ * single download saving available on this site. To change a drawing, restore its model into
+ * `public/models`, edit `FLEET` in `scripts/buildFleetDrawings.mjs`, and re-run `npm run
+ * build:drawings`.
+ *
+ * ⚠ `SOURCE_WEIGHTS` in lib/assetLoadProgress.ts was re-weighed to match. The loader's counter is a
+ * weighted blend of each source's bytes, so shrinking one side by 89 % invalidates it exactly as much
+ * as growing it would.
+ *
+ * ⚠ Which drawing is the hero is decided by the BAKE (`DECK_HERO_INDEX`), and the bake's `FLEET` is
+ * in DECK_SERVICES order. Reorder one and you must reorder the other.
+ */
+export const DECK_CRAFT = {
+  path: '/models/star_aventure_spaceship_starship_fighter.glb',
+  /** The hull imports facing the wrong way — flip it 180° on X to show the correct side. */
+  rotation: { x: -180 } as { x?: number; y?: number; z?: number },
+} as const;
 
 // Each hull is re-graded onto its own palette instead of being washed to one flat hue. The
 // model's own albedo *luminance* drives a three-tone map (shadow → hull → highlight), so panels,
@@ -52,10 +73,12 @@ export interface GradedProfile {
   envIntensity: number;
 }
 
-// The original pre-overhaul hull treatment, kept for ships that read best as a flat two-tone tint:
-// the model's texture is multiplied by a fresnel mix from `colorCore` (facing the camera) to
-// `colorEdge` (grazing edges). No graded palette, no clearcoat/iridescence — the model keeps its
-// native metalness/roughness.
+// The original pre-overhaul hull treatment, and the one the AI craft still wears: the model's texture
+// multiplied by a fresnel mix from `colorCore` (facing the camera) to `colorEdge` (grazing edges). No
+// graded palette, no clearcoat/iridescence — the model keeps its native metalness/roughness.
+//
+// It bakes its two colours into the program rather than into uniforms, which is fine and always was:
+// a hull is skinned once, at load, from the profile of the service it belongs to, and never re-graded.
 export interface LegacyProfile {
   kind: 'legacy';
   /** Hull colour where the surface faces the camera. */
@@ -96,14 +119,17 @@ export interface DeckService {
   description: string;
   /** Capability tags surfaced under the active description. */
   capabilities: string[];
-  /** Path to this service's vessel — a Draco-compressed .glb under /public/models. */
-  modelPath: string;
-  /** The ship's full visual identity (palette + material + glow). */
+  /**
+   * This craft's visual identity.
+   *
+   * ⚠ For three of the four services it only tints the DUST their drawing is made of — they have no
+   * geometry, so there is no hull for a palette to land on. Only the hero's profile is ever worn by a
+   * surface, and it is applied once when the model loads. There is no `modelPath` beside it any more:
+   * see DECK_CRAFT.
+   */
   profile: ShipProfile;
   /** Optional per-ship key-light override (see ShipLight); omit for the default warm key. */
   light?: ShipLight;
-  /** Optional base model rotation in DEGREES, applied before framing (e.g. flip a mis-oriented hull). */
-  modelRotation?: { x?: number; y?: number; z?: number };
 }
 
 export const DECK_SERVICES: DeckService[] = [
@@ -115,7 +141,6 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Bespoke platforms engineered from the metal up — no templates, no compromise. Every interaction is hand-tuned until the product moves like it has its own momentum.',
     capabilities: ['Next.js', 'WebGL / GLSL', 'Realtime', 'Design Systems'],
-    modelPath: WEB_VESSEL,
     // Ember Noir — a full-black hull lit almost neutrally; only a faint rim catch remains as a nod to
     // the heat. Predominantly black. Matte, low-reflectance.
     //
@@ -150,7 +175,6 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Apps that feel like an extension of the device, not a website in a frame. Sixty frames a second, offline-first, and tactile in the hand.',
     capabilities: ['iOS / Android', 'Offline-first', 'Motion', 'Haptics'],
-    modelPath: MOBILE_VESSEL,
     // Deep Navy — a dark blue hull (navy → steel-blue) raked by a reddish key light for a cinematic
     // warm/cool contrast. The ship itself stays cool/blue; the red mood comes from the light.
     profile: {
@@ -182,7 +206,6 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Operational cores that pull every signal into one orbit. We model the way your business actually works, then make the software disappear into the workflow.',
     capabilities: ['Workflow Engines', 'Integrations', 'Roles & Access', 'Reporting'],
-    modelPath: ENTERPRISE_VESSEL,
     // Gunmetal hull with a WARM amber accent — the one ship that breaks the cool palette, and
     // brushed rather than lacquered, so the fleet reads as four distinct machines.
     profile: {
@@ -211,19 +234,23 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Models wired into real products, not demos. Retrieval, agents, and inference pipelines designed around your data — useful on day one, smarter every week.',
     capabilities: ['LLM Pipelines', 'RAG', 'Agents', 'Evaluation'],
-    modelPath: AI_VESSEL,
     // Pre-overhaul original look (restored on request): a flat two-tone tint — purple body fading
     // to cyan at the edges. Keeps the model's native metalness/roughness; no graded palette.
     //
     // ⚠ THE ONE DELIBERATE EXCEPTION TO THE HEAT RAMP, and it was confirmed as such when the ramp was
     // introduced. This is the only saturated purple and the only saturated cyan left on the site — the
     // fleet is allowed exactly one alien, and this is it. Don't "fix" it to match the others.
+    //
+    // ⚠ It is also THE ONLY PROFILE THAT IS EVER WORN BY GEOMETRY. This is the one craft that
+    // materialises, and it is only ever on screen at its own stop — so the hull is skinned from this
+    // once, at load, and never re-graded. A brief cut of this rebuild had one hull standing in for all
+    // four services and rewrote this as a graded profile purely so its colours could live in uniforms;
+    // that constraint is gone, and with it the reason to express this as anything other than what it
+    // is. The other three services' profiles now only tint their DUST (see applyServicePalette).
     profile: {
       kind: 'legacy',
       colorCore: '#7a4ad0',
       colorEdge: '#36e6ff',
     },
-    // The hull imports facing the wrong way — flip it 180° on X to show the correct side.
-    modelRotation: { x: -180 },
   },
 ];

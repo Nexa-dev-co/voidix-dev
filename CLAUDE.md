@@ -117,7 +117,8 @@ scale** — the hue rotates 11° → 46° as luminance climbs, because that is w
 Luminance is strictly monotonic; keep it that way, several consumers were graded against a stop's
 value rather than its hue.
 
-Nine of its twelve stops were values already authored by hand in separate files (`portalGate`,
+Nine of its twelve stops were values already authored by hand in separate files (`portalGate`, since
+deleted with the fleet's swap — see "The craft" below,
 `accretionGrowth`, `gatherShader`, `chamberTuning`, `SunModelCanvas`, deck 03). The ramp did not
 invent a palette — it named the one that had already converged. Full audit and rationale in
 `docs/amber-color-system.md`.
@@ -211,7 +212,7 @@ components/
   pages/             # ⚠ a ROUTE's content (About/, Careers/) — not a homepage section
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
-    ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial
+    ServicesDeck/   # four drawings + one hull: DeckCanvas, hullMaterial, fleetDrawing, deckDrawings
     WorksField/     # the project field + FieldCanvas + the mark systems + transitions/
     Chamber/        # the room: walls/ground/plinth, FaqHologram/
   effects/
@@ -280,8 +281,8 @@ scroll progress. There is no stack of sections and no second pin.
 ```
   INTRO      HERO       SERVICES     ══HANDOFF══   WORKS      ══REVEAL══   CHAMBER
   ┌─────┐    ┌─────┐    ┌──────┐       (180vh)     ┌──────┐     (140vh)    ┌──────┐
-  │dust │───►│square───►│4 craft│── craft flies ──►│4 marks│── camera ────►│ room │
-  │→ sun│    │fills │   │+ gates│   off, then the  │grown  │   backs out   │ + FAQ│
+  │dust │───►│square───►│4 drawn│── craft flies ──►│4 marks│── camera ────►│ room │
+  │→ sun│    │fills │   │1 built│   off, then the  │grown  │   backs out   │ + FAQ│
   └─────┘    └─────┘    └──────┘   mark arrives    │from   │  of "screen"  │ holo │
      ▲                             from the dark   │stone  │               │      │
      │                                             └──────┘                └──────┘
@@ -345,6 +346,37 @@ the whole glide, with input locked (`settleMs`) so it can't be cut short.
 painted onto a quad in the chamber room — so the room must be drawn by the *same renderer*. That is
 why `useWorksField.ts` hosts `chamberScene.ts` rather than the chamber owning a canvas. **Do not
 "tidy" this.**
+
+## The fleet — four drawings, one ship
+
+**Rebuilt 2026-08-09.** Services shipped **four** models swapped through portal gates. It now **draws
+four craft and builds one**: every stop gathers its craft out of dust as a flat plan-view drawing, and
+only the LAST (`DECK_CRAFT`, the `star_aventure` fighter) goes further — turning out of plan view into
+three dimensions, wireframing, and skinning into the real hull, which the works crossing then flies
+off. A stop change is a MORPH between two drawings, exactly as the loader morphs its held forms.
+**Stops 01–03 have no geometry at all.** Full state doc: `docs/services-particle-ship-plan.md`.
+
+⚠ **The hero's drawing is not a picture of it — it IS the hull, flattened.** A stored point is
+`(drawX, drawY)` in the plane spanned by `DECK_PLAN_RIGHT` / `DECK_PLAN_NOSE`, produced by projecting
+the hull's own feature-edge points onto those axes — so `drawX·RIGHT + drawY·NOSE` is identically the
+3D point with its DORSAL component removed, and the turn is a plain lerp in model space. It cannot
+scramble. Do not "simplify" it by sampling the SVGs in `deck-shapes-src/` — that art is the readable
+RECORD of the same extraction, and grains sampled from it would have no 3D home to turn into.
+
+⚠ **The longest beat is bounded by `STAGE_STEP_HOLD_MS` (2900 ms), not by taste.** Arriving at the
+hero is 2.60 s. Retune the WINDOWS in `fleetDrawing.ts` before lengthening it.
+
+⚠ **A service's `profile` tints its DUST. Only the hero's is ever worn by a surface** — the other
+three stops have no geometry for a palette to land on. The hull is skinned once at load from the hero
+service's own profile and **never re-graded**, so the AI craft keeps its flat two-tone `legacy`
+purple→cyan exactly as authored. `applyServicePalette` must not touch the hull.
+
+⚠ **The bake's `FLEET` order is DECK_SERVICES order**, and `DECK_HERO_INDEX` comes from the bake.
+Reorder one and you must reorder the other.
+
+⚠ **Deleting three hulls took 5.2 MB off the critical path** — replaced by a 153 KB bake carrying all
+four drawings — and `SOURCE_WEIGHTS` was re-weighed for it (deck .47 → .10). That is the largest
+change those weights have ever taken.
 
 ---
 
@@ -738,7 +770,8 @@ only copy left:
 | where | what it holds |
 |---|---|
 | `lib/chamberTuning.ts` | the room, the display rig, the showcase keys, the hologram |
-| `ServicesDeck/deckTuning.ts` + `deckServices.ts` | the fleet's stage; the per-ship palettes |
+| `ServicesDeck/deckTuning.ts` + `deckServices.ts` | the stage; `DECK_CRAFT` and the per-service palettes |
+| `ServicesDeck/fleetDrawing.ts` | the dust, the wireframe, and the beat both read (`materialisePhases`) |
 | `WorksField/worksTuning.ts` | the camera path and where the mark sits |
 | `WorksField/transitions/accretionTransition.ts` → `ACCRETION_TUNING` | the mark's ~60 look and choreography numbers |
 | `Hero/SunModelCanvas.tsx` | the sun's Peaceful / Cracks / Collapse stages |

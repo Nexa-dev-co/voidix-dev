@@ -62,7 +62,8 @@ export function areEntrySourcesReady(): boolean {
 // honest pace — an unweighted average would leap to 50% the instant the lighter source finished, then
 // crawl. Weights sum to 1.
 //
-//   deck   ~5.3 MB — four vessels (2.5 + 2.1 + 0.4 + 0.3), Draco-compressed
+//   deck   ~0.57 MB — the ONE hull that is still built (0.41) plus the bake all four craft are drawn
+//          from (0.15): four point clouds and the hero's feature edges
 //   works  ~0.95 MB — the basalt its debris wears (0.41), the geode the mark's cavities open onto
 //          (0.39), the black stone of the mark's body (0.07), three logo outlines and a typeface (0.06)
 //   sun    ~1.3 MB — fractured_sun.glb, ten shards and a corona; 10k verts and the rest textures
@@ -79,15 +80,22 @@ export function areEntrySourcesReady(): boolean {
 //   chamber      ~0.48 MB — table.glb, plus building the room, its ground shader and the display rig
 //   singularity  ~2.37 MB — black_hole.glb (fractured_sun is already in cache by the time it asks)
 //
-// ⚠ RE-WEIGHED 2026-08-06 when the last two joined. Byte shares of the 10.76 MB total are
-// deck .53 / works .08 / sun .13 / chamber .04 / singularity .22; what is below moves weight from the
-// deck to `works` for the same reason it always did, and rounds the rest to the bytes.
+// ⚠ RE-WEIGHED 2026-08-09, when the deck stopped shipping four hulls and started shipping four
+// DRAWINGS and one hull. That is the largest single change these weights have ever seen — the deck
+// fell from ~5.3 MB to ~0.57 MB, which is 89 % of its own bytes, and takes the page's total from
+// 10.76 MB to ~5.67 MB. Left alone, the counter would have sprinted through the deck's old half of
+// the bar in a fraction of a second and then crawled through everything else, which is exactly the
+// dishonesty described above, in the other direction.
+//
+// Byte shares of the 5.67 MB total are deck .10 / works .17 / sun .23 / chamber .08 / singularity .42.
+// What is below still moves ~0.08 to `works` for its mark-cutting CPU (see above) — taken from the
+// two biggest downloads now that the deck has nothing left to give.
 const SOURCE_WEIGHTS: Record<AssetSource, number> = {
-  deck: 0.47,
-  works: 0.16,
-  sun: 0.12,
-  chamber: 0.05,
-  singularity: 0.2,
+  deck: 0.1,
+  works: 0.25,
+  sun: 0.22,
+  chamber: 0.08,
+  singularity: 0.35,
 };
 
 /**
