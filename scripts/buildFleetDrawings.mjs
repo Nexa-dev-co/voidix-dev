@@ -1,13 +1,29 @@
 // The fleet, as four drawings — and one of them as a ship.
 //
-// The Services deck shows FOUR craft and builds only the LAST one. Stops 01–03 are drawings and never
-// anything else; stop 04 gathers the same way, then turns out of plan view, wireframes and skins into
-// the real hull. So this bakes:
+// The Services deck shows FOUR craft and builds only the LAST one. Every stop gathers its craft as a
+// flat plan-view drawing and then TURNS it into three dimensions; only the hero goes further, into a
+// wireframe and a hull. So this bakes:
 //
-//   · four 2D point clouds, one per craft, all the same length so a grain can travel from its place
-//     in one drawing to its place in the next;
-//   · the hero's 3D position for every one of those points, so its drawing can get its depth back;
+//   · four 3D point clouds, one per craft, all the same length so a grain can travel from its place
+//     in one craft to its place in the next;
 //   · the hero's feature-edge segments, for the wireframe that draws itself between the grains.
+//
+// ── ⚠ Why there is no 2D array, when three of these craft are only ever drawings ─────────────────
+// Because a drawing is the 3D cloud with its DORSAL component removed, and that is one dot product in
+// the vertex shader. Storing it as well would be 66 KB of a value the GPU can derive for free — and,
+// worse, two representations of one shape that could drift apart.
+//
+// It is also what makes the first three craft read as OBJECTS rather than as decals: they have real
+// depth, so they can turn, catch the pinhole's size grading and sit on the turntable exactly as the
+// hero does. They are not models — nothing skins them and no GLB ships for them — but they are not
+// flat either.
+//
+// ── ⚠ All four are baked in ONE frame: the hero's ────────────────────────────────────────────────
+// Each craft has its own plan view (and its own base rotation), so each has its own set of screen
+// axes. Left that way, every shape would need its own DORSAL uniform and a morph between two of them
+// would be a morph between two different spaces. So each craft's points are re-expressed in the
+// hero's basis — dot with its own right/up/forward, then rebuild along the hero's — which is the
+// identity for the hero itself and makes one set of axes correct for all four.
 //
 // ── ⚠ Everything is baked in DECK UNITS, normalised exactly as prepareVessel normalises a hull ────
 // A point is (rotation · p − centre) / largestDimension, so the craft's largest dimension spans 1 and
@@ -71,7 +87,7 @@ const POINTS_PER_SHAPE = 4096;
 const MAX_HERO_SEGMENTS = 9000;
 
 const BINARY_MAGIC = 0x44583156; // "VX1D"
-const BINARY_VERSION = 1;
+const BINARY_VERSION = 2;
 const HEADER_BYTES = 24;
 /** Int16 range. A stored axis is the deck-unit value, where the largest dimension spans 1. */
 const COORDINATE_SCALE = 32767;
@@ -189,6 +205,30 @@ const previewDirectory = process.argv[2];
 const heroIndex = FLEET.findIndex((craft) => craft.hero);
 if (heroIndex === -1) throw new Error('no craft is marked `hero` — one of them has to become a ship');
 
+/**
+ * The frame every craft is expressed in: the hero's own.
+ *
+ * Computed before the loop because the hero is not the first entry, and every other craft's points
+ * have to be rebuilt along these axes.
+ */
+const rawPlanBasis = orbitBasis(PLAN_VIEW.yaw, PLAN_VIEW.pitch);
+const canonical = {
+  right: rotateVector(rawPlanBasis.right, FLEET[heroIndex].rotation),
+  up: rotateVector(rawPlanBasis.up, FLEET[heroIndex].rotation),
+  forward: rotateVector(rawPlanBasis.forward, FLEET[heroIndex].rotation),
+};
+/** [x,y,z] in a craft's own plan basis → the same point in the canonical one. */
+const intoCanonical = (x, y, z, basis) => {
+  const alongRight = x * basis.right[0] + y * basis.right[1] + z * basis.right[2];
+  const alongUp = x * basis.up[0] + y * basis.up[1] + z * basis.up[2];
+  const alongForward = x * basis.forward[0] + y * basis.forward[1] + z * basis.forward[2];
+  return [
+    alongRight * canonical.right[0] + alongUp * canonical.up[0] + alongForward * canonical.forward[0],
+    alongRight * canonical.right[1] + alongUp * canonical.up[1] + alongForward * canonical.forward[1],
+    alongRight * canonical.right[2] + alongUp * canonical.up[2] + alongForward * canonical.forward[2],
+  ];
+};
+
 const drawings = [];
 let heroData = null;
 
@@ -221,17 +261,21 @@ for (const [index, craft] of FLEET.entries()) {
 
   const sampled = samplePoints(segments, segmentCount, basis, POINTS_PER_SHAPE);
 
-  // Into deck units, then into the drawing's own plane.
+  // Into deck units, then into the frame every craft shares.
   const flat = [];
   for (let point = 0; point < POINTS_PER_SHAPE; point += 1) {
-    const x = (sampled[point * 3] - centre[0]) / largestDimension;
-    const y = (sampled[point * 3 + 1] - centre[1]) / largestDimension;
-    const z = (sampled[point * 3 + 2] - centre[2]) / largestDimension;
+    const solid = intoCanonical(
+      (sampled[point * 3] - centre[0]) / largestDimension,
+      (sampled[point * 3 + 1] - centre[1]) / largestDimension,
+      (sampled[point * 3 + 2] - centre[2]) / largestDimension,
+      basis,
+    );
     flat.push({
-      // The drawing: the deck-unit point projected onto the view's two screen axes.
-      drawX: x * basis.right[0] + y * basis.right[1] + z * basis.right[2],
-      drawY: x * basis.up[0] + y * basis.up[1] + z * basis.up[2],
-      solid: [x, y, z],
+      // Where this point lands in the DRAWING, which is the canonical cloud with its dorsal
+      // component removed. Stored only to sort by — the shader derives it.
+      drawX: solid[0] * canonical.right[0] + solid[1] * canonical.right[1] + solid[2] * canonical.right[2],
+      drawY: solid[0] * canonical.up[0] + solid[1] * canonical.up[1] + solid[2] * canonical.up[2],
+      solid,
     });
   }
 
@@ -278,32 +322,33 @@ for (const [index, craft] of FLEET.entries()) {
     // drawings and the hull sit at exactly the same height.
     const liftY = size[1] / largestDimension / 2;
     const heroSegments = new Float64Array(segmentCount * 6);
-    for (let value = 0; value < segmentCount * 6; value += 1) {
-      heroSegments[value] = (segments[value] - centre[value % 3]) / largestDimension;
+    for (let endpoint = 0; endpoint < segmentCount * 2; endpoint += 1) {
+      const at = endpoint * 3;
+      // Through the same change of basis as the points, so the wireframe and the cloud agree. It is
+      // the identity for the hero — this frame IS its frame — but writing it out means a future
+      // change of hero cannot silently leave the lines behind in the old one.
+      const [x, y, z] = intoCanonical(
+        (segments[at] - centre[0]) / largestDimension,
+        (segments[at + 1] - centre[1]) / largestDimension,
+        (segments[at + 2] - centre[2]) / largestDimension,
+        basis,
+      );
+      heroSegments[at] = x;
+      heroSegments[at + 1] = y;
+      heroSegments[at + 2] = z;
     }
-    heroData = {
-      liftY,
-      segments: heroSegments,
-      segmentCount,
-      // DORSAL points from the hull toward the eye; NOSE is screen-up. Rotating the craft until these
-      // face the camera and point up reproduces the drawing exactly.
-      dorsal: basis.forward,
-      nose: basis.up,
-      right: basis.right,
-    };
+    heroData = { liftY, segments: heroSegments, segmentCount };
   }
 }
 
 // ── The binary ──
 // header: magic u32 · version u16 · shapeCount u16 · pointCount u32 · heroIndex u16 · pad u16 ·
 //         heroSegmentCount u32 · reserved u32
-// body:   shapeCount × pointCount × 2 int16   (the drawings)
-//         pointCount × 3 int16                (the hero's depth)
+// body:   shapeCount × pointCount × 3 int16   (every craft, in three dimensions)
 //         heroSegmentCount × 6 int16          (the hero's wireframe)
-const drawingValues = FLEET.length * POINTS_PER_SHAPE * 2;
-const solidValues = POINTS_PER_SHAPE * 3;
+const shapeValues = FLEET.length * POINTS_PER_SHAPE * 3;
 const wireValues = heroData.segmentCount * 6;
-const output = new ArrayBuffer(HEADER_BYTES + (drawingValues + solidValues + wireValues) * 2);
+const output = new ArrayBuffer(HEADER_BYTES + (shapeValues + wireValues) * 2);
 
 const header = new DataView(output);
 header.setUint32(0, BINARY_MAGIC, true);
@@ -319,16 +364,11 @@ const quantise = (value) => Math.max(-32768, Math.min(32767, Math.round(value * 
 let cursor = 0;
 for (const drawing of drawings) {
   for (const point of drawing.points) {
-    payload[cursor] = quantise(point.drawX);
-    payload[cursor + 1] = quantise(point.drawY);
-    cursor += 2;
+    payload[cursor] = quantise(point.solid[0]);
+    payload[cursor + 1] = quantise(point.solid[1]);
+    payload[cursor + 2] = quantise(point.solid[2]);
+    cursor += 3;
   }
-}
-for (const point of drawings[heroIndex].points) {
-  payload[cursor] = quantise(point.solid[0]);
-  payload[cursor + 1] = quantise(point.solid[1]);
-  payload[cursor + 2] = quantise(point.solid[2]);
-  cursor += 3;
 }
 for (let value = 0; value < wireValues; value += 1) {
   payload[cursor] = quantise(heroData.segments[value]);
@@ -369,21 +409,18 @@ writeFileSync(
     `export const DECK_HERO_LIFT_Y = ${heroData.liftY.toFixed(6)};\n` +
     `\n` +
     `/**\n` +
-    ` * The plan view, in the same space.\n` +
+    ` * The shared frame every craft is expressed in — the hero's own plan view.\n` +
     ` *\n` +
-    ` * DORSAL points from the hull toward the eye and NOSE is screen-up — rotate the craft until these\n` +
-    ` * two axes face the camera and point up and you have reproduced the drawing exactly.\n` +
-    ` */\n` +
-    `export const DECK_PLAN_DORSAL = ${vector(heroData.dorsal)} as const;\n` +
-    `export const DECK_PLAN_NOSE = ${vector(heroData.nose)} as const;\n` +
-    `/**\n` +
-    ` * The drawing plane's other axis — screen-right; a point's stored drawX runs along it.\n` +
+    ` * DORSAL points from the craft toward the eye and NOSE is screen-up, so rotating the rig until\n` +
+    ` * those two axes face the camera and point up reproduces the drawing exactly.\n` +
     ` *\n` +
-    ` * With NOSE this spans the plane every drawing lives in, and the three of them are orthonormal.\n` +
-    ` * So drawX·RIGHT + drawY·NOSE is the same thing as "the hero's 3D point with its DORSAL component\n` +
-    ` * removed" — which is why the hero's drawing IS its flattened hull rather than a copy of it.\n` +
+    ` * ⚠ A DRAWING is the 3D cloud with its DORSAL component removed — one dot product, done in the\n` +
+    ` * vertex shader, which is why no 2D array is baked. The flatten is LINEAR and therefore commutes\n` +
+    ` * with the morph: flattening a crossing and crossing two flattened craft are the same thing.\n` +
     ` */\n` +
-    `export const DECK_PLAN_RIGHT = ${vector(heroData.right)} as const;\n`,
+    `export const DECK_PLAN_DORSAL = ${vector(canonical.forward)} as const;\n` +
+    `export const DECK_PLAN_NOSE = ${vector(canonical.up)} as const;\n` +
+    `export const DECK_PLAN_RIGHT = ${vector(canonical.right)} as const;\n`,
 );
 
 console.log(

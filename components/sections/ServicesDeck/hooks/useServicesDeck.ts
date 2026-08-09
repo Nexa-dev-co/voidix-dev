@@ -44,7 +44,7 @@ import { getDeckTuning } from '../deckTuning';
 import { SLATE_600 } from '@/lib/coolPalette';
 import {
   createFleetDrawing,
-  materialisePhases,
+  drawingPhases,
   type DrawingState,
   type FleetDrawing,
 } from '../fleetDrawing';
@@ -184,32 +184,73 @@ const BLOOM_MSAA_SAMPLES = 0;
 // de-materialise to the front.
 //
 // ⚠ WHICH PHASE RUNS WHEN LIVES IN fleetDrawing.ts, not here. The rig's pose and the field's grains
-// have to agree about how far through the build they are, so there is exactly one definition of it
-// (`materialisePhases`) and both read it. What this file owns is how LONG each beat takes.
+// have to agree about where the beat is, so there is exactly one definition of it (`drawingPhases`)
+// and both read it. What this file owns is how LONG each beat takes.
 //
-// ⚠ THE LONGEST PATH MUST FIT THE PIN'S INPUT LOCK, which is `STAGE_STEP_HOLD_MS` in
-// useHeroAnimation and is 2900 ms. That constant was sized to the portal swap this replaces (~2.77 s
-// end to end), and its own comment records what happens when a transition outgrows it: a second
-// gesture lands mid-cinematic and cuts it in half.
+// ⚠ TURN and BUILD are separate, and apply to different sets of craft. EVERY stop turns — the flat
+// drawing rotates out of plan view into three dimensions, which is what makes four drawings read as
+// four objects rather than three decals and one ship. Only the hero then BUILDS: a wireframe drawn
+// between the grains, and a hull skinned over it.
 //
-// The longest path is ARRIVING AT THE HERO — a crossing then a build — at 1.05 + 1.55 = 2.60 s. The
-// ordinary stop change is only the crossing, which is why the carousel feels quicker than the swap
-// did everywhere except the one place it should not.
-const MORPH_DURATION         = 1.05; // one drawing crosses into the next
-const MATERIALISE_DURATION   = 1.55; // the hero turns, wireframes and skins
-const DEMATERIALISE_DURATION = 0.80; // …and dissolves back into its own drawing on the way out
-const GATHER_DURATION        = 1.15; // dust arriving out of the dark, on entering the section
+// ⚠ A CROSSING HAPPENS FLAT. The craft un-turns to its drawing, the drawings cross, and the new one
+// turns. That is not a technical constraint — the flatten is linear so it would commute either way
+// (see the manifest) — it is the section's whole idea: these are drawings of craft, and a drawing is
+// what one becomes on its way to being another.
+//
+// ⚠ THE LONGEST PATH MUST FIT THE PIN'S INPUT LOCK, or a second gesture lands mid-cinematic and cuts
+// it in half. The paths are:
+//
+//   drawing → drawing   unturn + morph + turn                  = 3.50 s
+//   drawing → HERO      unturn + morph + turn + build          = 5.30 s   ← the longest
+//   HERO → drawing      unbuild + unturn + morph + turn        = 4.50 s
+//   entering at HERO    gather + turn + build                  = 5.00 s
+//
+// ── ⚠ HALVED IN SPEED 2026-08-09, which is what forced SERVICES_STEP_HOLD_MS to exist ────────────
+// These were all half their present length and fitted inside the pin's DEFAULT lock of 2900 ms. At
+// this pace the longest path is 5.30 s, so services now states its own hold (see useHeroAnimation's
+// carousel list) rather than borrowing the default — exactly the escape hatch `stepHoldMs` was put
+// there for, and the same one `work` uses in the other direction.
+//
+// ⚠ Raising these again means raising that hold again. It is not free: the hold is ONE value for the
+// whole section, so it is sized for the longest path and every SHORTER one over-locks by the
+// difference. A drawing-to-drawing change is 3.50 s and is ignored for 5.50 s.
+const MORPH_DURATION   = 1.70; // one craft crosses into the next, as drawings
+const TURN_DURATION    = 0.90; // the drawing rotates out of plan view into three dimensions
+const UNTURN_DURATION  = 0.90; // …and back to flat, before a crossing
+const BUILD_DURATION   = 1.80; // the hero's wireframe and hull
+const UNBUILD_DURATION = 1.00; // …dissolving back into dust on the way out
+const GATHER_DURATION  = 2.30; // dust arriving out of the dark, on entering the section
 /** How long the turntable stays suppressed after a beat lands, before the showroom spin resumes. */
 const BEAT_GRIP_RELEASE = 0.4;
+
+// ── The build sweep ──
+// The plane the hull skins in behind. Measured in WORLD units along the craft's nose axis, and the
+// craft is TARGET_SIZE across its longest dimension — so a little over half of that clears it at
+// either end. See HullUniforms for why this is world space and not local.
+const BUILD_SWEEP_EXTENT = TARGET_SIZE * 0.62;
+/** Parked here whenever nothing is building, which switches the effect off entirely. */
+const BUILD_SWEEP_PARKED = 1000;
+/** The leading edge's glow — the heat of the hull being laid down. */
+const BUILD_EDGE_COLOR = '#36e6ff';
 /**
- * The point of the hero's build the field is held at while the shaders are pre-compiled.
+ * How much of the skin the hull's OPACITY ramps over, before the sweep takes the reveal.
+ *
+ * Short on purpose. The sweep is the reveal; a slow opacity ramp underneath it would cross-dissolve
+ * the craft in at the same time and the two together read as neither.
+ */
+const HULL_OPACITY_RAMP = 0.12;
+/**
+ * The point of the hero's BUILD the field is held at while the shaders are pre-compiled.
  *
  * ⚠ Mid-build, and it has to be: `compileAsync` walks only VISIBLE objects, and the grains and the
- * lines each switch themselves off at the ends of the beat (see `apply`). This is the one value where
- * the dust, the wireframe and the hull are all on screen together, so all three programs get built.
+ * lines each switch themselves off at the ends of the beat (see `apply`). At this value the dust is
+ * still present, the wireframe is fully revealed and the hull has started to skin, so all three
+ * programs get built. Pushed with TURN AT 1 for the same reason — a beat held flat never makes the
+ * wireframe visible at all, because it only exists during a build.
+ *
  * A uniform's value never changes which program is compiled, so nothing else here needs a pose.
  */
-const BEAT_PREWARM_POINT = 0.7;
+const BEAT_PREWARM_POINT = 0.5;
 
 // ── Departure — the services → works flight (the ship no longer exits; it flies you in) ──
 // Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT. The ship's motion + the camera come from the
@@ -534,6 +575,20 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       };
     })();
 
+    /**
+     * The build sweep's uniforms, shared by every hull material.
+     *
+     * Parked far negative at rest, which switches the whole effect off: no fragment is ever behind
+     * the plane and the edge glow falls to nothing. The render loop pushes real values only while the
+     * hero is actually skinning.
+     */
+    const buildUniforms = {
+      buildAxis: { value: new THREE.Vector3(0, 0, 1) },
+      buildOrigin: { value: new THREE.Vector3() },
+      buildSweep: { value: -BUILD_SWEEP_PARKED },
+      buildEdge: { value: new THREE.Color(BUILD_EDGE_COLOR) },
+    };
+
     /** The craft's resting three-quarter pose — what the plan-view turn lands on. */
     const restingPose = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, BASE_YAW, 0));
     /** …and the plan-view pose, solved against the live camera once the model is in (see below). */
@@ -655,8 +710,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       shapeFrom: stagedIndex,
       shapeTo: stagedIndex,
       shapeMorph: 1,
-      /** The hero's build: turn → wireframe → hull. Zero at every other stop. */
-      materialise: 0,
+      /** 0 = the flat drawing, 1 = the craft in three dimensions. EVERY stop runs this. */
+      turn: 0,
+      /** The hero's wireframe and hull. Stays 0 at every other stop — they have no geometry. */
+      build: 0,
       /** Holds the showroom turntable still while any of the above is running. */
       grip: 0,
     };
@@ -665,14 +722,15 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     // One reused carrier, so pushing the beat onto the field allocates nothing per frame.
     const drawingState: DrawingState = {
-      gather: 0, shapeFrom: 0, shapeTo: 0, shapeMorph: 1, materialise: 0, elapsed: 0,
+      gather: 0, shapeFrom: 0, shapeTo: 0, shapeMorph: 1, turn: 0, build: 0, elapsed: 0,
     };
-    const pushBeat = (elapsed: number, materialise = beat.materialise) => {
+    const pushBeat = (elapsed: number, turn = beat.turn, build = beat.build) => {
       drawingState.gather = beat.gather;
       drawingState.shapeFrom = beat.shapeFrom;
       drawingState.shapeTo = beat.shapeTo;
       drawingState.shapeMorph = beat.shapeMorph;
-      drawingState.materialise = materialise;
+      drawingState.turn = turn;
+      drawingState.build = build;
       drawingState.elapsed = elapsed;
       ship.drawing?.apply(drawingState);
     };
@@ -692,6 +750,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const toCamera = new THREE.Vector3();
     const screenUp = new THREE.Vector3();
     const parentQuaternion = new THREE.Quaternion();
+    const buildWorldQuaternion = new THREE.Quaternion();
     const sourceBasis = new THREE.Matrix4();
     const targetBasis = new THREE.Matrix4();
     const basisThird = new THREE.Vector3();
@@ -747,14 +806,17 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       });
       beatTimeline = timeline;
 
-      const leavingHero = previousIndex === DECK_HERO_INDEX && beat.materialise > 0.001;
-      const crossAt = leavingHero ? DEMATERIALISE_DURATION : 0;
+      // The hull dissolves back into dust before anything else — a craft cannot un-turn while it is
+      // still a solid object.
+      const leavingHero = previousIndex === DECK_HERO_INDEX && beat.build > 0.001;
+      const unturnAt = leavingHero ? UNBUILD_DURATION : 0;
+      const crossAt = unturnAt + UNTURN_DURATION;
 
       if (leavingHero) {
-        timeline.to(beat, {
-          materialise: 0, duration: DEMATERIALISE_DURATION, ease: 'power2.inOut',
-        }, 0);
+        timeline.to(beat, { build: 0, duration: UNBUILD_DURATION, ease: 'power2.inOut' }, 0);
       }
+      // Back to a flat drawing, because that is what crosses. See this file's header.
+      timeline.to(beat, { turn: 0, duration: UNTURN_DURATION, ease: 'power2.inOut' }, unturnAt);
 
       // The palette changes ON the crossing rather than before it, so the dust warms into the new
       // service's colour as it takes the new craft's shape.
@@ -769,10 +831,14 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // an ease here would fight it.
       timeline.to(beat, { shapeMorph: 1, duration: MORPH_DURATION, ease: 'none' }, crossAt);
 
+      // The new craft takes its third dimension — every stop, not just the hero's.
+      const turnAt = crossAt + MORPH_DURATION;
+      timeline.to(beat, { turn: 1, duration: TURN_DURATION, ease: 'power2.inOut' }, turnAt);
+
       if (nextIndex === DECK_HERO_INDEX) {
         timeline.to(beat, {
-          materialise: 1, duration: MATERIALISE_DURATION, ease: 'none',
-        }, crossAt + MORPH_DURATION);
+          build: 1, duration: BUILD_DURATION, ease: 'none',
+        }, turnAt + TURN_DURATION);
       }
 
       timeline.to(beat, {
@@ -789,7 +855,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       beat.shapeFrom = index;
       beat.shapeTo = index;
       beat.shapeMorph = 1;
-      beat.materialise = index === DECK_HERO_INDEX ? 1 : 0;
+      beat.turn = 1;
+      beat.build = index === DECK_HERO_INDEX ? 1 : 0;
       beat.grip = 0;
       gsap.killTweensOf([beat, ship.spin.rotation]);
       // ⚠ Solved here rather than relied on. Under reduced motion the render loop never runs the
@@ -833,7 +900,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       beat.shapeFrom = index;
       beat.shapeTo = index;
       beat.shapeMorph = 1;
-      beat.materialise = 0;
+      beat.turn = 0;
+      beat.build = 0;
       beat.grip = 1;
       beatActive = true;
 
@@ -845,8 +913,11 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       });
       beatTimeline = timeline;
       timeline.to(beat, { gather: 1, duration: GATHER_DURATION, ease: 'none' }, 0);
+      // The dust settles into a flat drawing, and then the drawing takes its depth — the same turn
+      // every stop change runs, so arriving at a stop and crossing into one land the same way.
+      timeline.to(beat, { turn: 1, duration: TURN_DURATION, ease: 'power2.inOut' }, GATHER_DURATION);
       if (index === DECK_HERO_INDEX) {
-        timeline.to(beat, { materialise: 1, duration: MATERIALISE_DURATION, ease: 'none' }, GATHER_DURATION);
+        timeline.to(beat, { build: 1, duration: BUILD_DURATION, ease: 'none' }, GATHER_DURATION + TURN_DURATION);
       }
       timeline.to(beat, { grip: 0, duration: BEAT_GRIP_RELEASE, ease: 'power2.out' }, timeline.duration());
     };
@@ -942,7 +1013,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // does not do.
       // The deck is off screen throughout, and the render loop's own draw is gated off, so nothing
       // is on screen to see it. Cleared on every exit path below.
-      pushBeat(0, BEAT_PREWARM_POINT);
+      pushBeat(0, 1, BEAT_PREWARM_POINT);
       // The hull is not drawn at all while its presence is 0 (see applyOpacity), so it has to be
       // shown for the compile; the `finally` puts it back where its presence says it belongs.
       ship.parts.forEach((mesh, partId) => {
@@ -1130,7 +1201,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           ship.materials = applyHullMaterials(
             group,
             DECK_SERVICES[DECK_HERO_INDEX].profile,
-            { brightness: ship.brightnessUniform, emitPulse: ship.emitPulseUniform },
+            { brightness: ship.brightnessUniform, emitPulse: ship.emitPulseUniform, ...buildUniforms },
             lowPower,
           );
 
@@ -1340,13 +1411,32 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // Everything here is derived from the beat, every frame — none of it is tweened onto the scene
       // directly, so the hull's presence, the field's grains and the craft's pose cannot disagree
       // about how far through the build they are.
-      const phases = materialisePhases(beat.materialise);
+      const phases = drawingPhases(beat.turn, beat.build);
       pushBeat(elapsed);
 
-      // ⚠ The hull exists only at the hero stop, and only as far as its skin has closed. At every
-      // other stop `materialise` is 0, so this is 0, so the model is not drawn at all — which is the
-      // whole point: three of the four craft are drawings and have no geometry to show.
-      const presence = phases.skin;
+      // ⚠ The hull exists only at the hero stop, and only as far as its skin has closed. `build`
+      // never leaves 0 at any other stop, so this is 0 and the model is not drawn at all — which is
+      // the whole point: the other three craft turn and hold in three dimensions, but they are dust
+      // all the way through and there is no geometry to show.
+      // ── The build sweep ──
+      // The hull's OPACITY snaps on early and the sweep does the reveal, so the two never
+      // cross-dissolve over each other. Pushed in world space because each mesh's own local frame is
+      // no use to a plane that has to cut across all of them while the turntable turns the craft.
+      if (ship.drawing && phases.skin > 0.0001 && phases.skin < 0.9999) {
+        ship.drawing.object.getWorldPosition(buildUniforms.buildOrigin.value);
+        ship.drawing.object.getWorldQuaternion(buildWorldQuaternion);
+        buildUniforms.buildAxis.value.copy(planNose).applyQuaternion(buildWorldQuaternion);
+        // Nose first, matching the wireframe that just drew itself in the same direction.
+        buildUniforms.buildSweep.value = THREE.MathUtils.lerp(
+          BUILD_SWEEP_EXTENT, -BUILD_SWEEP_EXTENT, phases.skin,
+        );
+      } else {
+        buildUniforms.buildSweep.value = -BUILD_SWEEP_PARKED;
+      }
+
+      // ⚠ NOT the sweep. Presence is the hull's on/off and its opacity; letting it ramp over the
+      // whole skin as well would fade the craft up THROUGH the sweep, which reads as neither.
+      const presence = THREE.MathUtils.smoothstep(phases.skin, 0, HULL_OPACITY_RAMP);
       if (Math.abs(ship.presence.value - presence) > 0.0005) {
         ship.presence.value = presence;
         ship.litState.value = presence;
@@ -1360,9 +1450,16 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // ⚠ Solved every frame rather than once. The hover, the portrait drop and the turntable's
       // accumulated yaw all move the pose that would reproduce the drawing, and the handoff moves the
       // camera as well.
-      if (animate) {
+      //
+      // ⚠ ONLY WHILE THE TURN IS ACTUALLY MOVING. This used to run unconditionally, and since a
+      // settled stop sits at turn = 1 it pinned `spin` to the resting pose on every frame — which
+      // silently clobbered drag-to-rotate and its release spring, both of which write the same
+      // object. The craft could not be turned by hand at all. Handing `spin` back the moment the
+      // beat lands is also what lets the visitor grab a DUST craft and turn it, which is the whole
+      // proof that the first three are objects rather than pictures.
+      if (animate && (beatActive || phases.turn < 0.9995)) {
         solvePlanPose();
-        ship.spin.quaternion.slerpQuaternions(planPose, restingPose, phases.solid);
+        ship.spin.quaternion.slerpQuaternions(planPose, restingPose, phases.turn);
       }
 
       // ── The services → works flight ──

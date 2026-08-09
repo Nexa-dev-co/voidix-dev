@@ -25,13 +25,18 @@ import {
 export interface FleetDrawings {
   shapeCount: number;
   pointCount: number;
-  /** Which drawing becomes a ship. Every other stop is a drawing and never anything else. */
+  /** Which craft is ever skinned into a hull. The rest turn, hold and morph, but stay dust. */
   heroIndex: number;
   segmentCount: number;
-  /** `shapeCount × pointCount × 2` — every craft's drawing, in the plane spanned by RIGHT and NOSE. */
-  drawings: Float32Array;
-  /** `pointCount × 3` — where each of those points lives on the hero's actual hull. */
-  heroSolid: Float32Array;
+  /**
+   * `shapeCount × pointCount × 3` — every craft, in three dimensions, in one shared frame.
+   *
+   * ⚠ There is no separate 2D array: a DRAWING is one of these clouds with its DORSAL component
+   * removed, which the vertex shader does in a dot product. That is also what lets the first three
+   * craft read as objects rather than decals — they have real depth to turn into, they simply have
+   * no hull to become.
+   */
+  shapes: Float32Array;
   /** `segmentCount × 2 × 3` — the hero's feature edges, for the wireframe. */
   heroSegments: Float32Array;
   /**
@@ -69,10 +74,9 @@ export async function fetchFleetDrawings(): Promise<FleetDrawings | null> {
     if (shapeCount < 1 || shapeCount > 4 || pointCount < 1) return null;
     if (heroIndex >= shapeCount || segmentCount < 1) return null;
 
-    const drawingValues = shapeCount * pointCount * 2;
-    const solidValues = pointCount * 3;
+    const shapeValues = shapeCount * pointCount * 3;
     const wireValues = segmentCount * 6;
-    const total = drawingValues + solidValues + wireValues;
+    const total = shapeValues + wireValues;
     if (buffer.byteLength < DECK_DRAWINGS_HEADER_BYTES + total * 2) return null;
 
     const stored = new Int16Array(buffer, DECK_DRAWINGS_HEADER_BYTES, total);
@@ -88,9 +92,8 @@ export async function fetchFleetDrawings(): Promise<FleetDrawings | null> {
       pointCount,
       heroIndex,
       segmentCount,
-      drawings: dequantise(0, drawingValues),
-      heroSolid: dequantise(drawingValues, solidValues),
-      heroSegments: dequantise(drawingValues + solidValues, wireValues),
+      shapes: dequantise(0, shapeValues),
+      heroSegments: dequantise(shapeValues, wireValues),
       heroLiftY: DECK_HERO_LIFT_Y,
       planRight: DECK_PLAN_RIGHT,
       planNose: DECK_PLAN_NOSE,

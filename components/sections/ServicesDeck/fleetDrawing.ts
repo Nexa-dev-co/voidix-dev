@@ -4,21 +4,26 @@ import type { FleetDrawings } from './deckDrawings';
 
 // The fleet, drawn out of dust — and one of them built.
 //
-// Four craft, four drawings. Dust gathers into the first, and each stop MORPHS it into the next: one
-// grain travelling from its place in one craft to its place in the next, so the shape transforms
-// rather than dissolving and re-forming. At the last stop the drawing does something the others never
-// do — it turns out of plan view into three dimensions, the wireframe draws itself between the grains,
-// and the hull skins over it.
+// Four craft. Each arrives as a flat plan-view drawing, TURNS out of that plane into three
+// dimensions, and holds there on the turntable. A stop change MORPHS one into the next — one grain
+// travelling from its place in one craft to its place in the next, so the shape transforms rather
+// than dissolving and re-forming. Only the last one then BUILDS: a wireframe drawn between the
+// grains, and a hull skinned over it.
 //
-// ── ⚠ The hero's drawing is not a picture of it. It IS the hull, flattened ───────────────────────
-// A stored drawing point is `(drawX, drawY)` in a plane spanned by DECK_PLAN_RIGHT and DECK_PLAN_NOSE,
-// and the bake produced it by projecting the hull's own feature-edge points onto exactly those axes.
-// So `drawX·RIGHT + drawY·NOSE` is the same vector as "the 3D point with its DORSAL component
-// removed" — and the turn is a plain lerp between the two in MODEL space. Not a cross-fade, not a
-// view-space trick, and it cannot scramble: correspondence is by construction.
+// ── ⚠ A DRAWING IS THE CRAFT WITH ITS DEPTH REMOVED ─────────────────────────────────────────────
+// Every craft is baked as a 3D cloud in one shared frame, and its flat form is that cloud minus its
+// DORSAL component — one dot product in the vertex shader, which is why no 2D positions are stored.
+// The turn is then a plain lerp between the two in MODEL space. Not a cross-fade, not a view-space
+// trick, and it cannot scramble: correspondence is by construction.
 //
-// The other three craft have no third dimension at all. They are drawings and never anything else,
-// which is why nothing here needs their geometry — only the hero's model ships.
+// ⚠ ALL FOUR TURN, not only the hero — and that is what makes the other three read as OBJECTS rather
+// than as decals. They have real depth to rotate into, they take the pinhole's size grading, and the
+// turntable spins them exactly as it spins the hull. They are not models: nothing skins them and no
+// GLB ships for them. The whole distinction is `turn` (every craft) versus `build` (the hero's alone).
+//
+// Because the flatten is LINEAR it commutes with the morph — crossing two craft and then flattening
+// is the same as crossing two flattened craft. The crossing is run flat regardless, because a drawing
+// is what one craft becomes on its way to being another.
 //
 // ── Why the bloom is in the sprite ───────────────────────────────────────────────────────────────
 // Same trade the loader's field makes, for the same reason: the deck's UnrealBloomPass ships
@@ -60,17 +65,19 @@ const WIRE_OPACITY = 0.45;
 // craft is still turning and the hull starts skinning before the lines have finished, so it reads as
 // one continuous act rather than three cues.
 
-const TURN_WINDOW: [number, number] = [0.0, 0.46];
-const WIRE_IN_WINDOW: [number, number] = [0.14, 0.52];
-const WIRE_OUT_WINDOW: [number, number] = [0.66, 0.94];
-const SKIN_WINDOW: [number, number] = [0.56, 0.95];
+/** Windows over the BUILD, which only the hero ever runs. */
+const WIRE_IN_WINDOW: [number, number] = [0.0, 0.42];
+const WIRE_OUT_WINDOW: [number, number] = [0.55, 0.9];
+const SKIN_WINDOW: [number, number] = [0.45, 0.95];
 
-export interface MaterialisePhases {
-  /** 0 = the flat drawing, 1 = the real three-dimensional craft. Drives the pose too. */
-  solid: number;
-  /** How much of the wireframe has drawn itself in. */
+export interface DrawingPhases {
+  /** 0 = the flat drawing, 1 = the craft in three dimensions. Drives the rig's pose too. */
+  turn: number;
+  /** How much of the wireframe has drawn itself in — monotonic. Hero only. */
   wire: number;
-  /** How solid the hull is — the hook drives the ship's presence with this. */
+  /** …and how visible it is, which the skin takes back down. Kept apart; see the wire shader. */
+  wireFade: number;
+  /** How solid the hull is — the hook drives the ship's presence with this. Hero only. */
   skin: number;
 }
 
@@ -78,17 +85,23 @@ const window01 = (range: [number, number], value: number) =>
   THREE.MathUtils.clamp((value - range[0]) / (range[1] - range[0]), 0, 1);
 
 /**
- * The hero's build, as a pure function of one number.
+ * The beat, as a pure function of its two numbers.
+ *
+ * ⚠ TURN and BUILD are separate because they apply to different sets of craft. Every stop turns —
+ * that is what makes four drawings read as four objects — but only the hero has a wireframe to draw
+ * or a hull to skin. Folding them into one number would either give the other three a build they
+ * cannot run, or deny them the turn.
  *
  * One definition, read by both the field (which sets uniforms from it) and the deck hook (which
- * slerps the craft's pose and drives the hull's presence from it) — so the pose and the drawing can
- * never disagree about how far through the build they are.
+ * slerps the rig's pose and drives the hull's presence from it) — so the pose and the dust can never
+ * disagree about where the beat is.
  */
-export function materialisePhases(materialise: number): MaterialisePhases {
+export function drawingPhases(turn: number, build: number): DrawingPhases {
   return {
-    solid: THREE.MathUtils.smoothstep(materialise, TURN_WINDOW[0], TURN_WINDOW[1]),
-    wire: window01(WIRE_IN_WINDOW, materialise) * (1 - window01(WIRE_OUT_WINDOW, materialise)),
-    skin: THREE.MathUtils.smoothstep(materialise, SKIN_WINDOW[0], SKIN_WINDOW[1]),
+    turn: THREE.MathUtils.smoothstep(turn, 0, 1),
+    wire: window01(WIRE_IN_WINDOW, build),
+    wireFade: 1 - window01(WIRE_OUT_WINDOW, build),
+    skin: THREE.MathUtils.smoothstep(build, SKIN_WINDOW[0], SKIN_WINDOW[1]),
   };
 }
 
@@ -101,8 +114,10 @@ export interface DrawingState {
   shapeTo: number;
   /** How far the crossing between those two has run. */
   shapeMorph: number;
-  /** The hero's build. 0 at every other stop. */
-  materialise: number;
+  /** 0 = flat drawing, 1 = three dimensions. Every stop runs this. */
+  turn: number;
+  /** The hero's wireframe-and-hull build. Stays 0 at every other stop. */
+  build: number;
   /** Seconds, for the shimmer only. */
   elapsed: number;
 }
@@ -113,12 +128,11 @@ export interface DrawingState {
 // string; it has bitten this codebase four times and every one of them was in a comment.
 
 const GRAIN_VERTEX_SHADER = /* glsl */ `
-  // This grain's place in each of the four drawings, packed two to a vec4:
-  //   aShapeAB = shape0.xy · shape1.xy      aShapeCD = shape2.xy · shape3.xy
-  attribute vec4 aShapeAB;
-  attribute vec4 aShapeCD;
-  // …and its place on the HERO's hull. Unused at every other stop, where uMaterialise is 0.
-  attribute vec3 aSolid;
+  // This grain's place on each of the four craft, in three dimensions and in one shared frame.
+  attribute vec3 aShapeA;
+  attribute vec3 aShapeB;
+  attribute vec3 aShapeC;
+  attribute vec3 aShapeD;
   attribute float aSeed;
 
   // ⚠ TWO ONE-HOT SELECTORS AND A SCALAR, not one blended weight vector. A single set of weights makes
@@ -131,12 +145,13 @@ const GRAIN_VERTEX_SHADER = /* glsl */ `
   uniform float uShapeMorph;
 
   uniform float uGather;
-  uniform float uMaterialise;
+  // 0 = the flat drawing, 1 = the craft in three dimensions. EVERY stop turns; only the hero then
+  // goes on to a wireframe and a hull.
+  uniform float uTurn;
   uniform float uPresence;
   uniform float uTime;
   uniform float uSize;
   uniform float uScale;
-  uniform vec3  uRight;
   uniform vec3  uNose;
   uniform vec3  uDorsal;
 
@@ -164,6 +179,25 @@ const GRAIN_VERTEX_SHADER = /* glsl */ `
   /** How far a settled grain circles its target — a landed drawing must still be alive. */
   const float SHIMMER_RADIUS = 0.006;
   const float SHIMMER_RATE = 0.9;
+  /**
+   * How much hotter a grain burns while it is CROSSING between two craft.
+   *
+   * Without it a morph is a slide: the same dust in a different arrangement. Peaking mid-flight makes
+   * a crossing read as the energy it is meant to be, and it costs one sine that is already computed.
+   */
+  const float MORPH_HEAT = 0.45;
+  /**
+   * The scan: a band of brighter, hotter grains travelling nose to tail, forever.
+   *
+   * ⚠ This is what stops a HELD craft from being a still image. The loader's field has a rule about
+   * it — a form that is holding must still be moving — and the shimmer alone is per-grain noise, not
+   * something the eye can follow. A sweep down the hull reads as the craft being SCANNED, which is
+   * the same idea the whole section is built on, running on a loop while nothing else happens.
+   */
+  const float SCAN_RATE = 0.11;
+  const float SCAN_TIGHTNESS = 7.0;
+  const float SCAN_GAIN = 0.9;
+  const float SCAN_HEAT = 0.35;
   const float ORIGIN_RADIUS = ${ORIGIN_RADIUS.toFixed(2)};
 
   float hash(float x) {
@@ -172,29 +206,37 @@ const GRAIN_VERTEX_SHADER = /* glsl */ `
 
   void main() {
     // ── 1 · which craft this grain belongs to, and how far across it is ──
-    vec2 leaving =
-      aShapeAB.xy * uShapeFrom.x + aShapeAB.zw * uShapeFrom.y +
-      aShapeCD.xy * uShapeFrom.z + aShapeCD.zw * uShapeFrom.w;
-    vec2 entering =
-      aShapeAB.xy * uShapeTo.x + aShapeAB.zw * uShapeTo.y +
-      aShapeCD.xy * uShapeTo.z + aShapeCD.zw * uShapeTo.w;
+    vec3 leaving =
+      aShapeA * uShapeFrom.x + aShapeB * uShapeFrom.y +
+      aShapeC * uShapeFrom.z + aShapeD * uShapeFrom.w;
+    vec3 entering =
+      aShapeA * uShapeTo.x + aShapeB * uShapeTo.y +
+      aShapeC * uShapeTo.z + aShapeD * uShapeTo.w;
 
     float morphStart = hash(aSeed * 17.31) * MORPH_STAGGER;
     float morphTravel = clamp((uShapeMorph - morphStart) / (1.0 - MORPH_STAGGER), 0.0, 1.0);
     float morph = smoothstep(0.0, 1.0, morphTravel);
-    vec2 drawing = mix(leaving, entering, morph);
+    vec3 craft = mix(leaving, entering, morph);
 
-    // ── 2 · the drawing's own depth ──
-    // A slab so the flat form reads as an object, plus a bow through the same axis while crossing, so
-    // grains in transit separate from both drawings instead of sliding between them.
+    // ── 2 · the drawing ──
+    // ⚠ The flat form is this craft with its DORSAL component removed — one dot product, and the
+    // reason no 2D positions are baked. Because the flatten is LINEAR it commutes with the morph
+    // above: crossing two craft and then flattening is the same as crossing two flattened craft, so
+    // a stop change reads identically whether it happens flat or turned.
+    vec3 flattened = craft - dot(craft, uDorsal) * uDorsal;
+
+    // A slab of depth so the FLAT form still reads as an object rather than a decal, plus a bow
+    // through the same axis while crossing, so grains in transit separate from both craft instead of
+    // sliding between them. Both fade out as the real depth arrives.
     float slab = (hash(aSeed * 45.13) - 0.5) * DRAWING_SLAB;
     slab += sin(morph * 3.14159265) * MORPH_ARC * (hash(aSeed * 7.77) - 0.5) * 2.0;
-    vec3 drawingPosition = uRight * drawing.x + uNose * drawing.y + uDorsal * slab * (1.0 - uMaterialise);
+    flattened += uDorsal * slab;
 
     // ── 3 · the turn ──
-    // ⚠ A plain lerp in MODEL space, because drawX·RIGHT + drawY·NOSE is literally the hull's own
-    // point with its dorsal component removed. Giving the drawing its depth back IS the model.
-    vec3 target = mix(drawingPosition, aSolid, uMaterialise);
+    // Giving the drawing its depth back IS the craft. Every stop does this — which is what makes the
+    // three that never become models still read as objects: they turn, they take the pinhole's size
+    // grading, and the turntable spins them.
+    vec3 target = mix(flattened, craft, uTurn);
 
     // ── 4 · the arrival out of the dark ──
     // A uniform direction on the sphere per grain, so they come from every side rather than sweeping
@@ -233,8 +275,21 @@ const GRAIN_VERTEX_SHADER = /* glsl */ `
     const float HEAT_DEPTH_SCALE = 1.6;
     vHeat = clamp(0.5 + (view.z - centreView.z) * HEAT_DEPTH_SCALE, 0.0, 1.0);
 
+    // Grains in transit between two craft burn hotter than either.
+    float transit = sin(morph * 3.14159265);
+    vHeat = clamp(vHeat + transit * MORPH_HEAT, 0.0, 1.0);
+
+    // The scan, in the craft's own frame so it tracks the hull however the turntable has turned it.
+    // Deck units put the craft at roughly ±0.5 along the nose, so this maps it to 0..1.
+    float alongNose = clamp(dot(craft, uNose) + 0.5, 0.0, 1.0);
+    float sweep = fract(uTime * SCAN_RATE);
+    float band = (alongNose - sweep) * SCAN_TIGHTNESS;
+    float scan = exp(-band * band);
+    vHeat = clamp(vHeat + scan * SCAN_HEAT, 0.0, 1.0);
+
     // A grain that has not set off yet is invisible, so nothing sits parked in the dark.
-    vAlpha = uPresence * smoothstep(0.0, 0.12, gatherTravel) * mix(0.35, 1.0, vHeat);
+    vAlpha = uPresence * smoothstep(0.0, 0.12, gatherTravel) * mix(0.35, 1.0, vHeat) *
+      (1.0 + scan * SCAN_GAIN + transit * 0.35);
 
     gl_PointSize = max(
       ${GRAIN_SIZE_MIN_PIXELS.toFixed(1)},
@@ -278,29 +333,48 @@ const GRAIN_FRAGMENT_SHADER = /* glsl */ `
 `;
 
 const WIRE_VERTEX_SHADER = /* glsl */ `
-  attribute float aSeed;
+  /** The segment's OTHER endpoint, and which of the two this vertex is (0 = anchor, 1 = free). */
+  attribute vec3 aOther;
+  attribute float aEnd;
+  /** Where this line sits along the craft, nose (0) to tail (1), with a little jitter. */
+  attribute float aOrder;
 
   uniform float uReveal;
-  uniform float uMaterialise;
+  uniform float uFade;
+  uniform float uTurn;
   uniform float uOpacity;
   uniform vec3  uDorsal;
 
   varying float vAlpha;
 
-  /** How much of the reveal is spent staggering lines rather than fading any one of them. */
-  const float REVEAL_STAGGER = 0.82;
-  const float REVEAL_FADE = 0.18;
+  /** How much of the reveal is spent working down the craft rather than drawing any one line. */
+  const float ORDER_SPREAD = 0.84;
+  /** …and the share one line spends being drawn. */
+  const float LINE_DRAW = 0.16;
 
   void main() {
+    // ── The line DRAWS ITSELF ──
+    // Its anchor end is fixed and its free end travels out to meet its real position, so a segment
+    // grows from nothing rather than fading in whole. The anchor is the end nearer the NOSE and the
+    // order runs nose to tail, so the wireframe reads as a plotter working down the craft — which is
+    // the difference between a machine drawing a ship and a ship simply appearing.
+    float stroke = clamp((uReveal - aOrder * ORDER_SPREAD) / LINE_DRAW, 0.0, 1.0);
+    vec3 drawn = aEnd < 0.5 ? position : mix(aOther, position, stroke);
+
     // The same flatten the grains get, done the other way round: a line's endpoints were never
     // sampled into a drawing, but removing their DORSAL component is exactly what the bake did to
     // produce one. So the wireframe unfolds out of the plane in step with the dust.
-    vec3 flattened = position - dot(position, uDorsal) * uDorsal;
-    vec4 view = modelViewMatrix * vec4(mix(flattened, position, uMaterialise), 1.0);
+    vec3 flattened = drawn - dot(drawn, uDorsal) * uDorsal;
+    vec4 view = modelViewMatrix * vec4(mix(flattened, drawn, uTurn), 1.0);
     gl_Position = projectionMatrix * view;
 
-    // Both endpoints of a segment carry the SAME seed, so a line is never half drawn.
-    vAlpha = uOpacity * smoothstep(0.0, REVEAL_FADE, uReveal - aSeed * REVEAL_STAGGER);
+    // ⚠ Opacity is its OWN uniform, not the draw progress. Fading the wireframe out by winding the
+    // reveal back would make every line RETRACT into its anchor as the hull closed over it — the
+    // drawing being un-drawn, which is the opposite of what skinning means.
+    //
+    // (And no backticks in here, ever. This file's header says so and this comment is where it bit
+    // for the fifth time in this codebase.)
+    vAlpha = uOpacity * uFade * smoothstep(0.0, 0.05, stroke);
   }
 `;
 
@@ -361,42 +435,35 @@ export function createFleetDrawing(drawings: FleetDrawings, unitScale: number): 
   // Each grain adopts one sampled point, and there are more grains than points — so several grains
   // share a point and the shimmer spreads them around it. That is what turns a plotted outline into
   // dust, and it is why the point budget does not have to rise with the grain budget.
-  const shapeAB = new Float32Array(grainCount * 4);
-  const shapeCD = new Float32Array(grainCount * 4);
-  const solid = new Float32Array(grainCount * 3);
+  // One vec3 per craft. Four of them plus a seed is five attributes against a guaranteed sixteen —
+  // and a shape that was never baked stays at zero, where its selector weight is always zero too, so
+  // a bake of three craft costs nothing here.
+  const shapes = [0, 1, 2, 3].map(() => new Float32Array(grainCount * 3));
   const seeds = new Float32Array(grainCount);
   const random = createRandom(0x1b873593);
 
   for (let grain = 0; grain < grainCount; grain += 1) {
     const point = grain % pointCount;
-    const packed = [shapeAB, shapeAB, shapeCD, shapeCD];
-    for (let shape = 0; shape < 4; shape += 1) {
-      // Shapes beyond what was baked stay at zero, and their selector weight is always zero too, so a
-      // bake of three drawings costs nothing here.
-      const target = packed[shape];
-      const offset = grain * 4 + (shape % 2) * 2;
-      if (shape < shapeCount) {
-        target[offset] = drawings.drawings[shape * pointCount * 2 + point * 2];
-        target[offset + 1] = drawings.drawings[shape * pointCount * 2 + point * 2 + 1];
-      }
+    for (let shape = 0; shape < shapeCount && shape < 4; shape += 1) {
+      const from = (shape * pointCount + point) * 3;
+      shapes[shape][grain * 3] = drawings.shapes[from];
+      shapes[shape][grain * 3 + 1] = drawings.shapes[from + 1];
+      shapes[shape][grain * 3 + 2] = drawings.shapes[from + 2];
     }
-    solid[grain * 3] = drawings.heroSolid[point * 3];
-    solid[grain * 3 + 1] = drawings.heroSolid[point * 3 + 1];
-    solid[grain * 3 + 2] = drawings.heroSolid[point * 3 + 2];
     seeds[grain] = random();
   }
 
   const grainGeometry = new THREE.BufferGeometry();
-  // `position` is required by three even though the shader never reads it; sharing the solid buffer
+  const shapeAttributes = shapes.map((values) => new THREE.BufferAttribute(values, 3));
+  // `position` is required by three even though the shader never reads it; binding the hero's cloud
   // costs nothing (three uploads one buffer and binds it twice).
-  const solidAttribute = new THREE.BufferAttribute(solid, 3);
-  grainGeometry.setAttribute('position', solidAttribute);
-  grainGeometry.setAttribute('aSolid', solidAttribute);
-  grainGeometry.setAttribute('aShapeAB', new THREE.BufferAttribute(shapeAB, 4));
-  grainGeometry.setAttribute('aShapeCD', new THREE.BufferAttribute(shapeCD, 4));
+  grainGeometry.setAttribute('position', shapeAttributes[drawings.heroIndex]);
+  grainGeometry.setAttribute('aShapeA', shapeAttributes[0]);
+  grainGeometry.setAttribute('aShapeB', shapeAttributes[1]);
+  grainGeometry.setAttribute('aShapeC', shapeAttributes[2]);
+  grainGeometry.setAttribute('aShapeD', shapeAttributes[3]);
   grainGeometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
 
-  const planeRight = new THREE.Vector3(...drawings.planRight);
   const planeNose = new THREE.Vector3(...drawings.planNose);
   const planeDorsal = new THREE.Vector3(...drawings.planDorsal);
 
@@ -406,12 +473,11 @@ export function createFleetDrawing(drawings: FleetDrawings, unitScale: number): 
       uShapeTo: { value: new THREE.Vector4(1, 0, 0, 0) },
       uShapeMorph: { value: 0 },
       uGather: { value: 0 },
-      uMaterialise: { value: 0 },
+      uTurn: { value: 0 },
       uPresence: { value: 0 },
       uTime: { value: 0 },
       uSize: { value: GRAIN_SIZE },
       uScale: { value: 500 },
-      uRight: { value: planeRight },
       uNose: { value: planeNose },
       uDorsal: { value: planeDorsal },
       uColorCool: { value: new THREE.Color('#3d1503') },
@@ -429,22 +495,68 @@ export function createFleetDrawing(drawings: FleetDrawings, unitScale: number): 
   grains.renderOrder = 2;
 
   // ── The hero's wireframe ──
-  const wireSeeds = new Float32Array(drawings.segmentCount * 2);
-  const seedRandom = createRandom(0x85ebca6b);
-  for (let segment = 0; segment < drawings.segmentCount; segment += 1) {
-    const seed = seedRandom();
-    wireSeeds[segment * 2] = seed;
-    wireSeeds[segment * 2 + 1] = seed;
+  //
+  // Each segment is re-laid so its NOSE-most endpoint comes first — that end anchors while the other
+  // draws out to meet it — and ordered nose to tail so the whole frame is drawn down the craft.
+  const segmentCount = drawings.segmentCount;
+  const wirePositions = new Float32Array(segmentCount * 6);
+  const wireOther = new Float32Array(segmentCount * 6);
+  const wireEnd = new Float32Array(segmentCount * 2);
+  const wireOrder = new Float32Array(segmentCount * 2);
+
+  const alongNose = new Float32Array(segmentCount);
+  let nearestNose = Infinity;
+  let furthestNose = -Infinity;
+  for (let segment = 0; segment < segmentCount; segment += 1) {
+    const at = segment * 6;
+    const midpoint =
+      ((drawings.heroSegments[at] + drawings.heroSegments[at + 3]) / 2) * planeNose.x +
+      ((drawings.heroSegments[at + 1] + drawings.heroSegments[at + 4]) / 2) * planeNose.y +
+      ((drawings.heroSegments[at + 2] + drawings.heroSegments[at + 5]) / 2) * planeNose.z;
+    alongNose[segment] = midpoint;
+    if (midpoint < nearestNose) nearestNose = midpoint;
+    if (midpoint > furthestNose) furthestNose = midpoint;
+  }
+
+  const noseSpan = furthestNose - nearestNose || 1;
+  const orderRandom = createRandom(0x85ebca6b);
+  for (let segment = 0; segment < segmentCount; segment += 1) {
+    const at = segment * 6;
+    const first = [drawings.heroSegments[at], drawings.heroSegments[at + 1], drawings.heroSegments[at + 2]];
+    const second = [drawings.heroSegments[at + 3], drawings.heroSegments[at + 4], drawings.heroSegments[at + 5]];
+    const firstAlong = first[0] * planeNose.x + first[1] * planeNose.y + first[2] * planeNose.z;
+    const secondAlong = second[0] * planeNose.x + second[1] * planeNose.y + second[2] * planeNose.z;
+    // The anchor is the nose-most end, so every stroke is drawn in the same direction of travel.
+    const [anchor, free] = firstAlong >= secondAlong ? [first, second] : [second, first];
+
+    for (let axis = 0; axis < 3; axis += 1) {
+      wirePositions[at + axis] = anchor[axis];
+      wirePositions[at + 3 + axis] = free[axis];
+      wireOther[at + axis] = free[axis];
+      wireOther[at + 3 + axis] = anchor[axis];
+    }
+    wireEnd[segment * 2] = 0;
+    wireEnd[segment * 2 + 1] = 1;
+
+    // 0 at the nose, 1 at the tail. The jitter stops the sweep reading as a hard ruled line moving
+    // down the hull — a few lines always run ahead of and behind the front.
+    const order = (furthestNose - alongNose[segment]) / noseSpan;
+    const jittered = Math.min(1, Math.max(0, order + (orderRandom() - 0.5) * 0.12));
+    wireOrder[segment * 2] = jittered;
+    wireOrder[segment * 2 + 1] = jittered;
   }
 
   const wireGeometry = new THREE.BufferGeometry();
-  wireGeometry.setAttribute('position', new THREE.BufferAttribute(drawings.heroSegments, 3));
-  wireGeometry.setAttribute('aSeed', new THREE.BufferAttribute(wireSeeds, 1));
+  wireGeometry.setAttribute('position', new THREE.BufferAttribute(wirePositions, 3));
+  wireGeometry.setAttribute('aOther', new THREE.BufferAttribute(wireOther, 3));
+  wireGeometry.setAttribute('aEnd', new THREE.BufferAttribute(wireEnd, 1));
+  wireGeometry.setAttribute('aOrder', new THREE.BufferAttribute(wireOrder, 1));
 
   const wireMaterial = new THREE.ShaderMaterial({
     uniforms: {
       uReveal: { value: 0 },
-      uMaterialise: { value: 0 },
+      uFade: { value: 1 },
+      uTurn: { value: 0 },
       uOpacity: { value: WIRE_OPACITY },
       uDorsal: { value: planeDorsal },
       uColor: { value: new THREE.Color('#36e6ff') },
@@ -477,12 +589,12 @@ export function createFleetDrawing(drawings: FleetDrawings, unitScale: number): 
     },
 
     apply(state) {
-      const phases = materialisePhases(state.materialise);
+      const phases = drawingPhases(state.turn, state.build);
       setSelector(selectorFrom, state.shapeFrom);
       setSelector(selectorTo, state.shapeTo);
       grainMaterial.uniforms.uShapeMorph.value = state.shapeMorph;
       grainMaterial.uniforms.uGather.value = state.gather;
-      grainMaterial.uniforms.uMaterialise.value = phases.solid;
+      grainMaterial.uniforms.uTurn.value = phases.turn;
       grainMaterial.uniforms.uTime.value = state.elapsed;
       // The dust withdraws as the hull takes over — inverted from the skin rather than given its own
       // window, so the drawing cannot outlive the thing it described.
@@ -490,12 +602,13 @@ export function createFleetDrawing(drawings: FleetDrawings, unitScale: number): 
       grainMaterial.uniforms.uPresence.value = presence;
 
       wireMaterial.uniforms.uReveal.value = phases.wire;
-      wireMaterial.uniforms.uMaterialise.value = phases.solid;
+      wireMaterial.uniforms.uFade.value = phases.wireFade;
+      wireMaterial.uniforms.uTurn.value = phases.turn;
 
       // Nothing to draw at either end of the beat. Two objects skipped is two draw calls, and it also
       // means the composer never blends a fully transparent additive pass over the hull.
       grains.visible = presence > 0.001;
-      wire.visible = phases.wire > 0.001;
+      wire.visible = phases.wire > 0.001 && phases.wireFade > 0.001;
     },
 
     setViewportHeight(height) {

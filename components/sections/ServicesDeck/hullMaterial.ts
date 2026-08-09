@@ -27,6 +27,81 @@ export interface HullUniforms {
   brightness: { value: number };
   /** Engine-glow breathing — 1 at rest, modulated on the centred craft. */
   emitPulse: { value: number };
+  /**
+   * ── The build sweep ──
+   *
+   * A plane travelling down the craft: everything on the far side of it is discarded, and the
+   * fragments right at it glow. So the hull SKINS nose to tail behind a moving edge instead of
+   * fading up as one flat cross-dissolve — which matters because the wireframe it replaces draws
+   * itself the same way and in the same direction.
+   *
+   * ⚠ WORLD SPACE, and it has to be. Each mesh's `position` is in its own local frame, so the only
+   * common ground between a hull built from eight meshes and a craft axis that the turntable is
+   * rotating is the world. `axis` and `origin` are pushed every frame by the deck hook.
+   *
+   * `sweep` is the plane's distance along `axis` from `origin`. Park it far NEGATIVE to switch the
+   * whole effect off — nothing is ever behind it, and the edge glow falls off to nothing too.
+   */
+  buildAxis: { value: THREE.Vector3 };
+  buildOrigin: { value: THREE.Vector3 };
+  buildSweep: { value: number };
+  buildEdge: { value: THREE.Color };
+}
+
+/** How tightly the leading edge's glow is packed against the sweep plane, in world units. */
+const BUILD_EDGE_TIGHTNESS = 26;
+
+/**
+ * Inject the build sweep into one compiled hull shader.
+ *
+ * Shared by both profile treatments rather than written into either, so the hero keeps the sweep
+ * whichever one it is authored with.
+ */
+function injectBuildSweep(shader: { vertexShader: string; fragmentShader: string; uniforms: Record<string, unknown> }, uniforms: HullUniforms) {
+  Object.assign(shader.uniforms, {
+    uBuildAxis: uniforms.buildAxis,
+    uBuildOrigin: uniforms.buildOrigin,
+    uBuildSweep: uniforms.buildSweep,
+    uBuildEdge: uniforms.buildEdge,
+  });
+
+  shader.vertexShader = shader.vertexShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+      varying float vBuildAlong;
+      uniform vec3 uBuildAxis;
+      uniform vec3 uBuildOrigin;`,
+    )
+    // After begin_vertex, where `transformed` holds the local position.
+    .replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      vBuildAlong = dot((modelMatrix * vec4(transformed, 1.0)).xyz - uBuildOrigin, uBuildAxis);`,
+    );
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+      varying float vBuildAlong;
+      uniform float uBuildSweep;
+      uniform vec3 uBuildEdge;`,
+    )
+    // As early in main() as there is a hook, so a discarded fragment costs nothing else — and so it
+    // never writes depth, which is what would otherwise punch a hull-shaped hole in the dust behind.
+    .replace(
+      '#include <clipping_planes_fragment>',
+      `#include <clipping_planes_fragment>
+      if (vBuildAlong < uBuildSweep) discard;`,
+    )
+    // AFTER the emissive map multiply, so a black emissive map cannot cancel the edge.
+    .replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      totalEmissiveRadiance += uBuildEdge *
+        exp(-max(0.0, vBuildAlong - uBuildSweep) * ${BUILD_EDGE_TIGHTNESS.toFixed(1)});`,
+    );
 }
 
 /** The graded-palette uniforms, stored on `material.userData.hullUniforms`. */
@@ -97,6 +172,7 @@ function applyGradedHull(
       uTintBrightness: uniforms.brightness,
       uEmitPulse: uniforms.emitPulse,
     });
+    injectBuildSweep(shader, uniforms);
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -157,6 +233,7 @@ function applyLegacyTint(
       uTintBrightness: uniforms.brightness,
       uFresnelPower: { value: LEGACY_FRESNEL_POWER },
     });
+    injectBuildSweep(shader, uniforms);
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',

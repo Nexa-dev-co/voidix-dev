@@ -212,7 +212,7 @@ components/
   pages/             # ⚠ a ROUTE's content (About/, Careers/) — not a homepage section
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
-    ServicesDeck/   # four drawings + one hull: DeckCanvas, hullMaterial, fleetDrawing, deckDrawings
+    ServicesDeck/   # four craft, one hull: DeckCanvas, hullMaterial, fleetDrawing, deckDrawings
     WorksField/     # the project field + FieldCanvas + the mark systems + transitions/
     Chamber/        # the room: walls/ground/plinth, FaqHologram/
   effects/
@@ -281,7 +281,7 @@ scroll progress. There is no stack of sections and no second pin.
 ```
   INTRO      HERO       SERVICES     ══HANDOFF══   WORKS      ══REVEAL══   CHAMBER
   ┌─────┐    ┌─────┐    ┌──────┐       (180vh)     ┌──────┐     (140vh)    ┌──────┐
-  │dust │───►│square───►│4 drawn│── craft flies ──►│4 marks│── camera ────►│ room │
+  │dust │───►│square───►│4 craft│── craft flies ──►│4 marks│── camera ────►│ room │
   │→ sun│    │fills │   │1 built│   off, then the  │grown  │   backs out   │ + FAQ│
   └─────┘    └─────┘    └──────┘   mark arrives    │from   │  of "screen"  │ holo │
      ▲                             from the dark   │stone  │               │      │
@@ -347,35 +347,41 @@ painted onto a quad in the chamber room — so the room must be drawn by the *sa
 why `useWorksField.ts` hosts `chamberScene.ts` rather than the chamber owning a canvas. **Do not
 "tidy" this.**
 
-## The fleet — four drawings, one ship
+## The fleet — four craft, one ship
 
 **Rebuilt 2026-08-09.** Services shipped **four** models swapped through portal gates. It now **draws
-four craft and builds one**: every stop gathers its craft out of dust as a flat plan-view drawing, and
-only the LAST (`DECK_CRAFT`, the `star_aventure` fighter) goes further — turning out of plan view into
-three dimensions, wireframing, and skinning into the real hull, which the works crossing then flies
-off. A stop change is a MORPH between two drawings, exactly as the loader morphs its held forms.
-**Stops 01–03 have no geometry at all.** Full state doc: `docs/services-particle-ship-plan.md`.
+four craft and builds one**: every stop gathers its craft out of dust as a flat plan-view drawing and
+TURNS it into three dimensions, and only the LAST (`DECK_CRAFT`, the `star_aventure` fighter) goes
+further — wireframing and skinning into the real hull, which the works crossing then flies off. A stop
+change is a MORPH between two craft, run flat, exactly as the loader morphs its held forms. Full state
+doc: `docs/services-particle-ship-plan.md`.
 
-⚠ **The hero's drawing is not a picture of it — it IS the hull, flattened.** A stored point is
-`(drawX, drawY)` in the plane spanned by `DECK_PLAN_RIGHT` / `DECK_PLAN_NOSE`, produced by projecting
-the hull's own feature-edge points onto those axes — so `drawX·RIGHT + drawY·NOSE` is identically the
-3D point with its DORSAL component removed, and the turn is a plain lerp in model space. It cannot
-scramble. Do not "simplify" it by sampling the SVGs in `deck-shapes-src/` — that art is the readable
-RECORD of the same extraction, and grains sampled from it would have no 3D home to turn into.
+⚠ **A DRAWING IS THE CRAFT WITH ITS DEPTH REMOVED** — `p − dot(p, DORSAL)·DORSAL`, one dot product in
+the vertex shader, which is why no 2D positions are baked. The turn is then a plain lerp in model
+space and cannot scramble. Do not "simplify" it by sampling the SVGs in `deck-shapes-src/` — that art
+is the readable RECORD of the same extraction, and grains sampled from it would have no 3D home.
 
-⚠ **The longest beat is bounded by `STAGE_STEP_HOLD_MS` (2900 ms), not by taste.** Arriving at the
-hero is 2.60 s. Retune the WINDOWS in `fleetDrawing.ts` before lengthening it.
+⚠ **ALL FOUR TURN; only the hero BUILDS.** The other three craft are baked in 3D too — they rotate,
+take the pinhole's depth grading and sit on the turntable exactly as the hull does. They are objects
+that are never skinned, not flat art, and `turn` vs `build` is the whole distinction. Only the hero's
+GLB ships.
+
+⚠ **The longest beat and the pin's input lock must move together.** Arriving at the hero is 5.30 s,
+so services states its own `stepHoldMs` (`SERVICES_STEP_HOLD_MS`, 5500 ms) rather than borrowing the
+2900 ms default — lengthen the beat and that has to follow, or a second gesture cuts it in half. The
+cost is real: the hold is one value per SECTION, so it is sized for the longest path and every shorter
+one over-locks by the difference.
 
 ⚠ **A service's `profile` tints its DUST. Only the hero's is ever worn by a surface** — the other
-three stops have no geometry for a palette to land on. The hull is skinned once at load from the hero
+three craft are dust all the way through, with no surface for a palette to land on. The hull is skinned once at load from the hero
 service's own profile and **never re-graded**, so the AI craft keeps its flat two-tone `legacy`
 purple→cyan exactly as authored. `applyServicePalette` must not touch the hull.
 
 ⚠ **The bake's `FLEET` order is DECK_SERVICES order**, and `DECK_HERO_INDEX` comes from the bake.
 Reorder one and you must reorder the other.
 
-⚠ **Deleting three hulls took 5.2 MB off the critical path** — replaced by a 153 KB bake carrying all
-four drawings — and `SOURCE_WEIGHTS` was re-weighed for it (deck .47 → .10). That is the largest
+⚠ **Deleting three hulls took 5.2 MB off the critical path** — replaced by a 161 KB bake carrying all
+four craft in 3D — and `SOURCE_WEIGHTS` was re-weighed for it (deck .47 → .10). That is the largest
 change those weights have ever taken.
 
 ---

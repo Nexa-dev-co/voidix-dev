@@ -126,6 +126,19 @@ const TOUCH_STEP_THRESHOLD_PX = 42; // vertical swipe travel (px) that counts as
 // direction: its change is interruptible by design, so it holds for far less than it lasts.
 const STAGE_STEP_HOLD_MS = 2900;
 /**
+ * Services states its own, because its beat outgrew the default.
+ *
+ * The deck draws a craft out of dust, turns it into three dimensions and — at the last stop — builds
+ * it. Its longest path (a crossing into the hero, then the wireframe and the hull) is 5.30 s, and the
+ * durations that make it up are in useServicesDeck. This is that plus grace.
+ *
+ * ⚠ ONE value for the whole section, so it is sized for the LONGEST path and every shorter one is
+ * over-locked by the difference — a drawing-to-drawing change takes 3.50 s and is ignored for 5.50 s.
+ * That is the cost of the pin knowing only which SECTION it is stepping in, not which stop it is
+ * stepping to. Fixing it properly means `stepHoldMs` becoming a function of the destination.
+ */
+const SERVICES_STEP_HOLD_MS = 5500;
+/**
  * Works is the deliberate exception: its hold is SHORTER than the transition it kicks off.
  *
  * It used to be 6300 — `MARK_CHANGE_SECONDS` plus grace — on the reasoning that one gesture should
@@ -618,6 +631,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       {
         key: "services",
         stopCount: craftCount,
+        stepHoldMs: SERVICES_STEP_HOLD_MS,
         setActiveStop: (index) => setActiveCraftRef.current(index),
         crossingAfter: {
           scrollVh: HANDOFF_SCROLL_VH,

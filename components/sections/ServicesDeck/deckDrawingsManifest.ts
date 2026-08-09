@@ -6,7 +6,7 @@
 
 export const DECK_DRAWINGS_URL = '/deck-drawings.bin';
 export const DECK_DRAWINGS_MAGIC = 1146630486;
-export const DECK_DRAWINGS_VERSION = 1;
+export const DECK_DRAWINGS_VERSION = 2;
 export const DECK_DRAWINGS_HEADER_BYTES = 24;
 export const DECK_DRAWINGS_COORDINATE_SCALE = 32767;
 export const DECK_DRAWINGS_POINTS = 4096;
@@ -27,18 +27,15 @@ export const DECK_HERO_INDEX = 3;
 export const DECK_HERO_LIFT_Y = 0.133719;
 
 /**
- * The plan view, in the same space.
+ * The shared frame every craft is expressed in — the hero's own plan view.
  *
- * DORSAL points from the hull toward the eye and NOSE is screen-up — rotate the craft until these
- * two axes face the camera and point up and you have reproduced the drawing exactly.
+ * DORSAL points from the craft toward the eye and NOSE is screen-up, so rotating the rig until
+ * those two axes face the camera and point up reproduces the drawing exactly.
+ *
+ * ⚠ A DRAWING is the 3D cloud with its DORSAL component removed — one dot product, done in the
+ * vertex shader, which is why no 2D array is baked. The flatten is LINEAR and therefore commutes
+ * with the morph: flattening a crossing and crossing two flattened craft are the same thing.
  */
 export const DECK_PLAN_DORSAL = [0.000000, -1.000000, -0.000000] as const;
 export const DECK_PLAN_NOSE = [-0.000000, 0.000000, -1.000000] as const;
-/**
- * The drawing plane's other axis — screen-right; a point's stored drawX runs along it.
- *
- * With NOSE this spans the plane every drawing lives in, and the three of them are orthonormal.
- * So drawX·RIGHT + drawY·NOSE is the same thing as "the hero's 3D point with its DORSAL component
- * removed" — which is why the hero's drawing IS its flattened hull rather than a copy of it.
- */
 export const DECK_PLAN_RIGHT = [-1.000000, -0.000000, 0.000000] as const;
