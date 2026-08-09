@@ -3,6 +3,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { SUN_BODY_FILL } from '@/components/effects/IntroSequence/gatherShader';
 import { createSunParticles, type SunParticles } from '@/lib/sunParticles';
+import { createSunPlasma, type SunPlasma } from '@/components/sections/Hero/sunPlasma';
+import { isOmittedSunPart } from '@/components/sections/Hero/sunParts';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import {
   BURST_FRAGMENT_SHADER,
@@ -545,6 +547,8 @@ export function createSingularityScene({
   const scratchSpin = new THREE.Quaternion();
 
   let modelRoot: THREE.Object3D | null = null;
+  /** The star's burning surface — what the omitted `sunouter` shells used to be. */
+  let plasma: SunPlasma | null = null;
   /** The glTF's own root scale, so the collapse shrinks FROM it rather than replacing it. */
   const modelBaseScale = new THREE.Vector3(1, 1, 1);
   let shardRadius = 1;
@@ -841,6 +845,12 @@ export function createSingularityScene({
       material.opacity = presence;
     });
 
+    // The surface fades and reddens with the crust, so the two halves of the star cannot separate as
+    // it dies. Its CHURN is driven from the frame loop instead — this function is also called from
+    // `setPresence`, which has no clock, and it is the single owner of everything keyed to the
+    // sequence rather than to time.
+    plasma?.setPresence(presence, FINALE_REDSHIFT * collapse);
+
     // 6. The accretion spiral: the star's own matter, released and wound inward. Runs on the RAW
     //    sequence rather than on `explode`, because the particles carry their own staggered release —
     //    which is what fills the long dead beat the collapse curve leaves at the front of the finale.
@@ -1017,10 +1027,36 @@ export function createSingularityScene({
       });
     });
 
+    // ── The same star the hero draws, so it must be the same PARTS ──
+    //
+    // `SUN_OMITTED_PARTS` is shared with `SunModelCanvas` precisely so this cannot drift: the hero sun
+    // stopped drawing the flares, the blowout planes and the eleven `sunouter` shells, and a star at
+    // contact that still had them would be a visibly different object at the one moment the site asks
+    // you to recognise it as the one you left at works.
+    //
+    // ⚠ Hidden AFTER the material walk above, not instead of it. Those materials still need their
+    // emissive primed and their `transparent`/`opacity` set, because `materials` drives the whole
+    // star's fade and the rewind's exactness depends on every entry being present.
+    modelRoot.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
+      if (meshMaterials.some((material) => isOmittedSunPart(material.name))) object.visible = false;
+    });
+
+    // The atmosphere those shells used to be, procedurally — one surface instead of eleven blended
+    // meshes. Transparent here and only here: this star fades out, and `transparent` is part of a
+    // material's program key, so it is set at construction rather than toggled mid-finale.
+    plasma = createSunPlasma({ transparent: true });
+    modelRoot.add(plasma.mesh);
+
     // Flares are FLAT discs whose geometry centre is offset from the mesh origin — spinning about the
     // origin would ORBIT them. Recentre each so it turns in place, compensating the mesh position so
     // nothing moves visually.
+    //
+    // ⚠ Skipped when the flares are omitted: they are invisible, but this would still clone their
+    // geometry and the spin below would keep rebuilding quaternions for them every frame.
     modelRoot.traverse((object) => {
+      if (isOmittedSunPart('flare')) return;
       if (!(object instanceof THREE.Mesh)) return;
       const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
       if (!meshMaterials.some((material) => material.name === 'flare')) return;
@@ -1275,6 +1311,13 @@ export function createSingularityScene({
     // winding the form back down would sweep every grain home into the launch knot and sink it into the
     // star, which is the eruption played backwards — not a disc being consumed.
     rings?.update(elapsedSeconds, 1, 1, presence * (1 - collapseAmount));
+
+    // The burning surface, churning. ⚠ Both ramps pinned at 1 for the same reason the rings' are: this
+    // star ARRIVES already collapsed — the works section carried the hero sun into that pose, which is
+    // what the COLLAPSE_* block above mirrors — so its surface is at its hottest and most violent from
+    // the first frame. The finale's own additions, the fade and the redshift, are applied in
+    // `applyFinale`, which owns everything keyed to the sequence.
+    plasma?.update(elapsedSeconds, 1, 1);
   };
 
   const dispose = () => {
@@ -1292,6 +1335,7 @@ export function createSingularityScene({
       meshMaterials.forEach((material) => material.dispose());
     });
     rings?.dispose();
+    plasma?.dispose();
     accretionGeometry.dispose();
     accretionMaterial.dispose();
     burstMesh.geometry.dispose();

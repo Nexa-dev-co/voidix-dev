@@ -85,6 +85,15 @@ const COLOR_BODY = HEAT_600; // ⭐ THE ANCHOR — the sun's own light
 const COLOR_LANE_COLD = HEAT_100; // char
 const COLOR_LANE_HOT = HEAT_400; // the spiral — molten, still clearly below the body
 
+/**
+ * Where the light goes as it climbs out of the well at contact.
+ *
+ * ⚠ The same literal `singularityScene`'s `FINALE_REDSHIFT_COLOR` uses, and it has to be: that scene
+ * redshifts the crust's magma emissive while this redshifts the surface over it. Two halves of one
+ * star reddening at different hues would read as the surface peeling off.
+ */
+const REDSHIFT_COLOR = 0xff2600;
+
 // ── Surface tuning, carried over from the original ───────────────────────────────────────────────
 /** Size of the convection cells. */
 const NOISE_SCALE = 2.4;
@@ -129,6 +138,9 @@ const FRAGMENT_SHADER = /* glsl */ `
   uniform float uContrast;
   uniform float uIntensity;   // the Cracks ramp: 0 = calm hero star, 1 = restless
   uniform float uCollapse;    // the Collapse ramp: drives it white-hot and violent across works
+  uniform float uOpacity;     // 1 for the hero star; the contact star fades out on this
+  uniform float uRedshift;    // 0..1 toward uRedshiftColor — light climbing out of a deepening well
+  uniform vec3  uRedshiftColor;
 
   // Restless-state drama: extra flare energy and harder granulation.
   const float INTENSITY_FLARE_BOOST    = 2.6;
@@ -307,7 +319,13 @@ const FRAGMENT_SHADER = /* glsl */ `
     // 7. The collapse crushes the whole ramp toward the core colour — temperature, not exposure.
     color = mix(color, uColorCore, uCollapse * COLLAPSE_WHITEN);
 
-    gl_FragColor = vec4(color, 1.0);
+    // 8. Gravitational redshift, for the star that dies at contact. Applied LAST, over everything
+    //    including the rim and the flares, because light loses energy climbing out of the well
+    //    whatever produced it — tinting only the body would leave a bright amber edge on a star that
+    //    is supposed to be reddening as it goes. Zero for the hero star.
+    color = mix(color, uRedshiftColor, uRedshift);
+
+    gl_FragColor = vec4(color, uOpacity);
 
     // Into the same chain as the crust beside it. A ShaderMaterial does NOT get these for free —
     // three appends them to its OWN materials only. Without them the plasma emits raw linear values
@@ -322,10 +340,33 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+export interface SunPlasmaOptions {
+  /**
+   * Whether the surface can fade.
+   *
+   * ⚠ Set at construction, never toggled. `transparent` is part of a material's PROGRAM KEY in three,
+   * so flipping it mid-fade forces a shader recompile at exactly the moment the frame is already doing
+   * the most work — the same trap `singularityScene` documents for the model's own materials, which is
+   * why they are held transparent for the star's whole life rather than switched.
+   *
+   * The hero star is always solid: its silhouette is carried by limb darkening and the rim, and a
+   * transparent one reads as a ghost with the crust showing through it.
+   */
+  transparent?: boolean;
+}
+
 export interface SunPlasma {
   readonly mesh: THREE.Mesh;
-  /** Advance the field and re-grade it. Called every drawn frame; four uniform writes. */
+  /** Advance the field and re-grade it. Called every drawn frame; three uniform writes. */
   update(elapsedSeconds: number, cracks: number, collapse: number): void;
+  /**
+   * The contact star only: how present it is, and how far its light has reddened.
+   *
+   * Separate from `update` rather than two more parameters, because the hero never calls it and would
+   * be passing the same two constants sixty times a second forever. Both default to "fully present,
+   * unshifted" so a caller that never touches this behaves exactly as the hero does.
+   */
+  setPresence(opacity: number, redshift: number): void;
   dispose(): void;
 }
 
@@ -336,7 +377,7 @@ export interface SunPlasma {
  * `positionShards` scales from nothing at `CORONA_APPEAR`, and it is the whole reason the star lights
  * INSIDE its closing shell rather than being on screen for the entire download.
  */
-export function createSunPlasma(): SunPlasma {
+export function createSunPlasma({ transparent = false }: SunPlasmaOptions = {}): SunPlasma {
   const geometry = new THREE.SphereGeometry(PLASMA_RADIUS, PLASMA_SEGMENTS, PLASMA_SEGMENTS);
 
   const material = new THREE.ShaderMaterial({
@@ -354,13 +395,20 @@ export function createSunPlasma(): SunPlasma {
       uContrast: { value: SURFACE_CONTRAST },
       uIntensity: { value: 0 },
       uCollapse: { value: 0 },
+      uOpacity: { value: 1 },
+      uRedshift: { value: 0 },
+      uRedshiftColor: { value: new THREE.Color(REDSHIFT_COLOR) },
     },
     // ⚠ OPAQUE, and that is the original's design rather than an oversight: the fragment ends on
     // alpha 1.0 and the silhouette is carried by limb darkening plus the rim, not by a fade. A
     // transparent star was tried in the rewrite and it read as a ghost — the crust showed through the
     // body and nothing looked solid. Writing depth also means the shards occlude correctly once the
     // Cracks ramp pushes them out past this radius.
-    transparent: false,
+    transparent,
+    // A fading star must not write depth — it would punch the debris field and the accretion spiral
+    // behind it out of the frame while itself being see-through. The solid hero star wants the
+    // opposite, so the shards occlude correctly once Cracks pushes them past this radius.
+    depthWrite: !transparent,
     // At the crust radius the far hemisphere is behind opaque geometry; inside it, that hemisphere is
     // what shows through the widening gaps. Derived so the two cannot fall out of step.
     side: PLASMA_RADIUS < CRUST_RADIUS ? THREE.DoubleSide : THREE.FrontSide,
@@ -378,6 +426,10 @@ export function createSunPlasma(): SunPlasma {
       material.uniforms.uTime.value = elapsedSeconds;
       material.uniforms.uIntensity.value = cracks;
       material.uniforms.uCollapse.value = collapse;
+    },
+    setPresence(opacity, redshift) {
+      material.uniforms.uOpacity.value = opacity;
+      material.uniforms.uRedshift.value = redshift;
     },
     dispose() {
       geometry.dispose();

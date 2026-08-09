@@ -43,6 +43,7 @@ import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
 import { createSunPlasma, type SunPlasma } from './sunPlasma';
+import { SUN_OMITTED_PARTS, isOmittedSunPart } from './sunParts';
 import { warmSceneMaterials } from '@/lib/warmScene';
 import { SLATE_400 } from '@/lib/coolPalette';
 import {
@@ -209,21 +210,9 @@ const SUN_GLOW_STRIDE = 2;
  * downloaded. Reclaiming those means rebuilding the GLB, which changes the mesh table `compareModels`
  * asserts on — a separate, deliberate pass.
  */
-type SunPartMaterial = 'flare' | 'blowout' | 'sunouter';
-/**
- * Parts of the star that do not ship. Decided 2026-08-08 from the table above — 2.00 → 0.87 ms, a
- * 57 % cut, and the largest saving available without touching the atmosphere.
- *
- * ⚠ EMPTYING THIS IS NOT THE WHOLE REVERT, and an earlier version of this line claimed it was. Two
- * other things moved on the same day BECAUSE these groups left, and both would have to move back:
- *
- *   `SUN_FRAMING_NUDGE_X`   0.05 → 0   it existed to correct for the asymmetry these two caused
- *   the centring below      now reads the drawn geometry, not the full bounding box
- *
- * Restore this list alone and the star draws its flares again while being framed as though it had
- * none — off-centre, differently from before. Revert all three or none.
- */
-const SUN_OMITTED_PARTS: readonly SunPartMaterial[] = ['flare', 'blowout', 'sunouter'];
+// ⚠ The list itself lives in `sunParts.ts`, shared with `Contact/singularityScene`. There are two
+// stars built from this model and CLAUDE.md requires them not to drift; a copy here is how the star
+// at contact would have kept its flares and its eleven shells after the hero star lost them.
 /** DIAGNOSTIC. Keep only the N LARGEST `sunouter` shells. 0 = keep all, and that is the shipping value. */
 const SUN_ABLATION_KEEP_SHELLS = 0;
 
@@ -1125,7 +1114,7 @@ export default function SunModelCanvas() {
           const names = (Array.isArray(object.material) ? object.material : [object.material]).map(
             (material) => material.name,
           );
-          if (names.some((name) => SUN_OMITTED_PARTS.includes(name as SunPartMaterial))) {
+          if (names.some(isOmittedSunPart)) {
             object.visible = false;
             hidden += 1;
             return;
