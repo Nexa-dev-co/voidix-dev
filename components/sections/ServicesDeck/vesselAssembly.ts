@@ -79,11 +79,15 @@ const WIND_UP_DISTANCE = 0.11; // stage units, against a 2.3-wide hull
 /**
  * Peak emissive multiplier at the instant of contact.
  *
- * ⚠ Cut from 2.6 on 2026-08-11. At that value the lock was the single brightest event on the deck and
- * it blew straight through the bloom threshold, so every part arrived with a FLARE — the opposite of a
- * circuit coming to life. It is a tick now, and the light that matters comes AFTER, over TRIM_WARM_SPAN.
+ * ⚠ Cut from 2.6 to 0.12 on 2026-08-11, and the size of that cut is the point. At 2.6 the lock was the
+ * single brightest event on the deck and blew straight through the bloom threshold, so every part
+ * arrived with a FLARE — the exact opposite of a circuit coming to life.
+ *
+ * It is now sized so that `trimGlow × (LOCKED_TRIM_LEVEL · breathing + this)` still lands just UNDER
+ * BLOOM_THRESHOLD: contact registers as a tick in the emissive and nothing more. The light that matters
+ * arrives afterwards, over TRIM_WARM_SPAN. ⚠ Raising it past ~0.15 puts the flash back into bloom.
  */
-const FLASH_STRENGTH = 0.85;
+const FLASH_STRENGTH = 0.12;
 
 // ── The settle ──
 // The part's own clunk as it seats: a damped oscillation ALONG its approach axis, a couple of cycles.
@@ -146,8 +150,14 @@ const IGNITION_SPREAD = 0.55;
 // TRIM_WARM_SPAN of scroll, crossing into bloom as it goes. The machine powers up; it does not switch on.
 /** How dim a loose part's circuitry runs while it is still adrift. */
 const LOOSE_TRIM_LEVEL = 0.22;
-/** Where it sits the instant it locks. `trimGlow` × this must stay below BLOOM_THRESHOLD. */
-const LOCKED_TRIM_LEVEL = 0.42;
+/**
+ * Where it sits the instant it locks.
+ *
+ * ⚠ The binding constraint is `trimGlow × this × (1 + emitPulseAmplitude) + FLASH_STRENGTH × trimGlow
+ * < BLOOM_THRESHOLD`, evaluated against the LARGEST `trimGlow` in deckServices. Nudge any of those four
+ * and a part starts blooming at the instant it connects again — which is the thing this exists to stop.
+ */
+const LOCKED_TRIM_LEVEL = 0.36;
 /** How much scroll the warm-up from LOCKED_TRIM_LEVEL to full takes, in overall assembly progress. */
 const TRIM_WARM_SPAN = 0.085;
 

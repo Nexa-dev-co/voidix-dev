@@ -119,10 +119,11 @@ const RIM_LIGHT_COLOR      = HEAT_600;
 const RIM_LIGHT_INTENSITY  = 3.4;
 
 // ── Powered-on look ──
-// Each part wears a graded-palette shader (see hullMaterial.ts) built from ITS WAVE's accent: the
-// model's own albedo luminance is mapped onto the shared body tones, so the ship stays multi-tonal,
-// and the accent glow + rim carry which discipline built that part. Brightness and the engine pulse
-// are driven per part by vesselAssembly — a loose part is cold, a locked one is live.
+// Each part wears the vessel skin (see hullMaterial.ts), which splits the albedo into HULL and TRIM by
+// SATURATION — the texture is ~97% black with thin saturated circuit lines and carries no shading of
+// its own, so the body is a constant dark metal and the lines are that wave's circuit colour. Trim
+// level and hull brightness are driven per part by vesselAssembly: a loose part is cold and dim, a
+// seated one warms up over the following stretch of scroll, and the whole hull surges at ignition.
 
 // ── Selective bloom — BACK ON (2026-08-11), and the old reason for switching it off no longer holds ──
 //
@@ -133,8 +134,9 @@ const RIM_LIGHT_INTENSITY  = 3.4;
 //
 // That is a judgement about BROAD accents spread over four mid-tone hulls. This vessel's emissive is
 // thin circuit lines on a near-black hull, which is the one thing bloom is unambiguously good at — and
-// the threshold does the discriminating for us. At 1.0 nothing but the trim can cross it: the hull sits
-// far below, so there is no large bright area for a halo to form over, which is what haze actually is.
+// the threshold does the discriminating for us: the hull and the rim light both sit far below it, so
+// there is no large bright area for a halo to form over — and a halo over a large bright area is what
+// haze actually is.
 //
 // ⚠ It remains the most expensive pass on the site and this is a real cost. It is affordable now for a
 // reason that did not exist before: the deck is the CHEAPEST scene on the page (9 draw calls, 1,980

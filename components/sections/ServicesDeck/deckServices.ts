@@ -123,7 +123,7 @@ export const DECK_SERVICES: DeckService[] = [
     profile: {
       ...VESSEL_HULL,
       trim: '#ff8a1a',
-      trimGlow: 1.9,
+      trimGlow: 2.2,
       rim: '#6b1a04',
       iridescence: 0,
       iridescenceIOR: 1.3,

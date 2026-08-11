@@ -89,7 +89,10 @@ const DECK_TUNING: DeckTuning = {
   // between these two is most of what makes the assembly read as powering up rather than as tidying up.
   dormantBrightness: 0.55,
   activeBrightness: 1.3,
-  emitPulseAmplitude: 0.35,
+  // ⚠ Shallow (was 0.35). This breathes the CIRCUITRY now, not a whole hull's accent, and at 0.35 a
+  // freshly-locked part crossed the bloom threshold on every up-beat and fell back under on every
+  // down-beat — a line that flickers in and out of bloom reads as a bug, not as a pulse.
+  emitPulseAmplitude: 0.12,
   emitPulseSpeed: 2.9,
 
   // Pulled well down so the sun stays the brightest thing on the deck.
