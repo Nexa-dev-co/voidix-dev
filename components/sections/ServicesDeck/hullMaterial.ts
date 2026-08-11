@@ -1,51 +1,72 @@
 import * as THREE from 'three';
-import type { ShipProfile, GradedProfile, LegacyProfile } from './deckServices';
+import type { VesselProfile } from './deckServices';
 
-// Each hull's albedo is re-graded onto its ship's palette instead of being washed to one flat hue:
-// the model's own albedo *luminance* drives a three-tone map (shadow → hull → highlight), so the
-// surface keeps its real tonal variation (panels, recesses, worn edges read separately) — it looks
-// like a real, multi-material machine, never one solid colour. On top of that the brightest texels
-// (engines, windows) are picked out as an accent glow that feeds the bloom pass, and the silhouette
-// catches a thin fresnel rim. The model's normal / roughness / metalness maps are left untouched,
-// so all the PBR realism survives the recolour.
+/**
+ * The vessel's skin.
+ *
+ * ── Read this before changing anything: the texture is a TRIM MASK, not a colour source ──────────
+ * `vessel-albedo.jpg` is 512² and it is ~97 % pure black with thin (1–3 px) saturated amber lines
+ * tracing every panel seam. There is no panel shading in it, no ambient occlusion, no surface
+ * variation — the hull's form in the model's own reference render comes entirely from studio lighting.
+ * What the texture carries is the ship's circuitry, and that circuitry is already, exactly, the site's
+ * `--heat-600`. The model arrived on-brand.
+ *
+ * ⚠ The material this replaces was written for the OLD FLEET — four third-party hulls that came in the
+ * wrong colours and had to be forced onto a palette by grading their albedo LUMINANCE onto three tones.
+ * Against this texture that did three things wrong at once:
+ *
+ *   · 97 % of the texture sits at luminance ~0, so the whole hull collapsed onto one flat shadow tone;
+ *   · the amber trim sits at luminance ≈0.63, under the 0.84 emissive threshold, so IT NEVER GLOWED;
+ *   · and that same mid-scale luminance graded the trim between the hull and highlight tones, so the
+ *     amber lines came out GREY — the one feature the ship exists for, converted into the thing it is
+ *     supposed to stand out from.
+ *
+ * A luminance threshold cannot tell a bright grey panel from an amber line. So this separates on
+ * SATURATION instead, which on this texture is a perfect binary: the hull is desaturated at every
+ * brightness, the trim is saturated at every brightness.
+ *
+ *        saturation  0.0 ──────────────────────────► 1.0
+ *                    ████████ hull            ▓▓▓▓ trim
+ *                            └── one clean cut ──┘
+ *
+ * The trim colour is then entirely OURS, which is what lets each wave's parts glow their own
+ * discipline's colour along the same circuitry — one machine, four circuit colours, carried by the
+ * model's own design language rather than imposed on it.
+ */
 
-const RIM_POWER    = 3.0; // higher → the rim hugs the silhouette more tightly
-const RIM_STRENGTH = 0.6; // how strong the edge catch reads
+// ── The trim cut ──
+// Generous margins either side of the real gap. Measured in LINEAR space (three's `<map_fragment>`
+// has already decoded sRGB by the time we see `diffuseColor`), where the separation is even wider than
+// it is in sRGB: the amber reaches ~0.99 saturation and the hull sits near 0. The smoothstep is what
+// antialiases the JPEG's colour fringing along each line rather than crawling.
+const TRIM_SAT_LOW  = 0.25;
+const TRIM_SAT_HIGH = 0.55;
+// The trim's own brightness still modulates its glow, so a line that tapers in the texture tapers in
+// the light. Below the knee is hull; above it the line burns at full strength.
+const TRIM_LUM_FLOOR = 0.02;
+const TRIM_LUM_KNEE  = 0.30;
+/** How much of the trim colour lands in the DIFFUSE as well as the emissive — without this the lines
+ *  read as an additive overlay floating above the hull rather than as lit material. */
+const TRIM_DIFFUSE_MIX = 0.35;
 
-// Legacy (pre-overhaul) flat-tint treatment — see LegacyProfile in deckServices.
-const LEGACY_ENV_INTENSITY  = 1.2;
-const LEGACY_FRESNEL_POWER  = 2.2;
+// ── The silhouette ──
+// ⚠ Both raised for this model. A near-black hull on a near-black stage is read almost entirely by its
+// edges, and these two are what draw them. `RIM_POWER` DOWN widens the catch (the exponent is on an
+// inverted dot product, so lower = broader); `RIM_STRENGTH` up makes it carry.
+const RIM_POWER    = 2.4; // was 3.0 — a tighter rim vanished on a black hull
+const RIM_STRENGTH = 0.9; // was 0.6
 
-/** The rim-light colour a ship's edge light should ease to — the graded `rim`, or the legacy `colorEdge`. */
-export function rimColorOf(profile: ShipProfile): string {
-  return profile.kind === 'legacy' ? profile.colorEdge : profile.rim;
-}
-
-/** Per-ship uniforms shared across all of a hull's materials (the ship drives these as a unit). */
+/** Per-PART uniforms shared across one cluster's materials (each part drives these as a unit). */
 export interface HullUniforms {
-  /** Hull brightness — 1 when centred, lower as the craft leaves the pad. */
+  /** Hull brightness — cold while the part is loose, full once it has locked into the machine. */
   brightness: { value: number };
-  /** Engine-glow breathing — 1 at rest, modulated on the centred craft. */
+  /** Circuit breathing, the flash as a part locks, and the ignition surge. */
   emitPulse: { value: number };
 }
 
-/** The graded-palette uniforms, stored on `material.userData.hullUniforms`. */
-export interface HullShaderUniforms {
-  uHullShadow: { value: THREE.Color };
-  uHullMid: { value: THREE.Color };
-  uHullHighlight: { value: THREE.Color };
-  uAccent: { value: THREE.Color };
-  uRim: { value: THREE.Color };
-  uGradeMid: { value: number };
-  uEmitThreshold: { value: number };
-  uEmitStrength: { value: number };
-  uRimPower: { value: number };
-  uRimStrength: { value: number };
-}
-
 // Promote a loaded MeshStandardMaterial to a MeshPhysicalMaterial so it can wear clearcoat +
-// iridescence. We copy only the maps/props we need rather than `.copy()`, because copying from a
-// plain standard material would stomp the physical defaults (ior, clearcoat…) with `undefined`.
+// iridescence. We copy only the maps/props we need rather than `.copy()`, because copying from a plain
+// standard material would stomp the physical defaults (ior, clearcoat…) with `undefined`.
 function upgradeToPhysical(source: THREE.MeshStandardMaterial): THREE.MeshPhysicalMaterial {
   const physical = new THREE.MeshPhysicalMaterial();
   physical.name = source.name;
@@ -68,29 +89,30 @@ function upgradeToPhysical(source: THREE.MeshStandardMaterial): THREE.MeshPhysic
   return physical;
 }
 
-// Inject the graded-palette shader. The grade runs at <normal_fragment_begin> (where the
-// texture-sampled diffuseColor + view-space normal are in scope); the accent/rim glow is added at
-// <emissivemap_fragment> — AFTER the emissive map multiply — so a black emissive map can't cancel it.
-function applyGradedHull(
+// Inject the trim-mask shader. The mask + hull colour are resolved at <normal_fragment_begin> (where
+// the texture-sampled diffuseColor and the view-space normal are both in scope); the glow is added at
+// <emissivemap_fragment> — AFTER the emissive map multiply — so a black emissive map cannot cancel it.
+function applyVesselSkin(
   material: THREE.MeshStandardMaterial,
-  profile: GradedProfile,
+  profile: VesselProfile,
   uniforms: HullUniforms,
 ) {
-  const shaderUniforms: HullShaderUniforms = {
-    uHullShadow: { value: new THREE.Color(profile.shadow) },
-    uHullMid: { value: new THREE.Color(profile.hull) },
-    uHullHighlight: { value: new THREE.Color(profile.highlight) },
-    uAccent: { value: new THREE.Color(profile.accent) },
+  const shaderUniforms = {
+    uHull: { value: new THREE.Color(profile.hull) },
+    uHullLift: { value: profile.hullLift },
+    uTrim: { value: new THREE.Color(profile.trim) },
+    uTrimGlow: { value: profile.trimGlow },
     uRim: { value: new THREE.Color(profile.rim) },
-    uGradeMid: { value: profile.gradeMid },
-    uEmitThreshold: { value: profile.emitThreshold },
-    uEmitStrength: { value: profile.emitStrength },
+    uTrimSatLow: { value: TRIM_SAT_LOW },
+    uTrimSatHigh: { value: TRIM_SAT_HIGH },
+    uTrimLumFloor: { value: TRIM_LUM_FLOOR },
+    uTrimLumKnee: { value: TRIM_LUM_KNEE },
+    uTrimDiffuseMix: { value: TRIM_DIFFUSE_MIX },
     uRimPower: { value: RIM_POWER },
     uRimStrength: { value: RIM_STRENGTH },
   };
-  // Exposed so applyLitState can drive brightness per frame.
+  material.userData.vesselUniforms = shaderUniforms;
   material.userData.tintBrightness = uniforms.brightness;
-  material.userData.hullUniforms = shaderUniforms;
 
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shaderUniforms, {
@@ -102,108 +124,69 @@ function applyGradedHull(
       .replace(
         '#include <common>',
         `#include <common>
-        uniform vec3 uHullShadow;
-        uniform vec3 uHullMid;
-        uniform vec3 uHullHighlight;
-        uniform vec3 uAccent;
+        uniform vec3 uHull;
+        uniform float uHullLift;
+        uniform vec3 uTrim;
+        uniform float uTrimGlow;
         uniform vec3 uRim;
-        uniform float uGradeMid;
-        uniform float uEmitThreshold;
-        uniform float uEmitStrength;
+        uniform float uTrimSatLow;
+        uniform float uTrimSatHigh;
+        uniform float uTrimLumFloor;
+        uniform float uTrimLumKnee;
+        uniform float uTrimDiffuseMix;
         uniform float uRimPower;
         uniform float uRimStrength;
         uniform float uTintBrightness;
         uniform float uEmitPulse;
-        float hullLum;
-        float hullFresnel;`,
+        float vesselTrim;
+        float vesselLum;
+        float vesselFresnel;`,
       )
       .replace(
         '#include <normal_fragment_begin>',
         `#include <normal_fragment_begin>
-        // 1. Grade the albedo by its own luminance — keeps panel/detail variation, swaps the palette.
-        hullLum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
-        vec3 hullGraded = mix(uHullShadow, uHullMid, smoothstep(0.0, uGradeMid, hullLum));
-        hullGraded = mix(hullGraded, uHullHighlight, smoothstep(uGradeMid, 1.0, hullLum));
-        diffuseColor.rgb = hullGraded * uTintBrightness;
-        // 2. Silhouette fresnel, used for the rim glow below.
-        hullFresnel = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), uRimPower);`,
+        // 1. Split the texture into hull and trim by SATURATION. This texture is black plus saturated
+        //    amber lines and nothing else, so one cut separates them at any brightness.
+        float vesselMax = max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b));
+        float vesselMin = min(diffuseColor.r, min(diffuseColor.g, diffuseColor.b));
+        float vesselSat = vesselMax > 0.001 ? (vesselMax - vesselMin) / vesselMax : 0.0;
+        vesselTrim = smoothstep(uTrimSatLow, uTrimSatHigh, vesselSat);
+        vesselLum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+
+        // 2. The hull is a CONSTANT dark metal, not the texture's black — the texture carries no shading
+        //    to preserve, and pure black on a black stage has no form at all. Whatever faint luminance
+        //    the albedo does hold lifts it slightly, so panel-to-panel variation survives.
+        vec3 vesselHull = uHull * (1.0 + uHullLift * vesselLum);
+        diffuseColor.rgb = mix(vesselHull, uTrim * uTrimDiffuseMix, vesselTrim) * uTintBrightness;
+
+        // 3. Silhouette fresnel, used for the edge catch below. On a black hull this is most of what
+        //    tells you where the ship ends.
+        vesselFresnel = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), uRimPower);`,
       )
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
-        // 3. Pick the brightest texels out as accent glow (engines/windows) + add the rim catch.
-        float hullEmit = smoothstep(uEmitThreshold, 1.0, hullLum) * uEmitStrength * uEmitPulse;
-        totalEmissiveRadiance += (uAccent * hullEmit + uRim * hullFresnel * uRimStrength) * uTintBrightness;`,
+        // 4. Burn the circuitry. The trim's own brightness modulates it, so a line that tapers in the
+        //    texture tapers in the light. This is the only thing on the ship that exceeds 1.0, which is
+        //    what lets the bloom threshold pick it out without hazing the hull.
+        float vesselGlow = vesselTrim * uTrimGlow * uEmitPulse
+          * smoothstep(uTrimLumFloor, uTrimLumKnee, vesselLum);
+        totalEmissiveRadiance +=
+          (uTrim * vesselGlow + uRim * vesselFresnel * uRimStrength) * uTintBrightness;`,
       );
   };
   material.needsUpdate = true;
 }
 
-// The original flat two-tone tint: the model's texture multiplied by a fresnel mix from colorCore
-// (facing the camera) to colorEdge (grazing). Injected exactly as the pre-overhaul build did.
-function applyLegacyTint(
-  material: THREE.MeshStandardMaterial,
-  profile: LegacyProfile,
-  uniforms: HullUniforms,
-) {
-  const uColorCore = { value: new THREE.Color(profile.colorCore) };
-  const uColorEdge = { value: new THREE.Color(profile.colorEdge) };
-  material.userData.tintBrightness = uniforms.brightness;
-
-  material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, {
-      uColorCore,
-      uColorEdge,
-      uTintBrightness: uniforms.brightness,
-      uFresnelPower: { value: LEGACY_FRESNEL_POWER },
-    });
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-        uniform vec3 uColorCore;
-        uniform vec3 uColorEdge;
-        uniform float uTintBrightness;
-        uniform float uFresnelPower;`,
-      )
-      .replace(
-        '#include <normal_fragment_begin>',
-        `#include <normal_fragment_begin>
-        float hullFresnel = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), uFresnelPower);
-        diffuseColor.rgb *= mix(uColorCore, uColorEdge, hullFresnel) * uTintBrightness;`,
-      );
-  };
-  material.needsUpdate = true;
-}
-
-// Restore the original treatment for a legacy ship: keep the loaded MeshStandardMaterial (and its
-// native metalness/roughness), just retint it and wire up the swap fade.
-function createLegacyHull(
+// Build the final material for one loaded source material. Full path → MeshPhysicalMaterial (clearcoat
+// + iridescence); low-power path → the lighter MeshStandardMaterial. Both inject the same shader, so
+// the look is consistent — just cheaper on weak devices.
+function createVesselMaterial(
   source: THREE.MeshStandardMaterial,
-  profile: LegacyProfile,
-  uniforms: HullUniforms,
-): THREE.MeshStandardMaterial {
-  source.envMapIntensity = LEGACY_ENV_INTENSITY;
-  source.transparent = true;
-  source.userData.baseOpacity = source.opacity;
-  applyLegacyTint(source, profile, uniforms);
-  return source;
-}
-
-// Build the final hull material for one loaded source material. Legacy ships → the original flat
-// tint. Otherwise: full path → MeshPhysicalMaterial (clearcoat + iridescence); low-power path →
-// the lighter MeshStandardMaterial. Either graded path injects the same shader, so the look is
-// consistent — just cheaper on weak devices.
-function createHullMaterial(
-  source: THREE.MeshStandardMaterial,
-  profile: ShipProfile,
+  profile: VesselProfile,
   uniforms: HullUniforms,
   lowPower: boolean,
 ): THREE.MeshStandardMaterial {
-  if (profile.kind === 'legacy') {
-    return createLegacyHull(source, profile, uniforms);
-  }
-
   const material = lowPower ? source : upgradeToPhysical(source);
 
   material.metalness = profile.metalness;
@@ -217,25 +200,32 @@ function createHullMaterial(
     material.iridescenceIOR = profile.iridescenceIOR;
   }
 
-  // Native engine lights (an emissive map) take the accent colour; with no map the threshold
-  // pickout in the shader is the only glow, so keep the base emissive dark to avoid a flat wash.
-  material.emissive.set(material.emissiveMap ? profile.accent : 0x000000);
+  // The shader adds to `totalEmissiveRadiance` directly, so the material's own emissive must stay black
+  // or it lays a flat wash over the whole hull. (This model ships no emissive map.)
+  material.emissive.set(0x000000);
 
-  // Swap fades need transparency; remember the design opacity for the presence fade.
-  material.transparent = true;
-  material.userData.baseOpacity = material.opacity;
+  // ⚠ OPAQUE, where the fleet's hulls were transparent. That transparency existed only for the portal
+  // swap's presence fade, and it is actively wrong here: the nine clusters interpenetrate at every
+  // seam, and nine transparent meshes are sorted by distance rather than depth-tested — so the ship
+  // would show its parts drawing through one another wherever two of them meet.
+  material.transparent = false;
 
-  applyGradedHull(material, profile, uniforms);
+  applyVesselSkin(material, profile, uniforms);
   return material;
 }
 
 /**
- * Walk a loaded vessel, replace every standard hull material with its graded-palette equivalent,
- * reassign it to the mesh, and return the final material list (for the lit/opacity drivers).
+ * Walk one loaded part, replace every standard material with its wave's skin, reassign it to the mesh,
+ * and return the final material list.
+ *
+ * ⚠ Call this PER CLUSTER, with that cluster's wave profile — and on cloned source materials. Every
+ * cluster in vessel.glb references the same glTF material, and GLTFLoader hands out one shared
+ * THREE.Material instance for it, so re-skinning in place would give all nine parts whichever wave's
+ * trim colour happened to be applied last.
  */
 export function applyHullMaterials(
   root: THREE.Object3D,
-  profile: ShipProfile,
+  profile: VesselProfile,
   uniforms: HullUniforms,
   lowPower: boolean,
 ): THREE.Material[] {
@@ -245,7 +235,7 @@ export function applyHullMaterials(
     const sources = Array.isArray(child.material) ? child.material : [child.material];
     const built = sources.map((source) =>
       source instanceof THREE.MeshStandardMaterial
-        ? createHullMaterial(source, profile, uniforms, lowPower)
+        ? createVesselMaterial(source, profile, uniforms, lowPower)
         : source,
     );
     child.material = Array.isArray(child.material) ? built : built[0];

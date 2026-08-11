@@ -38,6 +38,10 @@ import {
   type HandoffProgressDetail,
 } from "@/lib/handoffEvents";
 import {
+  SERVICES_ASSEMBLY_EVENT,
+  type ServicesAssemblyDetail,
+} from "@/lib/servicesAssemblyEvents";
+import {
   CHAMBER_PROGRESS_EVENT,
   type ChamberProgressDetail,
 } from "@/lib/chamberEvents";
@@ -690,6 +694,50 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     const { fillFraction, carouselStart, stopProgressValues, totalStops } =
       layout;
 
+    // ── The Services vessel's assembly ──
+    // The deck builds one ship across the services span, a wave of parts per stop. It needs the span as
+    // a CONTINUOUS number, not the integer stop index `setActiveStop` already delivers — the parts fly
+    // in during the glides BETWEEN stops, and a scroll-back has to take them off again.
+    //
+    // Derived from the layout rather than written out, so the quarters follow `carouselLayout` if the
+    // section's stop count or the crossing spans ever move. See lib/servicesAssemblyEvents.ts for the
+    // mapping this produces and why the first quarter is the fill rather than a stop-to-stop glide.
+    // Found by key rather than by index. Services happens to be first today, and a literal 0 here would
+    // keep working right up until someone reorders the list — at which point the vessel would silently
+    // start assembling itself to the works section's scroll.
+    const servicesSectionIndex = carouselSections.findIndex(
+      (section) => section.key === "services",
+    );
+    const servicesLayout = layout.sections[servicesSectionIndex];
+    const servicesStopCount = carouselSections[servicesSectionIndex].stopCount;
+    const applyServicesAssembly = (progress: number) => {
+      // Where we are in services-stop space: −1 at the very start of the fill, 0 at stop 01, and one
+      // unit per stop after that.
+      const stopGap =
+        servicesStopCount > 1
+          ? servicesLayout.meterSpan / (servicesStopCount - 1)
+          : 1;
+      const stopPosition =
+        progress >= servicesLayout.firstStopProgress
+          ? (progress - servicesLayout.firstStopProgress) / stopGap
+          : // The fill, mapped onto the single unit that precedes stop 01. `firstStopProgress` is
+            // always > 0 (the fill occupies it), so this cannot divide by zero.
+            (progress - servicesLayout.firstStopProgress) /
+            servicesLayout.firstStopProgress;
+
+      window.dispatchEvent(
+        new CustomEvent<ServicesAssemblyDetail>(SERVICES_ASSEMBLY_EVENT, {
+          detail: {
+            progress: gsap.utils.clamp(
+              0,
+              1,
+              (stopPosition + 1) / servicesStopCount,
+            ),
+          },
+        }),
+      );
+    };
+
     // ── Stage transitions — which full-black scene is on screen ──
     // The sun's "behind + energised" state is turned on when the fleet first reveals and stays on
     // through works; it's only turned back off (sun forward, calm) when we scroll back to the fill.
@@ -1136,6 +1184,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             // Deliberately ABOVE the fill's early return — this span's whole job is inside the fill, and
             // a jump past it still has to land the sun fully open.
             applyHeroServicesProgress(progress);
+            // Same reason, and it matters more here: wave 1 of the vessel is laid down DURING the fill,
+            // so an early return would leave the ship with no frame to build on.
+            applyServicesAssembly(progress);
 
             // ⚠ A covered jump opens on THIS, not on its scrollTo tween completing. The pin is scrubbed,
             // so its progress trails the scrollbar by up to SCROLL_SCRUB seconds — opening when the tween

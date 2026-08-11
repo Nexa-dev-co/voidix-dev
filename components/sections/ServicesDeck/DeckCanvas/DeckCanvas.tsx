@@ -4,17 +4,18 @@ import { useRef, useState } from 'react';
 import { useServicesDeck, type DeckStatus } from '../hooks/useServicesDeck';
 
 interface DeckCanvasProps {
-  /** Index of the craft currently on the pad. */
-  activeIndex: number;
-  /** A horizontal flick on the craft asks to switch: +1 = next, -1 = previous. */
+  /** A horizontal flick on the vessel asks to switch stop: +1 = next, -1 = previous. */
   onFlick: (direction: number) => void;
 }
 
-export default function DeckCanvas({ activeIndex, onFlick }: DeckCanvasProps) {
+// ⚠ No `activeIndex`. The scene used to take it because the deck swapped between four hulls on every
+// stop change; there is one vessel now and its state is the scrubbed assembly progress, which arrives
+// as an event straight from the pin. The index still drives the COPY — that stays in ServicesDeck.
+export default function DeckCanvas({ onFlick }: DeckCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<DeckStatus>({ isLoading: true, percent: -1 });
 
-  useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus: setStatus });
+  useServicesDeck({ canvasRef, onFlick, onStatus: setStatus });
 
   return (
     <div className="deck-canvas-wrap">
@@ -27,8 +28,8 @@ export default function DeckCanvas({ activeIndex, onFlick }: DeckCanvasProps) {
         <span className="deck-loading-ring" />
         <span className="deck-loading-label">
           {status.percent >= 0
-            ? `Bringing the fleet online · ${status.percent}%`
-            : 'Bringing the fleet online'}
+            ? `Machining the vessel · ${status.percent}%`
+            : 'Machining the vessel'}
         </span>
       </div>
     </div>

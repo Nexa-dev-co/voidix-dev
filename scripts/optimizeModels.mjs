@@ -34,6 +34,32 @@ const GEOMETRY_ONLY_TEXTURE_SIZE = 8;
 // Per-model treatment. Anything not listed here gets the defaults: DISPLAY_TEXTURE_SIZE, geometry
 // simplification on, and one output keeping its source filename.
 const MODEL_RECIPES = {
+  // The Services vessel, built by scripts/buildVessel.mjs — nine named clusters that the deck flies in
+  // one wave per service and assembles into a whole ship.
+  //
+  // ⚠ THREE OF THESE FLAGS ARE LOAD-BEARING, and each of them undoes that build silently — the model
+  // still loads, still looks right standing still, and simply cannot come apart:
+  //   join      merges meshes sharing a material. All nine clusters share `vessel_hull`, so this
+  //             fuses the entire ship into ONE mesh with one transform.
+  //   flatten   bakes each node's translation into its vertices and drops the hierarchy. The
+  //             translation IS the part's socket (see buildVessel's `buildPrimitive`), so this both
+  //             loses the sockets and re-centres every part back onto the ship's origin — the exact
+  //             thing the recentring exists to prevent.
+  //   instance  can collapse the mirror pairs onto shared geometry, which takes two independently
+  //             flying parts down to one.
+  // Same family of trap as the fractured sun's and the podium's below.
+  "vessel.glb": {
+    // 1,980 triangles for the whole ship. There is nothing to reclaim by decimating it and everything
+    // to lose — this is hard-surface geometry whose panel edges and fin silhouettes are the model.
+    simplify: false,
+    join: false,
+    flatten: false,
+    instance: false,
+    // One albedo map on a hull that is regraded through hullMaterial's three-tone luminance map
+    // anyway. 512 is past the point where more resolution shows.
+    textureSizes: [512],
+  },
+
   "meteor.glb": {
     // Loaded for its GEOMETRY ONLY — the works field skins the mesh with its own textures
     // (public/textures/meteor/*), so the model's baked-in PBR maps are never sampled and are pure

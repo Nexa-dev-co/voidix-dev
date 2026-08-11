@@ -211,7 +211,8 @@ components/
   pages/             # ⚠ a ROUTE's content (About/, Careers/) — not a homepage section
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
-    ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial
+    ServicesDeck/   # the ONE vessel, assembled across the four stops: DeckCanvas, vesselParts,
+                    #   vesselAssembly, deckFrame, hullMaterial
     WorksField/     # the project field + FieldCanvas + the mark systems + transitions/
     Chamber/        # the room: walls/ground/plinth, FaqHologram/
   effects/
@@ -227,6 +228,8 @@ scripts/
   buildModels.mjs       # `npm run build:models`   — the road from a shipped GLB to a better one
   compareModels.mjs     #                            the invariants both of the above must not break
   optimizeTextures.mjs  # `npm run optimize:textures` — the standalone maps, which no GLB contains
+  buildVessel.mjs       # `npm run build:vessel`     — the road in from the services vessel's raw OBJ:
+                        #                              39 mesh islands → 9 named, recentred clusters
 docs/               # living design + state docs
 ```
 
@@ -345,6 +348,96 @@ the whole glide, with input locked (`settleMs`) so it can't be cut short.
 painted onto a quad in the chamber room — so the room must be drawn by the *same renderer*. That is
 why `useWorksField.ts` hosts `chamberScene.ts` rather than the chamber owning a canvas. **Do not
 "tidy" this.**
+
+---
+
+## ► The Services vessel — one ship, built as you scroll
+
+**Rebuilt 2026-08-11.** The deck used to show **four stock hulls one at a time**, swapping between them
+through a pair of portal gates. It now shows **one ship that does not exist yet**: its parts adrift at
+the edges of the frame, arriving one wave per service, complete and lit at the AI stop — and then it is
+the thing that flies you into Works. Full rationale in `docs/services-vessel-assembly-plan.md`.
+
+```
+  ┌ ·  ·  ┐   ┌ ·   ┐   ┌     ┐   ┌     ┐
+  │ ·╱▔╲· │   │ ╱▔╲ │   │╱█▔█╲│   │╱█▔█╲│      wave 1  spine + body plates   01 Web
+  │ · ╲╱ ·│   │▟╲╱▙ │   │▟ ╲╱ ▙│  │▟▂╲╱▂▙│     wave 2  the outer wings       02 Mobile
+  └ ·  ·  ┘   └ ·   ┘   └     ┘   └  ⚡  ┘      wave 3  the nacelles          03 Enterprise
+   01 Web      02 Mob    03 Ent    04 AI        wave 4  the core + IGNITION   04 AI
+```
+
+- **The model is generated, not downloaded.** `scripts/buildVessel.mjs` (`npm run build:vessel`) reads
+  the raw OBJ, finds its **39 disjoint mesh islands** by union-find over position-welded vertices,
+  groups them into **9 named clusters**, and emits a GLB with one node each. 5.15 MB of ships became
+  **30 KB**. ⚠ Its recipe in `optimizeModels.mjs` needs `join`, `flatten` and `instance` all **off** —
+  each of them silently undoes the split, and the model still loads and still looks right standing
+  still.
+- ⚠ **Each cluster's geometry is recentred on its own centroid at build time**, and the offset comes
+  back as the node's translation. That translation *is* the part's socket. Skip the recentring and every
+  loose part orbits the ship's origin instead of tumbling in place — the swarm reads as a carousel.
+- ⚠ **A part is never RE-PARENTED.** Each cluster stays a child of `parts` for its whole life and blends
+  between a holding pose and its socket. A re-parent is a discontinuity at a threshold in the middle of
+  a scrub, and it reverses badly. Three things fall out of the blend, all wanted: at 1 the part is
+  exactly rigid with the hull (nothing to reconcile before the flight); drag-to-look grabs a part **in
+  proportion to how attached it is**; and it reverses perfectly.
+- ⚠ **`spin` is a SIBLING of `parts`, not their ancestor.** `spin` is an empty group carrying the hull's
+  yaw (base view + turntable + drag) and exists only as the frame a socket resolves through. Parent the
+  parts under it and the showroom turntable reaches debris that has not joined the ship yet. This is
+  also why the turntable moved OFF `lift`.
+- **Where a part waits is a fraction of the LIVE frame**, never a world offset — `deckFrame.ts` resolves
+  an authored angle + radius against the current aspect on every resize. Same trap the portal gates
+  documented: at portrait the visible half-width collapses to ~1.2 world units against a 2.3 hull. The
+  same authored angle arrives round the side of a desktop and over the top of a phone, with no second
+  authoring pass and no breakpoint.
+- ⚠ **The travel is a CUBIC BÉZIER, not a lerp**, and the first build got this wrong — it shipped a
+  straight line while the plan called for an arc. Two control points, two jobs: P1 is tangential to the
+  holding ring (the part sweeps around rather than diving at the centre), and **P2 sits out along the
+  part's own mounting axis**, so the last stretch runs down the direction the part actually fits from —
+  a wing slides inboard, a nacelle lowers, the core slots forward. That second one is the difference
+  between a part *arriving at* its position and a part *fitting into* it.
+- **The idle swarm precesses.** Two tumble axes at a 1/φ rate ratio, and a 3-D Lissajous drift on three
+  coprime-ish frequencies. One axis at a constant rate reads as a spinning prop; nothing here visibly
+  repeats. The tumble is the one stateful value in the assembly (accumulated, not derived from elapsed)
+  so it can SLOW as a part commits without the rate change showing as a jump.
+- **Ignition travels.** Each part's light is delayed by its socket's distance from the *core* (wave 4's
+  own centre), so the machine comes alive from the brain outward instead of everywhere at once.
+- **The clock is the scroll and nothing else.** The old swap was a ~2.8 s GSAP timeline, which a
+  carousel stop is allowed to be. An assembly must not be: time-based, it can be outrun by a fast flick
+  and it cannot come apart when you scroll back up. **⚠ The scroll spine did not move for this** —
+  `carouselLayout`, `carouselSections`, `STAGE_SCROLL_VH` and every crossing span are untouched. The
+  existing 2,900 ms input hold per step already gives each wave about the 2.9 s the portal swap had.
+- ⚠ **THE TEXTURE IS A TRIM MASK, NOT A COLOUR SOURCE**, and this is the single most important thing
+  in the section. `vessel-albedo.jpg` is ~97 % pure black with thin saturated amber lines tracing every
+  panel seam — no panel shading, no AO, no surface variation. The hull's form in the model's own
+  reference render comes entirely from *studio lighting*, and its circuitry is already, exactly,
+  `--heat-600`. **The model arrived on-brand.**
+- ⚠ **So the skin separates hull from trim by SATURATION, never by luminance.** The fleet's old graded
+  shader mapped albedo *luminance* onto three tones, which against this texture did three things wrong
+  at once: 97 % of it collapsed onto one flat shadow tone; the amber sits at luminance ≈0.63, under the
+  0.84 emissive threshold, **so the trim never glowed**; and that same mid-scale luminance graded the
+  lines *between* hull and highlight, **so the amber came out GREY**. A luminance threshold cannot tell
+  a bright grey panel from an amber line. Saturation can, perfectly, at any brightness.
+- **One hull, four CIRCUIT colours.** `VESSEL_HULL` in `deckServices.ts` is shared by every wave; only
+  `trim` and `rim` differ. Because the texture is a mask, the trim colour is entirely ours — each wave's
+  parts glow their discipline down the same circuitry. ⚠ The AI wave keeps its purple→cyan, and the heat
+  ramp's one licensed alien **gains** a reason: it is the brain, it arrives last, and its colour is what
+  floods the hull at ignition.
+- ⚠ **The rim light is ON (`rimMultiplier: 1`) and that is not a retreat from "every stage light is 0".**
+  It is the first honest implementation of it: the doctrine says the sun behind the deck is the only
+  light, but the sun is a DOM layer casting nothing, so until 2026-08-11 the vessel had *no* light at
+  all — survivable for the fleet's mid-tone hulls, fatal for a 97 %-black one. The rim is `--heat-600`,
+  placed behind and above where the sun actually is. Key, fill and ambient stay at 0.
+- ⚠ **Bloom is back ON, and the 2026-07-28 reason for killing it does not apply.** That reason — *"blooming
+  their accents read as haze"* — was about broad accents on four mid-tone hulls. This ship's emissive is
+  thin lines on near-black, and `BLOOM_THRESHOLD` is **1.0**, so nothing but the trim can cross it and
+  there is no large bright area for a halo to form over. It is still the most expensive pass on the
+  site; it is affordable because the deck is now the *cheapest* scene.
+- ⚠ **Skin each cluster from a CLONED material.** All nine reference the same glTF material and
+  GLTFLoader hands out one shared instance, so re-skinning in place gives the whole ship whichever
+  wave's accent was applied last.
+- ⚠ **THE NOSE IS UNCONFIRMED.** `VESSEL_MODEL_ROTATION` is `{0,0,0}` and the export gives no reliable
+  clue which end is forward. It matters beyond the deck: the flight steers by `HEADING_PHASE`, so a ship
+  facing backwards here flies to Works tail-first.
 
 ---
 
@@ -493,7 +586,8 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:sun-forming` | `SUN_FORMING_EVENT` | SunModelCanvas | The star has lit inside its closing shell — the assembly's MIDPOINT (`CORONA_APPEAR`), not its cue. The gather field withdraws from around the star on this. ⚠ It must not key off the *cue*: the cue is only the intro asking, and on a slow load the sun has no model to answer with — so the dust pulled back from an empty "o" and stayed pulled back for the rest of the download. Fired from inside the flight, so a star exists by construction. |
 | `voidix:intro-ignite` | `IGNITE_EVENT` | IntroSequence | The gather field's final rush. |
 | `voidix:assets-warmup` | `ASSETS_WARMUP_EVENT` | IntroSequence | Asks each scene to compile shaders during a still beat, so the stall is invisible. |
-| `deck:reveal` / `deck:hide` | `DECK_REVEAL_EVENT` / `DECK_HIDE_EVENT` | useHeroAnimation | **The fleet itself** enters/leaves — replay the craft's entrance. Nothing else. |
+| `deck:reveal` / `deck:hide` | `DECK_REVEAL_EVENT` / `DECK_HIDE_EVENT` | useHeroAnimation | **The vessel's scene** enters/leaves — gates the composer draw. Nothing else. ⚠ It no longer replays an entrance: the fleet re-ran a portal swap on every reveal because a hard cut between two models needed hiding, and the vessel's entrance is wave 1 arriving, which is a pure function of scroll position. |
+| `voidix:services-assembly` | `SERVICES_ASSEMBLY_EVENT` | useHeroAnimation | **The vessel builds itself**, `0..1` across four equal quarters — one wave of parts per service. The first quarter is the hero→services fill, not a stop-to-stop glide, so the deck's entrance IS the frame being laid down. See `lib/servicesAssemblyEvents.ts`. |
 | `voidix:black-stage` | `BLACK_STAGE_EVENT` | useHeroAnimation (`setStage`) | A full-black scene is / is not on screen — the event form of `is-services`. Drives the sun's z-index, the fluid cursor's gate and the constellation's freeze. ⚠ Those three used to read `deck:reveal`, which was only ever right because the fleet was the first black scene you met — a **navbar jump** reaches works or contact without entering it. Keyed off the fill boundary so it cannot depend on the route. |
 | `voidix:jump-begin` / `-covered` / `-arrived` | `JUMP_BEGIN_EVENT` etc. | useHeroAnimation ↔ SectionJumpVeil | A navbar jump of 2+ sections is hidden: the cover closes, the **ordinary glide** runs underneath unwatched, the cover opens once the PIN (not its scrollTo tween) has settled. Nothing is skipped or snapped. See `docs/nav-jump-plan.md`. |
 | `voidix:goto-section` | `GOTO_SECTION_EVENT` | Navbar | **Every** nav item and the CTA. Carries a section key; the pin drives itself there on a distance-scaled glide. None of these sections is a place — they are overlays inside one pin, so an anchor would land on the hero whichever you clicked. |
@@ -621,7 +715,7 @@ These exist and are load-bearing — don't reinvent them:
 | `gpuProbe.ts` | Times **one real frame** of a real pipeline with a GPU drain either side of it. Used once, on the works field's warm-up render — a render that had to happen anyway, so the measurement is nearly free. |
 | `adaptivePixelRatio.ts` | **The quality allocator** (`reportSectionCosts`, added 2026-08-07) plus the shared resolution. **Native by default; above native has to be EARNED — and the probe only sets the CAP, it never starts you there.** It used to land straight on the measured ceiling, and since the probe times one works frame on a quiet stage while the real frame also carries the sun, the compositor and the blend layers, that meant the controller walked the ratio back down on nearly every load. Starting at `min(ceiling, 1)` and letting the controller climb costs the same reallocation in the opposite direction — sharpening rather than giving up. Also runs a live controller on real frame times for the rest of the session. **Frozen during crossings** — reallocating a composer mid-flight causes a visible jump. ⚠ **A ratio is not a cost — `MAX_DRAWING_BUFFER_MEGAPIXELS` is.** `hardwareCeil` rises with `devicePixelRatio`, which is backwards: a 4K laptop at 250% scaling was handed ratio 2.0 *because* its panel is dense, drew 5.26 Mpx, put the render targets over 700 MB and ran at 20 fps. The budget caps the pixels the ratio actually implies. |
 | `warmScene.ts` | Compiles a scene's programs **and uploads its maps** on an idle frame. Both halves are needed: `compile()` builds programs only, and three uploads a texture on first *draw*. |
-| `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size — shrinking one invalidates them exactly as much as growing one.** |
+| `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size — shrinking one invalidates them exactly as much as growing one.** ⚠ Re-weighed hard on 2026-08-11: the deck went 5.15 MB → 30 KB and its weight went `0.47 → 0.01`. |
 | `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones, and **reacts to resize** — unmounting an effect is cheap and reversible. It is no longer the source of `lowPower`. |
 | `deviceTier.ts` | **The one quality authority: `potato \| low \| mid \| high`, decided once at first ask and LATCHED.** Everything downstream of it allocates, so it must not change when a window is dragged. `isLowPowerDevice()` is the old `lowPower` boolean expressed in terms of it — the two scene hooks no longer compute their own. ⚠ It does not measure: `gpuProbe` runs during the works warm-up, long after every composer is allocated, so it cannot answer a question asked at construction. |
 | `modelLoading.ts` | The page's ONE Draco decoder and ONE KTX2 transcoder. Both are shared because each instance fetches its own ~250/585 KB decoder and spins its own worker pool, and **neither is ever disposed** — `dispose()` terminates those workers, so whichever scene unmounted first would break decoding for every scene still alive. ⚠ `detectKtx2Support(renderer)` is separate and mandatory: `KTX2Loader.load()` throws if it has never seen a renderer, and two of the four model loaders (`chamberScene`, `singularityScene`) deliberately never get one. ⚠ `THREE.Cache` must stay OFF — the header says what it breaks. |
@@ -711,7 +805,10 @@ the samples, not the renderer, which is why a grep never found it.
 change. `samples` is read in `setupRenderTarget`, so raising it means `dispose()` on **both** of a
 composer's ping-pong buffers.
 
-Costs, roughly: WorksField + Chamber ●●●●● > ServicesDeck ●●●●○ ≈ FluidCursor ●●●●○ > sun ●●●○○.
+Costs, roughly: WorksField + Chamber ●●●●● > FluidCursor ●●●●○ > sun ●●●○○ > ServicesDeck ●●○○○.
+(The deck dropped a band on 2026-08-11: four hulls at ~5.15 MB became one at 30 KB and 1,980 triangles
+across 9 draw calls, its bloom pass ships disabled, and the portal gates' two point lights went with
+them.)
 `UnrealBloom` is the recurring expensive pass. Diagnosis of what actually made a laptop crawl — with
 the numbers — is in `docs/lag-and-freeze-diagnosis.md`.
 
@@ -738,7 +835,8 @@ only copy left:
 | where | what it holds |
 |---|---|
 | `lib/chamberTuning.ts` | the room, the display rig, the showcase keys, the hologram |
-| `ServicesDeck/deckTuning.ts` + `deckServices.ts` | the fleet's stage; the per-ship palettes |
+| `ServicesDeck/deckTuning.ts` + `deckServices.ts` | the vessel's stage; the shared hull and the four per-wave accents |
+| `ServicesDeck/vesselParts.ts` | which cluster belongs to which wave, and where each one waits on the frame |
 | `WorksField/worksTuning.ts` | the camera path and where the mark sits |
 | `WorksField/transitions/accretionTransition.ts` → `ACCRETION_TUNING` | the mark's ~60 look and choreography numbers |
 | `Hero/SunModelCanvas.tsx` | the sun's Peaceful / Cracks / Collapse stages |
@@ -854,7 +952,7 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | **Contact** | **BUILT** — the star dies here, then the page loops back to the hero. Form + footer are front-end only: `handleSubmit` prevents default and posts nowhere, and every address, social handle and legal route in `contactContent.ts` is an invented placeholder. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
 | **Process content** | **The section is now called FAQ** (renamed 2026-08-05, key and label both — it was `process` everywhere). The chamber's content was always the FAQ hologram, and a key that said `process` was describing an intention rather than the room. The hologram's list now ends in an **Ask us anything** control that opens the shared enquiry panel with no prefill. **Still open:** the decided-but-unbuilt idea that process steps appear on the chamber's walls as the camera tours. |
 | **The collapse finale** | **BUILT** — ported into `components/sections/Contact/singularityScene.ts`, a SECOND star living inside the works renderer (the hero sun's canvas has no compositor and nothing behind it for lensing to bend). Collapse, flash, black hole, accretion and lensing all ship. See `docs/contact-singularity-plan.md`. |
-| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
+| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6 — the vessel scales to that by adding a fifth and sixth wave to `vesselParts.ts`, with no change to the scroll spine. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
 
 ⚠ **The `docs/` directory is nearly empty**, and most of this file's `docs/*.md` citations point at

@@ -10,6 +10,7 @@
     "optimize:models": "node scripts/optimizeModels.mjs",
     "optimize:textures": "node scripts/optimizeTextures.mjs",
     "build:models": "node scripts/buildModels.mjs",
+    "build:vessel": "node scripts/buildVessel.mjs",
     "build:shapes": "node scripts/buildLoaderShapes.mjs"
   },
   "dependencies": {

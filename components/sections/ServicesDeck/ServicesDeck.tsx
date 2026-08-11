@@ -85,20 +85,23 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
           reads as materialising on the same black. */}
       <div className="deck-backdrop" aria-hidden="true" />
 
-      <DeckCanvas activeIndex={activeIndex} onFlick={handleFlick} />
+      <DeckCanvas onFlick={handleFlick} />
 
       <div ref={overlayRef} className="deck-overlay">
         <header className="deck-head">
           <div className="deck-head-intro">
-            <p className="eyebrow">The Fleet</p>
+            {/* ⚠ "The Fleet" / "One craft at a time" described the old four-hull carousel and would now
+                actively contradict what is on screen — there is one machine, and it is being built in
+                front of you. */}
+            <p className="eyebrow">The Build</p>
             {/* ⚠ The line break is a DESKTOP instruction, and these spans are what let a phone ignore
-                it. Hard-wrapped with a <br/>, a 360px screen broke this into "One craft at / a time. /
-                Bring it / online." — four ragged lines out of two sentences. Each sentence is now its
-                own inline block that wraps on its own terms, and `text-wrap: balance` in the CSS
-                evens out whatever lines it does end up needing. */}
+                it. Hard-wrapped with a <br/>, a 360px screen broke the previous headline into four
+                ragged lines out of two sentences. Each sentence is its own inline block that wraps on
+                its own terms, and `text-wrap: balance` in the CSS evens out whatever lines it does end
+                up needing. */}
             <h2 className="deck-title font-display">
-              <span className="deck-title-line">One craft at a time.</span>{' '}
-              <span className="deck-title-line">Bring it online.</span>
+              <span className="deck-title-line">We don&rsquo;t sell services.</span>{' '}
+              <span className="deck-title-line">We hand you the finished machine.</span>
             </h2>
           </div>
 
@@ -147,13 +150,13 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
             On a phone this is a stepper instead: the same jumps, but two arrows and one name rather
             than four names competing for ~310px of usable width. */}
         {isNarrow ? (
-          <nav className="deck-stepper" aria-label="Fleet">
+          <nav className="deck-stepper" aria-label="Services">
             <button
               type="button"
               className="deck-stepper-arrow"
               onClick={() => goTo(activeIndex - 1)}
               disabled={isFirst}
-              aria-label="Previous craft"
+              aria-label="Previous service"
             >
               <StepperArrow direction="left" />
             </button>
@@ -179,13 +182,13 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
               className="deck-stepper-arrow"
               onClick={() => goTo(activeIndex + 1)}
               disabled={isLast}
-              aria-label="Next craft"
+              aria-label="Next service"
             >
               <StepperArrow direction="right" />
             </button>
           </nav>
         ) : (
-          <nav className="deck-carousel" aria-label="Fleet">
+          <nav className="deck-carousel" aria-label="Services">
             {DECK_SERVICES.map((service, index) => {
               const isActive = activeIndex === index;
               return (

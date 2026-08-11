@@ -128,9 +128,13 @@ const COUNTER_EASE_SECONDS = 0.5;
 //     `SKIP_OFFER_ETA_SECONDS` and claimed the visitor was "given a way out" — neither the constant
 //     nor the control was ever built. If one is wanted, build it; do not assume it is there.
 //
-// ⚠ There is still no unbounded wait anywhere. The old cap protected against a stalled asset; that
-// job now belongs to the stall window, which is the same instrument `lib/yieldToStarDownload.ts`
-// uses for the same reason.
+// ⚠ There is still no unbounded wait anywhere. The old cap protected against a stalled asset; that job
+// now belongs to the stall window below — a detector for "no sign of life", not for "no progress",
+// which is the distinction a flat deadline could never make.
+//
+// (That instrument used to have a twin in `lib/yieldToStarDownload.ts`, which held the services deck's
+// four vessels off the wire until the star was in. The deck now ships ONE ship at 30 KB against those
+// 5.15 MB, so there is nothing left to starve the star with and the twin was deleted 2026-08-11.)
 
 /**
  * Give up on the star after this long with NO sign of life — not merely no progress.

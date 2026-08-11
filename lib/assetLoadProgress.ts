@@ -62,7 +62,7 @@ export function areEntrySourcesReady(): boolean {
 // honest pace — an unweighted average would leap to 50% the instant the lighter source finished, then
 // crawl. Weights sum to 1.
 //
-//   deck   ~5.3 MB — four vessels (2.5 + 2.1 + 0.4 + 0.3), Draco-compressed
+//   deck   ~0.03 MB — vessel.glb: nine named clusters of one ship, Draco + a single 512² ETC1S map
 //   works  ~0.95 MB — the basalt its debris wears (0.41), the geode the mark's cavities open onto
 //          (0.39), the black stone of the mark's body (0.07), three logo outlines and a typeface (0.06)
 //   sun    ~1.3 MB — fractured_sun.glb, ten shards and a corona; 10k verts and the rest textures
@@ -79,15 +79,23 @@ export function areEntrySourcesReady(): boolean {
 //   chamber      ~0.48 MB — table.glb, plus building the room, its ground shader and the display rig
 //   singularity  ~2.37 MB — black_hole.glb (fractured_sun is already in cache by the time it asks)
 //
-// ⚠ RE-WEIGHED 2026-08-06 when the last two joined. Byte shares of the 10.76 MB total are
-// deck .53 / works .08 / sun .13 / chamber .04 / singularity .22; what is below moves weight from the
-// deck to `works` for the same reason it always did, and rounds the rest to the bytes.
+// ⚠ RE-WEIGHED 2026-08-11, and this is the largest re-weigh the file has ever taken. The services
+// section stopped shipping four whole ships and started shipping ONE, split into nine named clusters
+// that it assembles as you scroll (docs/services-vessel-assembly-plan.md): 5.15 MB → 30 KB. The deck
+// went from the heaviest source on the page to the lightest by two orders of magnitude, and the total
+// download fell from ~10.76 MB to ~5.6 MB.
+//
+// Leaving `deck: 0.47` in place would have been exactly the failure this file's own history records —
+// the counter would have sprinted to ~47% on a 30 KB file and then crawled through everything else.
+// Byte shares of the new ~5.6 MB total are deck .005 / works .17 / sun .23 / chamber .09 /
+// singularity .42; below keeps the same "move some weight onto `works` for the CPU time it spends
+// cutting the marks" adjustment the note above describes.
 const SOURCE_WEIGHTS: Record<AssetSource, number> = {
-  deck: 0.47,
-  works: 0.16,
-  sun: 0.12,
-  chamber: 0.05,
-  singularity: 0.2,
+  deck: 0.01,
+  works: 0.3,
+  sun: 0.22,
+  chamber: 0.09,
+  singularity: 0.38,
 };
 
 /**

@@ -13,18 +13,28 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
+import {
+  SERVICES_ASSEMBLY_EVENT,
+  readServicesAssembly,
+} from '@/lib/servicesAssemblyEvents';
+import { LOOP_RESET_EVENT } from '@/lib/loopEvents';
 import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
 import { flightPullbackScale, flightRamp, portraitPullbackScale } from '@/lib/portraitPullback';
-import { DECK_SERVICES } from '../deckServices';
+import { DECK_SERVICES, VESSEL_MODEL_PATH, VESSEL_MODEL_ROTATION } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
-import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
+import { applyHullMaterials } from '../hullMaterial';
+import {
+  createVesselAssembly,
+  resolveHoldingPoses,
+  updateVesselAssembly,
+  type VesselAssembly,
+} from '../vesselAssembly';
 import {
   reportAssetProgress,
   reportWarmupDone,
   isStageQuiet,
   ASSETS_WARMUP_EVENT,
 } from '@/lib/assetLoadProgress';
-import { yieldToStarDownload } from '@/lib/yieldToStarDownload';
 import {
   getControllerFps,
   getPixelRatio,
@@ -42,16 +52,13 @@ import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import { INTRO_MARKER_SELECTOR } from '@/components/effects/IntroSequence/introEvents';
 import { getDeckTuning } from '../deckTuning';
 import { SLATE_600 } from '@/lib/coolPalette';
-import {
-  createPortalGate,
-  PORTAL_GATE_RADIUS_X,
-  PORTAL_GATE_RADIUS_Y,
-} from '../portalGate';
+import { HEAT_600 } from '@/lib/heatPalette';
 
 // ── Framing ─────────────────────────────────────────────────────────────
-// The camera's pose and each hull's placement are all AUTHORED — they live
-// in deckTuning.ts and are pushed onto the scene every frame. Only the things
-// that were never authored stay here.
+// The camera's pose is AUTHORED — it lives in deckTuning.ts and is pushed onto the scene every frame.
+// Where the vessel's parts sit is not authored here either: a socket is baked into vessel.glb and a
+// holding position is a fraction of the live frame (see vesselParts.ts / deckFrame.ts). Only the
+// things that were never authored stay in this file.
 
 // ── Starfield ───────────────────────────────────────────────────────────
 const STAR_COUNT         = 1200;
@@ -60,21 +67,19 @@ const STAR_OUTER_RADIUS  = 60;
 const STAR_SIZE          = 0.16;
 const STAR_DRIFT         = 0.011; // radians/second of yaw drift — the "floating through space" feel
 
-// ── Fleet ───────────────────────────────────────────────────────────────
-const TARGET_SIZE = 2.3;  // largest dimension every vessel is normalised to
-const BASE_YAW    = -0.6; // resting 3/4 view so hulls don't read flat-on
-const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the stage plane
+// ── The vessel ──────────────────────────────────────────────────────────
+const TARGET_SIZE = 2.3;  // largest dimension the assembled hull is normalised to
+const BASE_YAW    = -0.6; // resting 3/4 view so the hull doesn't read flat-on
+const SHIP_HOVER  = 0.05; // resting height the vessel sits above the stage plane
 /**
  * How far the craft drops, in world units, when the frame is taller than it is wide.
  *
  * ⚠ It is the SHIP that moves, never the camera and never the sun.
  *
- * ⚠ And the hull's screen position is NOT what its 2.3 normalisation suggests. Hulls are normalised on
- * their LARGEST dimension, and on every craft in this fleet that is the LENGTH — so a ship is a long
- * flat thing whose vertical extent is small and whose centre sits close to the stage plane, not a
- * 2.3-tall tower standing on it. At rest that puts the hull's centre a little BELOW the camera's 0.75
- * aim line, around 59% down the frame. (A first pass at this assumed the tower and dropped the ship
- * nearly a full unit too far, straight through the capability keys.)
+ * ⚠ And the hull's screen position is NOT what its 2.3 normalisation suggests. The hull is normalised
+ * on its LARGEST dimension, and on this vessel that is the WINGSPAN — so it is a wide flat thing whose
+ * vertical extent is small and whose centre sits close to the stage plane, not a 2.3-tall tower
+ * standing on it. At rest that puts the hull's centre a little BELOW the camera's 0.75 aim line.
  *
  * −0.35 lands it around 66% down: below the headline, above the keys and the stepper. This is the
  * number to retune if the framing wants adjusting — it is the only thing that moves the craft, and the
@@ -84,14 +89,14 @@ const SHIP_HOVER  = 0.05; // resting height the centred craft sits above the sta
  * world coordinates: left standing, it would carry the sag all the way to the works field.
  */
 const PORTRAIT_SHIP_DROP = -0.35;
-const FLOAT_AMPLITUDE = 0.1;   // vertical hover bob (up + down) on the centred craft
+const FLOAT_AMPLITUDE = 0.1;   // vertical hover bob (up + down) on the hull
 const FLOAT_SPEED     = 1.1;
-const AUTO_ROTATE_SPEED = 0.35; // radians/sec — slow showroom turntable spin on the centred craft
+const AUTO_ROTATE_SPEED = 0.35; // radians/sec — slow showroom turntable spin
 
 // ── Third-person flight idle (the parked/flying chase ship) ──
 // A gentle weave layered on the ship while the flight is engaged, so the third-person chase reads as
 // actively flying — banking + swaying — instead of a frozen pose. Ramped in by flight progress so
-// normal fleet browsing stays a calm turntable.
+// normal browsing stays a calm turntable.
 const FLIGHT_WEAVE_ROLL_AMP    = 0.11; // radians of banking roll
 const FLIGHT_WEAVE_ROLL_SPEED  = 0.7;
 const FLIGHT_WEAVE_PITCH_AMP   = 0.05; // radians of nose bob
@@ -99,39 +104,54 @@ const FLIGHT_WEAVE_PITCH_SPEED = 0.5;
 const FLIGHT_WEAVE_SWAY_AMP    = 0.13; // world units of side-to-side drift
 const FLIGHT_WEAVE_SWAY_SPEED  = 0.45;
 
-// ── Lighting (shared stage rig; the centred craft is always powered) ──
+// ── Lighting (shared stage rig) ──
 const KEY_LIGHT_COLOR      = 0xfff2e2; // warm key so the hull reads with its own colour, not washed cold
 const KEY_LIGHT_INTENSITY  = 2.4;      // directional → reveals the surface/normal detail
 const FILL_LIGHT_COLOR     = SLATE_600; // neutral cool fill
 const FILL_LIGHT_INTENSITY = 0.5;
-const RIM_LIGHT_INTENSITY  = 0.8;      // a cyan-ish edge by default; recoloured per ship (see applyRimColor)
 const AMBIENT_INTENSITY    = 0.16;     // low so the directional key carves out contrast/texture
-// The active ship's edge light eases to the ship's own rim colour, so each craft feels lit for itself.
-const RIM_LIGHT_TWEEN = 0.5;
+// ── The rim: the only light that is actually on ──
+// It IS the sun. `--heat-600`, placed behind and above the stage — where the cracked sun in the DOM
+// layer behind this canvas actually sits — so the edge it draws is the edge the sun would draw. On a
+// hull whose albedo is 97% black with no shading in it, this and the shader's fresnel are between them
+// the entire read of the ship's form. See the note in deckTuning.
+const RIM_LIGHT_COLOR      = HEAT_600;
+const RIM_LIGHT_INTENSITY  = 3.4;
 
 // ── Powered-on look ──
-// Each hull wears a graded-palette shader (see hullMaterial.ts): the model's own albedo luminance
-// is mapped onto the ship's shadow/hull/highlight tones, so it stays multi-tonal. The centred craft
-// sits bright; a craft leaving the stage dims back as it fades. The accent glow + rim live in the
-// shader; here we only drive the shared brightness uniform + the native emissive intensity.
-//
-// The levels themselves are AUTHORED — brightness, emissive strength and the engine pulse all live in
-// deckTuning, and are applied every frame.
+// Each part wears a graded-palette shader (see hullMaterial.ts) built from ITS WAVE's accent: the
+// model's own albedo luminance is mapped onto the shared body tones, so the ship stays multi-tonal,
+// and the accent glow + rim carry which discipline built that part. Brightness and the engine pulse
+// are driven per part by vesselAssembly — a loose part is cold, a locked one is live.
 
-// ── Selective bloom — OFF ──
-// Removed from the fleet 2026-07-28: with every stage light at 0 (see deckTuning) the ships are lit
-// only by the cracked sun behind them, and blooming their accents on top of that read as haze rather
-// than as glowing engines.
+// ── Selective bloom — BACK ON (2026-08-11), and the old reason for switching it off no longer holds ──
 //
-// The pass is still CONSTRUCTED, so it is one constant away — but
-// it ships `enabled = false`, which makes EffectComposer skip it entirely rather than run the full
-// blur pyramid for a zero result. UnrealBloom is the most expensive pass on the site; a disabled one
-// costs nothing, a strength-0 one costs everything.
-const BLOOM_ENABLED        = false;
-const BLOOM_STRENGTH       = 0.85;
-const BLOOM_STRENGTH_LOW   = 0.5;  // gentler on low-power devices
-const BLOOM_RADIUS         = 0.5;
-const BLOOM_THRESHOLD      = 0.7;
+// It was disabled 2026-07-28, and the reason recorded was real for the fleet it was written about:
+//
+//   "with every stage light at 0 the ships are lit only by the cracked sun behind them, and blooming
+//    their accents on top of that read as haze rather than as glowing engines."
+//
+// That is a judgement about BROAD accents spread over four mid-tone hulls. This vessel's emissive is
+// thin circuit lines on a near-black hull, which is the one thing bloom is unambiguously good at — and
+// the threshold does the discriminating for us. At 1.0 nothing but the trim can cross it: the hull sits
+// far below, so there is no large bright area for a halo to form over, which is what haze actually is.
+//
+// ⚠ It remains the most expensive pass on the site and this is a real cost. It is affordable now for a
+// reason that did not exist before: the deck is the CHEAPEST scene on the page (9 draw calls, 1,980
+// triangles, one 30 KB model) rather than the four-hull, 5.15 MB section it used to be. If it ever
+// reads as haze again, this constant is still the one line.
+// ⚠ Pulled down hard on 2026-08-11 (strength 0.62 → 0.34) — the first pass was, in one word, "super
+// bloomy". Three things were compounding: the strength itself, an over-eager threshold, and per-part
+// `trimGlow` values that all came up to full the instant a part locked. All three moved; see also
+// LOCKED_TRIM_LEVEL in vesselAssembly, which is what stops a part blooming AT the moment of contact.
+const BLOOM_ENABLED        = true;
+const BLOOM_STRENGTH       = 0.34;
+const BLOOM_STRENGTH_LOW   = 0.22; // gentler on low-power devices
+const BLOOM_RADIUS         = 0.38;
+// ⚠ 1.15, not 0.7. This is what makes the bloom SELECTIVE rather than a glow filter: the hull and the
+// rim light both land well below it, so only circuitry that has actually WARMED UP pushes past. A part
+// at the instant it locks sits just underneath — which is the whole "it doesn't bloom right away".
+const BLOOM_THRESHOLD      = 1.15;
 /**
  * ⚠ NO MSAA ON THIS COMPOSER — because `SMAAPass` below is already doing the job.
  *
@@ -141,9 +161,6 @@ const BLOOM_THRESHOLD      = 0.7;
  * read, and the deck was therefore running true geometric MSAA **and then** a post-process edge pass
  * over the resolved result. Two antialiasers on one image, the second re-detecting edges the first had
  * already smoothed.
- *
- * That is the same fault `docs/lag-and-freeze-diagnosis.md` §2 found on the works field's screen stage,
- * in the other scene, hidden behind a comment that asserted the opposite.
  *
  * Dropping the samples rather than the SMAA pass, because the memory is where the problem is.
  * `EffectComposer` CLONES the target it is handed and `RenderTarget.copy` carries `samples` across, so
@@ -158,196 +175,111 @@ const BLOOM_THRESHOLD      = 0.7;
  * The works field raises its samples from a real measurement — `gpuProbe` runs inside its warm-up, so
  * by the time it decides, it knows. This hook has no such number: the probe is taken once, in that
  * hook, and `reportProbedFrameCost` deliberately ignores second callers so two scenes cannot argue.
+ * Reading the works field's answer from here would work usually and not always, and antialiasing that
+ * differs between two loads of the same page is worse than not having it. If MSAA is ever wanted here,
+ * the honest way is to give this hook its OWN probe.
  *
- * Reading the works field's answer from here would work *usually* — its assets are ~0.95 MB against
- * this fleet's ~5.15 MB, and `yieldToStarDownload` holds the vessels behind the star, so works almost
- * always warms first. But on a fully cached reload both scenes warm on the same stage-quiet signal and
- * the order is whichever effect registered first. That would make the fleet's antialiasing differ
- * between two loads of the same page on the same machine, which is worse than not having it.
- *
- * SMAA is genuine antialiasing and costs ~12 MB of lookup textures rather than ~142 MB of buffers, so
- * the fleet is not going without. If MSAA is ever wanted here, the honest way is to give this hook its
- * OWN probe — its warm-up already draws a real frame, which is the whole reason the works one was
- * nearly free — not to read a number that may or may not have arrived.
- *
- * ⚠ Whatever happens, this and the `SMAAPass` below must never both be on. That is the bug the top of
- * this comment is about.
+ * ⚠ Whatever happens, this and the `SMAAPass` below must never both be on.
  */
 const BLOOM_MSAA_SAMPLES = 0;
 
-// ── The portal swap ──
-// Two gates form; the craft turns to face one, flies through it, and its replacement comes out of the
-// other. See docs/services-portal-swap-plan.md.
+// ── The assembly scrub ──
+// The hero pin publishes the build's progress; the render loop eases toward it every frame so the
+// choreography stays smooth whether the visitor creeps, flicks, or a covered jump glides through.
 //
-// All beats are absolute seconds on ONE timeline, so the sequencing is readable in one place rather
-// than as a chain of delays. The gates reach "ready" (PORTAL_FORM_DURATION) just as the craft
-// arrives at one, so it flies WHILE they finish forming.
-//
-// The hero pin holds its input lock (STAGE_STEP_HOLD_MS) across the whole of this. Lengthen the swap
-// and that constant has to follow, or a second gesture cuts the gate in half.
-const PORTAL_FORM_DURATION     = 1.25; // gates: nothing → ready
-const PORTAL_AIM_DURATION      = 0.55; // the craft swings its nose onto the gate
-const PORTAL_LAUNCH_AT         = 0.75; // …holds a beat, then goes
-const PORTAL_FLIGHT_DURATION   = 0.55; // craft → gate (ends at 1.30, just past "ready")
-const SWAP_GAP                 = 0.12; // empty beat, so one gate never reads as two ships in one hole
-const PORTAL_ARRIVE_DURATION   = 0.65; // replacement → centre stage
-const PORTAL_COLLAPSE_DURATION = 0.70; // gates un-form through the same stages, in reverse
-/** How long the turntable stays suppressed after the craft lands, before the showroom spin resumes. */
-const PORTAL_GRIP_RELEASE      = 0.4;
-/** Scale a craft shrinks to as it passes through the gate, and grows from as it comes out. */
-const PORTAL_THROUGH_SCALE     = 0.12;
-/** Residual roll as the craft peels away — a fraction of the old slide-off bank, not a full barrel. */
-const PORTAL_BANK              = 0.22;
+// ⚠ THIS IS THE PARTS' TRAVEL TIME, and it is the only thing that is. The scrub target is a step
+// function of the scroll — a stop-to-stop glide moves it almost at once — so how long a part takes to
+// fly is set by how slowly this chases it, not by any duration in vesselAssembly. Exponential
+// smoothing settles in ≈3/(rate·fps) seconds: 0.12 was ~0.42 s at 60 fps, 0.08 is ~0.63 s, which is the
+// 50 % longer travel that was asked for.
+const ASSEMBLY_SMOOTHING = 0.08;
+/**
+ * A beat of stillness when the section opens, before anything commits.
+ *
+ * You arrive on a stage of drifting parts and they should stay drifting for a moment — starting the
+ * build on the same frame the deck appears gives the visitor nothing to arrive AT. Held on the eased
+ * value only: the scrubbed target keeps tracking the scroll throughout, so this can delay the build but
+ * can never desync it, and the catch-up on the far side is the ordinary ease.
+ */
+const ASSEMBLY_ENTRY_HOLD_MS = 700;
 
-// ── Gate placement ──
-// Derived from the LIVE frame, never from world constants: at portrait the visible half-width at the
-// stage collapses to ~1.2 world units while every hull is normalised to 2.3, so a fixed lateral offset
-// is off-screen by ~3× (see the plan doc §2).
-/**
- * How far BEHIND centre stage the gates stand.
- *
- * Not scenery depth — it is what makes the craft fly *through* a gate rather than slide sideways into
- * it. A gate is billboarded to face the camera, so at the stage's own plane the craft's travel is 71
- * degrees off the gate's normal: it grazes the face instead of passing through it. Setting the gates
- * back swings the travel round to ~23 degrees, and everything below is measured at THIS depth so the
- * push costs nothing in framing (see computePortalLayout).
- *
- * Perfect alignment is only possible for a gate directly behind the craft, which is exactly what the
- * narrow layout gets — the reason it reads better there.
- */
-const GATE_DEPTH           = 5.0;
-/**
- * Quad height as a fraction of the frame's half-height AT THE GATE'S DEPTH — so the gate's on-screen
- * size is the same wherever GATE_DEPTH is set.
- *
- * This sizes the QUAD, not the visible ring: the quad now carries a wide fade margin around the ring
- * (PORTAL_GATE_RADIUS_* are derived through it), so this number is larger than the ring looks. Raised
- * from 1.05 alongside that margin purely to leave the ring the same size on screen.
- */
-const GATE_SIZE_FRACTION   = 1.51;
-/** Where the pair sits, as a fraction of the frame's half-width, before the clearances clamp it. */
-const GATE_X_FRACTION      = 0.62;
-/**
- * Where the gates sit vertically, as a fraction of the frame's half-height at their depth, measured
- * from the camera's own aim line. Negative is below it — this is the knob that puts them low in the
- * frame rather than standing at eye level.
- */
-const GATE_Y_FRACTION      = -0.22;
-/** Half of TARGET_SIZE — the room a hull needs before a gate can sit beside it. */
-const SHIP_HALF_EXTENT     = TARGET_SIZE / 2;
-// Clearances are SCREEN fractions, not world units. The hull and the gates now sit at different
-// depths, so their world x tells you nothing about whether they overlap in frame — only where they
-// land on screen does.
-const GATE_SHIP_CLEARANCE  = 0.12; // clear air between the hull's edge and a gate's near edge
-const GATE_FRAME_MARGIN    = 0.04; // …and between a gate's far edge and the edge of frame
-// ── The narrow-viewport layout ──
-// Below the aspect at which a pair still fits (~0.97 with these clearances) it collapses to ONE gate
-// directly behind the craft. Depth is not constrained by aspect, so that gate is in frame at any
-// width with the camera exactly where it is.
-/** Where the lone gate sits, as a fraction of the frame's half-width — just off the axis, so the
- *  hull does not stand squarely in front of it. */
-const GATE_SINGLE_X        = 0.18;
-/**
- * A formation the gates are held at while the shaders are pre-compiled. Any non-zero value builds the
- * same program — every stage is a runtime branch inside one shader — it just has to clear the
- * visibility cut-off, because `compileAsync` walks only visible objects.
- */
-const PORTAL_PREWARM_FORMATION = 0.5;
-
-// ── Departure — the services → works flight (the ship no longer exits; it flies you in) ──
+// ── Departure — the services → works flight (the vessel you just watched being built flies you in) ──
 // Scrubbed by the hero pin via HANDOFF_PROGRESS_EVENT. The ship's motion + the camera come from the
-// shared choreography in lib/handoffFlightPath.ts (see docs/services-to-works-flight.md); here we own
-// only the deck-local anchors: the gates + sun STAY put (the camera leaves them behind by moving),
-// the contact shadow fades as the ship lifts off, and the deck starfield fades out during the fly-left
-// so the works field's streaking stars take over. Each value reverses cleanly when scrolled back.
-const DECK_STAR_FADE_WINDOW: [number, number] = [0.30, 0.55]; // deck stars fade out during the fly-left (Phase B)
+// shared choreography in lib/handoffFlightPath.ts; here we own only the deck-local anchors: the sun
+// STAYS put (the camera leaves it behind by moving) and the deck starfield fades out during the
+// fly-left so the works field's streaking stars take over. Each value reverses cleanly when scrolled
+// back.
+const DECK_STAR_FADE_WINDOW: [number, number] = [0.30, 0.55]; // deck stars fade out during the fly-left
 const DEPART_SMOOTHING = 0.09;   // per-frame ease toward the scrubbed target
 const TURNTABLE_SETTLE = 0.12;   // how quickly the accumulated showroom spin settles for the flight
 const DEPART_GRIP_SPAN = 0.25;   // handoff fraction over which the flight takes over the turntable
 
 // ── Exit — the ship whooshes off-screen as the flight completes (scrubbed by handoff progress) ──
-// The whoosh is driven by the handoff progress itself (via departState), NOT a free time-based tween:
-// so it can never desync from the scroll or be outrun. At progress 1 the ship is always fully gone,
-// and scrolling back flies it cleanly on again. The offset rides on TOP of the (parked) flight pose.
-// The window starts late enough that the ship has flown left across the frame before it dives out —
-// and the works meteor's arrival window (see useWorksField) begins only once the ship is clearing,
-// so the departing ship and the incoming meteor never share the centre of the screen.
-const EXIT_PROGRESS_START = 0.88; // handoff progress where the off-screen whoosh begins
-const EXIT_PROGRESS_END   = 1.0;  // …fully off-screen by progress 1 (parked on project 01's stop)
+// Driven by the handoff progress itself, NOT a free time-based tween: so it can never desync from the
+// scroll or be outrun. At progress 1 the ship is always fully gone, and scrolling back flies it
+// cleanly on again.
+const EXIT_PROGRESS_START = 0.88;
+const EXIT_PROGRESS_END   = 1.0;
 const EXIT_DELTA = new THREE.Vector3(-2, -3.5, 9); // dives down-left and PAST the camera → off-screen
 const EXIT_SCALE_GAIN = 0.25; // a touch bigger as it powers past
 // Fully parked at works browsing (handoff at 1): the ship has whooshed off-screen and the camera has
-// tracked so far left (near x=−15) that the origin sits well outside its frustum — so the
-// deck draws nothing. Stop paying for its bloom pipeline past this; it resumes the instant a
-// scroll-back eases the handoff below 1 and the ship flies back on. (Verified from the flight-path
-// geometry in lib/handoffFlightPath.ts, not guessed.)
+// tracked so far left (near x=−15) that the origin sits well outside its frustum — so the deck draws
+// nothing. Stop paying for its bloom pipeline past this; it resumes the instant a scroll-back eases
+// the handoff below 1.
 const DECK_PARKED_THRESHOLD = 0.999;
 
 // ── Heading — the nose points where the ship is actually going ──
-// Yaw is derived from the ship's own per-frame velocity, so the nose tracks its travel: screen-left
-// as it flies across, then toward the CAMERA as it dives off toward the screen on the exit. (Pitch +
-// bank stay authored from SHIP_ROTATION_KEYS.) The turn used to snap because the old time-based whoosh
-// spiked the velocity; now the exit is a smooth progress scrub, so the velocity — and thus the nose —
-// is smooth, and we additionally ease it frame-rate-independently and speed-cap it so a scroll-back
-// reversal eases round instead of whipping.
-const HEADING_SPEED_THRESHOLD = 0.006;      // min per-frame horizontal move before the heading updates
-const HEADING_EASE_RATE       = 7;          // fps-independent ease toward the travel heading: 1 - exp(-dt*rate)
-const HEADING_MAX_RAD_PER_SEC = 8;          // cap the turn so a scrub-reversal eases round instead of snapping
-const HEADING_PHASE           = 2.0 + Math.PI / 2; // atan2(velX, velZ)+this → nose ∥ velocity (2.0 = nose screen-left datum)
+// Yaw is derived from the ship's own per-frame velocity, so the nose tracks its travel: screen-left as
+// it flies across, then toward the CAMERA as it dives off. (Pitch + bank stay authored from
+// SHIP_ROTATION_KEYS.) Eased frame-rate-independently and speed-capped so a scroll-back reversal eases
+// round instead of whipping.
+const HEADING_SPEED_THRESHOLD = 0.006;
+const HEADING_EASE_RATE       = 7;
+const HEADING_MAX_RAD_PER_SEC = 8;
+/**
+ * `atan2(velX, velZ) + this` → nose parallel to travel.
+ *
+ * ⚠ TURNED 180° ON 2026-08-11 — that is what the trailing `+ Math.PI` is. The `2.0` datum was measured
+ * empirically against the OLD FLEET ("depart.y ≈ 2.0 → nose screen-left") and this is a different ship
+ * whose forward axis points the other way, so the vessel flew to Works showing its right flank while
+ * travelling left, and its left flank travelling right. This is the calibration for THIS hull.
+ *
+ * ⚠ Fixed here rather than in `VESSEL_MODEL_ROTATION`, which is the other constant that could turn the
+ * ship around, and which is where the plan expected the fix to land. It cannot go there: the holding
+ * angles in `vesselParts.ts` are authored in FRAME space against the side each socket currently sits
+ * on, so rotating the model 180° would move every socket across the centreline while leaving its
+ * holding pose behind — and the mirror pairs would fly straight through each other on their way in.
+ * A model-space flip would have to swap the hold angles in the same change.
+ */
+const HEADING_PHASE           = 2.0 + Math.PI / 2 + Math.PI;
 const REST_BLEND_START = 0.0;
-const REST_BLEND_END   = 0.12;              // ease the heading back to the resting pose near progress 0
+const REST_BLEND_END   = 0.12;
 
-// ── Drag-to-rotate + flick (replaces the old passive mouse-track) ──
-// A small drag on the craft rotates it (springs back on release); a big horizontal flick switches
-// the carousel via onFlick. Distances are in CSS pixels of pointer travel.
+// ── Drag-to-rotate + flick ──
+// A small drag on the vessel rotates it (springs back on release); a big horizontal flick switches the
+// carousel via onFlick. Distances are in CSS pixels of pointer travel.
 const DRAG_YAW_SENSITIVITY   = 0.006; // radians of yaw per pixel dragged
 const DRAG_PITCH_SENSITIVITY = 0.004;
-const DRAG_YAW_CLAMP         = 1.0;   // most the craft can be turned by a drag
+const DRAG_YAW_CLAMP         = 1.0;
 const DRAG_PITCH_CLAMP       = 0.45;
 const SPRING_DURATION        = 0.9;   // ease back to the resting view on release
 const FLICK_DISTANCE_PX      = 110;   // horizontal travel past this (and horizontally dominant) = a switch
 
 export interface DeckStatus {
   isLoading: boolean;
-  /** 0–100 while loading, 100 when the fleet is in. */
+  /** 0–100 while loading, 100 when the vessel is in. */
   percent: number;
 }
 
 interface DeckOptions {
   canvasRef: RefObject<HTMLCanvasElement | null>;
-  /** Index of the craft currently centre stage. Read live from the render loop / handlers. */
-  activeIndex: number;
-  /** A horizontal flick on the craft asks to switch: +1 = next, -1 = previous. */
+  /** A horizontal flick on the vessel asks to switch stop: +1 = next, -1 = previous. */
   onFlick: (direction: number) => void;
   onStatus: (status: DeckStatus) => void;
 }
 
-/** One craft's nested rig. stage → depart → lift → spin → vessel lets each transform stay
- *  independent: stage owns the carousel fly-on/off, depart owns the services→works departure
- *  scrub (identity outside the handoff), lift owns the hover height + float bob, spin owns
- *  yaw/pitch (base view + drag rotation). */
-interface DeckShip {
-  stage: THREE.Group;
-  depart: THREE.Group;
-  lift: THREE.Group;
-  spin: THREE.Group;
-  /** The loaded hull itself. Authored placement is applied here, on top of the normalised pose. */
-  vessel: THREE.Group | null;
-  /** Every switchable mesh of this hull, by positional id — what `hiddenParts` in the tuning switches off. */
-  parts: Map<string, THREE.Mesh>;
-  materials: THREE.Material[];
-  /** Shared across this ship's hull materials → driven by litState (dim when leaving, bright when centred). */
-  brightnessUniform: { value: number };
-  /** Shared engine-glow breathing — modulated on the centred craft each frame. */
-  emitPulseUniform: { value: number };
-  /** 0 = dim (leaving), 1 = fully powered (centred). GSAP tweens this → brightness + emissive. */
-  litState: { value: number };
-  /** 0 = off-stage/invisible, 1 = centre stage. GSAP tweens this → material opacity. */
-  presence: { value: number };
-}
-
-// A spherical shell of faint points wrapping the scene — the "stars in the section". Additive so
-// they glint against the black without lighting the craft.
+// A spherical shell of faint points wrapping the scene — the "stars in the section". Additive so they
+// glint against the black without lighting the craft.
 function createStarfield(): THREE.Points {
   const positions = new Float32Array(STAR_COUNT * 3);
   for (let starIndex = 0; starIndex < STAR_COUNT; starIndex += 1) {
@@ -373,55 +305,11 @@ function createStarfield(): THREE.Points {
   return new THREE.Points(geometry, material);
 }
 
-// Centre the model, scale so every hull reads at the same size, and rest its base on y = 0 (origin
-// at the base, not the centre) so a craft sits ON the stage plane when its rig is at y = 0.
-function prepareVessel(
-  loadedScene: THREE.Group,
-  rotationDegrees?: { x?: number; y?: number; z?: number },
-): THREE.Group {
-  // Apply any per-ship base rotation BEFORE measuring, so the bounding box (and the base-on-ground
-  // placement below) accounts for the new orientation — a flipped hull still sits right on the stage.
-  if (rotationDegrees) {
-    loadedScene.rotation.set(
-      THREE.MathUtils.degToRad(rotationDegrees.x ?? 0),
-      THREE.MathUtils.degToRad(rotationDegrees.y ?? 0),
-      THREE.MathUtils.degToRad(rotationDegrees.z ?? 0),
-    );
-    loadedScene.updateMatrixWorld(true);
-  }
-
-  const boundingBox = new THREE.Box3().setFromObject(loadedScene);
-  const size   = boundingBox.getSize(new THREE.Vector3());
-  const center = boundingBox.getCenter(new THREE.Vector3());
-  loadedScene.position.sub(center);
-
-  const largestDimension = Math.max(size.x, size.y, size.z) || 1;
-  const normalisedScale  = TARGET_SIZE / largestDimension;
-
-  const inner = new THREE.Group();
-  inner.scale.setScalar(normalisedScale);
-  inner.add(loadedScene);
-  // Shift the (centred) hull up by half its scaled height so its base lands at y = 0.
-  inner.position.y = (size.y * normalisedScale) / 2;
-
-  const group = new THREE.Group();
-  group.add(inner);
-  return group;
-}
-
-export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: DeckOptions) {
-  // The render loop and the swap logic read the freshest selection through a ref, so the
-  // persistent setup effect never re-runs when the carousel index changes.
-  const activeIndexRef = useRef(activeIndex);
-  activeIndexRef.current = activeIndex;
-
-  // Latest onFlick, so the drag handlers (set up once) always call the current closure.
+export function useServicesDeck({ canvasRef, onFlick, onStatus }: DeckOptions) {
+  // Latest onFlick, so the drag handlers (set up once, in a `[]` effect) always call the current
+  // closure rather than the one captured on mount.
   const onFlickRef = useRef(onFlick);
   onFlickRef.current = onFlick;
-
-  // Set up inside the persistent effect; called from the selection effect below so an index
-  // change re-stages the existing scene instead of rebuilding it.
-  const setStageRef = useRef<(index: number) => void>(() => {});
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -429,36 +317,33 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
 
     const reduceMotion = prefersReducedMotion();
     // The lighter path: keeps clearcoat/iridescence and strong bloom off the devices least able to
-    // afford them. One authority for it now, rather than a viewport test copied into two scene hooks —
-    // see lib/deviceTier.ts.
+    // afford them. One authority for it — see lib/deviceTier.ts.
     const lowPower = isLowPowerDevice();
 
-    // The authored stage: camera, rig intensities, and where each hull sits.
+    // The authored stage: camera and rig intensities.
     const tuning = getDeckTuning();
 
     // ── Renderer ──
     // ⚠ `antialias: false` is deliberate and is NOT a quality cut. Everything here draws through an
     // EffectComposer, and a composer's final pass is a fullscreen quad — so the multisampled default
-    // framebuffer that `antialias: true` allocates has no geometry edges to resolve. It costs memory
-    // and a resolve every frame to antialias a rectangle. The real AA is `samples` on the composer
-    // target (MSAA, where the geometry actually is) plus the SMAAPass below.
+    // framebuffer that `antialias: true` allocates has no geometry edges to resolve. The real AA is
+    // the SMAAPass below.
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
     // Which compressed texture formats this GPU accepts. Must happen before any KTX2 model loads —
     // the loader throws rather than guessing. See lib/modelLoading.ts.
     detectKtx2Support(renderer);
-    // Shared adaptive resolution (drops under load, climbs back when smooth) — see applyRendererSize.
     renderer.setPixelRatio(getPixelRatio());
     if (telemetryEnabled) renderer.info.autoReset = false;
     // Neutral tone mapping holds the hull colours instead of desaturating highlights the way ACES
-    // does — the fleet read flat/grey under ACES. OutputPass applies this after the composer.
+    // does. OutputPass applies this after the composer.
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = tuning.exposure;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     const scene  = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(tuning.cameraFov, 1, 0.1, 100);
-    // Re-applied every frame from the tuning rather than once at build, so there is one code path for the
-    // shot. Cheap: three writes and a lookAt on a camera that isn't otherwise animated at rest.
+    // Re-applied every frame from the tuning rather than once at build: it keeps the authored stage and
+    // the animated state on one code path, and all of it is plain property writes.
     const applyCameraFromTuning = () => {
       camera.position.set(0, tuning.cameraHeight, tuning.cameraDistance);
       camera.lookAt(0, tuning.cameraLookY, 0);
@@ -474,31 +359,23 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const roomEnvironment = new RoomEnvironment();
     scene.environment = pmremGenerator.fromScene(roomEnvironment, 0.04).texture;
 
-    // Warm key + neutral fill + a rim that traces the hull's edge (recoloured per ship below).
+    // Warm key + neutral fill + a rim that traces the hull's edge. All at intensity 0 through the
+    // tuning's multipliers (see deckTuning) — they exist so the stage CAN be lit, not because it is.
     const keyLight = new THREE.DirectionalLight(KEY_LIGHT_COLOR, KEY_LIGHT_INTENSITY);
     keyLight.position.set(4, 7, 5);
     const fillLight = new THREE.DirectionalLight(FILL_LIGHT_COLOR, FILL_LIGHT_INTENSITY);
     fillLight.position.set(-6, -1, 2);
-    const rimLight = new THREE.DirectionalLight(0xffffff, RIM_LIGHT_INTENSITY);
-    rimLight.position.set(-3, 3, -6);
+    // Behind and above, which is where the sun is. Steeply back (−z) so the light rakes across the
+    // silhouette rather than filling the faces the camera can see.
+    const rimLight = new THREE.DirectionalLight(RIM_LIGHT_COLOR, RIM_LIGHT_INTENSITY);
+    rimLight.position.set(-2.5, 5, -9);
     const ambientLight = new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY);
     scene.add(keyLight, fillLight, rimLight, ambientLight);
 
-    // The PER-SHIP light levels, tweened by applyShipLighting as the carousel moves. Kept separate from
-    // the lights themselves so the rig's multipliers can scale them every frame without the two writers
-    // fighting — an absolute per-frame write would simply overwrite the tween and flatten every craft
-    // to the same key.
-    const shipLightLevels = {
-      key: KEY_LIGHT_INTENSITY,
-      fill: FILL_LIGHT_INTENSITY,
-      rim: RIM_LIGHT_INTENSITY,
-    };
-
-    // ── Post-processing: selective bloom ──
+    // ── Post-processing ──
     // HalfFloat keeps the bloom precise — it must bleed on HDR values, before the tone curve compresses
-    // them — and the bloom threshold means only the bright accents/highlights bleed, so it reads as
-    // glowing engines rather than a haze. No MSAA: the SMAA pass at the end of this chain is the
-    // antialiasing, and running both is the bug BLOOM_MSAA_SAMPLES describes.
+    // them. No MSAA: the SMAA pass at the end of this chain is the antialiasing, and running both is
+    // the bug BLOOM_MSAA_SAMPLES describes.
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       samples: BLOOM_MSAA_SAMPLES,
@@ -514,11 +391,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     bloomPass.enabled = BLOOM_ENABLED;
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
-    // Smooth the hull edges the bloom pipeline leaves rough. A composer ignores the renderer's own
-    // `antialias` flag, so now that the target carries no samples this genuinely IS the only geometry
-    // AA on the final image — which it was previously claimed to be while 4x MSAA ran underneath it.
-    // Runs last, on the LDR result after tone mapping. Sized by the composer, so it follows the
-    // adaptive resolution.
     const smaaPass = new SMAAPass();
     composer.addPass(smaaPass);
 
@@ -527,410 +399,53 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const starfieldMaterial = starfield.material as THREE.PointsMaterial;
     scene.add(starfield);
 
-    // ── Ship rigs (created empty up-front so status works before models arrive) ──
-    const ships: DeckShip[] = DECK_SERVICES.map(() => {
-      const stage  = new THREE.Group();
-      const depart = new THREE.Group(); // written only by the handoff scrub in the render loop
-      const lift   = new THREE.Group();
-      const spin   = new THREE.Group();
-      spin.rotation.y = BASE_YAW;
-      lift.position.y = SHIP_HOVER;
-      lift.add(spin);
-      depart.add(lift);
-      stage.add(depart);
-      scene.add(stage);
-
-      return {
-        stage,
-        depart,
-        lift,
-        spin,
-        vessel: null,
-        parts: new Map<string, THREE.Mesh>(),
-        materials: [],
-        brightnessUniform: { value: tuning.activeBrightness },
-        emitPulseUniform: { value: 1 },
-        litState: { value: 0 },
-        presence: { value: 0 },
-      };
-    });
-
-    // Push a ship's lit value (0..1) onto its (shared) hull brightness + native emissive strength.
-    const applyLitState = (ship: DeckShip) => {
-      ship.brightnessUniform.value = THREE.MathUtils.lerp(
-        tuning.dormantBrightness, tuning.activeBrightness, ship.litState.value,
-      );
-      ship.materials.forEach((material) => {
-        if (material instanceof THREE.MeshStandardMaterial) {
-          material.emissiveIntensity = ship.litState.value * tuning.litEmissiveIntensity;
-        }
-      });
-    };
-
-    // Fold a ship's presence (0 off-stage → 1 centre stage) into its material opacity.
-    const applyOpacity = (ship: DeckShip) => {
-      // Stop drawing a craft entirely once it has faded out, rather than leaving it at opacity 0.
-      //
-      // The hulls are `transparent` but keep three's default `depthWrite: true`, so an invisible one
-      // still STAMPS ITS SHAPE INTO THE DEPTH BUFFER. That was harmless while parked craft sat off to
-      // the side; the moment they park at the origin (they leave through a gate now, so there is no
-      // off-stage spot) three of them stack on the visible craft, all at the same view depth, and
-      // whichever happens to draw first wins — punching a ship-shaped hole through the one you can
-      // see, and through any gate standing behind it. Not drawing it at all is both the fix and
-      // cheaper than drawing a fully transparent hull.
-      ship.stage.visible = ship.presence.value > 0.001;
-      ship.materials.forEach((material) => {
-        const baseOpacity = (material.userData.baseOpacity as number | undefined) ?? 1;
-        material.opacity = baseOpacity * ship.presence.value;
-      });
-    };
-
-    // Light the active craft to match its vibe: the rim light eases to the ship's rim colour, and the
-    // key light eases to its per-ship colour + intensity (default warm key when the ship omits `light`).
-    // Instant on the first stage / under reduced motion.
-    const applyShipLighting = (index: number, instant = false) => {
-      const service = DECK_SERVICES[index];
-      const rimTarget = new THREE.Color(rimColorOf(service.profile));
-      const keyTarget = new THREE.Color(service.light?.color ?? KEY_LIGHT_COLOR);
-      const fillTarget = new THREE.Color(service.light?.fill ?? FILL_LIGHT_COLOR);
-      const keyIntensity = service.light?.intensity ?? KEY_LIGHT_INTENSITY;
-      if (instant || reduceMotion) {
-        rimLight.color.copy(rimTarget);
-        keyLight.color.copy(keyTarget);
-        shipLightLevels.key = keyIntensity;
-        fillLight.color.copy(fillTarget);
-        return;
-      }
-      gsap.to(rimLight.color, {
-        r: rimTarget.r, g: rimTarget.g, b: rimTarget.b,
-        duration: RIM_LIGHT_TWEEN, ease: 'power2.out', overwrite: true,
-      });
-      gsap.to(keyLight.color, {
-        r: keyTarget.r, g: keyTarget.g, b: keyTarget.b,
-        duration: RIM_LIGHT_TWEEN, ease: 'power2.out', overwrite: true,
-      });
-      gsap.to(shipLightLevels, {
-        key: keyIntensity,
-        duration: RIM_LIGHT_TWEEN, ease: 'power2.out', overwrite: true,
-      });
-      gsap.to(fillLight.color, {
-        r: fillTarget.r, g: fillTarget.g, b: fillTarget.b,
-        duration: RIM_LIGHT_TWEEN, ease: 'power2.out', overwrite: true,
-      });
-    };
-
-    // Snap a ship out of play: invisible, at rest. Where it sits no longer matters once presence is 0
-    // (applyOpacity takes its materials to zero), so it does not need an off-stage parking spot the
-    // way the old side-to-side carousel did — a craft leaves through a gate now.
-    const parkShip = (ship: DeckShip) => {
-      gsap.killTweensOf([
-        ship.stage.position, ship.stage.rotation, ship.stage.scale,
-        ship.lift.rotation, ship.presence, ship.litState,
-      ]);
-      ship.stage.position.set(0, 0, 0);
-      ship.stage.rotation.set(0, 0, 0);
-      ship.stage.scale.setScalar(1);
-      ship.lift.rotation.y = 0;
-      ship.presence.value = 0;
-      ship.litState.value = 0;
-      applyOpacity(ship);
-      applyLitState(ship);
-    };
-
-    // Which craft is currently staged. Initialised to the mount index so the first selection
-    // effect (same index) is a no-op rather than a phantom swap.
-    let stagedIndex = activeIndexRef.current;
-    applyShipLighting(stagedIndex, true);
-
-    // ── The gates ──
-    // Two are always built. A narrow frame simply never shows the second and routes both halves of
-    // the swap through the one standing behind the craft (see computePortalLayout).
-    const exitGate = createPortalGate();
-    const entryGate = createPortalGate();
-    scene.add(exitGate.object, entryGate.object);
-    // `formation` 0..1 drives both gates through all ten stages; `grip` holds the showroom turntable
-    // still so the craft can actually keep a heading. Both are plain tweened numbers, so an
-    // interrupted swap re-tweens from wherever it had got to instead of snapping.
-    const portalState = { formation: 0, grip: 0 };
-    let singleGateLayout = false;
-    let swapActive = false;
-    let swapTimeline: gsap.core.Timeline | null = null;
-
-    /** Where the gates stand, how big they are, and whether the frame can hold a pair. */
-    interface PortalLayout {
-      exitPosition: THREE.Vector3;
-      entryPosition: THREE.Vector3;
-      gateSize: number;
-      singleGate: boolean;
-    }
-
-    // Derived from the LIVE frame on every swap, never from world constants — and measured at the
-    // GATE'S OWN DEPTH rather than the stage's, which is what lets GATE_DEPTH be a free choice: push the
-    // gates back for a better entry angle and they keep the same size and the same place on screen.
+    // ── The vessel's rig ──
+    // depart → lift → { spin, parts }. `depart` owns the services→works departure scrub (identity
+    // outside the handoff) and `lift` owns the hover height and the float bob. `spin` and `parts` are
+    // SIBLINGS — see vesselAssembly.ts for why the hull's yaw must not reach a part that is still
+    // adrift.
     //
-    // At portrait the visible half-width at the stage collapses to ~1.2 world units while every hull is
-    // normalised to 2.3, so a fixed lateral offset puts both gates off-screen by roughly 3x.
-    const computePortalLayout = (direction: number): PortalLayout => {
-      const viewDistance = Math.hypot(
-        tuning.cameraDistance,
-        tuning.cameraHeight - tuning.cameraLookY,
-      );
-      const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(tuning.cameraFov / 2));
-      // The camera looks slightly DOWN, so a world-z offset is not quite a depth offset. This is the
-      // z component of its forward axis — ~0.993 at the resting shot, but it stays honest if the
-      // camera is ever raised.
-      const forwardZ = tuning.cameraDistance / viewDistance;
-      const frameAt = (depth: number) => {
-        const halfHeight = (viewDistance - depth * forwardZ) * tanHalfFov;
-        return { halfHeight, halfWidth: halfHeight * (camera.aspect || 1) };
-      };
+    // ⚠ One level shorter than the fleet's rig, which opened with a `stage` group. That existed for the
+    // carousel's fly-on/off and then for the portal swap's flight into a gate; with one vessel nothing
+    // writes to it, and a pass-through group in a rig is the kind of thing the next person tries to
+    // drive something with.
+    const depart = new THREE.Group();
+    const lift   = new THREE.Group();
+    lift.position.y = SHIP_HOVER;
+    depart.add(lift);
+    scene.add(depart);
 
-      const stageFrame = frameAt(0);
-      const gateFrame = frameAt(-GATE_DEPTH);
+    let assembly: VesselAssembly | null = null;
+    let hullMaterials: THREE.Material[] = [];
 
-      const gateSize = gateFrame.halfHeight * GATE_SIZE_FRACTION;
-      // The quad spans +/- gateSize/2, and the visible ring fills these fractions of it.
-      const gateHalfWidth = (gateSize * PORTAL_GATE_RADIUS_X) / 2;
-
-      // Vertically the gate is placed in the FRAME, like it is horizontally — not stood on the ground.
-      // There is no ground five units behind the stage to stand it on, and what actually matters is
-      // where it lands in shot. This is the camera's aim line at the gate's depth, offset by
-      // GATE_Y_FRACTION.
-      const aimY =
-        tuning.cameraHeight +
-        (tuning.cameraLookY - tuning.cameraHeight) *
-          ((tuning.cameraDistance + GATE_DEPTH) / tuning.cameraDistance);
-      const gateCentreY = aimY + GATE_Y_FRACTION * gateFrame.halfHeight;
-
-      // Whether a pair fits is a SCREEN question: the hull is centre stage and the gates are five units
-      // behind it, so comparing their world x would say nothing about whether they overlap in frame.
-      const hullScreenHalf = SHIP_HALF_EXTENT / stageFrame.halfWidth;
-      const gateScreenHalf = gateHalfWidth / gateFrame.halfWidth;
-      const nearestScreenX = hullScreenHalf + gateScreenHalf + GATE_SHIP_CLEARANCE;
-      const furthestScreenX = 1 - gateScreenHalf - GATE_FRAME_MARGIN;
-      const singleGate = furthestScreenX < nearestScreenX;
-
-      if (singleGate) {
-        // One gate, directly behind the craft — which is also the only placement a craft can fly
-        // through dead square, since the gate faces the camera and so does the craft's exit path.
-        const behind = new THREE.Vector3(
-          GATE_SINGLE_X * gateFrame.halfWidth * direction,
-          gateCentreY,
-          -GATE_DEPTH,
-        );
-        return { exitPosition: behind, entryPosition: behind.clone(), gateSize, singleGate };
-      }
-
-      // The old carousel convention, kept: next (+1) leaves screen-left, arrives from screen-right.
-      const screenX = THREE.MathUtils.clamp(GATE_X_FRACTION, nearestScreenX, furthestScreenX);
-      const gateX = screenX * gateFrame.halfWidth;
-      return {
-        exitPosition: new THREE.Vector3(-direction * gateX, gateCentreY, -GATE_DEPTH),
-        entryPosition: new THREE.Vector3(direction * gateX, gateCentreY, -GATE_DEPTH),
-        gateSize,
-        singleGate,
-      };
+    // ── The assembly scrub ──
+    // The build's progress, 0..1 across the four waves. `current` eases toward `target` every frame so
+    // a flicked scroll still reads as parts flying rather than as parts teleporting.
+    const assemblyState = { target: 0, current: 0 };
+    /** `performance.now()` before which the eased value does not advance — see ASSEMBLY_ENTRY_HOLD_MS. */
+    let assemblyHoldUntil = 0;
+    const onAssemblyProgress = (event: Event) => {
+      assemblyState.target = readServicesAssembly(event);
     };
+    window.addEventListener(SERVICES_ASSEMBLY_EVENT, onAssemblyProgress);
 
-    // The yaw that points the nose along a travel direction. HEADING_PHASE is this file's own datum —
-    // the same one the services to works flight steers by — so the two agree about which way a hull
-    // faces instead of each carrying its own guess at it.
-    const aimYawTowards = (deltaX: number, deltaZ: number) =>
-      Math.atan2(deltaX, deltaZ) + HEADING_PHASE;
-
-    // Turn onto the gate, hold while it builds, then fly through it.
-    const flyShipIntoGate = (
-      ship: DeckShip,
-      gate: THREE.Vector3,
-      timeline: gsap.core.Timeline,
-    ) => {
-      gsap.killTweensOf([
-        ship.stage.position, ship.stage.rotation, ship.stage.scale,
-        ship.lift.rotation, ship.presence, ship.litState,
-      ]);
-      // Settle the accumulated showroom spin onto a whole turn as the craft aims, so the aim below
-      // means the same thing wherever the turntable happened to be. Same trick the handoff uses.
-      const settledYaw = Math.round(ship.lift.rotation.y / (Math.PI * 2)) * (Math.PI * 2);
-      timeline.to(ship.lift.rotation, {
-        y: settledYaw, duration: PORTAL_AIM_DURATION, ease: 'power2.inOut',
-      }, 0);
-      timeline.to(ship.stage.rotation, {
-        y: aimYawTowards(gate.x, gate.z), duration: PORTAL_AIM_DURATION, ease: 'power2.inOut',
-      }, 0);
-
-      timeline.to(ship.stage.position, {
-        x: gate.x, y: gate.y, z: gate.z,
-        duration: PORTAL_FLIGHT_DURATION, ease: 'power2.in',
-      }, PORTAL_LAUNCH_AT);
-      timeline.to(ship.stage.rotation, {
-        z: PORTAL_BANK, duration: PORTAL_FLIGHT_DURATION, ease: 'power2.in',
-      }, PORTAL_LAUNCH_AT);
-      timeline.to(ship.stage.scale, {
-        x: PORTAL_THROUGH_SCALE, y: PORTAL_THROUGH_SCALE, z: PORTAL_THROUGH_SCALE,
-        duration: PORTAL_FLIGHT_DURATION, ease: 'power2.in',
-      }, PORTAL_LAUNCH_AT);
-      // Presence drops late and fast: the craft is swallowed BY the gate rather than fading out on
-      // the way there, which would read as it giving up half way.
-      timeline.to(ship.presence, {
-        value: 0, duration: PORTAL_FLIGHT_DURATION * 0.45, ease: 'power2.in',
-        onUpdate: () => applyOpacity(ship),
-      }, PORTAL_LAUNCH_AT + PORTAL_FLIGHT_DURATION * 0.55);
-    };
-
-    // Come out of a gate and settle centre stage, straightening into the resting three-quarter view.
-    const flyShipOutOfGate = (
-      ship: DeckShip,
-      gate: THREE.Vector3,
-      timeline: gsap.core.Timeline,
-      at: number,
-    ) => {
-      gsap.killTweensOf([
-        ship.stage.position, ship.stage.rotation, ship.stage.scale,
-        ship.lift.rotation, ship.presence, ship.litState,
-      ]);
-      // Posed in a callback rather than up front: the craft has to stay parked until its moment, and
-      // on the single-gate layout that moment is after the outgoing one has cleared the same hole.
-      timeline.call(() => {
-        ship.stage.position.copy(gate);
-        ship.stage.rotation.set(0, aimYawTowards(-gate.x, -gate.z), -PORTAL_BANK);
-        ship.stage.scale.setScalar(PORTAL_THROUGH_SCALE);
-        ship.spin.rotation.set(0, BASE_YAW, 0);
-        ship.lift.rotation.y = 0; // off-stage and invisible, so this snap costs nothing to look at
-        ship.presence.value = 0;
-        ship.litState.value = 0;
-        applyOpacity(ship);
-        applyLitState(ship);
-      }, undefined, at);
-
-      timeline.to(ship.stage.position, {
-        x: 0, y: 0, z: 0, duration: PORTAL_ARRIVE_DURATION, ease: 'power3.out',
-      }, at);
-      timeline.to(ship.stage.rotation, {
-        y: 0, z: 0, duration: PORTAL_ARRIVE_DURATION, ease: 'power3.out',
-      }, at);
-      timeline.to(ship.stage.scale, {
-        x: 1, y: 1, z: 1, duration: PORTAL_ARRIVE_DURATION, ease: 'power2.out',
-      }, at);
-      timeline.to(ship.presence, {
-        value: 1, duration: PORTAL_ARRIVE_DURATION * 0.5, ease: 'power2.out',
-        onUpdate: () => applyOpacity(ship),
-      }, at);
-      timeline.to(ship.litState, {
-        value: 1, duration: PORTAL_ARRIVE_DURATION, ease: 'power2.out',
-        onUpdate: () => applyLitState(ship),
-      }, at);
-    };
-
-    // Snap a craft straight to centre stage, no animation (reduced motion).
-    const snapToCenter = (ship: DeckShip) => {
-      gsap.killTweensOf([
-        ship.stage.position, ship.stage.rotation, ship.stage.scale,
-        ship.lift.rotation, ship.presence, ship.litState,
-      ]);
-      ship.stage.position.set(0, 0, 0);
-      ship.stage.rotation.set(0, 0, 0);
-      ship.stage.scale.setScalar(1);
-      ship.spin.rotation.set(0, BASE_YAW, 0);
-      ship.presence.value = 1;
-      ship.litState.value = 1;
-      applyOpacity(ship);
-      applyLitState(ship);
-    };
-
-    // The one timeline a swap runs on. `outgoingIndex` is null for an entrance with nothing to send
-    // away (the section scrolling back into view), which is why the gates still form but only the
-    // arrival half of the choreography is used.
-    const runPortalSwap = (nextIndex: number, outgoingIndex: number | null, direction: number) => {
-      const layout = computePortalLayout(direction);
-      singleGateLayout = layout.singleGate;
-      exitGate.setPose(layout.exitPosition, camera.position, layout.gateSize);
-      entryGate.setPose(layout.entryPosition, camera.position, layout.gateSize);
-
-      swapTimeline?.kill();
-      swapActive = true;
-      portalState.grip = 1;
-      const timeline = gsap.timeline({
-        onComplete: () => {
-          swapActive = false;
-          swapTimeline = null;
-        },
-      });
-      swapTimeline = timeline;
-
-      // The gates build to "ready" just as the craft reaches one, so it crosses WHILE they finish.
-      timeline.to(portalState, {
-        formation: 1, duration: PORTAL_FORM_DURATION, ease: 'power2.inOut',
-      }, 0);
-
-      const arriveAt = outgoingIndex === null
-        ? PORTAL_FORM_DURATION * 0.72
-        : PORTAL_LAUNCH_AT + PORTAL_FLIGHT_DURATION + SWAP_GAP;
-
-      if (outgoingIndex !== null) {
-        flyShipIntoGate(ships[outgoingIndex], layout.exitPosition, timeline);
-        // Fully reset only once it is through the gate and out of sight.
-        timeline.call(() => parkShip(ships[outgoingIndex]), undefined, arriveAt);
-      }
-      flyShipOutOfGate(ships[nextIndex], layout.entryPosition, timeline, arriveAt);
-
-      const collapseAt = arriveAt + PORTAL_ARRIVE_DURATION;
-      timeline.to(portalState, {
-        formation: 0, duration: PORTAL_COLLAPSE_DURATION, ease: 'power2.in',
-      }, collapseAt);
-      // Hand the showroom turntable back only once the craft has actually settled.
-      timeline.to(portalState, {
-        grip: 0, duration: PORTAL_GRIP_RELEASE, ease: 'power2.out',
-      }, collapseAt);
-    };
-
-    // Send the current craft through a gate and bring the next one out of the other. Direction
-    // (+1 next / -1 prev) decides which gate is which, so it still reads as the carousel moving.
-    const setStage = (nextIndex: number) => {
-      if (nextIndex === stagedIndex && ships[nextIndex]?.presence.value === 1) return;
-      const direction = nextIndex > stagedIndex ? 1 : -1;
-      const previousIndex = stagedIndex;
-      stagedIndex = nextIndex;
-      applyShipLighting(nextIndex);
-
-      if (reduceMotion) {
-        ships.forEach((ship, index) => {
-          if (index === nextIndex) snapToCenter(ship);
-          else parkShip(ship);
-        });
-        return;
-      }
-
-      // Everything that is neither arriving nor leaving goes straight out of play.
-      ships.forEach((ship, index) => {
-        if (index !== nextIndex && index !== previousIndex) parkShip(ship);
-      });
-      runPortalSwap(nextIndex, previousIndex === nextIndex ? null : previousIndex, direction);
-    };
-    setStageRef.current = setStage;
-
-    // Replay the whole entrance for the currently-staged craft — fired by DECK_REVEAL_EVENT every
-    // time the section scrolls back into view, so "scroll away then back" runs the animation again.
-    // Nothing is leaving, so the gates form and the craft simply steps out of one.
-    const replayEntrance = () => {
-      const index = activeIndexRef.current;
-      stagedIndex = index;
-      applyShipLighting(index);
-      ships.forEach((ship) => parkShip(ship));
-      if (reduceMotion) {
-        snapToCenter(ships[index]);
-        return;
-      }
-      runPortalSwap(index, null, 1);
-    };
-    window.addEventListener(DECK_REVEAL_EVENT, replayEntrance);
-
-    // Gate the expensive bloom draw to when the deck is actually on screen. The deck reveals on
-    // DECK_REVEAL_EVENT (fill → fleet) and hides back on DECK_HIDE_EVENT (fleet → fill); it stays on
-    // screen through the whole services → works handoff (the craft flies you in). The render loop
-    // keeps running regardless — we skip only the composer draw — so ship state, tweens and the
-    // handoff scrub stay perfectly live, and the first frame after it reveals is already in pose.
+    // Gate the expensive draw to when the deck is actually on screen. The deck reveals on
+    // DECK_REVEAL_EVENT (fill → vessel) and hides back on DECK_HIDE_EVENT; it stays on screen through
+    // the whole services → works handoff (the ship flies you in). The render loop keeps running
+    // regardless — we skip only the composer draw — so the assembly scrub stays perfectly live, and the
+    // first frame after it reveals is already in pose.
+    //
+    // ⚠ There is no entrance to replay any more. The old fleet re-ran a portal swap on every
+    // DECK_REVEAL_EVENT because a hard cut between two models needed hiding. The vessel's entrance is
+    // wave 1 arriving, which is a pure function of scroll position — so scrolling away and back simply
+    // lands on whatever the scrollbar says, correctly, with no cue to fire.
     let deckShouldRender = false;
-    const showDeck = () => { deckShouldRender = true; };
+    const showDeck = () => {
+      deckShouldRender = true;
+      // The arrival beat. Re-armed on every entry, so scrolling back into services always gives you the
+      // swarm before the build rather than a ship already mid-assembly.
+      if (!reduceMotion) assemblyHoldUntil = performance.now() + ASSEMBLY_ENTRY_HOLD_MS;
+    };
     const hideDeck = () => { deckShouldRender = false; };
     window.addEventListener(DECK_REVEAL_EVENT, showDeck);
     window.addEventListener(DECK_HIDE_EVENT, hideDeck);
@@ -938,8 +453,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // ── Departure state (the services → works handoff) ──
     // The hero pin scrubs the raw target; the render loop eases toward it every frame, so the
     // choreography stays smooth whether the user creeps, flicks, or the snap glides through.
-    // `engaged` keeps the scrub's writes off the rig entirely until the handoff is first touched,
-    // and hands the rig back to the swap/idle systems once it has fully reversed out.
+    // `engaged` keeps the scrub's writes off the rig entirely until the handoff is first touched, and
+    // hands the rig back to the idle systems once it has fully reversed out.
     const departState = { target: 0, current: 0, engaged: false };
     // Reusable output for the shared flight choreography — filled each engaged frame, never allocated
     // in the render loop.
@@ -954,24 +469,53 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     window.addEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
 
+    // ── Rotation state ──
+    // The showroom turntable and the drag are kept apart so they can compose onto `spin` every frame.
+    // Writing either straight onto `spin.rotation` would make the other one's value unreadable — and
+    // the flight needs to settle the turntable specifically, without cancelling a drag spring.
+    let turntableYaw = 0;
+    const dragRotation = { yaw: 0, pitch: 0 };
+
+    // ⚠ The teleport at the bottom of the loop throws the scrollbar to the top under cover of the black
+    // hole's own shadow. Everything that EASES toward a target has to be told to stop easing and BE
+    // there now, or the ship visibly un-builds itself behind the cream hero while the visitor is
+    // looking at it. Registered here, below every value it touches, rather than beside the assembly
+    // scrub it is mostly about — the listener reads five separate pieces of eased state and all of them
+    // have to exist first.
+    const onLoopReset = () => {
+      assemblyState.target = 0;
+      assemblyState.current = 0;
+      assemblyHoldUntil = 0;
+      departState.target = 0;
+      departState.current = 0;
+      departState.engaged = false;
+      hasPrevShipPosition = false;
+      headingYaw = 0;
+      turntableYaw = 0;
+      depart.position.set(0, 0, 0);
+      depart.rotation.set(0, 0, 0);
+      depart.scale.setScalar(1);
+    };
+    window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
+
     // ── Warm-up: build every program and allocate every buffer while the deck is off screen ──
     //
-    // Two beats, ONE PER FRAME. `compileAsync` is not the free ride an earlier version of this comment
-    // claimed: it runs `renderer.compile()` SYNCHRONOUSLY before it awaits anything (three's own
-    // source), so program creation and uploads still block — only the wait for the driver to finish
-    // linking is offloaded. And the `composer.render()` after it is the more expensive half anyway,
-    // because that is where the composer's two full-resolution multisampled targets are ALLOCATED.
+    // Two beats, ONE PER FRAME. `compileAsync` is not a free ride: it runs `renderer.compile()`
+    // SYNCHRONOUSLY before it awaits anything, so program creation and uploads still block — only the
+    // wait for the driver to finish linking is offloaded. And the `composer.render()` after it is the
+    // more expensive half anyway, because that is where the composer's two full-resolution targets are
+    // ALLOCATED.
     //
     // Both are GPU-process work, and while the GPU process is busy the compositor cannot present
     // anyone's frames — including the loader's worker-rendered dust. Given a frame each they are two
-    // short hitches rather than one long one. See `warmUpField` in useWorksField for the full note.
+    // short hitches rather than one long one.
     //
-    // ⚠ Run when the FLEET's own vessels are in (see emitStatus), not when the whole page has finished
-    // downloading. ASSETS_WARMUP_EVENT remains as a backstop; `warmupStarted` makes the two idempotent.
+    // ⚠ Run when the VESSEL is in (see emitStatus), not when the whole page has finished downloading.
+    // ASSETS_WARMUP_EVENT remains as a backstop; `warmupStarted` makes the two idempotent.
     let disposed = false;
     let warmupStarted = false;
     let warmupFrame = 0;
-    /** Program cache keys present at the end of the warm-up — see the diagnostic in `prewarmPipeline`. */
+    /** Program cache keys present at the end of the warm-up — see the diagnostic below. */
     let warmedProgramKeys: Set<string> | null = null;
     /** Latches after the first drawn frame has been compared against them. */
     let programDiffReported = false;
@@ -982,26 +526,6 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const prewarmPipeline = async () => {
       if (warmupStarted || disposed) return;
       warmupStarted = true;
-      // Open the gates a crack first. `compileAsync` walks only VISIBLE objects, and a gate hides
-      // itself at formation 0 (see PortalGate.update) — so without this the portal shader is not
-      // built until the first swap, which is the exact stall this whole warm-up exists to prevent.
-      //
-      // ⚠ That premise no longer holds on three r184: `compile` gathers LIGHTS with `traverseVisible`
-      // but materials with plain `traverse`, so a hidden object is compiled regardless. Kept anyway —
-      // it costs nothing, it is correct on either behaviour, and it is not worth re-testing the deck to
-      // remove. Do NOT cite it as evidence that hiding an object defers its compile; the sun's corona
-      // freeze (see `warmStarMaterials` in SunModelCanvas) was a first-DRAW problem, not a visibility
-      // one, and needed an explicit `initTexture` pass that this does not do.
-      // The deck is off screen throughout, and the render loop's own draw is gated off, so nothing
-      // is on screen to see them. Cleared on every exit path below.
-      portalState.formation = PORTAL_PREWARM_FORMATION;
-      // Same reason, and the reason this matters for the FLEET as well: a parked craft is no longer
-      // drawn at all (see applyOpacity), so only the centred hull would be walked here and the other
-      // three would compile on the frame they first fly out of a gate. Show every hull for the
-      // compile; applyOpacity puts each back where its presence says it belongs.
-      ships.forEach((ship) => {
-        ship.stage.visible = true;
-      });
       try {
         // Out of the caller's tick first — this is reached from inside a GLTFLoader `onLoad`, straight
         // after a Draco decode and a full material re-skin. `compileAsync` runs `renderer.compile()`
@@ -1014,33 +538,25 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         await nextWarmupFrame();
         if (disposed) return;
         // Forces the bloom + SMAA passes to compile, and — the expensive part — allocates the
-        // composer's targets, so neither lands on the frame the fleet is first revealed.
+        // composer's targets, so neither lands on the frame the vessel is first revealed.
         composer.render();
+
         // ── ⚠ DIAGNOSTIC: did this warm-up actually cover the frame the reveal will draw? ──
         //
-        // A Chrome trace of the hero → services boundary found ONE real hitch: a 69 ms task, 67 ms of
-        // it inside `FunctionCall`, and the sampler charged 55 % of what it could sample to
-        // `getProgramInfoLog` — reached through `renderFrame` → `RenderPass.render` → `setProgram`.
-        // That call blocks the main thread until the driver finishes LINKING a shader program, so a
-        // program is being built on the deck's first real render despite everything above.
+        // A Chrome trace of the hero → services boundary once found a 69 ms task blocked inside
+        // `getProgramInfoLog` — a shader program being LINKED on the deck's first real render despite
+        // everything above. The cause was the portal gates' POINT LIGHTS: the warm-up opened the gates,
+        // so everything compiled with two point lights in the scene, and the first real frame drew with
+        // zero. three keys programs on the COUNT of visible lights (`WebGLPrograms.js`), so every
+        // program missed.
         //
-        // ── ANSWERED 2026-08-11. It was the PORTAL GATES' POINT LIGHTS. ──
-        // The reasoning that stalled here was right up to its last step: `applyShipLighting` tweens
-        // light colours and intensities, and those are indeed not part of three's program cache key.
-        // The NUMBER OF VISIBLE POINT LIGHTS is (`WebGLPrograms.js`, `getProgramCacheKeyParameters`).
-        // This warm-up opens the gates to PORTAL_PREWARM_FORMATION, so everything below is compiled
-        // with two point lights in the scene — and the `finally` then shuts them, so the first real
-        // frame drew with zero and every program missed. `portalGate.update` now keeps the lights in
-        // the scene permanently at intensity 0; its comment has the whole mechanism, including why the
-        // same bug bit far harder at the gate's CLOSE than it ever did here.
+        // ⚠ The gates are gone (2026-08-11) and the point lights went with them, which removes the
+        // cause — and makes this instrument MORE useful, not less: it is now the check that no new
+        // light-count difference has crept in between the warm-up and the first drawn frame. It should
+        // report `added NONE` on every load.
         //
-        // The instrument stays, telemetry-gated, because it is now the check that the fix HOLDS: this
-        // should report `added NONE` on every load. Anything else means a program parameter is still
-        // differing between the warm-up and the first drawn frame, and the key it prints names which.
-        //
-        // ⚠ Gated on telemetry. three's cache keys are long concatenations of every program
-        // parameter, so ~9 of them is several KB held for the whole session — pointless in a build
-        // that can never print them.
+        // Gated on telemetry: three's cache keys are long concatenations of every program parameter, so
+        // holding ~9 of them for the whole session is pointless in a build that can never print them.
         if (telemetryEnabled) {
           warmedProgramKeys = new Set(
             (renderer.info.programs ?? []).map((program) => program.cacheKey),
@@ -1049,27 +565,22 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       } catch {
         // A failed compile is not a reason to trap the loader; whatever failed compiles on first draw.
       } finally {
-        portalState.formation = 0;
-        ships.forEach((ship) => applyOpacity(ship));
         if (!disposed) reportWarmupDone('deck'); // the intro holds the reveal until this fires
       }
     };
-    // ── When it runs: BOTH the fleet's own vessels AND a quiet loader ──
-    // Own-assets-in keeps this off the tail of the page's last byte (see above). The quiet-stage half is
-    // what keeps it off the loader's wordmark: five Syne 800 glyphs at up to 256 px animating transform
-    // and opacity through an overshoot is the most expensive thing the loader draws, and a compile
-    // landing on it is visible. ASSETS_WARMUP_EVENT now fires once that animation has resolved.
+    // ── When it runs: BOTH the vessel itself AND a quiet loader ──
+    // Own-assets-in keeps this off the tail of the page's last byte. The quiet-stage half is what keeps
+    // it off the loader's wordmark: five Syne 800 glyphs at up to 256 px animating through an overshoot
+    // is the most expensive thing the loader draws, and a compile landing on it is visible.
     //
     // `stageQuiet` starts TRUE when no loader is on the page — under reduced motion the intro skips its
     // timeline and never dispatches, so waiting on it would mean never warming. Read from the DOM
     // because this hook is behind a dynamic import and mounts after INTRO_ACTIVE_EVENT has gone.
-    let vesselsIn = false;
-    // State as well as event, because this hook is dynamically imported and its chunk can land after
-    // the intro has already dispatched. See `isStageQuiet` for why an event alone is a race.
+    let vesselIn = false;
     let stageQuiet =
       isStageQuiet() || document.querySelector(INTRO_MARKER_SELECTOR) === null;
     const warmWhenBothReady = () => {
-      if (vesselsIn && stageQuiet) void prewarmPipeline();
+      if (vesselIn && stageQuiet) void prewarmPipeline();
     };
     const onWarmupRequested = () => {
       stageQuiet = true;
@@ -1077,147 +588,111 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
     window.addEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
 
-    // ── Model loading (Draco-compressed) ──
+    // ── Model loading ──
     const gltfLoader = new GLTFLoader();
     gltfLoader.setDRACOLoader(getSharedDracoLoader());
     gltfLoader.setKTX2Loader(getSharedKtx2Loader());
 
-    // ── Load the four vessels (Draco-compressed) ──
-    const loadProgress = new Array(ships.length).fill(0);
-    const emitStatus = () => {
-      const isDone = loadProgress.every((value) => value >= 1);
-      const summed = loadProgress.reduce((total, value) => total + value, 0);
-      const fraction = summed / ships.length;
-      // Feed the intro's honest loader (combined with the works field) so the reveal can wait for
-      // the fleet to actually be in.
+    const emitStatus = (fraction: number) => {
+      const isDone = fraction >= 1;
+      // Feed the intro's honest loader (combined with the works field) so the reveal can wait for the
+      // vessel to actually be in.
       reportAssetProgress('deck', fraction);
       onStatus({ isLoading: !isDone, percent: isDone ? 100 : Math.round(fraction * 100) });
-      // Arm the warm-up on THIS section's own vessels, rather than on the whole page. It still waits
-      // for the loader's stage to go quiet — see `warmWhenBothReady`.
       if (isDone) {
-        vesselsIn = true;
+        vesselIn = true;
         warmWhenBothReady();
       }
     };
-    emitStatus();
+    emitStatus(0);
 
-    // ── The fleet yields the wire to the star ──
-    //
-    // The four vessels are 5.3 MB and are not needed until the visitor scrolls to services, which is
-    // tens of seconds away. `fractured_sun.glb` is 1.3 MB and is needed NOW — it is the subject of the
-    // hero and the loader's own finale flies its ten shards in.
-    //
-    // Started together, they simply share the pipe: a browser opens all of these streams at once and
-    // the bandwidth splits roughly evenly across them, so on a slow connection the star finishes at
-    // about the same FRACTION of the total download as the ships do — i.e. right at the end. That is
-    // the whole of the reported bug: the site would open with no sun and the star would fade in
-    // 30–60 s later. Nothing was broken in the sun's code; it was queued behind cargo.
-    //
-    // Holding the fleet costs a fast connection nothing (the star lands in a fraction of a second) and
-    // on a slow one it takes the star from ~70 % of the download to ~17 % of it. Total bytes are
-    // unchanged; only the order is.
-    let vesselsStarted = false;
-    const startVesselLoads = () => {
-      if (vesselsStarted || disposed) return;
-      vesselsStarted = true;
-      DECK_SERVICES.forEach(loadVessel);
-    };
-    // Held until the star is in, stalls, or fails — see lib/yieldToStarDownload.ts, which also
-    // covers the already-cached case and why this is a stall detector rather than the flat 6 s
-    // deadline it replaces (that deadline expired mid-download on exactly the connections it
-    // existed to protect, and the fleet then starved the star the rest of the way).
-    const stopYieldingToStar = yieldToStarDownload(startVesselLoads);
+    // ⚠ No `yieldToStarDownload` any more, and its removal is the point rather than an oversight. The
+    // fleet held its four vessels behind `fractured_sun.glb` because they were 5.15 MB against the
+    // star's 1.3 MB, and started together they simply shared the pipe — the site would open with no sun
+    // and the star would fade in 30–60 s later on a slow connection. The vessel is 30 KB. There is
+    // nothing left to starve the star with, and holding it back would only delay this scene's warm-up
+    // for no gain.
+    gltfLoader.load(
+      VESSEL_MODEL_PATH,
+      (gltf) => {
+        if (disposed) return;
+        assembly = createVesselAssembly(
+          gltf.scene,
+          TARGET_SIZE,
+          BASE_YAW,
+          VESSEL_MODEL_ROTATION,
+        );
+        lift.add(assembly.spin, assembly.parts);
 
-    function loadVessel(service: (typeof DECK_SERVICES)[number], index: number) {
-      gltfLoader.load(
-        service.modelPath,
-        (gltf) => {
-          const vessel = prepareVessel(gltf.scene, service.modelRotation);
-          const ship = ships[index];
-          ship.spin.add(vessel);
-          ship.vessel = vessel;
-          // Catalogue every mesh by positional id, and honour whatever is already
-          // baked into the tuning as hidden. Switched off rather than culled: a hidden piece has to be able
-          // to come back on, and a hull is small enough that a hidden mesh costs nothing to keep around.
-          let partIndex = 0;
-          vessel.traverse((child) => {
+        // Skin each cluster with ITS WAVE's accent.
+        //
+        // ⚠ The clone is mandatory. All nine clusters reference the same glTF material, and GLTFLoader
+        // hands out one shared THREE.Material instance for it — so re-skinning in place would give the
+        // whole ship whichever wave's accent was applied last. (The low-power path in hullMaterial
+        // mutates the source material rather than upgrading it, which is what makes this bite.)
+        assembly.members.forEach((member) => {
+          member.group.traverse((child) => {
             if (!(child instanceof THREE.Mesh)) return;
-            const partId = `${index}:${partIndex}`;
-            partIndex += 1;
-            ship.parts.set(partId, child);
-            if (tuning.ships[index]?.hiddenParts.includes(partId)) child.visible = false;
+            child.material = Array.isArray(child.material)
+              ? child.material.map((material) => material.clone())
+              : child.material.clone();
           });
-          // Re-skin every hull material onto this ship's graded palette + accent glow.
-          ship.materials = applyHullMaterials(
-            vessel,
-            service.profile,
-            { brightness: ship.brightnessUniform, emitPulse: ship.emitPulseUniform },
-            lowPower,
+          const profile = DECK_SERVICES[member.spec.wave - 1].profile;
+          hullMaterials.push(
+            ...applyHullMaterials(
+              member.group,
+              profile,
+              { brightness: member.brightness, emitPulse: member.emitPulse },
+              lowPower,
+            ),
           );
+        });
 
-          // The centred craft shows immediately; the rest wait off-stage. (Materials only exist
-          // now, so the initial pose has to be applied after the model arrives.)
-          if (index === stagedIndex) {
-            ship.stage.position.set(0, 0, 0);
-            ship.presence.value = 1;
-            ship.litState.value = 1;
-          } else {
-            // No off-stage parking spot any more — presence 0 is what hides a craft (see parkShip).
-            ship.stage.position.set(0, 0, 0);
-            ship.presence.value = 0;
-            ship.litState.value = 0;
-          }
-          applyOpacity(ship);
-          applyLitState(ship);
-
-          loadProgress[index] = 1;
-          emitStatus();
-        },
-        (progressEvent) => {
-          if (progressEvent.total > 0) {
-            loadProgress[index] = progressEvent.loaded / progressEvent.total;
-            emitStatus();
-          }
-        },
-        (error) => {
-          console.error(`Failed to load vessel: ${service.modelPath}`, error);
-          loadProgress[index] = 1;
-          emitStatus();
-        },
-      );
-    }
+        resolveHoldingPoses(assembly, tuning, camera.aspect || 1);
+        emitStatus(1);
+      },
+      (progressEvent) => {
+        if (progressEvent.total > 0) {
+          emitStatus(progressEvent.loaded / progressEvent.total);
+        }
+      },
+      (error) => {
+        console.error(`Failed to load vessel: ${VESSEL_MODEL_PATH}`, error);
+        emitStatus(1);
+      },
+    );
 
     // ── Drag-to-rotate + flick ──
-    // Pointer down on the canvas grabs the centred craft. Dragging rotates it; on release a big
-    // horizontal travel is read as a flick (switch carousel), otherwise the craft springs back.
-    const drag = { active: false, startX: 0, startY: 0, startTime: 0 };
-
-    const activeShip = () => ships[activeIndexRef.current];
+    // Pointer down on the canvas grabs the vessel. Dragging rotates it; on release a big horizontal
+    // travel is read as a flick (switch stop), otherwise it springs back.
+    //
+    // ⚠ The drag reaches `spin`, which is the frame every SOCKET resolves through — so it moves a part
+    // exactly as much as that part has locked in. A wing half way home follows your drag half way.
+    // Nobody will name that; everybody will feel it.
+    const drag = { active: false, startX: 0, startY: 0 };
 
     const handlePointerDown = (event: PointerEvent) => {
-      // Drag only rotates the resting craft — it's disabled during the flight (the
-      // camera is scripted there, so a drag would fight it).
+      // Drag only rotates the resting vessel — it's disabled during the flight (the camera is scripted
+      // there, so a drag would fight it).
       if (reduceMotion || departState.engaged) return;
       drag.active = true;
       drag.startX = event.clientX;
       drag.startY = event.clientY;
-      drag.startTime = performance.now();
-      const ship = activeShip();
-      if (ship) gsap.killTweensOf(ship.spin.rotation);
+      gsap.killTweensOf(dragRotation);
       canvas.setPointerCapture?.(event.pointerId);
     };
 
     const handlePointerMove = (event: PointerEvent) => {
       if (!drag.active) return;
-      const ship = activeShip();
-      if (!ship) return;
-      const deltaX = event.clientX - drag.startX;
-      const deltaY = event.clientY - drag.startY;
-      ship.spin.rotation.y = BASE_YAW + THREE.MathUtils.clamp(
-        deltaX * DRAG_YAW_SENSITIVITY, -DRAG_YAW_CLAMP, DRAG_YAW_CLAMP,
+      dragRotation.yaw = THREE.MathUtils.clamp(
+        (event.clientX - drag.startX) * DRAG_YAW_SENSITIVITY,
+        -DRAG_YAW_CLAMP,
+        DRAG_YAW_CLAMP,
       );
-      ship.spin.rotation.x = THREE.MathUtils.clamp(
-        deltaY * DRAG_PITCH_SENSITIVITY, -DRAG_PITCH_CLAMP, DRAG_PITCH_CLAMP,
+      dragRotation.pitch = THREE.MathUtils.clamp(
+        (event.clientY - drag.startY) * DRAG_PITCH_SENSITIVITY,
+        -DRAG_PITCH_CLAMP,
+        DRAG_PITCH_CLAMP,
       );
     };
 
@@ -1230,15 +705,12 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const totalY = event.clientY - drag.startY;
       const isFlick = Math.abs(totalX) > FLICK_DISTANCE_PX && Math.abs(totalX) > Math.abs(totalY);
 
-      // Always ease the craft back to its resting view; if it was a flick, also ask to switch.
-      const ship = activeShip();
-      if (ship) {
-        gsap.to(ship.spin.rotation, {
-          x: 0, y: BASE_YAW, duration: SPRING_DURATION, ease: 'elastic.out(1, 0.5)', overwrite: true,
-        });
-      }
+      // Always ease back to the resting view; if it was a flick, also ask to switch.
+      gsap.to(dragRotation, {
+        yaw: 0, pitch: 0, duration: SPRING_DURATION, ease: 'elastic.out(1, 0.5)', overwrite: true,
+      });
       if (isFlick) {
-        // Dragging the craft left pushes it away → reveal the next craft (and vice-versa).
+        // Dragging left pushes the vessel away → move to the next stop (and vice-versa).
         onFlickRef.current(totalX < 0 ? 1 : -1);
       }
     };
@@ -1247,23 +719,17 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
 
-    // Push the shared adaptive pixel ratio + current CSS size onto BOTH the renderer and the
-    // composer. The composer caches its own pixel ratio (captured at construction), so it must be
-    // told separately or the bloom targets stay at the old density. Used for real window resizes and
-    // whenever the adaptive controller shifts the ratio. Defined before the render loop so the loop
-    // can call it without a forward reference.
+    // Push the shared adaptive pixel ratio + current CSS size onto BOTH the renderer and the composer.
+    // The composer caches its own pixel ratio (captured at construction), so it must be told separately
+    // or the bloom targets stay at the old density.
     let appliedPixelRatio = getPixelRatio();
     /** How long the controller's ratio has differed from the one actually allocated. */
     let ratioPendingSeconds = 0;
     /** Mirrors the `.is-uncomposited` class, so the DOM is touched only when it changes. */
     let canvasUncomposited = false;
-    // How far the flight's camera pulls back on a narrow frame, at its far end. Held here beside the
-    // aspect it is derived from rather than recomputed in the loop, so the two can't disagree — and
-    // read ONLY by the handoff below. The fleet's own resting shot is deliberately not touched by it
-    // (see the flight branch for why the ramp has to start at exactly 1).
+    // How far the flight's camera pulls back on a narrow frame, at its far end.
     let portraitScale = 1;
-    // The craft's portrait drop, in world units — 0 on any landscape frame, so nothing below it costs
-    // a desktop anything. See PORTRAIT_SHIP_DROP.
+    // The vessel's portrait drop, in world units — 0 on any landscape frame.
     let portraitShipDrop = 0;
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
@@ -1280,6 +746,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       renderer.setSize(width, height, false);
       composer.setPixelRatio(ratio);
       composer.setSize(width, height);
+      // ⚠ The ONLY place the viewport enters the assembly. Every loose part waits on a ring measured in
+      // fractions of what this camera can now see, so the swarm reframes itself rather than stretching
+      // — parts round the sides of a desktop, over the top and bottom of a phone.
+      if (assembly) resolveHoldingPoses(assembly, tuning, camera.aspect);
     };
 
     // ── Render loop ──
@@ -1295,8 +765,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     const renderFrame = () => {
       frameId = requestAnimationFrame(renderFrame);
       const loopStartedAt = profileNow();
-      // See the works field: three resets `info` on every `render()`, so a composer's many passes all
-      // vanish except the last unless it is accumulated by hand.
+      // three resets `info` on every `render()`, so a composer's many passes all vanish except the last
+      // unless it is accumulated by hand.
       if (telemetryEnabled) renderer.info.reset();
 
       const deltaSeconds = frameTimer.tick();
@@ -1304,13 +774,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       starfield.rotation.y = elapsed * STAR_DRIFT;
 
       // ── Push the authored stage onto the scene ──
-      // Applied every frame rather than once at build: it keeps the authored stage and the animated state
-      // on one code path, and all of it is plain property writes.
       renderer.toneMappingExposure = tuning.exposure;
-      // Multiplied, not assigned — see shipLightLevels.
-      keyLight.intensity = shipLightLevels.key * tuning.keyMultiplier;
-      fillLight.intensity = shipLightLevels.fill * tuning.fillMultiplier;
-      rimLight.intensity = shipLightLevels.rim * tuning.rimMultiplier;
+      keyLight.intensity = KEY_LIGHT_INTENSITY * tuning.keyMultiplier;
+      fillLight.intensity = FILL_LIGHT_INTENSITY * tuning.fillMultiplier;
+      rimLight.intensity = RIM_LIGHT_INTENSITY * tuning.rimMultiplier;
       ambientLight.intensity = tuning.ambientIntensity;
       // The flight owns the camera once it engages; before that the resting shot is the tuning's.
       if (!departState.engaged) applyCameraFromTuning();
@@ -1318,20 +785,8 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // At rest the departure isn't driving this, so the authored value applies directly.
       if (!departState.engaged) starfieldMaterial.opacity = tuning.starOpacity;
 
-      ships.forEach((ship, shipIndex) => {
-        const placement = tuning.ships[shipIndex];
-        if (!ship.vessel || !placement) return;
-        ship.vessel.position.set(placement.x, placement.y, placement.z);
-        ship.vessel.rotation.set(
-          THREE.MathUtils.degToRad(placement.rotX),
-          THREE.MathUtils.degToRad(placement.rotY),
-          THREE.MathUtils.degToRad(placement.rotZ),
-        );
-        ship.vessel.scale.setScalar(placement.scale);
-      });
-
-      // Ease toward the scrubbed handoff target (instant under reduced motion — the scroll
-      // position itself is then the only animator).
+      // Ease toward the scrubbed handoff target (instant under reduced motion — the scroll position
+      // itself is then the only animator).
       if (departState.engaged) {
         departState.current +=
           (departState.target - departState.current) * (reduceMotion ? 1 : DEPART_SMOOTHING);
@@ -1340,114 +795,111 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         }
       }
       const departure = departState.current;
-      // How firmly the departure holds the craft — ramps in over the first beats so the turntable
-      // spin settles instead of snapping.
+      // How firmly the departure holds the vessel — ramps in over the first beats so the turntable spin
+      // settles instead of snapping.
       const departGrip = THREE.MathUtils.clamp(departure / DEPART_GRIP_SPAN, 0, 1);
 
-      const centred = activeIndexRef.current;
-      // The portrait drop, released across the handoff so the flight's authored world path arrives
-      // exactly where it was written to (see PORTRAIT_SHIP_DROP). Computed once per frame rather than
-      // per ship — every craft shares one stage and one frame.
-      const shipDrop = portraitShipDrop * (1 - flightRamp(departure));
-      ships.forEach((ship, index) => {
-        const isCentred = index === centred;
-        // Only the centred craft animates; the rest rest flat off-stage.
-        const animateCentred = isCentred && !reduceMotion;
-        // 1. Float / hover bob — drifts up and down, about the (possibly dropped) resting height.
-        ship.lift.position.y =
-          SHIP_HOVER + shipDrop + (animateCentred ? Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE : 0);
-        // 2. Slow turntable spin — paused while dragging so manual rotation stays precise, and
-        //    wound down as the departure takes its grip so the craft can hold a heading.
-        //    A swap grips it too: the craft has to hold the heading it just turned onto, and the
-        //    turntable underneath would drag it off the gate while it flew.
-        if (animateCentred && !drag.active) {
-          ship.lift.rotation.y +=
-            AUTO_ROTATE_SPEED * deltaSeconds * (1 - departGrip) * (1 - portalState.grip);
+      // ── The assembly ──
+      // Frozen for the arrival beat, then eased. `target` is untouched either way, so the hold delays
+      // the build without ever letting it drift away from the scroll.
+      if (reduceMotion || performance.now() >= assemblyHoldUntil) {
+        assemblyState.current +=
+          (assemblyState.target - assemblyState.current) *
+          (reduceMotion ? 1 : ASSEMBLY_SMOOTHING);
+        if (Math.abs(assemblyState.target - assemblyState.current) < 0.0005) {
+          assemblyState.current = assemblyState.target;
         }
-        // 3. Engine-glow breathing.
-        ship.emitPulseUniform.value = animateCentred
-          ? 1 + Math.sin(elapsed * tuning.emitPulseSpeed) * tuning.emitPulseAmplitude
-          : 1;
-        // 4. Third-person flight weave — banks + sways the chase ship so it reads as actively flying.
-        //    Ramped in by `departure` (0 during normal fleet browsing → full at the parked chase view).
-        const flightIdle = animateCentred && departState.engaged ? departure : 0;
-        ship.lift.rotation.z = Math.sin(elapsed * FLIGHT_WEAVE_ROLL_SPEED) * FLIGHT_WEAVE_ROLL_AMP * flightIdle;
-        ship.lift.rotation.x = Math.sin(elapsed * FLIGHT_WEAVE_PITCH_SPEED + 1.3) * FLIGHT_WEAVE_PITCH_AMP * flightIdle;
-        ship.lift.position.x = Math.sin(elapsed * FLIGHT_WEAVE_SWAY_SPEED + 0.7) * FLIGHT_WEAVE_SWAY_AMP * flightIdle;
-      });
+      }
 
-      // ── The gates ──
-      // Forced shut for the whole services → works handoff. They cannot normally overlap it (a swap
-      // runs on an index change, the handoff is the crossing after the last one), but an interrupted
-      // swap could otherwise leave a gate standing in the shot as the craft flies you out.
-      const gateFormation = departState.engaged ? 0 : portalState.formation;
-      exitGate.update(elapsed, gateFormation);
-      // On a narrow frame both halves of the swap share the exit gate, so the second never appears.
-      entryGate.update(elapsed, singleGateLayout ? 0 : gateFormation);
+      // 1. The turntable, wound down as the departure takes its grip so the ship can hold a heading,
+      //    and paused while dragging so manual rotation stays precise.
+      if (!reduceMotion && !drag.active) {
+        turntableYaw += AUTO_ROTATE_SPEED * deltaSeconds * (1 - departGrip);
+      }
+      // Settle the accumulated spin onto a whole turn as the flight takes over, so the bank and heading
+      // below mean the same thing wherever the showroom spin happened to be.
+      if (departState.engaged) {
+        const settled = Math.round(turntableYaw / (Math.PI * 2)) * (Math.PI * 2);
+        turntableYaw += (settled - turntableYaw) * departGrip * TURNTABLE_SETTLE;
+      }
+      if (assembly) {
+        assembly.spin.rotation.set(dragRotation.pitch, BASE_YAW + turntableYaw + dragRotation.yaw, 0);
+      }
+
+      // 2. Float / hover bob — about the (possibly dropped) resting height. The portrait drop is
+      //    released across the handoff so the flight's authored world path arrives exactly where it was
+      //    written to (see PORTRAIT_SHIP_DROP).
+      const shipDrop = portraitShipDrop * (1 - flightRamp(departure));
+      lift.position.y =
+        SHIP_HOVER + shipDrop + (reduceMotion ? 0 : Math.sin(elapsed * FLOAT_SPEED) * FLOAT_AMPLITUDE);
+
+      // 3. Third-person flight weave — banks + sways the chase ship so it reads as actively flying.
+      //    Ramped in by `departure` (0 during normal browsing → full at the parked chase view).
+      const flightIdle = reduceMotion || !departState.engaged ? 0 : departure;
+      lift.rotation.z = Math.sin(elapsed * FLIGHT_WEAVE_ROLL_SPEED) * FLIGHT_WEAVE_ROLL_AMP * flightIdle;
+      lift.rotation.x = Math.sin(elapsed * FLIGHT_WEAVE_PITCH_SPEED + 1.3) * FLIGHT_WEAVE_PITCH_AMP * flightIdle;
+      lift.position.x = Math.sin(elapsed * FLIGHT_WEAVE_SWAY_SPEED + 0.7) * FLIGHT_WEAVE_SWAY_AMP * flightIdle;
+
+      // 4. The build itself — every part blended between where it waits and where it belongs.
+      if (assembly) {
+        updateVesselAssembly(assembly, {
+          progress: assemblyState.current,
+          elapsed,
+          deltaSeconds,
+          reduceMotion,
+          dormantBrightness: tuning.dormantBrightness,
+          activeBrightness: tuning.activeBrightness,
+          emitPulseAmplitude: tuning.emitPulseAmplitude,
+          emitPulseSpeed: tuning.emitPulseSpeed,
+        });
+      }
 
       // ── The services → works flight ──
       if (departState.engaged) {
         // One shared pose drives the ship + the camera swing (see lib/handoffFlightPath.ts). At
         // progress 0 it returns the exact resting camera + an identity ship, so entering/leaving the
-        // flight is seamless with normal fleet browsing.
+        // flight is seamless with normal browsing.
         computeFlightPose(departure, flightPose);
 
         // Exit whoosh — scrubbed straight off the handoff progress (no time-based tween, no sentinel):
         // fully off-screen by progress 1, and it flies cleanly back on when scrubbed backward.
         const exitAmount = THREE.MathUtils.smoothstep(departure, EXIT_PROGRESS_START, EXIT_PROGRESS_END);
 
-        ships.forEach((ship, index) => {
-          if (index !== centred) {
-            // Any residue from an interrupted flight heals the moment a ship isn't the centred one.
-            ship.depart.position.set(0, 0, 0);
-            ship.depart.rotation.set(0, 0, 0);
-            ship.depart.scale.setScalar(1);
-            return;
+        depart.position.copy(flightPose.shipPosition).addScaledVector(EXIT_DELTA, exitAmount);
+        depart.scale.setScalar(flightPose.shipScale * (1 + EXIT_SCALE_GAIN * exitAmount));
+
+        // Keep the authored pitch + bank, but drive YAW from the ship's real velocity so the nose points
+        // where it's going — screen-left across the field, then toward the camera as it dives off.
+        depart.rotation.x = flightPose.shipRotation.x;
+        depart.rotation.z = flightPose.shipRotation.z;
+        if (hasPrevShipPosition) {
+          const velocityX = depart.position.x - prevShipPosition.x;
+          const velocityZ = depart.position.z - prevShipPosition.z;
+          if (Math.hypot(velocityX, velocityZ) > HEADING_SPEED_THRESHOLD) {
+            const desiredYaw = Math.atan2(velocityX, velocityZ) + HEADING_PHASE;
+            // Shortest arc, so a reverse turns the nose the short way round.
+            const shortest = Math.atan2(Math.sin(desiredYaw - headingYaw), Math.cos(desiredYaw - headingYaw));
+            const eased = shortest * (1 - Math.exp(-deltaSeconds * HEADING_EASE_RATE));
+            const maxStep = HEADING_MAX_RAD_PER_SEC * deltaSeconds;
+            headingYaw += THREE.MathUtils.clamp(eased, -maxStep, maxStep);
           }
-          // Settle the accumulated turntable yaw onto a full turn, so the flight bank/heading below
-          // means the same thing no matter where the showroom spin happened to be.
-          const settledYaw = Math.round(ship.lift.rotation.y / (Math.PI * 2)) * (Math.PI * 2);
-          ship.lift.rotation.y += (settledYaw - ship.lift.rotation.y) * departGrip * TURNTABLE_SETTLE;
+        }
+        prevShipPosition.copy(depart.position);
+        hasPrevShipPosition = true;
+        depart.rotation.y = headingYaw * THREE.MathUtils.smoothstep(departure, REST_BLEND_START, REST_BLEND_END);
 
-          // Scrubbed flight pose + the exit off-screen offset on top.
-          ship.depart.position.copy(flightPose.shipPosition).addScaledVector(EXIT_DELTA, exitAmount);
-          ship.depart.scale.setScalar(flightPose.shipScale * (1 + EXIT_SCALE_GAIN * exitAmount));
-
-          // Keep the authored pitch + bank, but drive YAW from the ship's real velocity so the nose
-          // points where it's going — screen-left across the field, then toward the camera as it dives
-          // off toward the screen. Eased frame-rate-independently + speed-capped so the turn never snaps.
-          ship.depart.rotation.x = flightPose.shipRotation.x;
-          ship.depart.rotation.z = flightPose.shipRotation.z;
-          if (hasPrevShipPosition) {
-            const velocityX = ship.depart.position.x - prevShipPosition.x;
-            const velocityZ = ship.depart.position.z - prevShipPosition.z;
-            if (Math.hypot(velocityX, velocityZ) > HEADING_SPEED_THRESHOLD) {
-              const desiredYaw = Math.atan2(velocityX, velocityZ) + HEADING_PHASE;
-              // Shortest arc, so a reverse turns the nose the short way round.
-              const shortest = Math.atan2(Math.sin(desiredYaw - headingYaw), Math.cos(desiredYaw - headingYaw));
-              const eased = shortest * (1 - Math.exp(-deltaSeconds * HEADING_EASE_RATE));
-              const maxStep = HEADING_MAX_RAD_PER_SEC * deltaSeconds;
-              headingYaw += THREE.MathUtils.clamp(eased, -maxStep, maxStep);
-            }
-          }
-          prevShipPosition.copy(ship.depart.position);
-          hasPrevShipPosition = true;
-          ship.depart.rotation.y = headingYaw * THREE.MathUtils.smoothstep(departure, REST_BLEND_START, REST_BLEND_END);
-        });
-
-        // Drive the shared camera: holds through the launch, then tracks the ship left, then frames
-        // the meteor.
+        // Drive the shared camera: holds through the launch, then tracks the ship left, then frames the
+        // meteor.
         //
         // The portrait pull-back rides on top, off the SAME shared function the works field uses (see
         // lib/portraitPullback.ts). It is here for the field's benefit, not the deck's: the field's
         // browsing camera has always pulled back on a narrow frame, and until this existed the flight
-        // handed it a camera at landscape distance — so the mark landed big and snapped small. The
-        // deck has to apply the identical scale or the ship and the debris it is flying through stop
-        // being in the same place, which is the one thing this crossing cannot survive.
+        // handed it a camera at landscape distance — so the mark landed big and snapped small. The deck
+        // has to apply the identical scale or the ship and the debris it is flying through stop being in
+        // the same place, which is the one thing this crossing cannot survive.
         //
-        // The ramp is exactly 1 until progress 0.3, which is where `CAMERA_POSITION_KEYS` stops
-        // holding — so the fleet's resting shot, and the whole launch off the pad, are untouched at
-        // every viewport size.
+        // The ramp is exactly 1 until progress 0.3, which is where `CAMERA_POSITION_KEYS` stops holding
+        // — so the resting shot, and the whole launch off the pad, are untouched at every viewport size.
         camera.position
           .copy(flightPose.cameraPosition)
           .sub(flightPose.cameraTarget)
@@ -1459,35 +911,36 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           camera.updateProjectionMatrix();
         }
 
-        // The gates + sun are the stationary anchors — they do NOT sink (the camera leaves them
-        // behind by tracking away). The deck starfield fades out during the fly-left so the works
-        // field's streaking stars take over.
+        // The sun is the stationary anchor — it does NOT sink (the camera leaves it behind by tracking
+        // away). The deck starfield fades out during the fly-left so the works field's streaking stars
+        // take over.
         starfieldMaterial.opacity =
           tuning.starOpacity * (1 - departWindow(DECK_STAR_FADE_WINDOW, departure));
 
-        // Fully home again → the last computed pose already restored the resting camera + rig, so
-        // just hand back to the swap/idle systems.
+        // Fully home again → the last computed pose already restored the resting camera + rig, so just
+        // hand back to the idle systems.
         if (departState.current === 0 && departState.target === 0) {
           departState.engaged = false;
           hasPrevShipPosition = false;
           headingYaw = 0;
+          depart.position.set(0, 0, 0);
+          depart.rotation.set(0, 0, 0);
+          depart.scale.setScalar(1);
         }
       }
 
       // Only pay for the bloom pipeline when the deck is actually visible (and the tab is in the
-      // foreground). Everything above still ran, so the pose is current — we just skipped the GPU
-      // draw while it was hidden behind the hero.
-      // Once fully parked at works browsing the deck shows nothing (see DECK_PARKED_THRESHOLD), so
-      // skip its whole bloom pipeline there — halving the GPU cost while the user browses projects.
+      // foreground). Everything above still ran, so the pose is current — we just skipped the GPU draw
+      // while it was hidden behind the hero. Once fully parked at works browsing the deck shows nothing
+      // (see DECK_PARKED_THRESHOLD), so skip its whole pipeline there.
       const parkedAtWorks = departState.current >= DECK_PARKED_THRESHOLD;
       const handoffActive = departState.current > 0.001 && departState.current < 0.999;
       const isDrawing = deckShouldRender && !document.hidden && !parkedAtWorks;
       if (isDrawing) {
         profileMeasure('deck · render', () => composer.render(), true);
         // ── ⚠ DIAGNOSTIC, one shot: what did the warm-up miss? ──
-        // Compared AFTER the draw, because the missing program is created BY that draw — checking
-        // before it would compare the warmed set against itself and report nothing. See the snapshot
-        // in `prewarmPipeline` for what this is chasing.
+        // Compared AFTER the draw, because a missing program is created BY that draw — checking before
+        // it would compare the warmed set against itself and report nothing.
         if (!programDiffReported && warmedProgramKeys !== null && telemetryEnabled) {
           programDiffReported = true;
           const added = (renderer.info.programs ?? [])
@@ -1496,7 +949,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           console.log(
             added.length === 0
               ? `%c[voidix] deck programs%c first drawn frame added NONE — the ${warmedProgramKeys.size} warmed` +
-                  ` programs covered it, so the link stall is coming from somewhere else.`
+                  ` programs covered it.`
               : `%c[voidix] deck programs%c first drawn frame added ${added.length} of ` +
                   `${renderer.info.programs?.length ?? 0} — THE WARM-UP MISSED THESE:\n` +
                   added.map((key) => `  ${key}`).join('\n'),
@@ -1505,39 +958,45 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           );
         }
         profileGauge('deck draws', renderer.info.render.calls);
-        // Also published here, not only from the works field — otherwise the whole fleet section
+        // Also published here, not only from the works field — otherwise the whole services section
         // reports no ratio and no controller reading, which is exactly the span where the first step
-        // down happens and where the last log left us guessing.
+        // down happens.
         profileGauge('ratio', renderer.getPixelRatio());
         profileGauge('fps(ctrl)', getControllerFps());
       }
 
       // ── Stop paying the compositor for a canvas nobody can see ──
-      // Only while PARKED behind works, which is the longest span on the site (works → chamber →
-      // contact) and the one case where this canvas is provably covered rather than merely faded.
-      // Deliberately not tied to `isDrawing`: that also goes false on a hidden tab and during the
-      // fill, where the deck is mid-reveal and must stay composited. See `.is-uncomposited`.
+      // Only while PARKED behind works, which is the longest span on the site and the one case where
+      // this canvas is provably covered rather than merely faded. Deliberately not tied to `isDrawing`:
+      // that also goes false on a hidden tab and during the fill, where the deck is mid-reveal and must
+      // stay composited.
       if (parkedAtWorks !== canvasUncomposited) {
         canvasUncomposited = parkedAtWorks;
         canvas.classList.toggle('is-uncomposited', parkedAtWorks);
       }
 
       // ── Adaptive resolution: only ever re-sized while this scene is NOT being drawn ──
-      // Applying a new pixel ratio reallocates the whole composer (the UnrealBloom target pyramid +
-      // the SMAA buffers) — it blocks for a frame or more. Never do that on a scene the user is
-      // looking at, and ESPECIALLY not "hidden behind" some motion: the tweens keep advancing in real
-      // time through the stall, so the motion visibly JUMPS on the far side of it. So we wait for a
-      // genuinely idle moment — the deck off screen (the fill phase, or parked behind works) or the
-      // tab backgrounded. Also frozen entirely through the handoff — and through a portal swap, which
-      // is the same hazard for the same reason: ~2.8s of tweened motion the user is watching, where a
-      // reallocation stall would let the timeline advance behind it and land the craft somewhere else.
-      if (handoffActive || swapActive) {
-        // ⚠ The freeze must not BANK credit while it is frozen. `swapActive` is cleared by the swap
-        // timeline's onComplete, which is the same instant the gate finishes closing — so a grace
-        // period that had almost run out before the swap began would come off the freeze already
-        // spent and reallocate on that exact frame. The stall comment above describes what that
-        // looks like from the outside: the tweens advance in real time through it and the craft
-        // lands somewhere else. Restart the countdown on the far side instead.
+      // Applying a new pixel ratio reallocates the whole composer — it blocks for a frame or more.
+      // Never do that on a scene the user is looking at, and ESPECIALLY not "hidden behind" some
+      // motion: the tweens keep advancing in real time through the stall, so the motion visibly JUMPS
+      // on the far side of it.
+      //
+      // ⚠ The freeze now covers the ASSEMBLY as well as the handoff, and for exactly the same reason.
+      // A reallocation stall in the middle of a wave flying in lets the scrub advance behind it, and
+      // the parts land somewhere other than where they were last drawn. (This replaces the old
+      // `swapActive` freeze, which guarded the portal swap for the identical hazard.)
+      // ⚠ "Still easing", not "anywhere inside the build". A first cut froze the ratio for the whole
+      // services span, which is most of a minute — but at a STOP the scrub has settled exactly on a
+      // quarter boundary, where one wave has finished and the next has not started, and every part is
+      // motionless. There is nothing to jump. Reallocating is safe there and the section is long enough
+      // that forbidding it outright would leave a struggling machine no chance to drop resolution
+      // before the works field arrives.
+      const assemblyMoving =
+        Math.abs(assemblyState.target - assemblyState.current) > 0.0005;
+      if (handoffActive || assemblyMoving) {
+        // ⚠ The freeze must not BANK credit while it is frozen: a grace period that had almost run out
+        // before the freeze began would come off it already spent and reallocate on that exact frame.
+        // Restart the countdown on the far side instead.
         ratioPendingSeconds = 0;
       } else {
         const targetRatio = getPixelRatio();
@@ -1545,17 +1004,14 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           ratioPendingSeconds = 0;
           // In sync with the controller → measure this frame. Only frames we actually DREW, so idle
           // (gated-off) frames can never fake headroom and trick it into ramping the resolution up.
-          // Raw by name rather than by luck: this loop happens to be unclamped today (see its
-          // frameTimer), so `deltaSeconds` would work — but the moment anyone adds a max delta here
-          // for the tab-restore reason, the controller would go blind exactly as the works field did.
+          // Raw by name rather than by luck: this loop happens to be unclamped today, so `deltaSeconds`
+          // would work — but the moment anyone adds a max delta here for the tab-restore reason, the
+          // controller would go blind exactly as the works field did.
           if (isDrawing) sampleFrame(frameTimer.lastRawDelta(), 'deck');
         } else {
           // Queued. Sampling deliberately stops — measuring at the old ratio while the controller
           // believes it is already at the new one would feed it a lie and make it over-climb.
           ratioPendingSeconds += deltaSeconds;
-          // The fleet does get idle frames (it parks behind works), but not while it is being
-          // browsed — four stops with wide crossings between them is a long time to hold a queued
-          // change. Same rule as the works field; see RATIO_APPLY_GRACE_SECONDS.
           if (!isDrawing || ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS) {
             applyRendererSize();
             ratioPendingSeconds = 0;
@@ -1579,54 +1035,33 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener(DECK_REVEAL_EVENT, replayEntrance);
       window.removeEventListener(DECK_REVEAL_EVENT, showDeck);
       window.removeEventListener(DECK_HIDE_EVENT, hideDeck);
       window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
-      cancelAnimationFrame(warmupFrame);
-      stopYieldingToStar();
+      window.removeEventListener(SERVICES_ASSEMBLY_EVENT, onAssemblyProgress);
+      window.removeEventListener(LOOP_RESET_EVENT, onLoopReset);
       window.removeEventListener(HANDOFF_PROGRESS_EVENT, onHandoffProgress);
-      // Stop any running tweens, then dispose every loaded hull's geometry + materials.
-      ships.forEach((ship) => {
-        gsap.killTweensOf(ship.litState);
-        gsap.killTweensOf(ship.presence);
-        gsap.killTweensOf(ship.stage.position);
-        gsap.killTweensOf(ship.stage.rotation);
-        gsap.killTweensOf(ship.stage.scale);
-        gsap.killTweensOf(ship.spin.rotation);
-        ship.spin.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            child.geometry.dispose();
-            const meshMaterials = Array.isArray(child.material) ? child.material : [child.material];
-            meshMaterials.forEach((material) => material.dispose());
-          }
-        });
+      cancelAnimationFrame(warmupFrame);
+      gsap.killTweensOf(dragRotation);
+      // Dispose the loaded hull's geometry + materials.
+      assembly?.parts.traverse((child) => {
+        if (child instanceof THREE.Mesh) child.geometry.dispose();
       });
-      gsap.killTweensOf(rimLight.color);
-      gsap.killTweensOf(keyLight.color);
-      gsap.killTweensOf(keyLight);
-      gsap.killTweensOf(fillLight.color);
+      hullMaterials.forEach((material) => material.dispose());
+      hullMaterials = [];
       // No dracoLoader.dispose() — it is shared and page-lifetime (see lib/modelLoading.ts).
       starfield.geometry.dispose();
       starfieldMaterial.dispose();
-      swapTimeline?.kill();
-      exitGate.dispose();
-      entryGate.dispose();
       pmremGenerator.dispose();
       scene.environment?.dispose();
-      // EffectComposer.dispose() only frees its own targets + copy pass, not added passes —
-      // so free the bloom pass's render-target pyramid explicitly to avoid a GPU leak on unmount.
+      // EffectComposer.dispose() only frees its own targets + copy pass, not added passes — so free the
+      // bloom pass's render-target pyramid explicitly to avoid a GPU leak on unmount.
       bloomPass.dispose();
       smaaPass.dispose();
       composer.dispose();
       renderer.dispose();
     };
-    // Setup runs once; selection changes are read live via activeIndexRef.
+    // Setup runs once; everything that changes arrives as a scrubbed event.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // React to carousel index changes: re-stage the existing scene (fly current off, next on).
-  useEffect(() => {
-    setStageRef.current(activeIndex);
-  }, [activeIndex]);
 }

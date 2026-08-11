@@ -1,37 +1,73 @@
-// The four vessels that sit on the Services deck. Each ship is dormant until the
-// visitor hovers (lights ignite) or clicks (it powers up and steps forward).
+// The four disciplines that build the Services vessel.
 //
-// This is the single source of truth for the services copy — short display `name`
-// plus the richer eyebrow / description / capability detail surfaced when active —
-// and for each ship's full visual identity (its `profile`).
+// This is the single source of truth for the services copy — short display `name` plus the richer
+// eyebrow / description / capability detail surfaced when active — and for each discipline's CIRCUIT
+// COLOUR: what the trim lines on its wave of parts burn, while it flies and after it has locked.
+//
+// ⚠ There is one ship now, not four. Until 2026-08-11 each service owned a whole vessel and a whole
+// palette, and the deck swapped between them through a pair of portal gates. It now assembles a single
+// machine across the four stops, a wave of parts per discipline — so what a service contributes is a
+// PART, and its identity is carried by that part's accent rather than by a hull of its own. See
+// docs/services-vessel-assembly-plan.md.
 
 import type { DisciplineId } from '@/lib/enquirySubjects';
 
-// Model → service assignment. Each ship is one line — swap a path to reassign a
-// vessel. The carousel shows one craft at a time, so every bay gets a distinct hull.
-const WEB_VESSEL        = '/models/spaceship.glb';
-const MOBILE_VESSEL     = '/models/spaceship3.glb';
-const ENTERPRISE_VESSEL = '/models/cargo_spaceship.glb';
-const AI_VESSEL         = '/models/star_aventure_spaceship_starship_fighter.glb';
+/** The one vessel. Nine named clusters — see vesselParts.ts and scripts/buildVessel.mjs. */
+export const VESSEL_MODEL_PATH = '/models/vessel.glb';
 
-// Each hull is re-graded onto its own palette instead of being washed to one flat hue. The
-// model's own albedo *luminance* drives a three-tone map (shadow → hull → highlight), so panels,
-// recesses, and bright faces stay distinct (the ship reads as real, multi-material — never one
-// solid colour). `accent` is the engine/window glow that blooms; `rim` is the silhouette edge
-// catch. The four accents deliberately span blue / mint / warm-amber / magenta so no two ships
-// share a colour family. See hullMaterial.ts for how these are applied.
-export interface GradedProfile {
-  /** Discriminates the material treatment; omitted = graded (the default). */
-  kind?: 'graded';
-  /** Deep tone the darkest albedo maps to (recesses, shadowed panels). */
-  shadow: string;
-  /** Primary mid-tone — the hull's "body" colour. */
+/**
+ * Base rotation in DEGREES, applied before framing.
+ *
+ * ⚠ THE NOSE. The export gives no reliable clue which end is forward — its two tall nacelles sit at
+ * −z and are capped by flat plates perpendicular to travel, which read as exhaust nozzles and put the
+ * nose at +z, but the widest cross-section is at +z too, which argues the other way. It is set from
+ * what the ship actually looks like on the stage, not from the bounding boxes.
+ *
+ * It matters beyond the deck: the services→works flight steers by `HEADING_PHASE` in useServicesDeck
+ * ("nose screen-left datum"), so a ship facing backwards here flies to Works tail-first.
+ */
+export const VESSEL_MODEL_ROTATION = { x: 0, y: 0, z: 0 };
+
+/**
+ * The shared hull — the body every wave's parts are made of, so the assembled ship reads as one
+ * machine rather than as four donated fragments.
+ *
+ * ⚠ NOT pure black, and not the near-black of the old `01` either. The model's own reference render is
+ * shot on a grey studio backdrop where a pure-black hull still shows every facet; our stage is black
+ * and unlit (see deckTuning), so pure black there is a silhouette-shaped hole. `#0e1116` is far enough
+ * off the void behind it that the panels read, and still unmistakably a black ship.
+ *
+ * There is nothing else to author here, because the texture carries no shading — see hullMaterial.ts.
+ * The hull's form comes from the rim light and the fresnel; its identity comes from the trim.
+ */
+const VESSEL_HULL = {
+  hull: '#0e1116',
+  // The albedo's black is not perfectly uniform, and what little variation it has is worth keeping.
+  hullLift: 0.9,
+  metalness: 0.62,
+  roughness: 0.48,
+  clearcoat: 0.18,
+  clearcoatRoughness: 0.45,
+  envIntensity: 0.85,
+} as const;
+
+/**
+ * A wave's skin: the shared hull above, plus the colour ITS circuitry burns.
+ *
+ * The texture is a trim mask, so the colour of every line on a part is entirely ours to choose. That is
+ * what lets the finished ship be visibly four disciplines fused while staying one machine — you can
+ * point at the wings and say which work built them, and nothing about the hull changed to say it.
+ */
+export interface VesselProfile {
+  /** Base hull colour — shared by every wave. */
   hull: string;
-  /** Bright tone the lightest albedo maps to (top faces, worn edges). */
-  highlight: string;
-  /** Emissive glow colour for engines / windows / trim — this is what blooms. */
-  accent: string;
-  /** Fresnel edge-catch colour traced along the silhouette. */
+  /** How much the albedo's own faint luminance lifts the hull off that base. */
+  hullLift: number;
+  /** This wave's circuit colour: the trim lines, in both diffuse and emissive. */
+  trim: string;
+  /** How hard the circuitry burns. Above ~1 it crosses the bloom threshold and blooms. */
+  trimGlow: number;
+  /** Fresnel edge-catch traced along the silhouette — most of what reads a black hull on black. */
   rim: string;
   /** PBR feel. */
   metalness: number;
@@ -39,42 +75,11 @@ export interface GradedProfile {
   /** Lacquered-hull sheen (a thin reflective coat over the base material). */
   clearcoat: number;
   clearcoatRoughness: number;
-  /** Exotic shifting sheen — only the AI ship uses it (0 elsewhere). */
+  /** Exotic shifting sheen — only the AI wave uses it (0 elsewhere). */
   iridescence: number;
   iridescenceIOR: number;
-  /** Luminance pivot between the hull mid-tone and the highlight (≈0.5). */
-  gradeMid: number;
-  /** Albedo luminance above which a texel is treated as a light (→ accent glow). */
-  emitThreshold: number;
-  /** How hard those picked-out lights glow (feeds bloom). */
-  emitStrength: number;
-  /** Per-ship environment-reflection strength. */
+  /** Environment-reflection strength. */
   envIntensity: number;
-}
-
-// The original pre-overhaul hull treatment, kept for ships that read best as a flat two-tone tint:
-// the model's texture is multiplied by a fresnel mix from `colorCore` (facing the camera) to
-// `colorEdge` (grazing edges). No graded palette, no clearcoat/iridescence — the model keeps its
-// native metalness/roughness.
-export interface LegacyProfile {
-  kind: 'legacy';
-  /** Hull colour where the surface faces the camera. */
-  colorCore: string;
-  /** Hull colour at grazing / edge angles. */
-  colorEdge: string;
-}
-
-export type ShipProfile = GradedProfile | LegacyProfile;
-
-// Per-ship key-light override, so the stage light matches each craft's vibe (the rim light already
-// adapts via the profile's rim / colorEdge). Omit `light` to keep the rig's default warm key.
-export interface ShipLight {
-  /** Key-light colour (CSS hex). */
-  color: string;
-  /** Key-light intensity; defaults to the rig's base when omitted. */
-  intensity?: number;
-  /** Fill-light colour override; defaults to the rig's cool fill when omitted (use to kill any cool cast). */
-  fill?: string;
 }
 
 export interface DeckService {
@@ -83,7 +88,7 @@ export interface DeckService {
   /** Short display name shown on the deck. */
   name: string;
   /**
-   * Which discipline this craft sells — what the CTA's enquiry arrives already knowing.
+   * Which discipline this wave sells — what the CTA's enquiry arrives already knowing.
    *
    * Separate from `name` on purpose: the name is the brand talking ("Web Experiences"), the discipline
    * is the plain thing a visitor would write in an email ("Web Development"). `worksProjects.ts` points
@@ -96,14 +101,8 @@ export interface DeckService {
   description: string;
   /** Capability tags surfaced under the active description. */
   capabilities: string[];
-  /** Path to this service's vessel — a Draco-compressed .glb under /public/models. */
-  modelPath: string;
-  /** The ship's full visual identity (palette + material + glow). */
-  profile: ShipProfile;
-  /** Optional per-ship key-light override (see ShipLight); omit for the default warm key. */
-  light?: ShipLight;
-  /** Optional base model rotation in DEGREES, applied before framing (e.g. flip a mis-oriented hull). */
-  modelRotation?: { x?: number; y?: number; z?: number };
+  /** The skin this discipline's wave of parts wears. */
+  profile: VesselProfile;
 }
 
 export const DECK_SERVICES: DeckService[] = [
@@ -115,32 +114,20 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Bespoke platforms engineered from the metal up — no templates, no compromise. Every interaction is hand-tuned until the product moves like it has its own momentum.',
     capabilities: ['Next.js', 'WebGL / GLSL', 'Realtime', 'Design Systems'],
-    modelPath: WEB_VESSEL,
-    // Ember Noir — a full-black hull lit almost neutrally; only a faint rim catch remains as a nod to
-    // the heat. Predominantly black. Matte, low-reflectance.
+    // Wave 1 · THE FRAME — the spine and body plates.
     //
-    // The catch was a crimson (#a01824 / #4a0f13) sitting ~7° off the heat ramp's hue — close enough
-    // to look intentional, far enough to read as a second red. These are the ramp's own stops at the
-    // same luminance (heat-300 / heat-100), so the rim now reads as the hull glowing rather than as
-    // paint on it.
+    // ⚠ `--heat-600`, which is the colour the MODEL'S OWN TEXTURE already is. Wave 1 is the frame, and
+    // it should look like the ship the reference render shows, untouched. It was heat-300 (#a82600),
+    // chosen when the trim was thought of as a PAINT colour on a hull; as emitted LIGHT that stop reads
+    // as dried blood rather than as a live circuit.
     profile: {
-      shadow: '#040404',
-      hull: '#060606',
-      highlight: '#0c0c0c',
-      accent: '#a82600',
-      rim: '#3d1503',
-      metalness: 0.25,
-      roughness: 0.72,
-      clearcoat: 0.04,
-      clearcoatRoughness: 0.6,
+      ...VESSEL_HULL,
+      trim: '#ff8a1a',
+      trimGlow: 1.9,
+      rim: '#6b1a04',
       iridescence: 0,
       iridescenceIOR: 1.3,
-      gradeMid: 0.5,
-      emitThreshold: 0.86,
-      emitStrength: 1.4,
-      envIntensity: 0.4,
     },
-    light: { color: '#c9c2bc', intensity: 2.0, fill: '#4a4644' },
   },
   {
     index: '02',
@@ -150,29 +137,17 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Apps that feel like an extension of the device, not a website in a frame. Sixty frames a second, offline-first, and tactile in the hand.',
     capabilities: ['iOS / Android', 'Offline-first', 'Motion', 'Haptics'],
-    modelPath: MOBILE_VESSEL,
-    // Deep Navy — a dark blue hull (navy → steel-blue) raked by a reddish key light for a cinematic
-    // warm/cool contrast. The ship itself stays cool/blue; the red mood comes from the light.
+    // Wave 2 · THE REACH — the outer wings. The cool counterweight, on the ramp's own cool axis
+    // (`--slate-800`) rather than near it: amber only reads as heat if something in frame is cold, and
+    // on one hull that contrast now lives on the same object.
     profile: {
-      shadow: '#050a14',
-      hull: '#14233f',
-      highlight: '#5276a8',
-      accent: '#cfe0f5',
-      rim: '#8fb0dd',
-      metalness: 0.25,
-      roughness: 0.72,
-      clearcoat: 0.04,
-      clearcoatRoughness: 0.6,
+      ...VESSEL_HULL,
+      trim: '#dfe7ff',
+      trimGlow: 1.9,
+      rim: '#2a3550',
       iridescence: 0,
       iridescenceIOR: 1.3,
-      gradeMid: 0.5,
-      emitThreshold: 0.86,
-      emitStrength: 1.5,
-      envIntensity: 0.4,
     },
-    // The key was #ff5e47 — a coral about 7° off the ramp. Nudged onto it; the warm/cool contrast the
-    // note above describes is what carries this ship, and it is untouched by the hue shift.
-    light: { color: '#ff5e2a', intensity: 1.9 },
   },
   {
     index: '03',
@@ -182,25 +157,15 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Operational cores that pull every signal into one orbit. We model the way your business actually works, then make the software disappear into the workflow.',
     capabilities: ['Workflow Engines', 'Integrations', 'Roles & Access', 'Reporting'],
-    modelPath: ENTERPRISE_VESSEL,
-    // Gunmetal hull with a WARM amber accent — the one ship that breaks the cool palette, and
-    // brushed rather than lacquered, so the fleet reads as four distinct machines.
+    // Wave 3 · THE POWER — the nacelles. `--heat-800`, the hot end of the ramp, and the brightest of
+    // the four before ignition: these are the parts that are supposed to look like they burn something.
     profile: {
-      shadow: '#0e1218',
-      hull: '#3a4856',
-      highlight: '#aebccb',
-      accent: '#ffb24d',
-      rim: '#ffd9a0',
-      metalness: 0.5,
-      roughness: 0.68,
-      clearcoat: 0.05,
-      clearcoatRoughness: 0.6,
+      ...VESSEL_HULL,
+      trim: '#ffb24d',
+      trimGlow: 2.8,
+      rim: '#a82600',
       iridescence: 0,
       iridescenceIOR: 1.3,
-      gradeMid: 0.55,
-      emitThreshold: 0.8,
-      emitStrength: 2.6,
-      envIntensity: 0.7,
     },
   },
   {
@@ -211,19 +176,22 @@ export const DECK_SERVICES: DeckService[] = [
     description:
       'Models wired into real products, not demos. Retrieval, agents, and inference pipelines designed around your data — useful on day one, smarter every week.',
     capabilities: ['LLM Pipelines', 'RAG', 'Agents', 'Evaluation'],
-    modelPath: AI_VESSEL,
-    // Pre-overhaul original look (restored on request): a flat two-tone tint — purple body fading
-    // to cyan at the edges. Keeps the model's native metalness/roughness; no graded palette.
+    // Wave 4 · THE INTELLIGENCE — the core, and the ignition.
     //
-    // ⚠ THE ONE DELIBERATE EXCEPTION TO THE HEAT RAMP, and it was confirmed as such when the ramp was
-    // introduced. This is the only saturated purple and the only saturated cyan left on the site — the
-    // fleet is allowed exactly one alien, and this is it. Don't "fix" it to match the others.
+    // ⚠ THE ONE DELIBERATE EXCEPTION TO THE HEAT RAMP, and it survives the rebuild intact. This is the
+    // only saturated purple and the only saturated cyan left on the site. On four separate hulls it was
+    // simply the odd ship out; on one machine it is the BRAIN — the alien part, arriving last, and the
+    // colour that floods the rest of the hull when the thing lights. The exception now has a reason.
+    // Don't "fix" it to match the others.
     profile: {
-      kind: 'legacy',
-      colorCore: '#7a4ad0',
-      colorEdge: '#36e6ff',
+      ...VESSEL_HULL,
+      trim: '#7a4ad0',
+      trimGlow: 3.0,
+      rim: '#36e6ff',
+      // The only wave that gets the exotic shifting sheen. It should not look like it was machined in
+      // the same shop as the wings.
+      iridescence: 0.6,
+      iridescenceIOR: 1.8,
     },
-    // The hull imports facing the wrong way — flip it 180° on X to show the correct side.
-    modelRotation: { x: -180 },
   },
 ];
