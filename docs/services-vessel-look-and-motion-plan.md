@@ -212,6 +212,34 @@ cycles, decaying, a few percent of the part's size. The whole-body `kick` alread
 this is the part's own clunk as it seats. Driven off progress past the wave's end, exactly like the
 kick, so it stays reversible.
 
+### 9b · How long a part takes to fly — and where that is actually set
+
+⚠ **Not in this file, and not in the smoothing.** A first pass at "make the travel 50 % longer" moved
+`ASSEMBLY_SMOOTHING` from 0.12 to 0.08, on the reasoning that the scrub target is a step function and
+the deck's ease is therefore the whole duration. That reasoning is wrong: `useHeroAnimation` pins with
+`scrub: 1.8`, so **pin progress already takes ~1.8 s to walk from one stop to the next** and the deck's
+ease (~0.6 s) is a lag on a motion that is mostly over. The change bought nearer 10 % than 50 %.
+
+```
+  wheel  ──►  scrollTo tween  ──►  ScrollTrigger scrub  ──►  deck ease  ──►  parts
+            (0.6 s)                (1.8 s)  ◄─ dominates      (0.6 s)
+```
+
+So the follow is **speed-capped** instead: `waveSpan ÷ ASSEMBLY_WAVE_TRAVEL_SECONDS` progress per second,
+with the exponential ease taking over for the last ~6 % as a soft landing. A wave now takes at least
+that long **whatever the scroll did and however the pin's scrub is tuned** — which is the property the
+plain ease could never have, since its duration was a function of a constant in another file.
+
+Two escapes, both necessary: the cap lifts once the backlog exceeds `ASSEMBLY_CATCHUP_WAVES` (a navbar
+jump is not a wave being built, and capped it would take fifteen seconds to reconcile), and the frame
+delta feeding it is clamped, because this loop's timer is unclamped and a tab-restore would otherwise
+authorise one unbounded step.
+
+⚠ 3.6 s is deliberately longer than `STAGE_STEP_HOLD_MS` (2,900 ms), so a wave can still be seating when
+the next step is allowed. That is fine here and would not have been for the portal swap this replaced:
+overlapping waves is what an assembly looks like, and every part is a pure function of progress, so an
+interrupted wave cannot land wrong — it simply keeps going.
+
 ### 10 · Ignition becomes a travelling wave
 
 Currently every part lights at once on a smoothstep. Instead: **the light starts at the core and runs

@@ -23,6 +23,7 @@ import { flightPullbackScale, flightRamp, portraitPullbackScale } from '@/lib/po
 import { DECK_SERVICES, VESSEL_MODEL_PATH, VESSEL_MODEL_ROTATION } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials } from '../hullMaterial';
+import { VESSEL_WAVE_COUNT } from '../vesselParts';
 import {
   createVesselAssembly,
   resolveHoldingPoses,
@@ -189,12 +190,48 @@ const BLOOM_MSAA_SAMPLES = 0;
 // The hero pin publishes the build's progress; the render loop eases toward it every frame so the
 // choreography stays smooth whether the visitor creeps, flicks, or a covered jump glides through.
 //
-// ⚠ THIS IS THE PARTS' TRAVEL TIME, and it is the only thing that is. The scrub target is a step
-// function of the scroll — a stop-to-stop glide moves it almost at once — so how long a part takes to
-// fly is set by how slowly this chases it, not by any duration in vesselAssembly. Exponential
-// smoothing settles in ≈3/(rate·fps) seconds: 0.12 was ~0.42 s at 60 fps, 0.08 is ~0.63 s, which is the
-// 50 % longer travel that was asked for.
+// ⚠ THIS IS NOT THE TRAVEL TIME, and a previous revision of this comment claimed it was. The scrub
+// target is NOT a step function: `useHeroAnimation` pins with `scrub: 1.8`, so pin progress already
+// takes ~1.8 s to walk from one stop to the next, and this exponential ease (~0.6 s to settle) is a lag
+// on top of a motion that is mostly over by the time it matters. Retuning it moves the total by a tenth
+// of what the arithmetic suggests — which is exactly what happened when it went 0.12 → 0.08 to buy
+// "50 % longer" and bought nearer 10 %.
+//
+// What actually sets the travel time is ASSEMBLY_WAVE_TRAVEL_SECONDS below. This is now only the soft
+// landing at the end of it.
 const ASSEMBLY_SMOOTHING = 0.08;
+/**
+ * How long one wave takes to fly in, in SECONDS — the real knob, and the only honest one.
+ *
+ * The follow below is speed-capped at `waveSpan ÷ this`, so a wave's travel takes at least this long no
+ * matter how fast the scroll moved or how the pin's scrub is tuned. That is the property the exponential
+ * ease could never give: with a plain ease the duration is a function of the scrub, so it changes
+ * whenever anyone touches a constant in another file.
+ *
+ * ⚠ It is deliberately LONGER than `STAGE_STEP_HOLD_MS` (2,900 ms), so a determined visitor can start
+ * the next step while the current wave is still seating. That is fine here and was not fine for the
+ * portal swap this replaces: overlapping waves is what an assembly actually looks like, and every part
+ * is a pure function of progress, so an interrupted wave cannot land wrong — it just keeps going.
+ */
+const ASSEMBLY_WAVE_TRAVEL_SECONDS = 3.6;
+/**
+ * Backlog, in waves, past which the speed cap gets out of the way.
+ *
+ * A navbar jump or a scroll-back can leave the eased value most of a build behind the scrub. Capped,
+ * that would take fifteen seconds to reconcile; this is the point at which we stop pretending it is a
+ * wave being built and let the ease catch up.
+ */
+const ASSEMBLY_CATCHUP_WAVES = 1.25;
+/**
+ * Longest frame the speed cap will honour, in seconds.
+ *
+ * ⚠ This loop's `frameTimer` is deliberately UNCLAMPED (see its note), so a tab-restore hands it the
+ * whole backgrounded gap in one delta. Fed straight into the cap that would authorise a step of any
+ * size — the one frame the cap exists to prevent — and the ship would snap together on the frame the
+ * tab came back. Clamped only HERE, so the shared timer keeps the behaviour the rest of the loop
+ * expects.
+ */
+const ASSEMBLY_MAX_STEP_SECONDS = 1 / 30;
 /**
  * A beat of stillness when the section opens, before anything commits.
  *
@@ -426,6 +463,16 @@ export function useServicesDeck({ canvasRef, onFlick, onStatus }: DeckOptions) {
     const assemblyState = { target: 0, current: 0 };
     /** `performance.now()` before which the eased value does not advance — see ASSEMBLY_ENTRY_HOLD_MS. */
     let assemblyHoldUntil = 0;
+    /**
+     * Whether the section has ever actually been on screen.
+     *
+     * ⚠ Without this the arrival beat does nothing. The render loop runs through the whole hero fill
+     * with the draw gated off, so the eased value tracks the scrub the entire way down — and wave 1
+     * rides the FILL, which means the frame was already fully assembled by the time the deck first
+     * appeared. Holding the build at 0 until the deck has been revealed once is what lets the visitor
+     * watch it happen instead of arriving after it.
+     */
+    let hasRevealedDeck = false;
     const onAssemblyProgress = (event: Event) => {
       assemblyState.target = readServicesAssembly(event);
     };
@@ -447,6 +494,7 @@ export function useServicesDeck({ canvasRef, onFlick, onStatus }: DeckOptions) {
       // The arrival beat. Re-armed on every entry, so scrolling back into services always gives you the
       // swarm before the build rather than a ship already mid-assembly.
       if (!reduceMotion) assemblyHoldUntil = performance.now() + ASSEMBLY_ENTRY_HOLD_MS;
+      hasRevealedDeck = true;
     };
     const hideDeck = () => { deckShouldRender = false; };
     window.addEventListener(DECK_REVEAL_EVENT, showDeck);
@@ -488,6 +536,7 @@ export function useServicesDeck({ canvasRef, onFlick, onStatus }: DeckOptions) {
       assemblyState.target = 0;
       assemblyState.current = 0;
       assemblyHoldUntil = 0;
+      hasRevealedDeck = false;
       departState.target = 0;
       departState.current = 0;
       departState.engaged = false;
@@ -802,12 +851,25 @@ export function useServicesDeck({ canvasRef, onFlick, onStatus }: DeckOptions) {
       const departGrip = THREE.MathUtils.clamp(departure / DEPART_GRIP_SPAN, 0, 1);
 
       // ── The assembly ──
-      // Frozen for the arrival beat, then eased. `target` is untouched either way, so the hold delays
-      // the build without ever letting it drift away from the scroll.
-      if (reduceMotion || performance.now() >= assemblyHoldUntil) {
+      // Held until the section has been on screen and the arrival beat has passed, then followed with a
+      // SPEED CAP. `target` is untouched throughout, so none of this can let the build drift away from
+      // the scroll — it only governs how fast the ship is allowed to chase it.
+      const assemblyRunning =
+        reduceMotion || (hasRevealedDeck && performance.now() >= assemblyHoldUntil);
+      if (assemblyRunning) {
+        const gap = assemblyState.target - assemblyState.current;
+        const eased = gap * (reduceMotion ? 1 : ASSEMBLY_SMOOTHING);
+        const waveSpan = 1 / VESSEL_WAVE_COUNT;
+        const stepCap =
+          (waveSpan / ASSEMBLY_WAVE_TRAVEL_SECONDS) *
+          Math.min(deltaSeconds, ASSEMBLY_MAX_STEP_SECONDS);
+        // Capped while a wave is being built; uncapped once the backlog is too big to be one (a jump).
+        // Near the end of a wave the eased term falls under the cap on its own, which is what gives the
+        // travel a constant speed and then a soft landing rather than a linear stop.
         assemblyState.current +=
-          (assemblyState.target - assemblyState.current) *
-          (reduceMotion ? 1 : ASSEMBLY_SMOOTHING);
+          reduceMotion || Math.abs(gap) > waveSpan * ASSEMBLY_CATCHUP_WAVES
+            ? eased
+            : THREE.MathUtils.clamp(eased, -stepCap, stepCap);
         if (Math.abs(assemblyState.target - assemblyState.current) < 0.0005) {
           assemblyState.current = assemblyState.target;
         }
