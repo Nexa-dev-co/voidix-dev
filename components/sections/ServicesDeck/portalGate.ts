@@ -31,6 +31,11 @@ import * as THREE from 'three';
  *
  * Depth TESTING stays on while depth WRITING is off, so the craft correctly passes in front of the
  * gate on its way in and is hidden by nothing on its way out.
+ *
+ * ⚠ ── The gate's MESH hides. Its LIGHT never does. See `update`. ─────────────────────────────────
+ * This used to hide the whole group, which took the point light out of the scene with it, and that
+ * froze the craft for a few hundred milliseconds on the frame the gate closed. The reason is in
+ * `update`'s comment; it is the single least obvious thing in this file.
  */
 
 // ── The ring, and the room around it ──
@@ -139,6 +144,12 @@ const FRAGMENT_SHADER = /* glsl */ `
   // particular are live from formation 0, so without this they pop in at full brightness the instant
   // the gate turns visible. Runs at both ends of the range, so the collapse lets go just as gently.
   const float EMERGENCE_FADE = 0.05;
+  // ── The early reject's two thresholds — see the block in main() for the derivation ──
+  // How far outside the ring anything can still be bright enough to matter, in ellipseDistance units.
+  const float STRAND_REACH = 0.65;
+  // What counts as "not there". Four terms are each bounded by this, so together they stay under the
+  // 0.001 the discard at the bottom already rejects.
+  const float NOTHING_HERE = 0.0002;
 
   float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -208,6 +219,48 @@ const FRAGMENT_SHADER = /* glsl */ `
     float rx = max(RADIUS_X * rimOpen, LINE_HALF_WIDTH);
     float ry = max(RADIUS_Y * columnRise, 0.001);
 
+    // Signed distance to the ring itself. Needed by the halo and the interior below, and hoisted here
+    // because the early reject is expressed in it.
+    float haloDistance = ellipseDistance(p, vec2(rx, ry), 0.0);
+
+    // ── The base ──
+    // Where the gate meets the ground: a hot point with the ring standing out of it, and light
+    // running away along the floor. Noise-free, so it is cheap enough to sit above the reject.
+    vec2 basePoint = vec2(0.0, -ry);
+    vec2 toBase = p - basePoint;
+    float flare = exp(-length(toBase * vec2(1.6, 3.4)) * 5.5);
+    float groundStreak = exp(-abs(toBase.y) * 26.0) * exp(-abs(toBase.x) * 3.6) * 0.4;
+    // The base is lit through the column stages, before the rim has any power — but at a fraction of
+    // its formed strength, or it sits at nearly full brightness while the ring is barely there.
+    float base = (flare + groundStreak) * max(rimPower, columnRise * ${BASE_EARLY_GAIN.toFixed(2)});
+
+    // ── Early reject — everything past this line is the expensive half of the shader ──
+    // The strand loop and the interior swirl are 48 of this shader's ~50 noise samples, and the ring
+    // is small inside a quad that reaches +/-QUAD_MARGIN purely so the glow has room to fade out (see
+    // the note at the top of the file). Two of these quads cover roughly 64 percent of the screen for
+    // the whole 2.8 s of a swap, and most of those fragments were ALREADY being thrown away by the
+    // discard at the bottom — after being paid for in full.
+    //
+    // So bound every term that could still survive out here, using only what is computed above and no
+    // noise whatsoever:
+    //
+    //   · the strands are the same ellipse pushed about by the bulge, whose magnitude is at most
+    //     0.5 * 0.21 (the widest wobble times the widest wander), scaled by k1/k2 <= max(rx, ry) =
+    //     0.78 — so a strand never sits more than 0.082 further out than haloDistance. The widest of
+    //     them is exp(-d / 0.070) * 0.21, under NOTHING_HERE by d = 0.55. 0.55 + 0.082 rounds to 0.65.
+    //   · the halo is exp(-d / 0.10) * 0.05, under NOTHING_HERE by d = 0.56 — inside the same reach.
+    //   · the base and the spark column are noise-free, so they are simply evaluated and tested.
+    //   · the surface only exists at haloDistance < 0, and cannot reach out here at all.
+    //
+    // Each bound is NOTHING_HERE, so all four together stay below the 0.001 the discard already
+    // rejects: this can only remove fragments that were being discarded anyway, which is why it is
+    // safe to call it free rather than nearly free.
+    //
+    // ⚠ Derived at uIntensity 1 (INTENSITY in this file). Raise that and both thresholds move.
+    float sparkReach =
+      exp(-abs(p.x) * 9.0) * exp(-max(p.y - basePoint.y, 0.0) * 1.4) * sparkLife * 2.2;
+    if (haloDistance > STRAND_REACH && base < NOTHING_HERE && sparkReach < NOTHING_HERE) discard;
+
     // Direction around the ring, taken from the raw quad position so it has no seam at the angle
     // wrap — atan() here would put a hard discontinuity down the gate's left side.
     vec2 direction = normalize(p + vec2(1e-5));
@@ -238,7 +291,6 @@ const FRAGMENT_SHADER = /* glsl */ `
     energy *= rimPower;
 
     // A soft halo so the gate sits in the air rather than being cut out of it.
-    float haloDistance = ellipseDistance(p, vec2(rx, ry), 0.0);
     float halo = exp(-abs(haloDistance) / 0.10) * 0.05 * rimPower;
 
     // ── The surface inside the ring ──
@@ -247,17 +299,6 @@ const FRAGMENT_SHADER = /* glsl */ `
     float swirl = fbm(rotation(swirlAngle) * p * 3.4 + vec2(uTime * 0.14, 0.0));
     float inside = smoothstep(0.0, -0.16, haloDistance) * interior;
     float surface = inside * (0.30 + swirl * 0.75);
-
-    // ── The base ──
-    // Where the gate meets the ground: a hot point with the ring standing out of it, and light
-    // running away along the floor.
-    vec2 basePoint = vec2(0.0, -ry);
-    vec2 toBase = p - basePoint;
-    float flare = exp(-length(toBase * vec2(1.6, 3.4)) * 5.5);
-    float groundStreak = exp(-abs(toBase.y) * 26.0) * exp(-abs(toBase.x) * 3.6) * 0.4;
-    // The base is lit through the column stages, before the rim has any power — but at a fraction of
-    // its formed strength, or it sits at nearly full brightness while the ring is barely there.
-    float base = (flare + groundStreak) * max(rimPower, columnRise * ${BASE_EARLY_GAIN.toFixed(2)});
 
     // ── Stage 1: the sparks, before there is anything to be part of ──
     // A narrow column of motes climbing out of the base point. They are gone by the time the line is
@@ -334,12 +375,13 @@ export function createPortalGate(): PortalGate {
   // test: the gate stands behind the craft, and drawing it later lets the hull correctly occlude the
   // part of the ring it is in front of.
   mesh.renderOrder = 2;
+  // Driven by `update` from here on. The GROUP stays visible for the life of the page — see below.
+  mesh.visible = false;
 
   const light = new THREE.PointLight(LIGHT_COLOR, 0, LIGHT_DISTANCE, LIGHT_DECAY);
 
   const object = new THREE.Group();
   object.add(mesh, light);
-  object.visible = false;
 
   const forward = new THREE.Vector3();
 
@@ -355,17 +397,42 @@ export function createPortalGate(): PortalGate {
   };
 
   const update = (elapsedSeconds: number, formation: number) => {
-    // Fully skipped when there is no gate — no draw, no light, no cost.
-    object.visible = formation > 0.001;
-    if (!object.visible) {
-      light.intensity = 0;
-      return;
-    }
-    material.uniforms.uTime.value = elapsedSeconds;
-    material.uniforms.uFormation.value = formation;
+    const standing = formation > 0.001;
+
+    // ⚠ ── Hide the MESH. Never the group, and never the LIGHT. ─────────────────────────────────────
+    // This was `object.visible = formation > 0.001`, which is the obvious way to write it and cost a
+    // few hundred milliseconds of frozen craft on the frame the gate finished closing.
+    //
+    // The deck's rig is three DirectionalLights and an AmbientLight, so THESE ARE THE SCENE'S ONLY
+    // POINT LIGHTS. Taking the group out of the scene took the light with it, walking the visible
+    // point-light count 0 → 2 → 0 across every swap. And `numPointLights` is part of three's program
+    // cache key (WebGLPrograms.js, `getProgramCacheKeyParameters`) — so on the frame the count
+    // changed, every visible material had to compile and LINK a fresh GLSL program. The hulls are
+    // MeshPhysicalMaterial with clearcoat, iridescence and an injected shader: about the most
+    // expensive program three can build, and a single one of them was traced here at 69 ms.
+    //
+    // It landed on the CLOSE rather than the open because of which programs already existed. The
+    // warm-up opens the gates to PORTAL_PREWARM_FORMATION with every hull forced visible, so the
+    // whole fleet gets warmed at 2 point lights — but only the centred craft is drawn afterwards, so
+    // only IT ever built the 0-light variant. Every other ship first needed one at the instant the
+    // gate shut behind it, which is the instant it had just arrived and was the only thing moving.
+    //
+    // Keeping the light in the scene at intensity 0 pins the count at 2 for the life of the page: the
+    // warm-up compiles the same variant every real frame then uses, nothing is ever relinked, and the
+    // fix cannot be re-broken by a later change to the gate's own visibility. The cost is two light
+    // loop iterations per hull fragment, which does not register beside this shader.
+    //
+    // (Warming BOTH variants in the loader was the alternative. Rejected: it doubles the link work on
+    // the one thing the loader gate actually waits for, and it only patches this instance — any future
+    // light that comes and goes would reintroduce the same stall.)
+    mesh.visible = standing;
     // The light follows the rim's own power rather than the raw formation, so the room does not
     // brighten while there is still only a column of sparks standing there.
-    light.intensity = LIGHT_INTENSITY * formation * formation;
+    light.intensity = standing ? LIGHT_INTENSITY * formation * formation : 0;
+    if (!standing) return;
+
+    material.uniforms.uTime.value = elapsedSeconds;
+    material.uniforms.uFormation.value = formation;
   };
 
   const dispose = () => {

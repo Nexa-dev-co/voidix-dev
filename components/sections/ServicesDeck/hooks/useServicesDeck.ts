@@ -1024,11 +1024,19 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         // That call blocks the main thread until the driver finishes LINKING a shader program, so a
         // program is being built on the deck's first real render despite everything above.
         //
-        // Which program is not known. `applyShipLighting` only tweens light colours and intensities,
-        // which are not part of three's program cache key; there are no shadows, no `onBeforeCompile`
-        // and no material swaps. So rather than guess a fourth time, record the key set here and diff
-        // it against the first drawn frame — three keys every program by a string that spells out
-        // exactly which features it was built for, so the diff names the cause outright.
+        // ── ANSWERED 2026-08-11. It was the PORTAL GATES' POINT LIGHTS. ──
+        // The reasoning that stalled here was right up to its last step: `applyShipLighting` tweens
+        // light colours and intensities, and those are indeed not part of three's program cache key.
+        // The NUMBER OF VISIBLE POINT LIGHTS is (`WebGLPrograms.js`, `getProgramCacheKeyParameters`).
+        // This warm-up opens the gates to PORTAL_PREWARM_FORMATION, so everything below is compiled
+        // with two point lights in the scene — and the `finally` then shuts them, so the first real
+        // frame drew with zero and every program missed. `portalGate.update` now keeps the lights in
+        // the scene permanently at intensity 0; its comment has the whole mechanism, including why the
+        // same bug bit far harder at the gate's CLOSE than it ever did here.
+        //
+        // The instrument stays, telemetry-gated, because it is now the check that the fix HOLDS: this
+        // should report `added NONE` on every load. Anything else means a program parameter is still
+        // differing between the warm-up and the first drawn frame, and the key it prints names which.
         //
         // ⚠ Gated on telemetry. three's cache keys are long concatenations of every program
         // parameter, so ~9 of them is several KB held for the whole session — pointless in a build
@@ -1523,7 +1531,15 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // tab backgrounded. Also frozen entirely through the handoff — and through a portal swap, which
       // is the same hazard for the same reason: ~2.8s of tweened motion the user is watching, where a
       // reallocation stall would let the timeline advance behind it and land the craft somewhere else.
-      if (!handoffActive && !swapActive) {
+      if (handoffActive || swapActive) {
+        // ⚠ The freeze must not BANK credit while it is frozen. `swapActive` is cleared by the swap
+        // timeline's onComplete, which is the same instant the gate finishes closing — so a grace
+        // period that had almost run out before the swap began would come off the freeze already
+        // spent and reallocate on that exact frame. The stall comment above describes what that
+        // looks like from the outside: the tweens advance in real time through it and the craft
+        // lands somewhere else. Restart the countdown on the far side instead.
+        ratioPendingSeconds = 0;
+      } else {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
           ratioPendingSeconds = 0;
