@@ -110,7 +110,11 @@ export default function RoleRow({ role, open, onToggle, onApply, order }: RoleRo
             </ul>
           </div>
 
-          <button type="button" className="enquiry-cta doc-role-apply" onClick={onApply}>
+          <button
+            type="button"
+            className="enquiry-cta enquiry-cta--hot doc-role-apply"
+            onClick={onApply}
+          >
             <span className="enquiry-cta-label">Apply for this role</span>
             <span className="enquiry-cta-glyph" aria-hidden="true">
               <svg width="15" height="10" viewBox="0 0 15 10" fill="none">

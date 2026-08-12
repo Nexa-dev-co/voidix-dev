@@ -30,6 +30,11 @@ interface EnquiryPanelProps {
   prefill?: EnquiryPrefill;
   briefLabel?: string;
   submitLabel?: string;
+  /** `'application'` gives careers its work fieldset and stricter required rules — see EnquiryForm. */
+  variant?: 'enquiry' | 'application';
+  /** Passed straight through. Only the OPEN application asks it — see EnquiryForm. */
+  commitmentOptions?: readonly string[];
+  commitmentLabel?: string;
 }
 
 export default function EnquiryPanel({
@@ -40,8 +45,12 @@ export default function EnquiryPanel({
   prefill,
   briefLabel,
   submitLabel = 'Send the brief',
+  variant,
+  commitmentOptions,
+  commitmentLabel,
 }: EnquiryPanelProps) {
   const isNarrow = useIsNarrowViewport();
+  const isApplication = variant === 'application';
 
   const form = (
     <EnquiryForm
@@ -49,6 +58,15 @@ export default function EnquiryPanel({
       prefill={prefill}
       briefLabel={briefLabel}
       submitLabel={submitLabel}
+      variant={variant}
+      // ⚠ On an application the shell's own title IS the role, so the form's subject box would print
+      // the same string a second time, 50px below the first — in the one panel that has no room to
+      // spare. The hidden field carrying it to the endpoint is unaffected; only the visible box goes.
+      // Everywhere else the two genuinely differ ("Start a project" over the craft you clicked), and
+      // the box is the only thing naming what the message is about.
+      showSubject={!isApplication}
+      commitmentOptions={commitmentOptions}
+      commitmentLabel={commitmentLabel}
     />
   );
 
@@ -61,7 +79,7 @@ export default function EnquiryPanel({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} eyebrow={eyebrow} title={title}>
+    <Dialog open={open} onClose={onClose} eyebrow={eyebrow} title={title} wide={isApplication}>
       {form}
     </Dialog>
   );

@@ -180,6 +180,47 @@ body {
   color: #000;
 }
 
+/* ─── Scrollbars ─────────────────────────────────────────────────────
+   The one piece of chrome the browser draws inside our own surfaces, and left alone it draws a LIGHT
+   one: a white track and a grey thumb down the side of a black glass panel, which is the most
+   off-theme thing on the site by some distance.
+
+   ⚠ Both syntaxes, and that is not belt-and-braces. `scrollbar-width` / `scrollbar-color` are the
+   standard and are what modern Chrome and Firefox obey; `::-webkit-scrollbar-*` is what older WebKit
+   (Safari especially) understands and it is IGNORED by any engine honouring the standard properties,
+   so the two cannot both apply and fight. Keep the colours in step by hand — nothing enforces it.
+
+   Thin rather than hidden: a scroll region whose scrollbar is invisible gives no clue that there is
+   more below it, which on a form is how a submit button goes unfound. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--accent-rgb) / 0.32) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--accent-rgb) / 0.32);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--accent-rgb) / 0.55);
+}
+
+/* The corner where a horizontal and a vertical bar meet — white by default, and visible on any panel
+   that manages to show both. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* ─── Typography helpers ─────────────────────────────────────────── */
 .font-display {
   font-family: var(--font-syne), sans-serif;
@@ -2565,7 +2606,7 @@ body {
   font-size: var(--fs-tiny);
   letter-spacing: 0.1875em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: rgb(var(--fg-rgb) / 0.55);
 }
 
 .enquiry-subject-value {
@@ -2574,11 +2615,18 @@ body {
   color: var(--accent);
 }
 
+/* ── ⚠ SENTENCE CASE, AND BRIGHTER — BOTH WERE FAILURES ──
+   These were `--muted` (0.38 alpha ≈ 3.0:1) at 10–11px, uppercase, tracked 0.1875em. That is an AA
+   contrast failure in the one place on the site a visitor has to READ a label to answer it correctly,
+   and tracked micro-caps is the hardest setting to read at that size. Seven of them down an
+   application form read as shouting.
+
+   The tracked-caps register is not lost — it still belongs to section numbers, eyebrows and the HUD,
+   which are labels you GLANCE at rather than act on. */
 .enquiry-label {
-  font-size: var(--fs-tiny);
-  letter-spacing: 0.1875em;
-  text-transform: uppercase;
-  color: var(--muted);
+  font-size: var(--fs-small);
+  letter-spacing: 0.01em;
+  color: rgb(var(--fg-rgb) / 0.68);
 }
 
 /* Marks the ONE required field. Only the email carries it — see the note in EnquiryForm on why the rest
@@ -2612,10 +2660,55 @@ body {
   box-shadow: 0 1px 0 0 rgb(var(--accent-rgb) / 0.5);
 }
 
+/* ── A field that is being complained about ──
+   ⚠ These two rules must stay BELOW `:focus-visible`. Both are one class plus one qualifier, so they
+   carry identical specificity and order is the only thing deciding which wins — above it, an invalid
+   field would go back to looking fine the moment it was focused, which is exactly when the visitor is
+   there to fix it. The second rule keeps the focus ring visible in that state rather than trading one
+   signal for the other. */
+.enquiry-input[aria-invalid='true'] {
+  border-bottom-color: rgb(var(--heat-500-rgb) / 0.8);
+}
+
+.enquiry-input[aria-invalid='true']:focus-visible {
+  border-bottom-color: var(--heat-500);
+  box-shadow: 0 1px 0 0 rgb(var(--heat-500-rgb) / 0.55);
+}
+
+/* What is wrong, under the field it is wrong about. `--heat-500` is the floor for small text on black
+   (7.8:1) and is the form's ONE error colour — shared with the work group's message below. */
+.enquiry-field-error {
+  font-size: var(--fs-tiny);
+  line-height: 1.45;
+  color: rgb(var(--heat-500-rgb) / 0.95);
+}
+
+/* ── ⚠ AUTOFILL, WHICH REPAINTS THESE FIELDS AND IS NOT OPTIONAL TO HANDLE ──
+   Chrome paints its own background on an autofilled input, at a specificity no ordinary rule can
+   reach — which turned the three hairline-underlined fields into filled blue-grey BOXES the moment a
+   visitor let the browser fill their name, email and phone. Nothing else in the form looked like that,
+   so the form appeared half-broken to precisely the people who filled it fastest.
+
+   ⚠ The usual fix — `box-shadow: inset 0 0 0 100px <colour>` — is WRONG on this panel. It works by
+   painting an opaque rectangle over the browser's, and this panel is translucent glass over a live
+   scene: it would stamp three solid blocks into the blur. The transition delay is the fix that keeps
+   transparency — the background is applied as an ANIMATION, so a delay it never reaches means it is
+   never painted, and only the text colour needs restating. */
+.enquiry-input:-webkit-autofill,
+.enquiry-input:-webkit-autofill:hover,
+.enquiry-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--fg);
+  caret-color: var(--fg);
+  transition: background-color 600000s 0s;
+}
+
 /* `:user-invalid` rather than `:invalid` — every required field is invalid the moment it renders, so
    `:invalid` would paint the whole form red before anyone had typed a character. */
+/* ⚠ Kept even though the form now validates in JS (see EnquiryForm's header): this is the browser's
+   own read of the same fields, and it fires on interaction paths ours does not watch. Recoloured to
+   the form's ONE error colour so the two systems can never disagree on screen. */
 .enquiry-input:user-invalid {
-  border-bottom-color: rgb(var(--sun-accent-rgb) / 0.7);
+  border-bottom-color: rgb(var(--heat-500-rgb) / 0.7);
 }
 
 /* ⚠ `min-height`, not `height` — the visitor can still drag it taller, and a short frame only decides
@@ -2628,6 +2721,289 @@ body {
   line-height: 1.55;
 }
 
+/* ── The work (careers only) ──
+   The link and the CV, held together as ONE requirement rather than two fields that happen to sit near
+   each other — the rule is "at least one of these", and a group with a hairline down its left is how
+   the eye is told that before it reads the sentence. */
+.enquiry-work {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.75rem 0 0.15rem 0.85rem;
+  border-left: 1px solid rgb(var(--accent-rgb) / 0.28);
+}
+
+/* Sentence case and not tracked-out, so it reads as help rather than as another field label. */
+.enquiry-work-sublabel {
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: rgb(var(--fg-rgb) / 0.5);
+}
+
+/* ── The commitment chips (the open application only) ──
+   A radio group wearing a segmented control. ⚠ Not a `<select>`: with three options every choice can
+   be on screen at once, choosing costs one press instead of two, and a native dropdown's LIST is drawn
+   by the operating system — on a translucent dark panel it arrives as a white system menu no rule in
+   this file can reach.
+
+   ⚠ `min-width: 0` on the fieldset is not optional. A `<fieldset>` carries an intrinsic minimum width
+   from its contents that ignores its container, which in the application's grid column means the whole
+   panel widens to fit the chips rather than the chips wrapping. */
+.enquiry-choice {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* `<legend>` arrives with UA padding and its own idea of where it sits. Flattened to an ordinary
+   label so it lines up with every other label in the form. */
+.enquiry-choice > legend {
+  display: block;
+  float: none;
+  margin-bottom: 0.55rem;
+  padding: 0;
+}
+
+.enquiry-choice-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.enquiry-choice-option {
+  display: inline-flex;
+  cursor: pointer;
+}
+
+/* ⚠ Visually gone, NOT `display: none` — a hidden radio is an unfocusable radio, and this group would
+   stop existing for the keyboard and for the arrow keys that are how a radio group is meant to be
+   operated. Clipped to a pixel keeps it in the tree, in the tab order and in the accessibility tree. */
+.enquiry-choice-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.enquiry-choice-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.95rem;
+  border: 1px solid rgb(var(--fg-rgb) / 0.18);
+  border-radius: 999px;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.04em;
+  color: rgb(var(--fg-rgb) / 0.68);
+  white-space: nowrap;
+  transition:
+    color 0.22s ease,
+    background-color 0.22s ease,
+    border-color 0.22s ease;
+}
+
+.enquiry-choice-option:hover .enquiry-choice-chip {
+  border-color: rgb(var(--accent-rgb) / 0.5);
+  color: var(--fg);
+}
+
+.enquiry-choice-input:checked + .enquiry-choice-chip {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The ring goes on the chip, because the thing actually focused is a clipped pixel. */
+.enquiry-choice-input:focus-visible + .enquiry-choice-chip {
+  outline: 1px solid rgb(var(--accent-rgb) / 0.9);
+  outline-offset: 2px;
+}
+
+/* The link and the CV side by side — they are alternatives, and stacking them reads as a sequence
+   ("do this, then that") rather than as a choice. */
+.enquiry-work-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem 1.1rem;
+  align-items: start;
+}
+
+/* ── The CV drop zone ──
+   ⚠ It is a REAL `<input type="file">` stretched invisibly over the whole box, not a hidden input
+   driven by script. That keeps the native picker, the tab stop, and the screen reader's own "button,
+   file upload" for nothing — the usual fake-button build throws all three away and then spends ARIA
+   buying them back. The label underneath is what the eye reads and must not take the pointer. */
+.enquiry-drop {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 3.35rem;
+  padding: 0.55rem 0.85rem;
+  border: 1px dashed rgb(var(--fg-rgb) / 0.22);
+  border-radius: 10px;
+  background: rgb(var(--fg-rgb) / 0.025);
+  transition:
+    border-color 0.25s ease,
+    background-color 0.25s ease;
+}
+
+/* Dashed says "empty, put something here"; solid says "holding something". The border STYLE carries
+   that, so the state survives for anyone who cannot see the colour change. */
+.enquiry-drop[data-dragging='true'],
+.enquiry-drop[data-filled='true'] {
+  border-style: solid;
+}
+
+.enquiry-drop[data-dragging='true'] {
+  border-color: var(--accent);
+  background: rgb(var(--accent-rgb) / 0.1);
+}
+
+.enquiry-drop[data-filled='true'] {
+  border-color: rgb(var(--accent-rgb) / 0.42);
+  background: rgb(var(--accent-rgb) / 0.05);
+}
+
+/* The ring belongs on the BOX, because the thing being focused is invisible by design. */
+.enquiry-drop:has(.enquiry-drop-input:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.5);
+}
+
+.enquiry-drop-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.enquiry-drop-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  /* The input above owns every press — a label that took the pointer would fire the picker twice. */
+  pointer-events: none;
+}
+
+.enquiry-drop-lead {
+  font-size: var(--fs-tiny);
+  color: rgb(var(--fg-rgb) / 0.72);
+}
+
+.enquiry-drop-hint {
+  font-size: var(--fs-micro);
+  color: rgb(var(--fg-rgb) / 0.45);
+}
+
+/* ⚠ `break-all`, not `ellipsis`. A CV is routinely named "Rewaa-Yasser-CV-2026-final(2).pdf" and the
+   end of that string is the part that tells you which file you actually attached. */
+.enquiry-drop-file {
+  font-size: var(--fs-tiny);
+  line-height: 1.35;
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.enquiry-drop-size {
+  font-size: var(--fs-micro);
+  color: rgb(var(--accent-rgb) / 0.9);
+}
+
+/* Clear of the remove button, so a long filename never runs under it. */
+.enquiry-drop[data-filled='true'] .enquiry-drop-label {
+  padding-right: 1.75rem;
+}
+
+/* ⚠ Above the transparent input, or pressing it would reopen the picker instead of removing — which
+   is the single thing this control must never do. */
+.enquiry-drop-clear {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  right: 0.45rem;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  font-size: 1rem;
+  line-height: 1;
+  color: rgb(var(--fg-rgb) / 0.55);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.enquiry-drop-clear:hover,
+.enquiry-drop-clear:focus-visible {
+  color: var(--accent);
+  border-color: rgb(var(--accent-rgb) / 0.4);
+  outline: none;
+}
+
+/* The either-of rule and the file checks report here. `--heat-500` is the floor for small text on
+   black (7.8:1); the raw accent would be an amber notice competing with the amber controls. */
+.enquiry-work-error {
+  font-size: var(--fs-tiny);
+  line-height: 1.5;
+  color: rgb(var(--heat-500-rgb) / 0.95);
+}
+
+/* ── ⚠ THE ACTIONS BAR IS STICKY, AND IT IS THE FIX FOR THE WHOLE PANEL ──
+   The application form is ~780px of content in a panel that is ~510px tall on a laptop. The submit
+   button was therefore BELOW THE FOLD INSIDE A MODAL, reachable only by noticing a scrollbar that
+   nobody goes looking for — a person filled in three fields, saw no way to send, and stopped.
+
+   Sticking it to the bottom of the scroller fixes that at every viewport height, which no amount of
+   trimming fields could guarantee.
+
+   ⚠ It reaches back OUT through the shell's own padding (negative margins, `--enquiry-shell-pad`) so
+   the bar meets the panel's edges. Without that the gradient stops short and form content scrolls
+   visibly through the gap beside the button. Each shell declares the variable; the fallback is 0. */
+/* ⚠ `bottom: 0`, NOT a negative offset, and the bar owns ALL the space beneath the button.
+   Sticky positions an element's MARGIN box against the scrollport, so `bottom: -32px` does not tuck
+   the bar's own padding out of sight — it lets the border box hang 64px below the visible area.
+   And because the scroller kept its own `padding-bottom` as well, releasing at the end of the scroll
+   stacked the two: 32px of bar padding on top of 32px of shell padding, a 64px hole under the button
+   that appeared only once you reached the bottom. The shell's bottom padding is removed below. */
+.enquiry-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  margin: 0.4rem calc(var(--enquiry-shell-pad, 0px) * -1) 0;
+  padding: 0.9rem var(--enquiry-shell-pad, 0px) var(--enquiry-shell-pad, 0px);
+  /* Fades in rather than starting as a hard edge, so content passes under it instead of hitting a bar. */
+  background: linear-gradient(
+    to top,
+    rgb(var(--card-rgb) / 0.97) 55%,
+    rgb(var(--card-rgb) / 0.85) 78%,
+    rgb(var(--card-rgb) / 0)
+  );
+}
+
+/* ⚠ NO `align-self` and NO `margin-top`, and both are absences worth knowing about: this button used
+   to be a direct child of the form and owned its own spacing. It now lives in the sticky
+   `.enquiry-actions` bar, which is a ROW — `align-self: flex-start` would top-align it against the
+   status line beside it, and the bar supplies the gap the margin used to. The vertical padding gives
+   on height like the rest of the form's rhythm; 1.1vh of 1000 is 11px against the 0.6rem it has always
+   been, so a full-height desktop is unchanged. */
 .enquiry-send {
   align-self: flex-start;
   margin-top: clamp(0.25rem, 0.8vh, 0.5rem);
@@ -2644,6 +3020,44 @@ body {
   transition:
     background-color 0.25s ease,
     color 0.25s ease;
+}
+
+.enquiry-send:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+/* ── What happened, in words ──
+   Shares the bar with the button rather than sitting under it: the answer to a press belongs beside
+   the thing pressed, and in a panel this tight there is no row to spare. Empty until there is
+   something to say — an empty <p> generates no line box, so it costs no height. */
+.enquiry-status {
+  flex: 1 1 11rem;
+  min-width: 0;
+  font-size: var(--fs-tiny);
+  line-height: 1.45;
+  color: rgb(var(--fg-rgb) / 0.6);
+}
+
+.enquiry-status[data-status='sent'] {
+  color: var(--accent);
+}
+
+/* `--heat-500` is the floor for small text on black (7.8:1). The raw accent here would be an amber
+   notice competing with the amber button it sits beside. */
+.enquiry-status[data-status='error'],
+.enquiry-status[data-status='not-connected'] {
+  color: rgb(var(--heat-500-rgb) / 0.95);
+}
+
+/* ⚠ THE OTHER HALF OF THE STICKY BAR — see `.enquiry-actions`.
+   The bar supplies the whole gap under the button, in both of its states, which only works if the
+   scroller stops supplying one as well. Scoped with `:has()` rather than removed outright because
+   BOTH shells carry other content too: the drawer holds the fleet's detail and the works panel, and
+   those still want a floor under them. */
+.dialog-scroll:has(.enquiry-form),
+.drawer-scroll:has(.enquiry-form) {
+  padding-bottom: 0;
 }
 
 .enquiry-send:hover,
@@ -2918,13 +3332,42 @@ body {
     min-height: 2.75rem;
   }
 
+  /* ⚠ ONE COLUMN. The pairing exists because a 40rem dialog has room for two ~290px fields; a phone
+     has room for one, and a half-width "Mobile" beside a half-width sentence would be two cramped
+     columns of about 150px each. Everything below 51.25em is in the bottom sheet anyway. */
+  .enquiry-form--application,
+  .enquiry-work-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .enquiry-form--application .enquiry-field--half {
+    grid-column: 1 / -1;
+  }
+
+  /* It was filling the cell beside Mobile, and in one column there is no cell to fill — it becomes a
+     line of prose interrupting the fields. The asterisks still carry the rule. */
+  .enquiry-aside {
+    display: none;
+  }
+
   /* Full width, and tall enough to be a touch target rather than a mouse one. A shrink-wrapped button
      tucked under a full-width form reads as an afterthought on a phone. */
   .enquiry-send {
-    align-self: stretch;
-    margin-top: 0.35rem;
+    flex: 1 1 100%;
     padding: 0.7rem 1.4rem;
     text-align: center;
+  }
+
+  /* Below the button on a phone rather than beside it — at this width "beside" is a 4rem column. */
+  .enquiry-status {
+    flex: 1 1 100%;
+  }
+
+  /* The sheet's own floor was 1.5rem while its sides are 1.25rem; now that the bar owns the gap, it
+     restores that extra — a button sitting 20px off the bottom edge of a phone is a button in the
+     home-indicator's way. */
+  .enquiry-actions {
+    padding-bottom: 1.5rem;
   }
 
   /* ── The two actions, side by side ──
@@ -3469,6 +3912,9 @@ body {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 0 1.25rem 1.5rem;
+  /* What the enquiry form's sticky actions bar reaches back out through to reach this box's edges —
+     see `.enquiry-actions`. Each shell declares its own, because each has its own padding. */
+  --enquiry-shell-pad: 1.25rem;
 }
 
 .drawer-head {
@@ -3597,6 +4043,31 @@ body {
   outline: none;
 }
 
+/* ── The hot variant ──
+   Filled at rest, for a surface whose entire purpose is this one press — careers, and nothing else so
+   far. The outlined default is right where the CTA is one option among several, which is everywhere on
+   the homepage. ⚠ Two of these on one screen is two destinations, which is none.
+
+   ⚠ IT MUST STAY BELOW `.enquiry-cta:hover`. Both are one class plus one pseudo-class, so they carry
+   identical specificity and the later one simply wins — written above it, the hot button's hover would
+   be silently overridden by the default's and the variant would look broken only on pointer-over. */
+.enquiry-cta--hot {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 1.75rem rgb(var(--accent-rgb) / 0.26);
+}
+
+/* The default fills ON hover, so this one has nowhere left to go in that direction — it climbs the
+   ramp instead. `--heat-700` is one stop up: the same light, hotter. */
+.enquiry-cta--hot:hover,
+.enquiry-cta--hot:focus-visible {
+  color: var(--bg);
+  background: var(--heat-700);
+  border-color: var(--heat-700);
+  box-shadow: 0 0 2.5rem rgb(var(--heat-700-rgb) / 0.45);
+}
+
 .enquiry-cta-glyph {
   display: inline-flex;
   transition: transform 0.28s ease;
@@ -3704,11 +4175,19 @@ body {
   pointer-events: auto;
 }
 
+/* ⚠ 0.72, and NO `backdrop-filter` on this — the two are a deliberate pair.
+   At 0.5 the page stayed legible around the panel: on careers you could read the role bullets and the
+   orbit rail straight through it, so the eye kept leaving the form it had just opened. Darkening is the
+   cheap half of the fix.
+
+   Blurring the scrim is the expensive half and is refused. This sits over a LIVE WebGL scene for the
+   whole session on the homepage, and a full-viewport backdrop-filter is a per-frame cost across the
+   entire window rather than the panel's own 34rem — the site's budget has no room for it (see
+   CLAUDE.md's performance systems). The panel keeps its own blur, which is where it is affordable. */
 .dialog-scrim {
   position: absolute;
   inset: 0;
-  /* Lighter than the sheet's, because the panel itself is doing most of the separating. */
-  background: rgb(0 0 0 / 0.5);
+  background: rgb(0 0 0 / 0.72);
   opacity: 0; /* GSAP owns it */
 }
 
@@ -3720,7 +4199,7 @@ body {
   position: relative;
   display: flex;
   flex-direction: column;
-  width: min(34rem, 100%);
+  width: min(var(--dialog-width, 34rem), 100%);
   /* Small viewport, for the usual mobile-chrome reason — and a hard ceiling so the panel stays a panel
      on a tall desktop monitor rather than growing into a page.
      86%, not 84: on a tall screen the 42rem cap is what binds and the percentage never comes into it,
@@ -3780,6 +4259,10 @@ body {
    and because silently clipping a form is worse than a scrollbar — which is exactly what the contact
    panel was doing before the height work. */
 .dialog-scroll {
+  /* ⚠ `min-height: 0` — see the note on the panel. Without it this refuses to shrink below its content
+     and the panel overflows the viewport instead of scrolling inside itself. */
+  min-height: 0;
+  flex: 1;
   overflow-y: auto;
   /* Stop the browser chaining a scroll out of the panel and into the page. `useScrollGuard` handles the
      PIN, which is a separate problem — the pin listens on window and doesn't care about chaining. */
@@ -4724,6 +5207,15 @@ body {
   overflow: hidden;
 }
 
+/* ⚠ THE PAGE IS AN APPROACH, AND `--doc-progress` IS WHAT MAKES IT ONE.
+   `useOrbitRail` already publishes the page's scroll position on <html> every frame, for the rail's
+   own arc. Everything below reads that same number — so the field reacting to the descent costs no
+   listener, no observer and not one line of JavaScript. Two layers separate at different rates
+   (parallax), the bloom rises and heats, and the star in the masthead dims as you leave the top.
+
+   ⚠ The parallax uses the INDEPENDENT `translate` property, not `transform`. The drift keyframes below
+   animate `transform`, and the two compose instead of overwriting each other — one declaration rather
+   than a wrapper element per layer. */
 .doc-field-stars {
   position: absolute;
   /* Oversized and offset, so the drift below never walks an edge into frame. */
@@ -4743,6 +5235,8 @@ body {
     radial-gradient(1px 1px at 74% 91%, rgb(var(--fg-rgb) / 0.12), transparent);
   background-size: 260px 260px;
   animation: doc-field-drift 150s linear infinite;
+  /* The far layer moves least — that is what makes it read as far. */
+  translate: 0 calc(var(--doc-progress, 0) * -3.5vh);
 }
 
 /* The near layer: fewer, larger, and one of them warm — the ramp's job is to keep a trace of the star
@@ -4755,8 +5249,15 @@ body {
   background-size: 430px 430px;
   /* Slower and the other way, so the two layers separate into depth instead of sliding as one sheet. */
   animation: doc-field-drift-slow 240s linear infinite;
+  /* …and nearer, so it travels further against the far layer as the page descends. */
+  translate: 0 calc(var(--doc-progress, 0) * -9vh);
 }
 
+/* ── The approach ──
+   The star is off this page, low and to the left, and you descend TOWARD it: the bloom rises, widens
+   and gains heat across the document, so by the time the apply button is on screen it is sitting in the
+   warmest part of the frame. The heat ramp is a temperature scale, so "closer to the press = hotter" is
+   the palette telling the truth rather than a decoration. */
 .doc-field-bloom {
   position: absolute;
   left: -20vw;
@@ -4770,6 +5271,26 @@ body {
     transparent 100%
   );
   pointer-events: none;
+  /* Anchored at the corner it lives in, so growing reads as approaching rather than as inflating. */
+  transform-origin: 25% 100%;
+  transform: translate3d(0, calc(var(--doc-progress, 0) * -20vh), 0)
+    scale(calc(1 + var(--doc-progress, 0) * 0.38));
+  opacity: calc(0.55 + var(--doc-progress, 0) * 0.45);
+}
+
+/* The hue shift, held apart from the size. Fading a HOTTER stop in over the top is what stops the
+   growth reading as "the same light, bigger" — the ramp climbs as you get closer. */
+.doc-field-bloom::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    closest-side,
+    rgb(var(--heat-700-rgb) / 0.1),
+    rgb(var(--heat-600-rgb) / 0.045) 50%,
+    transparent 100%
+  );
+  opacity: var(--doc-progress, 0);
 }
 
 @keyframes doc-field-drift {
@@ -4789,6 +5310,16 @@ body {
   position: relative;
   min-height: 100vh;
   min-height: 100svh;
+  /* ── Document ink ──
+     ⚠ The site's text tokens were graded for the homepage's HUD — short labels under live scenes — and
+     they fail on a page of prose. `--muted` is 3.0:1 on the page black, and `--fs-body` caps at 14px;
+     fine for a readout beside a 3D scene, an AA failure for the sentences these routes are made of.
+     Everything the document routes actually ask you to READ goes through these instead. The homepage
+     keeps its own values untouched. */
+  --doc-fs-body: clamp(0.9375rem, 0.9rem + 0.26vw, 1.03125rem); /* 15 → 16.5px */
+  --doc-ink: rgb(var(--fg-rgb) / 0.72); /* body sentences — 8.6:1 */
+  --doc-ink-soft: rgb(var(--fg-rgb) / 0.58); /* meta, footer links — 5.9:1 */
+  --doc-ink-label: rgb(var(--fg-rgb) / 0.5); /* the micro uppercase labels — 4.6:1 */
   /* The same top expression `.deck-overlay` and `.contact-section` use, so the first line of type on
      all three surfaces starts on the same rule. */
   padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.25rem, 5vw, 5rem) clamp(3rem, 6vh, 5rem);
@@ -4803,8 +5334,85 @@ body {
 }
 
 /* ── The masthead ── */
+/* ⚠ `z-index: 0` makes this a stacking context ON PURPOSE — it is what keeps the star below at -1
+   trapped behind the masthead's own type instead of falling behind `.doc-inner` entirely. */
 .doc-masthead {
+  position: relative;
+  z-index: 0;
   padding-bottom: clamp(3rem, 9vh, 6.5rem);
+}
+
+/* ── The star ──
+   The document routes' one image, and it is made of gradients. These pages carry no WebGL by decision
+   (see PageShell), which for a while meant they carried no image at all — a surface whose entire visual
+   weight was typography and hairlines. This is the cheapest possible answer: it costs three gradients
+   and a rotation, it sits in the dead space the offset lead opens up, and it says the same thing the
+   hero's sun says without a second GL context.
+
+   It is NOT a picture of the sun. It is the same light much further away. */
+.doc-masthead-star {
+  position: absolute;
+  z-index: -1;
+  top: clamp(-2.5rem, -3vh, -1rem);
+  right: clamp(-2rem, -1.5vw, 0rem);
+  width: clamp(7rem, 16vw, 13rem);
+  aspect-ratio: 1;
+  pointer-events: none;
+  /* Dims as you descend: you are travelling away from the top of the document, and the one thing on
+     screen that came from the hero goes with you. Never to nothing — it is still the page's light. */
+  opacity: calc(1 - var(--doc-progress, 0) * 0.7);
+}
+
+/* The light it throws on the page around it. */
+.doc-masthead-star::after {
+  content: '';
+  position: absolute;
+  inset: -35%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(var(--heat-600-rgb) / 0.09), transparent 72%);
+}
+
+/* ⚠ The corona is a conic gradient MASKED to a ring, not a border. A border cannot be unevenly bright
+   around its circumference, and an even ring is the one thing that would make this read as a graphic
+   of a circle rather than as light. */
+.doc-masthead-star-corona {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(closest-side, transparent 40%, rgb(var(--heat-600-rgb) / 0.16) 47%, transparent 64%),
+    conic-gradient(
+      from 0deg,
+      transparent 0deg,
+      rgb(var(--heat-600-rgb) / 0.22) 42deg,
+      transparent 96deg,
+      rgb(var(--heat-800-rgb) / 0.15) 168deg,
+      transparent 232deg,
+      rgb(var(--heat-600-rgb) / 0.2) 304deg,
+      transparent 360deg
+    );
+  -webkit-mask: radial-gradient(closest-side, transparent 32%, #000 46%, #000 70%, transparent 84%);
+  mask: radial-gradient(closest-side, transparent 32%, #000 46%, #000 70%, transparent 84%);
+  animation: doc-star-spin 120s linear infinite;
+}
+
+.doc-masthead-star-core {
+  position: absolute;
+  inset: 36%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 42% 38%,
+    rgb(var(--heat-999-rgb) / 0.9),
+    rgb(var(--heat-700-rgb) / 0.7) 44%,
+    rgb(var(--heat-400-rgb) / 0.3) 74%,
+    transparent 100%
+  );
+}
+
+@keyframes doc-star-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .doc-masthead-eyebrow {
@@ -4844,9 +5452,9 @@ body {
   max-width: 46ch;
   margin-top: clamp(1.5rem, 4vh, 2.5rem);
   margin-left: auto;
-  font-size: var(--fs-body);
+  font-size: var(--doc-fs-body);
   line-height: 1.75;
-  color: var(--muted);
+  color: var(--doc-ink);
 }
 
 /* ── The body: rail gutter + the flow ── */
@@ -5006,6 +5614,10 @@ body {
 .doc-section {
   padding: clamp(2.5rem, 7vh, 5rem) 0;
   border-top: 1px solid var(--border);
+  /* ⚠ The navbar is a FIXED 4.5rem strip. Anything that scrolls a section to the viewport top — the
+     rail's travel, a /careers#open-roles deep link — parks the heading underneath it without this.
+     `scrollIntoView` and native anchors both honour it. */
+  scroll-margin-top: 5.5rem;
 }
 
 .doc-section:first-child {
@@ -5013,30 +5625,50 @@ body {
   padding-top: 0;
 }
 
+/* ── ⚠ THE HEAD IS DISPLAY TYPE NOW, AND THE EYEBROW IT REPLACED WAS THE PROBLEM ──
+   Every section used to open with a tiny wide-tracked uppercase label beside a tiny number. Four of
+   those down a page is not a kicker, it is scaffolding: the headings had less presence than the copy
+   beneath them, and every section looked like every other one. The numeral takes over the tracked
+   register at a size where it is a design element, and the title becomes a heading.
+
+   ⚠ `align-items: baseline` and nothing else — the numeral is roughly twice the title's size, so any
+   other alignment leaves the two floating against each other. The rule is an empty box, whose
+   synthesised baseline is its own bottom edge, so it lands exactly ON the text baseline for free. */
 .doc-section-head {
   display: flex;
-  align-items: center;
-  gap: 0.85rem;
+  align-items: baseline;
+  gap: clamp(0.7rem, 1.6vw, 1.15rem);
   margin-bottom: clamp(1.5rem, 4vh, 2.5rem);
 }
 
 .doc-section-number {
-  font-family: var(--font-syne), sans-serif;
-  font-weight: 700;
-  font-size: var(--fs-tiny);
-  letter-spacing: 0.1em;
-  color: var(--accent);
+  flex-shrink: 0;
+  font-weight: 800;
+  font-size: clamp(1.7rem, 4.4vw, 3.1rem);
+  line-height: 0.85;
+  letter-spacing: -0.03em;
+  /* Ghosted: it is the section's ordinal, not its name. Loud in size, quiet in value. */
+  color: rgb(var(--accent-rgb) / 0.26);
 }
 
 .doc-section-title {
-  color: rgb(var(--fg-rgb) / 0.85);
-  white-space: nowrap;
+  font-weight: 700;
+  font-size: clamp(1.15rem, 2.6vw, 1.95rem);
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  color: var(--fg);
+  /* ⚠ It used to be `nowrap`, which was survivable at 11px and is not at display size — "What it is
+     like here" would have pushed a 360px page sideways. */
+  text-wrap: balance;
 }
 
 /* Draws itself left to right as the section arrives — the section's own entrance, before any of its
    content moves. */
 .doc-section-rule {
-  flex: 1;
+  /* A floor as well as a share: the title may now wrap, and a rule allowed to collapse to nothing
+     beside a two-line heading reads as a rendering fault. */
+  flex: 1 1 2rem;
+  min-width: 1.5rem;
   height: 1px;
   background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.35), rgb(var(--accent-rgb) / 0));
   transform: scaleX(0);
@@ -5065,9 +5697,9 @@ body {
 }
 
 .doc-paragraph {
-  font-size: var(--fs-body);
+  font-size: var(--doc-fs-body);
   line-height: 1.85;
-  color: rgb(var(--fg-rgb) / 0.72);
+  color: var(--doc-ink);
 }
 
 /* Breaks the rule between the paragraphs rather than sitting under them — a pull quote that follows
@@ -5152,17 +5784,31 @@ body {
 .doc-claim-backing {
   margin-top: 0.6rem;
   max-width: 58ch;
-  font-size: var(--fs-body);
+  font-size: var(--doc-fs-body);
   line-height: 1.75;
-  color: var(--muted);
+  color: var(--doc-ink);
 }
 
 /* ── The phase track ──
-   The orbit rail laid sideways: one line running through the row with a marker per phase. */
+   The orbit rail laid sideways: a curve running through the row with a marker per phase, each riding
+   the point on it that its own column computes. Geometry in `trajectoryGeometry.ts`; the component's
+   header explains why every column draws its own slice of one shared curve rather than one stretched
+   SVG lying across the row.
+
+   ⚠ The columns are `--track-count`, not `auto-fit`. auto-fit would silently drop to two columns just
+   above the narrow breakpoint, which with the subgrid below would push phases 3 and 4 onto a second
+   band of rows — and a trajectory cannot survive being wrapped. */
 .doc-track {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: clamp(1.25rem, 3vw, 2rem);
+  grid-template-columns: repeat(var(--track-count, 4), minmax(0, 1fr));
+  /* The gap is a var because the curve reaches across it — the track must be ONE line through all
+     four phases, and a grid gap would otherwise cut it into four dashes. */
+  --track-gap: clamp(1.25rem, 3vw, 2rem);
+  /* How tall the band the curve lives in is. The trajectory's viewBox is 20 units tall, which is what
+     `--marker-drop` is divided by to place each dot. */
+  --track-arc-height: 2.5rem;
+  column-gap: var(--track-gap);
+  row-gap: 0;
   list-style: none;
 }
 
@@ -5176,7 +5822,8 @@ body {
   font-size: var(--fs-micro);
   letter-spacing: 0.1875em;
   text-transform: uppercase;
-  color: rgb(var(--accent-rgb) / 0.7);
+  /* 0.85, not 0.7 — at 0.7 the amber lands at 4.45:1, a hair under AA for 9px caps. */
+  color: rgb(var(--accent-rgb) / 0.85);
 }
 
 .doc-track-name {
@@ -5187,13 +5834,22 @@ body {
   color: var(--fg);
 }
 
-/* The marker, and the line it sits on. The line is drawn by the marker's own ::after so it can never
-   be a rule under the row that the markers happen to sit near — it passes THROUGH them. */
+/* ── The marker, and the path it rides ──
+   ⚠ THIS BLOCK IS THE FALLBACK, and the curve is the enhancement below it. Without `subgrid` the four
+   columns' rows do not line up — a phase whose name wraps to two lines would carry its marker lower
+   than its neighbours, and a curve whose dots sit off it is worse than no curve. So the straight rule
+   this always was stays as the base, and the trajectory only appears where the rows can be trusted. */
 .doc-track-marker {
   position: relative;
   height: 1px;
   margin: 0.95rem 0;
   background: var(--border);
+}
+
+/* Reach across the grid gap so the line arrives at the next phase's marker — one continuous track,
+   not four dashes with a hole at every gap. */
+.doc-track-phase:not(:last-child) .doc-track-marker {
+  margin-right: calc(var(--track-gap) * -1);
 }
 
 .doc-track-marker::before {
@@ -5206,12 +5862,69 @@ body {
   margin: -0.2rem 0 0 0;
   border-radius: 50%;
   background: var(--accent);
+  box-shadow: 0 0 0.5rem rgb(var(--accent-rgb) / 0.55);
+}
+
+.doc-track-marker-arc {
+  display: none;
+}
+
+/* ── The trajectory ──
+   `subgrid` is what makes the four phases share one set of rows, so every marker starts from the same
+   baseline and `--marker-drop` is the whole of the difference between them. */
+@supports (grid-template-rows: subgrid) {
+  .doc-track {
+    /* span · name · the curve's band · detail */
+    grid-template-rows: auto auto var(--track-arc-height) auto;
+  }
+
+  .doc-track-phase {
+    display: grid;
+    grid-row: span 4;
+    grid-template-rows: subgrid;
+  }
+
+  .doc-track-marker {
+    height: auto;
+    margin: 0;
+    background: none;
+  }
+
+  .doc-track-phase:not(:last-child) .doc-track-marker {
+    margin-right: 0;
+  }
+
+  /* Drawn across its column AND the gap after it, so consecutive slices meet exactly at the x where
+     both computed the same point. The last one has no gap to cross. */
+  .doc-track-marker-arc {
+    display: block;
+    width: calc(100% + var(--track-gap));
+    height: 100%;
+    overflow: visible;
+  }
+
+  .doc-track-phase:last-child .doc-track-marker-arc {
+    width: 100%;
+  }
+
+  .doc-track-arc-line {
+    stroke: rgb(var(--accent-rgb) / 0.3);
+    stroke-width: 1;
+  }
+
+  /* ⚠ The dot comes from the same `--marker-drop` the path was built from, divided by the viewBox's
+     20 units — so it cannot drift off its own line at any width. It is a pseudo-element and not a
+     `<circle>` because the SVG is scaled non-uniformly, which would draw a circle as an ellipse. */
+  .doc-track-marker::before {
+    top: calc(var(--marker-drop, 16) / 20 * 100%);
+    margin-top: -0.2rem;
+  }
 }
 
 .doc-track-detail {
-  font-size: var(--fs-body);
+  font-size: var(--doc-fs-body);
   line-height: 1.7;
-  color: var(--muted);
+  color: var(--doc-ink);
 }
 
 /* ── The instruments ──
@@ -5236,7 +5949,7 @@ body {
   font-size: var(--fs-micro);
   letter-spacing: 0.1875em;
   text-transform: uppercase;
-  color: rgb(var(--fg-rgb) / 0.3);
+  color: var(--doc-ink-label);
 }
 
 .doc-instrument-value {
@@ -5254,7 +5967,7 @@ body {
   max-width: 56ch;
   font-size: var(--fs-tiny);
   line-height: 1.7;
-  color: rgb(var(--fg-rgb) / 0.3);
+  color: var(--doc-ink-label);
 }
 
 /* ── Capability chips ──
@@ -5273,17 +5986,35 @@ body {
   border-radius: 999px;
   font-size: var(--fs-tiny);
   letter-spacing: 0.05em;
-  color: rgb(var(--fg-rgb) / 0.55);
+  color: rgb(var(--fg-rgb) / 0.62);
 }
 
+/* Quieter than the capability chips by BORDER, not by dimming the words below legibility — 0.4 on
+   the type was 3.2:1 at 10px, which is not "quiet", it is gone. */
 .doc-chips--quiet .doc-chip {
-  border-color: rgb(var(--fg-rgb) / 0.08);
-  color: rgb(var(--fg-rgb) / 0.4);
+  border-color: rgb(var(--fg-rgb) / 0.14);
+  color: rgb(var(--fg-rgb) / 0.55);
 }
 
 /* ── Open roles ── */
 .doc-roles {
   list-style: none;
+}
+
+/* The honest state for an empty list. The content file's own header says the mock roles may simply be
+   cut — this is what the section says then, instead of a heading floating over nothing. */
+.doc-roles-empty {
+  max-width: 62ch;
+  padding: clamp(1.1rem, 2.5vh, 1.6rem) 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--doc-fs-body);
+  line-height: 1.75;
+  color: var(--doc-ink);
+}
+
+.doc-roles-empty .doc-close-link {
+  white-space: nowrap;
 }
 
 .doc-role {
@@ -5300,6 +6031,7 @@ body {
 }
 
 .doc-role-toggle {
+  position: relative;
   width: 100%;
   display: flex;
   align-items: center;
@@ -5315,14 +6047,65 @@ body {
   font-family: inherit;
 }
 
+/* The same edge light the claim rows make on hover. ⚠ It matters MORE here: these rows are the page's
+   main control, and for a while the static claims answered the cursor more strongly than the buttons
+   did — an inverted affordance a visitor reads as "this list does nothing". */
+.doc-role-toggle::before {
+  content: '';
+  position: absolute;
+  left: calc(clamp(0.85rem, 2.5vw, 1.75rem) * -0.5);
+  top: 0.9rem;
+  bottom: 0.9rem;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.doc-role-toggle:hover::before,
+.doc-role-toggle:focus-visible::before,
+.doc-role[data-open='true'] .doc-role-toggle::before {
+  opacity: 0.6;
+}
+
+/* ── The gate ──
+   An amber hairline that sweeps the row's full width as it opens, drawn under the toggle where the
+   panel is about to appear. It is the homepage's portal language said in one declaration: the row
+   does not just get taller, something OPENS. */
+.doc-role-toggle::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent), rgb(var(--accent-rgb) / 0.15));
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.doc-role[data-open='true'] .doc-role-toggle::after {
+  transform: scaleX(1);
+}
+
 .doc-role-index {
   flex-shrink: 0;
   font-family: var(--font-syne), sans-serif;
   font-weight: 700;
-  font-size: var(--fs-tiny);
+  font-size: clamp(0.7rem, 1.4vw, 0.95rem);
   letter-spacing: 0.1em;
   color: rgb(var(--accent-rgb) / 0.55);
-  transition: color 0.3s ease;
+  /* Grows from its own left edge as the gate opens, so the row's ordinal is part of the mechanism
+     rather than a label beside it. */
+  transform-origin: left center;
+  transition:
+    color 0.3s ease,
+    transform 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.doc-role[data-open='true'] .doc-role-index {
+  transform: scale(1.4);
 }
 
 .doc-role-toggle:hover .doc-role-index,
@@ -5339,11 +6122,14 @@ body {
   gap: 0.3rem;
 }
 
+/* ⚠ Display scale, and it is the page's art direction rather than a preference. Section 02 IS the
+   careers page; at 1.4rem the role titles were the same size as About's principles and smaller than
+   the heading above them, so the one thing a visitor came for read as a sub-list. */
 .doc-role-title {
   font-weight: 700;
-  font-size: clamp(1rem, 1.8vw, 1.4rem);
-  line-height: 1.15;
-  letter-spacing: -0.02em;
+  font-size: clamp(1.25rem, 3vw, 2.3rem);
+  line-height: 1.06;
+  letter-spacing: -0.03em;
   color: var(--fg);
   text-wrap: balance;
 }
@@ -5354,7 +6140,7 @@ body {
   align-items: baseline;
   gap: 0.4rem;
   font-size: var(--fs-tiny);
-  color: var(--muted);
+  color: var(--doc-ink-soft);
 }
 
 .doc-role-meta-sep {
@@ -5362,12 +6148,13 @@ body {
 }
 
 /* A plus that becomes a minus: two bars, one of which turns. Cheaper than swapping an icon, and the
-   turn is what says the row OPENS rather than navigates. */
+   turn is what says the row OPENS rather than navigates. Sized and lit as the affordance it is — at
+   0.85rem and 0.45 alpha it was the faintest thing on the row it was supposed to explain. */
 .doc-role-sign {
   position: relative;
   flex-shrink: 0;
-  width: 0.85rem;
-  height: 0.85rem;
+  width: 1rem;
+  height: 1rem;
 }
 
 .doc-role-sign-bar {
@@ -5377,10 +6164,15 @@ body {
   width: 100%;
   height: 1px;
   margin-top: -0.5px;
-  background: rgb(var(--fg-rgb) / 0.45);
+  background: rgb(var(--fg-rgb) / 0.6);
   transition:
     transform 0.4s cubic-bezier(0.2, 0.7, 0.2, 1),
     background-color 0.3s ease;
+}
+
+.doc-role-toggle:hover .doc-role-sign-bar,
+.doc-role-toggle:focus-visible .doc-role-sign-bar {
+  background: var(--fg);
 }
 
 .doc-role-sign-bar:last-child {
@@ -5422,9 +6214,19 @@ body {
 
 /* ⚠ REQUIRED. A zero-height grid row does not clip its own content — without this the collapsed
    panel's text simply paints over the row below it. */
+/* The content wipes in behind the gate's own sweep rather than simply being revealed by the height:
+   the hairline crosses the row, and the panel arrives in the space it just opened. The delay is what
+   puts those two in that order; closing has none, so the panel goes first and the row follows it up. */
 .doc-role-panel-inner {
   overflow: hidden;
   min-height: 0;
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.doc-role[data-open='true'] .doc-role-panel-inner {
+  clip-path: inset(0 0 0 0);
+  transition: clip-path 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) 0.12s;
 }
 
 .doc-role-columns {
@@ -5439,7 +6241,7 @@ body {
   font-size: var(--fs-micro);
   letter-spacing: 0.1875em;
   text-transform: uppercase;
-  color: rgb(var(--fg-rgb) / 0.3);
+  color: var(--doc-ink-label);
 }
 
 .doc-role-list {
@@ -5447,9 +6249,9 @@ body {
   flex-direction: column;
   gap: 0.55rem;
   list-style: none;
-  font-size: var(--fs-body);
+  font-size: var(--doc-fs-body);
   line-height: 1.7;
-  color: var(--muted);
+  color: var(--doc-ink);
 }
 
 /* A hairline tick rather than a bullet — a disc reads as a shopping list, and this page is trying not
@@ -5478,9 +6280,28 @@ body {
 }
 
 /* ── The close ── */
+/* ⚠ `position: relative` and `isolation` are for the pool below, which is a negative-z child: without
+   its own stacking context the glow would fall behind `.doc-inner` and out of sight entirely. */
 .doc-close,
 .doc-open-application {
+  position: relative;
+  isolation: isolate;
   padding-top: clamp(2.5rem, 6vh, 4rem);
+}
+
+/* The end of the approach. The field's bloom has been rising the whole way down; this is the last of
+   it, pooled behind the one control the document exists to produce. */
+.doc-close::before,
+.doc-open-application::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  left: -12%;
+  right: 30%;
+  top: 10%;
+  bottom: -30%;
+  background: radial-gradient(closest-side, rgb(var(--heat-600-rgb) / 0.07), transparent 78%);
+  pointer-events: none;
 }
 
 .doc-close {
@@ -5500,9 +6321,9 @@ body {
 .doc-close-lead {
   max-width: 48ch;
   margin-top: 0.9rem;
-  font-size: var(--fs-body);
+  font-size: var(--doc-fs-body);
   line-height: 1.7;
-  color: var(--muted);
+  color: var(--doc-ink);
 }
 
 .doc-close-actions {
@@ -5514,9 +6335,9 @@ body {
 }
 
 .doc-close-link {
-  font-size: var(--fs-tiny);
+  font-size: var(--fs-small);
   letter-spacing: 0.06em;
-  color: var(--muted);
+  color: var(--doc-ink-soft);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition:
@@ -5562,7 +6383,7 @@ body {
 
 .doc-footer-note {
   font-size: var(--fs-tiny);
-  color: var(--muted);
+  color: var(--doc-ink-soft);
 }
 
 .doc-footer-groups {
@@ -5576,7 +6397,7 @@ body {
   font-size: var(--fs-micro);
   letter-spacing: 0.1875em;
   text-transform: uppercase;
-  color: rgb(var(--fg-rgb) / 0.28);
+  color: var(--doc-ink-label);
 }
 
 .doc-footer-links {
@@ -5588,7 +6409,7 @@ body {
 
 .doc-footer-link {
   font-size: var(--fs-tiny);
-  color: var(--muted);
+  color: var(--doc-ink-soft);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition:
@@ -5608,7 +6429,7 @@ body {
   padding-top: 1rem;
   border-top: 1px solid var(--border);
   font-size: var(--fs-micro);
-  color: rgb(var(--fg-rgb) / 0.26);
+  color: var(--doc-ink-label);
 }
 
 /* ── Focus ──
@@ -5719,6 +6540,18 @@ body {
   .doc-section-rule {
     transform: scaleX(1);
   }
+
+  /* The roles are a JavaScript disclosure, so without it they can only be open — and the gate's wipe
+     has to come off with them. The `<noscript>` block in PageShell says the same thing for browsers
+     that never learned this media query; the two must not disagree. */
+  .doc-role-panel {
+    visibility: visible;
+    grid-template-rows: 1fr;
+  }
+
+  .doc-role-panel-inner {
+    clip-path: none;
+  }
 }
 
 /* ── No gutter, no rail ──
@@ -5749,20 +6582,38 @@ body {
     margin-left: 0;
   }
 
+  /* ⚠ The star moves UP and shrinks rather than being hidden. At this width the lead is no longer hung
+     right, so the space it was standing in has closed — but the eyebrow line is short at every width,
+     and the corner beside it is the one piece of room the masthead always has. */
+  .doc-masthead-star {
+    top: -1.5rem;
+    right: -1rem;
+    width: clamp(4.5rem, 22vw, 6.5rem);
+  }
+
   /* ⚠ THE TRACK ROTATES; IT DOES NOT SCROLL SIDEWAYS. Four phases across a 360px screen is 90px each,
      which fits neither "6–24 weeks" nor a sentence — and an overflow-x scroller would break the site's
      rule that the page body never scrolls horizontally, while hiding the last phase from anyone who
      does not notice it can be dragged. Vertical loses nothing. */
+  /* ⚠ Everything the trajectory set up is undone here, deliberately and in one place: the rows, the
+     subgrid, the drawn curve. A trajectory needs a horizontal run to be one, and there isn't one. */
   .doc-track {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
     gap: 0;
   }
 
   .doc-track-phase {
     display: grid;
+    grid-row: auto;
+    grid-template-rows: none;
     grid-template-columns: auto 1fr;
     column-gap: 1rem;
     padding-bottom: 1.5rem;
+  }
+
+  .doc-track-marker-arc {
+    display: none;
   }
 
   /* The marker becomes the vertical line down the left, still passing THROUGH each phase rather than
@@ -5776,10 +6627,20 @@ body {
     background: var(--border);
   }
 
+  /* The wide rule reached RIGHT across the grid gap; rotated, the line reaches DOWN through the
+     phase's own padding instead, so it stays one line here too. (This also outweighs that rule —
+     same selector — which would otherwise leave a stray negative right margin on a vertical line.) */
+  .doc-track-phase:not(:last-child) .doc-track-marker {
+    margin: 0.35rem 0 -1.5rem;
+  }
+
+  /* Back to the top of the vertical line — `--marker-drop` is a position on a curve that is no longer
+     drawn, and left applied it would hang the dot in the middle of the rule. */
   .doc-track-marker::before {
     left: 50%;
     top: 0.25rem;
     margin-left: -0.2rem;
+    margin-top: 0;
   }
 
   .doc-track-span,
@@ -5825,6 +6686,19 @@ body {
     gap: 0.75rem;
   }
 
+  /* ⚠ At 360px the row is index + title + sign inside ~310px, and the title is display type now. The
+     scale's own floor (1.25rem) is a hair generous once "Senior Creative Engineer — WebGL" wraps to
+     three lines; a touch smaller keeps it at two and keeps four roles scannable in one screen. */
+  .doc-role-title {
+    font-size: 1.1rem;
+  }
+
+  /* Same reasoning one level up: the numeral is decoration and the title is the information, so the
+     numeral is what gives up room first. */
+  .doc-section-number {
+    font-size: 1.5rem;
+  }
+
   /* The chips are the one place a long entry can force the page wider than the screen. */
   .doc-chip {
     max-width: 100%;
@@ -5862,4 +6736,32 @@ body {
   animation-duration: 0.001ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
+}
+
+/* ── ⚠ THE DOCUMENT ROUTES' APPROACH NEEDS ITS OWN CLAUSE, AND IT IS NOT AN OVERSIGHT ABOVE ──
+   Both blanket rules collapse animation and transition DURATIONS. The field's parallax and the bloom's
+   climb are neither: they are transforms computed directly from `--doc-progress`, recomputed by the
+   browser as the number changes. A duration of 0.001ms does nothing to a value that was never being
+   interpolated, so scroll-linked travel would survive a reduced-motion request untouched — and
+   parallax is close to the top of the list of things that request is actually about.
+
+   ⚠ The HEAT is deliberately left alone. A gradient that changes colour and brightness with the scroll
+   position is not motion; pinning it would cost the page its whole idea to satisfy a rule about
+   movement it does not break. Only the travel stops. */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion='full']) .doc-field-stars {
+    translate: none;
+  }
+
+  :root:not([data-motion='full']) .doc-field-bloom {
+    transform: none;
+  }
+}
+
+:root[data-motion='reduced'] .doc-field-stars {
+  translate: none;
+}
+
+:root[data-motion='reduced'] .doc-field-bloom {
+  transform: none;
 }

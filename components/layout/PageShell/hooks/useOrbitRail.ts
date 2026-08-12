@@ -114,9 +114,21 @@ export function useOrbitRail({ railRef, sectionCount }: OrbitRailRefs) {
     // it — change when the display font lands. The navbar's meters re-measure for the same reason.
     if (document.fonts?.ready) document.fonts.ready.then(remeasure);
 
+    // ⚠ The page's own content moves the sections. Careers' role rows open in place, and a panel is
+    // hundreds of pixels — without this the offsets measured at mount go stale the first time one
+    // opens, and the rail lights the wrong station for the rest of the visit. Watching the body's
+    // box catches anything that changes the document's height, the accordion included; the resize
+    // listener above stays for the browsers without the observer.
+    let bodyObserver: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== 'undefined') {
+      bodyObserver = new ResizeObserver(remeasure);
+      bodyObserver.observe(document.body);
+    }
+
     return () => {
       window.removeEventListener('scroll', requestUpdate);
       window.removeEventListener('resize', remeasure);
+      bodyObserver?.disconnect();
       if (frameRequest) window.cancelAnimationFrame(frameRequest);
       document.documentElement.style.removeProperty('--doc-progress');
     };
