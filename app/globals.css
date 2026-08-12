@@ -2581,48 +2581,10 @@ body {
   gap: clamp(0.5rem, 1.4vh, 0.85rem);
 }
 
-/* ── The application's two columns ──
-   Seven fields in one column is ~780px of form in a ~510px panel: the submit button and the required
-   work fieldset both ended up below the fold, inside a modal, behind a scrollbar nobody goes looking
-   for. Pairing the short fields takes ~160px out of that, and the sticky actions bar below takes care
-   of whatever height is left over.
-
-   ⚠ Everything spans the full width by DEFAULT and pairs only where it is asked to. The other way
-   round — pairing by default, spanning by exception — is how a textarea ends up half a panel wide. */
-/* ⚠ The ROW gap gives on height and the column gap does not, and the asymmetry is the point: a short
-   frame costs you rows, never columns. 1.4vh of 1000 is 14px against the 0.85rem this was authored at,
-   so a full-height desktop renders exactly what it did before — the give only appears on the short
-   frames this form is most exposed to, being the taller of the two variants. Same curve as
-   `.enquiry-form`'s, deliberately: one rhythm, whichever variant is up. */
-.enquiry-form--application {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: clamp(0.5rem, 1.4vh, 0.85rem) 1.1rem;
-  align-items: start;
-}
-
-.enquiry-form--application > * {
-  grid-column: 1 / -1;
-}
-
-.enquiry-form--application .enquiry-field--half {
-  grid-column: span 1;
-}
-
 .enquiry-field {
   display: flex;
   flex-direction: column;
   gap: clamp(0.2rem, 0.7vh, 0.4rem);
-}
-
-/* Sits in the cell beside Mobile. `end` so it aligns to the field's baseline row rather than floating
-   at the top of a taller cell. */
-.enquiry-aside {
-  align-self: end;
-  padding-bottom: 0.55rem;
-  font-size: var(--fs-tiny);
-  line-height: 1.5;
-  color: rgb(var(--fg-rgb) / 0.45);
 }
 
 /* What the enquiry is ABOUT — stated, not asked. The visitor answered this by choosing where to click,
@@ -3043,7 +3005,8 @@ body {
    on height like the rest of the form's rhythm; 1.1vh of 1000 is 11px against the 0.6rem it has always
    been, so a full-height desktop is unchanged. */
 .enquiry-send {
-  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: clamp(0.25rem, 0.8vh, 0.5rem);
   padding: clamp(0.45rem, 1.1vh, 0.6rem) 1.4rem;
   font-family: var(--font-dm-sans), sans-serif;
   font-size: var(--fs-small);
@@ -4290,23 +4253,11 @@ body {
   outline: none;
 }
 
-/* Four fields fit 34rem; the application's seven do not — this is what buys the second column. */
-.dialog-panel[data-wide='true'] {
-  --dialog-width: 40rem;
-}
-
-/* ⚠ THE OVERFLOW HERE IS A BACKSTOP FOR THE FOUR-FIELD FORM, AND THE MECHANISM FOR THE SEVEN-FIELD
-   ONE. The two variants ask different things of it and both are deliberate:
-
-   The enquiry form gives on height instead of scrolling (see .enquiry-form) — four fields that make
-   you scroll is the panel admitting it did not try, and this should not engage for it much above a
-   landscape phone. The application form is seven fields plus a work fieldset and cannot be made to
-   fit by any rhythm, so it scrolls on purpose, under a sticky action bar that keeps the submit button
-   on screen while it does. See `.enquiry-actions`.
-
-   Either way it stays: a 250% browser font setting must still reach the send button, and silently
-   clipping a form is worse than a scrollbar — which is exactly what the contact panel was doing
-   before the height work. */
+/* ⚠ THE OVERFLOW HERE IS A BACKSTOP, NOT THE MECHANISM. Four fields that make you scroll is the panel
+   admitting it did not try, and everything above is sized so this never engages down to ~430px of
+   viewport. It stays because a 250% browser font setting must still be able to reach the send button,
+   and because silently clipping a form is worse than a scrollbar — which is exactly what the contact
+   panel was doing before the height work. */
 .dialog-scroll {
   /* ⚠ `min-height: 0` — see the note on the panel. Without it this refuses to shrink below its content
      and the panel overflows the viewport instead of scrolling inside itself. */
@@ -4316,29 +4267,13 @@ body {
   /* Stop the browser chaining a scroll out of the panel and into the page. `useScrollGuard` handles the
      PIN, which is a separate problem — the pin listens on window and doesn't care about chaining. */
   overscroll-behavior: contain;
-  /* ⚠ Top is 0 because `.dialog-head` is OUTSIDE this box and owns the shoulder above the form. And
-     the side/bottom value is deliberately NOT given a `vh` term like the rest of the height work: the
-     sticky bar reads it back out as a negative margin to reach the panel's edges, so it is a
-     HORIZONTAL distance that the bottom padding happens to reuse. Make it fluid on height and the bar
-     stops lining up with the panel on a short screen. The vertical give lives on `.dialog-head` and
-     `.enquiry-send` instead. */
-  padding: 0 clamp(1.5rem, 3vw, 2rem) clamp(1.5rem, 3vw, 2rem);
-  /* See `.enquiry-actions` — the sticky footer reaches back out through this to the panel's edges. */
-  --enquiry-shell-pad: clamp(1.5rem, 3vw, 2rem);
+  padding: clamp(1rem, 3.4vh, 2rem) clamp(1.25rem, 3vw, 2rem);
 }
 
-/* ⚠ OUTSIDE the scroller (see Dialog.tsx). It therefore owns its own padding, and `flex-shrink: 0`
-   keeps it from being squeezed when the form beneath it is tall. */
 .dialog-head {
-  flex-shrink: 0;
-  /* Clear of the close button, so a long title never runs under it.
-     ⚠ The two VERTICAL values carry the height give and the two horizontal ones do not — this is the
-     one box in the dialog where the shoulder above the title is the biggest single block of space, so
-     it is the right place to spend it. Both clamp to their authored value at a 1000px viewport
-     (3.4vh → 34px against a 2rem cap; 2.2vh → 22px against 1.1rem), so a full-height desktop is
-     untouched. The right value stays 2.5rem flat: it is clearance for the close button, which does
-     not shrink. */
-  padding: clamp(1rem, 3.4vh, 2rem) 2.5rem clamp(0.7rem, 2.2vh, 1.1rem) clamp(1.5rem, 3vw, 2rem);
+  /* Clear of the close button, so a long title never runs under it. */
+  padding-right: 2rem;
+  margin-bottom: clamp(0.7rem, 2.2vh, 1.35rem);
 }
 
 .dialog-eyebrow {
@@ -4384,17 +4319,9 @@ body {
      32em / 512px — THE LANDSCAPE PHONE
        932 × 430 is the shape that breaks all of this, and note that it is WIDER than the 51.25em
        narrow breakpoint: a landscape phone gets the desktop layout and none of the desktop's height.
-       The sheet gives up nearly the whole frame here, because there is nothing else left to give.
+       Here the last thing left to spend is width, so the form spends it.
 
-   ⚠ Keep them in this order. Both are `max-height`, so the 32em rule only wins by coming second.
-
-   ⚠ THE ENQUIRY FORM DOES NOT PAIR ITS FIELDS AT THIS HEIGHT, and that was a decision rather than an
-   oversight. A `(max-height: 32em) and (min-width: 34em)` rule pairing Name and Email inside the two
-   full-width shells was built and then dropped in the merge: `.enquiry-form--application` already owns
-   the pairing on this site, keyed on the VARIANT rather than on the frame, and two owners of one
-   behaviour is how they drift. The cost is real and small — a landscape phone opening the four-field
-   enquiry dialog scrolls it by a few tens of pixels rather than fitting exactly. If that ever needs
-   closing, extend the application rule's reach; do not add a second grid here. */
+   ⚠ Keep them in this order. Both are `max-height`, so the 32em rules only win by coming second. */
 @media (max-height: 38em) {
   /* Stop paying for the desktop's shoulder. 5rem clears the 4.5rem navbar and not a great deal more —
      the same figure, for the same reason, as the true-phone block. */
@@ -4416,6 +4343,35 @@ body {
   .drawer-sheet {
     max-height: 92vh;
     max-height: 92svh;
+  }
+}
+
+/* ── The pair ──
+   Two of the four fields step into one row, which buys back a whole field's height (~46px) — the last
+   thing standing between a landscape phone and a form it does not have to scroll.
+
+   Scoped to the two shells that are the full width of their frame. NOT the contact panel: it is a
+   24rem column beside a black hole, and at this height its form is in the sheet anyway.
+
+   ⚠ Span-by-default, pair-by-exception, rather than nth-child. The subject block is conditional (only
+   an enquiry opened FROM something carries one), so every positional selector here would address a
+   different element depending on where the dialog was opened. */
+@media (max-height: 32em) and (min-width: 34em) {
+  .dialog-scroll .enquiry-form,
+  .drawer-scroll .enquiry-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 1rem;
+  }
+
+  .dialog-scroll .enquiry-form > *,
+  .drawer-scroll .enquiry-form > * {
+    grid-column: 1 / -1;
+  }
+
+  .dialog-scroll .enquiry-field--pair,
+  .drawer-scroll .enquiry-field--pair {
+    grid-column: span 1;
   }
 }
 

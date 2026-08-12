@@ -168,10 +168,7 @@ Everything ships working from ~360px phones to large desktops **in the same chan
   breaks it is not a small window, it is a LANDSCAPE PHONE — 932 × 430, which is WIDER than 51.25em.**
   It gets the full desktop layout and none of the height. `38em` (608px) is where the contact section
   runs out of room and its form moves into the sheet (`useIsShortViewport`); `32em` (512px) is the
-  landscape phone, where the bottom sheet gives up nearly the whole frame. ⚠ **Field PAIRING is not a
-  height rule and deliberately isn't one** — `.enquiry-form--application` owns it, keyed on the
-  variant, because the seven-field application is too tall at *any* height. One owner; don't add a
-  second grid in the height block. Width questions live with
+  landscape phone, where the form pairs its two short fields into one row. Width questions live with
   their section; height questions do not — one short frame squeezes the section, the sheet and the
   dialog at once, so they stay in one place.
 - **⚠ Give on height with a `clamp(floor, Nvh, today)` before reaching for either of those.** Every
