@@ -378,11 +378,7 @@ export default function EnquiryForm({
         </>
       )}
 
-      {/* ⚠ `--pair` is a HEIGHT affordance, not a width one, and it does nothing at all until the
-          frame is short: the two shortest labels in the form are the two that step into one row when
-          a landscape phone leaves width as the only resource left. See the SHORT FRAMES block in
-          globals.css. It marks the fields that MAY pair — the media query decides whether they do. */}
-      <div className="enquiry-field enquiry-field--pair">
+      <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={nameId}>
           Name
           {isApplication && (
@@ -407,7 +403,7 @@ export default function EnquiryForm({
         )}
       </div>
 
-      <div className="enquiry-field enquiry-field--pair">
+      <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={emailId}>
           Email
           <span className="enquiry-required" aria-hidden="true">
