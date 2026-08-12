@@ -27,10 +27,22 @@ interface DialogProps {
   eyebrow?: string;
   /** Names the dialog for assistive tech, and heads the panel. */
   title: string;
+  /**
+   * Widens the panel from 34rem to 40rem, which is what buys the application form its second column.
+   * Four fields fit a narrow panel; seven do not.
+   */
+  wide?: boolean;
   children: ReactNode;
 }
 
-export default function Dialog({ open, onClose, eyebrow, title, children }: DialogProps) {
+export default function Dialog({
+  open,
+  onClose,
+  eyebrow,
+  title,
+  wide = false,
+  children,
+}: DialogProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const scrimRef = useRef<HTMLDivElement>(null);
@@ -63,6 +75,7 @@ export default function Dialog({ open, onClose, eyebrow, title, children }: Dial
       <div
         ref={panelRef}
         className="dialog-panel"
+        data-wide={wide}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -72,12 +85,15 @@ export default function Dialog({ open, onClose, eyebrow, title, children }: Dial
           <CloseGlyph />
         </button>
 
-        <div ref={scrollRef} className="dialog-scroll">
-          <header className="dialog-head">
-            {eyebrow && <p className="eyebrow dialog-eyebrow">{eyebrow}</p>}
-            <p className="dialog-title font-display">{title}</p>
-          </header>
+        {/* ⚠ The head sits OUTSIDE the scroller on purpose. It used to be the first thing inside it, so
+            on any panel whose content overflowed — which is every application form on a laptop — the
+            title scrolled away and the visitor lost the name of the thing they were filling in. */}
+        <header className="dialog-head">
+          {eyebrow && <p className="eyebrow dialog-eyebrow">{eyebrow}</p>}
+          <p className="dialog-title font-display">{title}</p>
+        </header>
 
+        <div ref={scrollRef} className="dialog-scroll">
           {children}
         </div>
       </div>

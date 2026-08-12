@@ -247,6 +247,26 @@ the code below was written on that assumption. It no longer holds.
 right way to honour "one pin" for a page that is genuinely prose is to keep it out of the pin
 entirely — not to build a second one. See `docs/about-careers-plan.md`.
 
+⚠ **`--doc-progress` IS THESE ROUTES' SCROLL SPINE, and `useOrbitRail` is the only thing that writes
+it** (design pass, 2026-08-11). It was the rail's own number; four other things now read it, all in
+CSS and all in `globals.css`: the field's bloom **rises, grows and gains heat** across the descent
+(the page is an approach toward a star that is off-frame), the two star layers **parallax** at
+different rates, the masthead's star **dims** as you leave the top, and the phone's progress hairline
+does what it always did. That is the whole of the document routes' motion system and it costs **no
+listener, no observer and not one line of animation code** — it is one variable, already published
+every frame for the arc.
+
+**So: delete or refactor `useOrbitRail` and the entire page stops breathing, silently and with no
+error.** Every consumer defaults (`var(--doc-progress, 0)`) so nothing breaks visibly — it just goes
+inert, which is a worse failure than a crash. If the rail is ever reworked, the variable is the
+contract, not the arc.
+
+⚠ **The document routes DO have an image now, and it is CSS.** `.doc-masthead-star` is three gradients
+and a 120 s rotation standing in the space the offset lead opens up. It exists because a page whose
+entire visual weight was typography and hairlines reads as unfinished rather than restrained — and it
+is **deliberately not a canvas**, for exactly the budget reason `PageShell`'s header gives about the
+field. It is the hero's light seen from much further away. Do not grow it into a second sun.
+
 ⚠ **Three things in the shared chrome were written assuming one route, and all three have been
 fixed** — check them before adding a fourth route:
 1. `useNavbarAnimation` waited on `REVEAL_EVENT`, which only `IntroSequence` fires. Off the homepage
@@ -854,7 +874,8 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | **Contact** | **BUILT** — the star dies here, then the page loops back to the hero. Form + footer are front-end only: `handleSubmit` prevents default and posts nowhere, and every address, social handle and legal route in `contactContent.ts` is an invented placeholder. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
 | **Process content** | **The section is now called FAQ** (renamed 2026-08-05, key and label both — it was `process` everywhere). The chamber's content was always the FAQ hologram, and a key that said `process` was describing an intention rather than the room. The hologram's list now ends in an **Ask us anything** control that opens the shared enquiry panel with no prefill. **Still open:** the decided-but-unbuilt idea that process steps appear on the chamber's walls as the camera tours. |
 | **The collapse finale** | **BUILT** — ported into `components/sections/Contact/singularityScene.ts`, a SECOND star living inside the works renderer (the hero sun's canvas has no compositor and nothing behind it for lensing to bend). Collapse, flash, black hole, accretion and lensing all ship. See `docs/contact-singularity-plan.md`. |
-| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). |
+| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). `careersContent.ts`'s four roles are likewise invented — and there they are the **template for the dashboard**, see below. |
+| **Careers content** | **DASHBOARD-MANAGED, not yet connected** (decided 2026-08-11). The admin panel exists on its own domain; the page will fetch roles through it on **ISR**, with `CareerRole` / `Phase` as the shapes it must serve and `careersContent.ts` as the seed and fallback. Section 02 already renders an honest **empty state** when the list is empty, so a no-openings day needs no code. ⚠ The application form is `EnquiryForm variant="application"` — name\*, email\*, and **the work** (a link and/or one PDF ≤ 5 MB, at least one of the two, checked in JS because `required` cannot express "either"). It validates and then **posts nowhere**, exactly like contact's. Wire both in the same change; this one is multipart. |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
 
 ⚠ **The `docs/` directory is nearly empty**, and most of this file's `docs/*.md` citations point at
