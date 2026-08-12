@@ -414,18 +414,37 @@ hero's frame on a dpr 2.5 laptop.
   shorter mesh list and not a resolution knob. (On the dpr 2.5 laptop the same call costs 16–19 ms and
   the limit there is GPU fill instead — fewer meshes wins in both.)
 - ⚠ **`sunouter` — the 11 translucent shells — is NOT omitted and must not be.** It is the star's
-  ATMOSPHERE: the core is an opaque ball and those shells are what make it read as burning. They are
-  also what a procedural plasma shader would REPLACE, one animated surface for eleven static ones. To
-  be superseded, never simply deleted. `SUN_ABLATION_KEEP_SHELLS` stays at 0 and exists to measure that.
+  ATMOSPHERE: the core is an opaque ball and those shells are what make it read as burning. They also
+  carry `sunouter_baseColor`, **the largest map in the file and the star's actual skin**. A procedural
+  plasma (`sunPlasma.ts`) replaced them for four days and was **deleted 2026-08-12**: it bought the
+  blend cost back by painting over the model's own surface, which is the one thing it was not allowed
+  to spend. Recoverable from git if the trade is ever wanted again.
+- ⚠ **`SUN_ABLATION_KEEP_SHELLS` is a SHIPPING DIAL now, at 4** — it is what pays for the shells
+  instead. Each is `BLEND` at α 0.815, so transmission after n of them is 0.185ⁿ: **shells five
+  through eleven composite into a pixel already 99.9 % decided.** Four keeps the silhouette and every
+  layer the eye can resolve at 36 % of the fill. Budget ~0.044 ms per shell on the dpr 1.1 desktop and
+  ~0.5 ms on the dpr 2.5 laptop, where these double-sided full-coverage spheres are fill-bound.
 - **Hiding is not removing** — the geometry still downloads. After the texture cap below it is worth
   ~15 KB, so it is not worth the GLB rebuild that would break `compareModels`' mesh table.
 - ⚠ Omitting `flare` also **skips its recentre-and-spin setup**. `flareSpins` would otherwise keep
   rebuilding quaternions for eight invisible discs every frame — hiding the draw while keeping the
   work is the one way this cull could have cost more than it saved.
 
-**Its textures are capped at 512²** (`buildModels.mjs` recipe, same day): the maps were 2048² on a star
-that never exceeds ~250 device pixels across. **1346 KB → 505 KB, −62 %.** Bytes and VRAM only — it
-cannot move `sun · bloom`, for the per-draw-call reason above.
+**Its textures are capped PER TEXTURE** (`buildModels.mjs` recipe, `textureSizes`): 2048² maps on a star
+that never exceeds ~350 device pixels across. **1346 KB → 662 KB.** Bytes and VRAM only — it cannot move
+`sun · bloom`, for the per-draw-call reason above.
+
+⚠ **One number for a whole model assumes every map is sampled at the same rate, and on the sun that is
+false.** It was a flat 512² while the shells were hidden and the magma was the only thing being sampled.
+Now the shells are the surface, so: **`sunouter*` → 1024** (a sphere's equirectangular unwrap spends most
+of its texels near the poles, so the visible hemisphere gets nothing like 1024 across), **`Lava*` → 512**
+(shard interiors, seen for two beats — unchanged judgement, and 62 % of the bytes at 1024), **`flare*` /
+`blowout*` → 256** (never drawn at all; the only lever is making the waste small).
+
+⚠ **`resize --pattern` matches texture NAMES and a glob that matches nothing fails SILENTLY** — same shape
+as the `--slots` trap. `assertTextureSizes` gates on each rule having hit something at the size it asked
+for, and the build prints every texture's final dimensions. Patterns must cover everything and must not
+overlap: `resize` never INCREASES a dimension, so a later unpatterned cap would undo an earlier raise.
 
 It is driven through exactly **three nested elements, one owner each** — sharing one between two
 owners is how you get a sun that jumps:

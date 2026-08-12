@@ -41,8 +41,19 @@ import * as THREE from 'three';
 // NOTE ON `THRESHOLD`: UnrealBloom thresholds the composer's buffer, which sits at a different
 // point in the tone-mapping chain than this pass does. The number is therefore a close analogue,
 // not a guaranteed pixel match — expect to nudge it by eye.
-/** The resting grade — Peaceful. The works section eases past these into Collapse; see `setGrade`. */
-export const BLOOM_STRENGTH = 1.26;
+/**
+ * The resting grade — Peaceful. The works section eases past these into Collapse; see `setGrade`.
+ *
+ * ⚠ STRENGTH IS THE FIRST STOP OF A RAMP ACROSS THE WHOLE JOURNEY, raised 2026-08-12. The star gets
+ * hotter the deeper you go, and the lift grows with it: **+5 % here, +17.5 % at works
+ * (`COLLAPSE_BLOOM_STRENGTH`), +30 % at contact (`CONTACT_BLOOM_STRENGTH`)**. The hero is the one
+ * place the star sits against the CREAM rather than against black, which is why it takes the
+ * smallest share — the same glow reads far hotter on a light substrate.
+ *
+ * Free: strength is a multiplier on an already-blurred mip chain. `BLOOM_RADIUS` and the mip count
+ * are what cost, and neither moved.
+ */
+export const BLOOM_STRENGTH = 1.32; // was 1.26
 export const BLOOM_RADIUS = 0.92;
 export const BLOOM_THRESHOLD = 0.59;
 

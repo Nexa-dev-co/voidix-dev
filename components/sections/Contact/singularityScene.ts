@@ -3,7 +3,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { getSharedDracoLoader, getSharedKtx2Loader } from '@/lib/modelLoading';
 import { SUN_BODY_FILL } from '@/components/effects/IntroSequence/gatherShader';
 import { createSunParticles, type SunParticles } from '@/lib/sunParticles';
-import { createSunPlasma, type SunPlasma } from '@/components/sections/Hero/sunPlasma';
 import { isOmittedSunPart } from '@/components/sections/Hero/sunParts';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import {
@@ -55,6 +54,8 @@ const MODEL_PATH = '/models/fractured_sun.glb';
 const SHARD_NAME_PREFIX = 'Sphere_0_cell';
 /** The only lit material on the star, and the one carrying its glow — so the one redshift acts on. */
 const REDSHIFT_MATERIAL = 'magma';
+/** The translucent shells that are the star's surface — redshifted alongside the magma. */
+const SHELL_MATERIAL = 'sunouter';
 
 // ── The pose: the authored "Collapse", which is where the star already is when you arrive ──
 // The works section carries the hero sun into this pose across the services→works handoff, so the star
@@ -135,7 +136,16 @@ const RING_POINT_SIZE = 28;
 //
 // This is not a compromise: at contact the frame is a star, a starfield and nothing else, so a hotter
 // bloom IS the section's grade — and it is the same dial the flash will ride later.
-export const CONTACT_BLOOM_STRENGTH = 1.05;
+//
+// ⚠ The LAST stop of the journey-wide bloom ramp (2026-08-12), and the hottest: **+30 %**, against
+// +5 % at the hero and +17.5 % at works. This is the end of the circuit and the star's last beat, so
+// it takes the largest share.
+//
+// It lifts the STAR only, not the section. Read `bloomStrength` below: this value is weighted by
+// `presence` against the field's own resting bloom, so the marks, the debris and the starfield keep
+// exactly the grade they had — and the flash still spikes additively above whatever this resolves
+// to, while the formed hole settles back to BLACKHOLE_BLOOM_STRENGTH, which did not move.
+export const CONTACT_BLOOM_STRENGTH = 1.37; // was 1.05
 
 // ── The finale ──
 // Every number below was authored in a sun-and-black-hole editor that has since been deleted, so this
@@ -548,7 +558,16 @@ export function createSingularityScene({
 
   let modelRoot: THREE.Object3D | null = null;
   /** The star's burning surface — what the omitted `sunouter` shells used to be. */
-  let plasma: SunPlasma | null = null;
+  /**
+   * The `sunouter` shells' own materials, and the colour each was authored with.
+   *
+   * ⚠ A SEPARATE LIST from `materials`, which only holds `MeshStandardMaterial`. The shells are
+   * `KHR_materials_unlit`, so three builds them as `MeshBasicMaterial` and they were never in it —
+   * the same reason `sun_inner` has always sat outside the star's fade. They are collected here for
+   * one job: the redshift, which a procedural plasma used to carry for this surface and which would
+   * otherwise have been lost with it.
+   */
+  const shellMaterials: { material: THREE.MeshBasicMaterial; baseColor: THREE.Color }[] = [];
   /** The glTF's own root scale, so the collapse shrinks FROM it rather than replacing it. */
   const modelBaseScale = new THREE.Vector3(1, 1, 1);
   let shardRadius = 1;
@@ -845,11 +864,12 @@ export function createSingularityScene({
       material.opacity = presence;
     });
 
-    // The surface fades and reddens with the crust, so the two halves of the star cannot separate as
-    // it dies. Its CHURN is driven from the frame loop instead — this function is also called from
-    // `setPresence`, which has no clock, and it is the single owner of everything keyed to the
-    // sequence rather than to time.
-    plasma?.setPresence(presence, FINALE_REDSHIFT * collapse);
+    // The surface reddens with the crust, so the two halves of the star cannot separate as it dies.
+    // Same lerp, same base-value-kept-exactly rule as the magma above: rewinding to sequence 0 has to
+    // leave no tint behind.
+    shellMaterials.forEach(({ material, baseColor }) => {
+      material.color.copy(baseColor).lerp(redshiftColor, FINALE_REDSHIFT * collapse);
+    });
 
     // 6. The accretion spiral: the star's own matter, released and wound inward. Runs on the RAW
     //    sequence rather than on `explode`, because the particles carry their own staggered release —
@@ -1043,11 +1063,19 @@ export function createSingularityScene({
       if (meshMaterials.some((material) => isOmittedSunPart(material.name))) object.visible = false;
     });
 
-    // The atmosphere those shells used to be, procedurally — one surface instead of eleven blended
-    // meshes. Transparent here and only here: this star fades out, and `transparent` is part of a
-    // material's program key, so it is set at construction rather than toggled mid-finale.
-    plasma = createSunPlasma({ transparent: true });
-    modelRoot.add(plasma.mesh);
+    // The shells' own materials, for the redshift. Walked AFTER the omission pass above so a hidden
+    // group is never collected — `SUN_ABLATION_KEEP_SHELLS` is the hero's dial and does not run here,
+    // so every shell this star draws is one this list must cover.
+    modelRoot.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || !object.visible) return;
+      const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
+      meshMaterials.forEach((material) => {
+        if (!(material instanceof THREE.MeshBasicMaterial)) return;
+        if (material.name !== SHELL_MATERIAL) return;
+        if (shellMaterials.some((entry) => entry.material === material)) return;
+        shellMaterials.push({ material, baseColor: material.color.clone() });
+      });
+    });
 
     // Flares are FLAT discs whose geometry centre is offset from the mesh origin — spinning about the
     // origin would ORBIT them. Recentre each so it turns in place, compensating the mesh position so
@@ -1317,7 +1345,6 @@ export function createSingularityScene({
     // what the COLLAPSE_* block above mirrors — so its surface is at its hottest and most violent from
     // the first frame. The finale's own additions, the fade and the redshift, are applied in
     // `applyFinale`, which owns everything keyed to the sequence.
-    plasma?.update(elapsedSeconds, 1, 1);
   };
 
   const dispose = () => {
@@ -1335,7 +1362,6 @@ export function createSingularityScene({
       meshMaterials.forEach((material) => material.dispose());
     });
     rings?.dispose();
-    plasma?.dispose();
     accretionGeometry.dispose();
     accretionMaterial.dispose();
     burstMesh.geometry.dispose();

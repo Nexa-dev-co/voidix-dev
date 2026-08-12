@@ -100,23 +100,50 @@ const ETC1S_QUALITY = 160;
  */
 const TEXTURE_RECIPES = {
   'fractured_sun.glb': {
-    maxTextureSize: 512,
-    // 2048² maps (the set is literally named Lava004_2K) on a star that is **~250 device pixels
-    // across** at its largest. `.hero-sun-card` is `clamp(7rem, 20vw, 11rem)` — 176 CSS px — and the
-    // camera pulls back by `SUN_CANVAS_HEADROOM` so the star renders at that size inside a padded
-    // canvas; the pin's `SUN_SCROLL_SCALE` of 1.1 is a CSS transform and never touches the backing
-    // store. So the maps are ~8× oversampled per axis, ~64× in texels, for the entire session.
+    // ⚠ PER TEXTURE, not one number for the model — see the resize stage for why the passes cannot be
+    // reordered. These three patterns cover all eight maps and do not overlap.
+    textureSizes: [
+      // The star's SKIN. `sunouter` is eleven translucent shells and its baseColor is the largest map
+      // in the file; both were dead weight while a procedural plasma covered them and both are what
+      // you actually look at now. A sphere's equirectangular unwrap spends most of its texels near
+      // the poles, so the visible hemisphere gets nothing like `size` texels across — 1024 is the
+      // first value comfortably above the ~350 device px the star covers.
+      { pattern: 'sunouter*', size: 1024 },
+      // The shard INTERIORS, seen during the cracks and the collapse and never on the resting hero.
+      // These were judged at 512 back when they were the only maps being sampled, and nothing about
+      // that judgement changed — they are 62 % of the model's bytes at 1024, which is the whole
+      // reason this recipe is per-texture.
+      { pattern: 'Lava*', size: 512 },
+      // ⚠ `flare` and `blowout` are in SUN_OMITTED_PARTS and NEVER DRAW. Their maps are pure download
+      // waste and the only lever here is to make the waste small; reclaiming it properly means
+      // dropping the materials from the GLB, which moves the mesh table `compareModels` asserts on.
+      { pattern: 'flare*', size: 256 },
+      { pattern: 'blowout*', size: 256 },
+    ],
+    // 2048² maps (the set is literally named Lava004_2K) on a star that is **~350 device pixels
+    // across** at its largest. `.hero-sun-card` is `clamp(7rem, 20vw, 11rem)` — 176 CSS px, so 352
+    // backing-store pixels at dpr 2 — and the camera pulls back by `SUN_CANVAS_HEADROOM` so the star
+    // renders at that size inside a padded canvas; the pin's `SUN_SCROLL_SCALE` of 1.1 is a CSS
+    // transform and never touches the backing store. So 2048 was ~6× oversampled per axis.
     //
-    // 512 is still 2× oversampled, which is why this is the cheap knob and not a codec argument.
+    // ⚠ 512 → 1024 on 2026-08-12, and the reason is that the star grew a skin. This said "512 is
+    // still 2× oversampled", which was true of what was DRAWN at the time: the shells were hidden
+    // behind a procedural plasma and the only sampled maps were the magma on the shard interiors.
+    // `sunouter_baseColor` is the largest map in the file and is now the star's actual surface, and a
+    // sphere's equirectangular unwrap spends most of its texels near the poles — so the visible
+    // hemisphere gets nothing like 512 usable texels across. At 1024 it is comfortably above the
+    // ~350 px it has to cover, which is the first size that can be said of.
     //
     // ⚠ It buys BYTES AND VRAM, NOT FRAME TIME, and the distinction is measured rather than assumed:
     // hiding whole material groups showed the star's cost is ~0.02 ms per DRAW CALL and independent of
     // texture area (see SUN_OMITTED_PARTS in SunModelCanvas). Nothing here will move `sun · bloom`.
+    // The star is preload rung 1 and the loader gate waits on it, so the cost this DOES have is the
+    // download — measure it on the console line this script prints, not by eye.
     //
-    // ⚠ The largest set (Lava004, ~797 KB of the 1231 KB) belongs to `magma` — the shard interiors,
-    // which are what the cracks and the collapse actually show. If anything reads soft, it will be
-    // there and during those beats, not on the resting hero.
-    why: '2048² maps on a star that never exceeds ~250 device pixels across',
+    // ⚠ `flare` and `blowout` never draw (SUN_OMITTED_PARTS) and their two maps are pure download
+    // waste — ~78 KB at 512, and this quadruples them. Reclaiming that means removing the materials
+    // from the GLB, which moves the mesh table `compareModels` asserts on: a separate pass.
+    why: 'the shells are the star surface again — 1024 where it shows, 512 and 256 where it does not',
   },
   'spaceship3.glb': {
     maxTextureSize: 512,
@@ -214,6 +241,57 @@ const SUPERCOMPRESSION_OFFSET = 12 + 8 * 4;
 const SUPERCOMPRESSION_NAMES = { 0: 'none', 1: 'ETC1S', 2: 'Zstd/UASTC', 3: 'ZLIB' };
 
 /**
+ * Every texture's final pixel dimensions, and a HARD GATE on a per-pattern recipe having landed.
+ *
+ * ⚠ `resize --pattern` matches on texture NAME, and a glob that matches nothing does not fail — it
+ * resizes nothing and reports success, which is the same silent shape the `--slots` note above
+ * records. The symptom is a build that is simply larger than it should be, which nobody notices.
+ * So each entry must be shown to have hit at least one texture AT the size it asked for.
+ *
+ * Dimensions come from the KTX2 header, where `pixelWidth`/`pixelHeight` are the 3rd and 4th uint32
+ * after the 12-byte identifier and `vkFormat`/`typeSize`.
+ */
+function assertTextureSizes(path, textureSizes) {
+  const buffer = readFileSync(path);
+  const jsonLength = buffer.readUInt32LE(12);
+  const document = JSON.parse(buffer.slice(20, 20 + jsonLength).toString('utf8'));
+  const binaryStart = 20 + jsonLength + 8;
+
+  const measured = (document.images ?? []).map((image, index) => {
+    const view = document.bufferViews?.[image.bufferView];
+    if (!view) return { name: image.name ?? `image ${index}`, width: 0, height: 0 };
+    const start = binaryStart + (view.byteOffset ?? 0);
+    return {
+      name: image.name ?? `image ${index}`,
+      width: buffer.readUInt32LE(start + 12 + 2 * 4),
+      height: buffer.readUInt32LE(start + 12 + 3 * 4),
+    };
+  });
+  console.log(
+    `  sizes   ${measured.map(({ name, width, height }) => `${name} ${width}²`.replace(/ (\d+)²/, ' $1²')).join(', ')}`,
+  );
+
+  if (!textureSizes) return;
+  // Same matcher shape the CLI uses for these globs: `*` only, no brace expansion (see the note on
+  // uastcSlots for what happened the one time a `{a,b}` glob was assumed to expand).
+  const missed = textureSizes.filter(({ pattern, size }) => {
+    const matcher = new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+    return !measured.some(
+      ({ name, width, height }) => matcher.test(name) && Math.max(width, height) === size,
+    );
+  });
+  if (missed.length) {
+    console.error(
+      `\n  ⚠ ${missed.length} texture size rule(s) matched nothing at the size they asked for:\n` +
+        missed.map(({ pattern, size }) => `      ${pattern} → ${size}`).join('\n') +
+        '\n    `resize --pattern` matches texture NAMES and fails silently. Check them against the\n' +
+        '    `sizes` line above.\n',
+    );
+    process.exit(1);
+  }
+}
+
+/**
  * Which codec each texture actually ended up as — and a HARD GATE on the answer.
  *
  * ⚠ This is the most valuable check in the file, and it earned that on its first run. The KTX2
@@ -282,7 +360,12 @@ for (const fileName of fileNames) {
   // Scratch files, one per stage. `simplify` writes UNCOMPRESSED geometry (it had to decode Draco to
   // touch the mesh at all), so that intermediate is several times larger than either end of this pipe.
   const scratch = (stage) => join(tmpdir(), `voidix-${fileName}.${stage}.glb`);
-  const stages = ['simplified', 'geometry', 'png', 'resized', 'uastc', 'etc1s', 'final'];
+  // `resized-N` covers the patterned resize passes — one scratch file each, so cleanup has to
+  // reach further than the single `resized` a global cap used to produce.
+  const stages = [
+    'simplified', 'geometry', 'png', 'resized', 'uastc', 'etc1s', 'final',
+    ...(TEXTURE_RECIPES[fileName]?.textureSizes ?? []).map((_, index) => `resized-${index}`),
+  ];
 
   const reasons = [geometryRecipe?.why, TEXTURE_RECIPES[fileName]?.why].filter(Boolean);
   console.log(`\n── ${fileName}${reasons.length ? ` — ${reasons.join('; ')}` : ''}`);
@@ -317,9 +400,31 @@ for (const fileName of fileNames) {
     // 3. Cap the resolution, where a recipe says the maps are bigger than anything can sample.
     //    ⚠ After the PNG stage, not before: this resamples, and resampling a lossless intermediate
     //    keeps the operation to a single resample rather than a decode-resize-recompress round trip.
+    //
+    //    ⚠ A recipe may cap PER TEXTURE (`textureSizes`) instead of across the model
+    //    (`maxTextureSize`). One number for a whole model assumes every map is sampled at the same
+    //    rate, and on the sun that is simply false: its shells are the surface you look at and its
+    //    magma maps are shard interiors seen for two beats. `resize` NEVER INCREASES a dimension, so
+    //    the passes cannot be reordered out of trouble — an unpatterned cap run after a patterned one
+    //    would just shrink what the first pass raised. Patterned entries must therefore cover
+    //    everything they mean to bound, and must not overlap.
+    //
+    //    ⚠ Globs here match a texture's NAME, and a glob that matches nothing fails SILENTLY —
+    //    exactly the trap the `--slots` note above records. `assertTextureSizes` proves each entry
+    //    hit something, because "no error and a suspiciously large file" is the only other symptom.
     const textureRecipe = TEXTURE_RECIPES[fileName];
     let textureInput = scratch('png');
-    if (textureRecipe?.maxTextureSize) {
+    if (textureRecipe?.textureSizes) {
+      textureRecipe.textureSizes.forEach(({ pattern, size }, index) => {
+        const output = scratch(`resized-${index}`);
+        runTransform([
+          'resize', textureInput, output,
+          '--pattern', pattern,
+          '--width', String(size), '--height', String(size),
+        ]);
+        textureInput = output;
+      });
+    } else if (textureRecipe?.maxTextureSize) {
       const size = String(textureRecipe.maxTextureSize);
       runTransform(['resize', textureInput, scratch('resized'), '--width', size, '--height', size]);
       textureInput = scratch('resized');
@@ -351,6 +456,7 @@ for (const fileName of fileNames) {
     // reach public/models — nothing downstream would notice until a section silently lost its star
     // or hid the wrong part of a hull.
     execFileSync('node', [COMPARE_SCRIPT, sourcePath, scratch('final')], { stdio: 'inherit' });
+    assertTextureSizes(scratch('final'), textureRecipe?.textureSizes);
     assertTextureCodecs(scratch('final'));
 
     copyFileSync(scratch('final'), outputPath);
