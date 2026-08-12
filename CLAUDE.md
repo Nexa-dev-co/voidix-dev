@@ -161,6 +161,26 @@ Everything ships working from ~360px phones to large desktops **in the same chan
   section: a 390px portrait phone and an 800px landscape tablet are not the same problem, and the
   contact footer's three link columns are correct at 800px and wrong at 390px. Don't reach for 30em
   when 51.25em would do.
+- **…and two on the HEIGHT axis, added 2026-08-12, kept together in one `SHORT FRAMES` block.** Until
+  then there was not a single `max-height` query in `globals.css`, which is why every height defect on
+  this site was invisible: the contact form was **clipped** (nothing there scrolls) and the enquiry
+  dialog scrolled, both from one fixed rhythm authored on a full-height desktop. ⚠ **The shape that
+  breaks it is not a small window, it is a LANDSCAPE PHONE — 932 × 430, which is WIDER than 51.25em.**
+  It gets the full desktop layout and none of the height. `38em` (608px) is where the contact section
+  runs out of room and its form moves into the sheet (`useIsShortViewport`); `32em` (512px) is the
+  landscape phone, where the bottom sheet gives up nearly the whole frame. ⚠ **Field PAIRING is not a
+  height rule and deliberately isn't one** — `.enquiry-form--application` owns it, keyed on the
+  variant, because the seven-field application is too tall at *any* height. One owner; don't add a
+  second grid in the height block. Width questions live with
+  their section; height questions do not — one short frame squeezes the section, the sheet and the
+  dialog at once, so they stay in one place.
+- **⚠ Give on height with a `clamp(floor, Nvh, today)` before reaching for either of those.** Every
+  gap in `.enquiry-form` is fluid this way, and each coefficient is picked so it **clamps to its old
+  value at a 1000px viewport** — a full-height desktop renders what it always did, to the pixel, and
+  the curve is only ever a give. Keep that property when retuning: raise a maximum without raising its
+  coefficient and every tall screen silently loses the spacing too. `.dialog-title` needs *two*
+  viewport terms summed (`1.1vw + 1.8vh`) for the same reason the landscape phone exists — it is short
+  exactly where it is wide, so a `vw`-only clamp sets display type at its maximum on a 430px frame.
 - **Full-height boxes use `100svh`, with a `100vh` line above it as the fallback.** On mobile browsers
   `100vh` is the LARGE viewport — the height the page would have with the chrome hidden — so anything
   pinned to the bottom of a `100vh` box (the fleet's carousel strip, the works arrows, the contact
@@ -179,11 +199,19 @@ Everything ships working from ~360px phones to large desktops **in the same chan
   `ScrollTrigger.config({ ignoreMobileResize: true })` so a mobile address bar doesn't re-pin.
 - **Phones don't mount the optional hero effects at all** — `useIsLowPowerViewport` unmounts
   `FluidCursor` and `HeroInstruments` below 760px / on coarse pointers. Hiding with CSS leaves the
-  rAF loops running, which is the opposite of the point.
-- **⚠ `useIsLowPowerViewport` and `useIsNarrowViewport` are different questions.** The first is *how
-  much work can this device do* (coarse pointer or <760px) and gates WebGL. The second is *how much
-  room is there* (the 51.25em query, mirrored from the CSS) and gates LAYOUT. A phone answers yes to
-  both; a narrow window on a fast desktop wants the narrow layout and the full effects.
+  rAF loops running, which is the opposite of the point. ⚠ **That gate cost one thing it shouldn't
+  have, and `HeroScrollCue` is the repair** (2026-08-12): the scroll cue lived at the bottom of the
+  HUD's left column, so unmounting the panel took it with it — and the platform that most needs
+  telling the page wants a gesture was the one left with nothing saying so. It is back as static
+  markup with one keyframe, gated in **CSS at 51.25em** rather than in JS, because the reason the HUD
+  is unmounted (four rAF loops) simply does not apply to it. The two cues are never up together.
+- **⚠ `useIsLowPowerViewport`, `useIsNarrowViewport` and `useIsShortViewport` are three different
+  questions.** The first is *how much work can this device do* (coarse pointer or <760px) and gates
+  WebGL. The second is *how much room is there, ACROSS* (the 51.25em query, mirrored from the CSS) and
+  gates LAYOUT. The third is *how much room is there, DOWN* (38em) and gates layout too — **only the
+  contact section asks it**, and it exists because a landscape phone clears the narrow breakpoint
+  while having less height than a portrait one. A phone answers yes to all three; a narrow window on a
+  fast desktop wants the narrow layout and the full effects.
 - **Copy that doesn't fit goes in the drawer, not in the bin.** `components/ui/Drawer` is the phone's
   bottom sheet: services, works, contact and the navbar all use it. Every section past the hero is one
   pinned viewport with a live scene behind it, so on a phone the screen keeps only what NAMES the thing
@@ -434,18 +462,37 @@ hero's frame on a dpr 2.5 laptop.
   shorter mesh list and not a resolution knob. (On the dpr 2.5 laptop the same call costs 16–19 ms and
   the limit there is GPU fill instead — fewer meshes wins in both.)
 - ⚠ **`sunouter` — the 11 translucent shells — is NOT omitted and must not be.** It is the star's
-  ATMOSPHERE: the core is an opaque ball and those shells are what make it read as burning. They are
-  also what a procedural plasma shader would REPLACE, one animated surface for eleven static ones. To
-  be superseded, never simply deleted. `SUN_ABLATION_KEEP_SHELLS` stays at 0 and exists to measure that.
+  ATMOSPHERE: the core is an opaque ball and those shells are what make it read as burning. They also
+  carry `sunouter_baseColor`, **the largest map in the file and the star's actual skin**. A procedural
+  plasma (`sunPlasma.ts`) replaced them for four days and was **deleted 2026-08-12**: it bought the
+  blend cost back by painting over the model's own surface, which is the one thing it was not allowed
+  to spend. Recoverable from git if the trade is ever wanted again.
+- ⚠ **`SUN_ABLATION_KEEP_SHELLS` is a SHIPPING DIAL now, at 4** — it is what pays for the shells
+  instead. Each is `BLEND` at α 0.815, so transmission after n of them is 0.185ⁿ: **shells five
+  through eleven composite into a pixel already 99.9 % decided.** Four keeps the silhouette and every
+  layer the eye can resolve at 36 % of the fill. Budget ~0.044 ms per shell on the dpr 1.1 desktop and
+  ~0.5 ms on the dpr 2.5 laptop, where these double-sided full-coverage spheres are fill-bound.
 - **Hiding is not removing** — the geometry still downloads. After the texture cap below it is worth
   ~15 KB, so it is not worth the GLB rebuild that would break `compareModels`' mesh table.
 - ⚠ Omitting `flare` also **skips its recentre-and-spin setup**. `flareSpins` would otherwise keep
   rebuilding quaternions for eight invisible discs every frame — hiding the draw while keeping the
   work is the one way this cull could have cost more than it saved.
 
-**Its textures are capped at 512²** (`buildModels.mjs` recipe, same day): the maps were 2048² on a star
-that never exceeds ~250 device pixels across. **1346 KB → 505 KB, −62 %.** Bytes and VRAM only — it
-cannot move `sun · bloom`, for the per-draw-call reason above.
+**Its textures are capped PER TEXTURE** (`buildModels.mjs` recipe, `textureSizes`): 2048² maps on a star
+that never exceeds ~350 device pixels across. **1346 KB → 662 KB.** Bytes and VRAM only — it cannot move
+`sun · bloom`, for the per-draw-call reason above.
+
+⚠ **One number for a whole model assumes every map is sampled at the same rate, and on the sun that is
+false.** It was a flat 512² while the shells were hidden and the magma was the only thing being sampled.
+Now the shells are the surface, so: **`sunouter*` → 1024** (a sphere's equirectangular unwrap spends most
+of its texels near the poles, so the visible hemisphere gets nothing like 1024 across), **`Lava*` → 512**
+(shard interiors, seen for two beats — unchanged judgement, and 62 % of the bytes at 1024), **`flare*` /
+`blowout*` → 256** (never drawn at all; the only lever is making the waste small).
+
+⚠ **`resize --pattern` matches texture NAMES and a glob that matches nothing fails SILENTLY** — same shape
+as the `--slots` trap. `assertTextureSizes` gates on each rule having hit something at the size it asked
+for, and the build prints every texture's final dimensions. Patterns must cover everything and must not
+overlap: `resize` never INCREASES a dimension, so a later unpatterned cap would undo an earlier raise.
 
 It is driven through exactly **three nested elements, one owner each** — sharing one between two
 owners is how you get a sun that jumps:

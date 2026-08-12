@@ -1267,9 +1267,14 @@ body {
    one frame, and against the now-black page bg the difference blend flips these grey glyphs from
    near-black to BRIGHT grey — a fading headline reads as "we build worlds" flashing over the
    services screen. Hiding it the same frame the cream vanishes kills the flash; the fade back in
-   on returning to the fill comes from the base .hero-mask transition (GSAP re-fades .hero-sub). */
+   on returning to the fill comes from the base .hero-mask transition (GSAP re-fades .hero-sub).
+   The narrow screen's scroll cue is on this list for exactly the same reason — it is difference-
+   blended too, so it would flash bright over the fleet on the frame the cream goes transparent. It
+   needs no return fade of its own: it carries no inline opacity (GSAP owns its CHILDREN's), so
+   dropping the class puts it straight back at 1. */
 .hero-section.is-services .hero-mask,
-.hero-section.is-services .hero-sub {
+.hero-section.is-services .hero-sub,
+.hero-section.is-services .hero-touch-cue {
   opacity: 0 !important;
   transition: none;
 }
@@ -1465,6 +1470,86 @@ body {
   width: clamp(0.95rem, 1.3vw, 1.25rem);
   height: auto;
 }
+
+/* ── The same cue on a narrow screen ──
+   The left column that used to carry it is gone below 51.25em — `.hero-hud` is display:none here and
+   `HeroInstruments` is not even mounted below 760px — which quietly took with it the only thing on the
+   hero that says the page wants a gesture. This is that one thing, brought back on its own: centred
+   under the tagline instead of hung off a gutter, and static markup rather than a panel of readouts,
+   so it costs a keyframe and nothing else. See components/sections/Hero/HeroScrollCue.tsx.
+
+   ⚠ NO `z-index`, NO `opacity`, NO `transform` on this wrapper. Both children blend against the cream
+   through `mix-blend-mode: difference`, and any one of those three would make this a stacking context
+   and trap the blend — the `.hero-main` trap, and the same reason `.hud-module` is bare. The one place
+   it does take an opacity is `.is-services` below, where the element is being hidden outright and
+   there is no blend left to lose. */
+.hero-touch-cue {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: clamp(1.25rem, 3.5vh, 2rem);
+}
+
+/* Tracked wider than the HUD's labels. It sits directly under the tagline, which is set at 0.24em, and
+   two lines of small caps at different tracking a few pixels apart read as a mistake. */
+.hero-touch-cue-label {
+  letter-spacing: 0.24em;
+}
+
+/* ⚠ THE BLEND IS ON THIS SPAN, NOT ON THE SVG INSIDE IT. This is the element `useHeroInstruments`
+   animates (it carries `data-hud-item`), and a blended child under an animated parent loses its blend
+   for good. Blending the animated element itself is safe — an element blends against its PARENT's
+   backdrop, whatever it does to itself. */
+.hero-touch-cue-arrow {
+  position: relative;
+  z-index: 5;
+  display: inline-flex;
+  mix-blend-mode: difference;
+  color: var(--hero-invert-text);
+}
+
+/* ⚠ And the drift is one level further in, on a glyph GSAP never writes to. A CSS animation outranks
+   an inline style, so a keyframe on `.hero-touch-cue-arrow` — which the entrance sets `opacity` and
+   `transform` on inline — would beat the entrance silently and permanently. */
+.hero-touch-cue-glyph {
+  width: clamp(0.85rem, 3vw, 1.1rem);
+  height: auto;
+}
+
+/* A fall and a recovery, not a bounce: it drifts down the way the page does and eases back. */
+@keyframes hero-touch-cue-drift {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(0.4rem);
+  }
+}
+
+@media (max-width: 51.25em) {
+  .hero-touch-cue {
+    display: flex;
+  }
+
+  .hero-touch-cue-glyph {
+    animation: hero-touch-cue-drift 2.6s ease-in-out infinite;
+  }
+
+  /* The tagline hands over its shoulder to the cue — the two are one block at the bottom of the frame
+     and 2.25rem between them would push the pair under the toolbar. */
+  .hero-sub {
+    padding-bottom: clamp(0.75rem, 2vh, 1.25rem);
+  }
+}
+
+/* No reduced-motion rule of its own, deliberately: the drift is ambient motion with nothing to report,
+   and the blanket rule at the bottom of this file already collapses any animation that only needs
+   turning OFF — in BOTH the ways this site can be asked for it. A local `@media (prefers-reduced-
+   motion)` here would have caught the operating system and missed the visitor's own toggle, which is
+   the exact inconsistency that rule's header warns about. The arrow itself stays either way; it is
+   what the cue MEANS, not how it moves. */
 
 /* ─── Hero sun-square neon frame ──────────────────────────────────── */
 /* A cyan neon frame hugging the black square. The slot only reserves the square's footprint in the
@@ -2434,7 +2519,11 @@ body {
 .contact-panel {
   pointer-events: auto;
   width: min(24rem, 36%);
-  padding: clamp(1.5rem, 3vw, 2.25rem);
+  /* Vertical padding gives on a short frame for the same reason the form's own rhythm does — and by
+     the same rule: 3.6vh of 1000 is 36px, which is the 2.25rem maximum, so a full-height desktop is
+     unchanged. The horizontal pair stays keyed on WIDTH; nothing about a short window makes a 24rem
+     column narrower. */
+  padding: clamp(1rem, 3.6vh, 2.25rem) clamp(1.5rem, 3vw, 2.25rem);
   background: rgb(var(--bg-rgb) / 0.62);
   border: 1px solid var(--border);
   border-radius: 2px;
@@ -2466,11 +2555,30 @@ body {
    project's CTA opens. See components/ui/EnquiryForm.
 
    No top margin: in the contact panel the form is the only content now that the copy has moved to the
-   left column. */
+   left column.
+
+   ── ⚠ EVERY GAP IN HERE IS FLUID ON THE **HEIGHT** AXIS ──────────────────────────────────────────
+   This form is four fields tall and it has nowhere to grow: in the contact panel it sits in ONE
+   pinned viewport with nothing below it to scroll to, and in the dialog it sits under an 86svh
+   ceiling. At the fixed rhythm this was authored with (0.85rem between fields, 3.5rem of textarea,
+   0.5rem of input padding) it needs 403px, which is more than a 600px-tall window has left after the
+   section's padding, the action row and the footer. It overflowed, `align-items: center` split the
+   overflow across both ends, and `.hero-section`'s `overflow: hidden` took the title AND the send
+   button off screen with no scrollbar to say so.
+
+   So the rhythm gives instead. ⚠ Each `vh` coefficient is picked to CLAMP TO ITS OLD VALUE AT A
+   1000px VIEWPORT — 1.4vh of 1000 is 14px against a 0.85rem max of 13.6 — so a full-height desktop
+   renders exactly what it rendered before, to the pixel. This is only ever a give. Keep that property
+   when retuning: raise a maximum and you must raise its coefficient to match, or every tall screen
+   silently loses the spacing too.
+
+   The `@media (max-width: 30em)` block near the contact section still overrides these on a true
+   phone. That is not a conflict — it is the SHEET's ceiling talking, which is a width question about
+   which shell the form is in, and it is authored tighter than the height curve reaches. */
 .enquiry-form {
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
+  gap: clamp(0.5rem, 1.4vh, 0.85rem);
 }
 
 /* ── The application's two columns ──
@@ -2481,10 +2589,15 @@ body {
 
    ⚠ Everything spans the full width by DEFAULT and pairs only where it is asked to. The other way
    round — pairing by default, spanning by exception — is how a textarea ends up half a panel wide. */
+/* ⚠ The ROW gap gives on height and the column gap does not, and the asymmetry is the point: a short
+   frame costs you rows, never columns. 1.4vh of 1000 is 14px against the 0.85rem this was authored at,
+   so a full-height desktop renders exactly what it did before — the give only appears on the short
+   frames this form is most exposed to, being the taller of the two variants. Same curve as
+   `.enquiry-form`'s, deliberately: one rhythm, whichever variant is up. */
 .enquiry-form--application {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.85rem 1.1rem;
+  gap: clamp(0.5rem, 1.4vh, 0.85rem) 1.1rem;
   align-items: start;
 }
 
@@ -2499,7 +2612,7 @@ body {
 .enquiry-field {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: clamp(0.2rem, 0.7vh, 0.4rem);
 }
 
 /* Sits in the cell beside Mobile. `end` so it aligns to the field's baseline row rather than floating
@@ -2520,7 +2633,7 @@ body {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.5rem 0.7rem;
-  padding: 0.6rem 0.85rem;
+  padding: clamp(0.4rem, 1.1vh, 0.6rem) 0.85rem;
   border: 1px solid rgb(var(--accent-rgb) / 0.28);
   border-left-width: 2px;
   border-radius: 0 8px 8px 0;
@@ -2566,7 +2679,7 @@ body {
    precisely the aesthetic the brief rejects. */
 .enquiry-input {
   width: 100%;
-  padding: 0.5rem 0 0.55rem;
+  padding: clamp(0.3rem, 0.8vh, 0.5rem) 0 clamp(0.34rem, 0.9vh, 0.55rem);
   font-family: var(--font-dm-sans), sans-serif;
   font-size: var(--fs-body);
   color: var(--fg);
@@ -2636,9 +2749,13 @@ body {
   border-bottom-color: rgb(var(--heat-500-rgb) / 0.7);
 }
 
+/* ⚠ `min-height`, not `height` — the visitor can still drag it taller, and a short frame only decides
+   where it STARTS. Three rows of seed text is what `rows={3}` asks for and what 3.5rem shows; at
+   2.25rem it is two, which is the last thing worth spending height on when the alternative is losing
+   the send button. */
 .enquiry-textarea {
   resize: vertical;
-  min-height: 3.5rem;
+  min-height: clamp(2.25rem, 6vh, 3.5rem);
   line-height: 1.55;
 }
 
@@ -2919,9 +3036,15 @@ body {
   );
 }
 
+/* ⚠ NO `align-self` and NO `margin-top`, and both are absences worth knowing about: this button used
+   to be a direct child of the form and owned its own spacing. It now lives in the sticky
+   `.enquiry-actions` bar, which is a ROW — `align-self: flex-start` would top-align it against the
+   status line beside it, and the bar supplies the gap the margin used to. The vertical padding gives
+   on height like the rest of the form's rhythm; 1.1vh of 1000 is 11px against the 0.6rem it has always
+   been, so a full-height desktop is unchanged. */
 .enquiry-send {
   flex-shrink: 0;
-  padding: 0.6rem 1.4rem;
+  padding: clamp(0.45rem, 1.1vh, 0.6rem) 1.4rem;
   font-family: var(--font-dm-sans), sans-serif;
   font-size: var(--fs-small);
   letter-spacing: 0.1875em;
@@ -2985,10 +3108,15 @@ body {
    The loop's discoverable path, sat just above the footer. A slowly turning arc rather than a static
    pill: the same orbital language as the navbar's mark, and it is the one control on the page that does
    something irreversible, so it should read as a mechanism rather than as a link. */
+/* ⚠ The `gap` is not decorative. This row holds ONE button on a wide screen and TWO wherever the form
+   has moved into the sheet, and the phone block at 30em was the only place that ever set it — so the
+   pair touched at any width above 480px. That was unreachable while the sheet was a phone-only layout
+   and became reachable the moment a short desktop window could ask for it too (see the 38em block). */
 .contact-loop {
   pointer-events: auto;
   display: flex;
   justify-content: center;
+  gap: 0.65rem;
   padding-bottom: clamp(0.85rem, 2vh, 1.35rem);
 }
 
@@ -3281,11 +3409,10 @@ body {
 
   /* ── The two actions, side by side ──
      Equal halves of one row. `flex: 1 1 0` rather than letting them size to their labels, so the pair
-     reads as a matched set instead of one wide button beside a narrow one. */
+     reads as a matched set instead of one wide button beside a narrow one. (The `gap` moved to the
+     base rule — the pairing is no longer phone-only.) */
   .contact-loop {
-    display: flex;
     align-items: stretch;
-    gap: 0.65rem;
     padding-bottom: 0.6rem;
   }
 
@@ -4063,7 +4190,11 @@ body {
   z-index: 10000;
   display: grid;
   place-items: center;
-  padding: clamp(1.25rem, 4vw, 3rem);
+  /* ⚠ The vertical pair is fluid on HEIGHT and it has to be, because it is spent from the same budget
+     as the panel's 86svh ceiling: 3rem of shoulder either side of 86% leaves nothing on a 500px
+     window, and `place-items: center` would clip the panel at both ends rather than shrink it.
+     5vh of 1000 is 50px against a 3rem max, so a full-height desktop keeps its generous frame. */
+  padding: clamp(0.75rem, 5vh, 3rem) clamp(1.25rem, 4vw, 3rem);
   /* Hidden, not merely transparent: this sits over a live WebGL scene for the whole session, and a
      transparent full-screen element still owns a compositor layer and still hit-tests. */
   visibility: hidden;
@@ -4107,9 +4238,13 @@ body {
   flex-direction: column;
   width: min(var(--dialog-width, 34rem), 100%);
   /* Small viewport, for the usual mobile-chrome reason — and a hard ceiling so the panel stays a panel
-     on a tall desktop monitor rather than growing into a page. */
-  max-height: min(84vh, 42rem);
-  max-height: min(84svh, 42rem);
+     on a tall desktop monitor rather than growing into a page.
+     86%, not 84: on a tall screen the 42rem cap is what binds and the percentage never comes into it,
+     so the only thing those two extra points change is a short window — where they are worth ~12px
+     against a form that was missing by fewer than that. The shoulder above still clears the root's own
+     fluid padding at every height (0.86 + 2 × 0.05 = 0.96). */
+  max-height: min(86vh, 42rem);
+  max-height: min(86svh, 42rem);
   background: rgb(var(--card-rgb) / 0.42);
   -webkit-backdrop-filter: blur(22px) saturate(1.2);
   backdrop-filter: blur(22px) saturate(1.2);
@@ -4160,6 +4295,18 @@ body {
   --dialog-width: 40rem;
 }
 
+/* ⚠ THE OVERFLOW HERE IS A BACKSTOP FOR THE FOUR-FIELD FORM, AND THE MECHANISM FOR THE SEVEN-FIELD
+   ONE. The two variants ask different things of it and both are deliberate:
+
+   The enquiry form gives on height instead of scrolling (see .enquiry-form) — four fields that make
+   you scroll is the panel admitting it did not try, and this should not engage for it much above a
+   landscape phone. The application form is seven fields plus a work fieldset and cannot be made to
+   fit by any rhythm, so it scrolls on purpose, under a sticky action bar that keeps the submit button
+   on screen while it does. See `.enquiry-actions`.
+
+   Either way it stays: a 250% browser font setting must still reach the send button, and silently
+   clipping a form is worse than a scrollbar — which is exactly what the contact panel was doing
+   before the height work. */
 .dialog-scroll {
   /* ⚠ `min-height: 0` — see the note on the panel. Without it this refuses to shrink below its content
      and the panel overflows the viewport instead of scrolling inside itself. */
@@ -4169,6 +4316,12 @@ body {
   /* Stop the browser chaining a scroll out of the panel and into the page. `useScrollGuard` handles the
      PIN, which is a separate problem — the pin listens on window and doesn't care about chaining. */
   overscroll-behavior: contain;
+  /* ⚠ Top is 0 because `.dialog-head` is OUTSIDE this box and owns the shoulder above the form. And
+     the side/bottom value is deliberately NOT given a `vh` term like the rest of the height work: the
+     sticky bar reads it back out as a negative margin to reach the panel's edges, so it is a
+     HORIZONTAL distance that the bottom padding happens to reuse. Make it fluid on height and the bar
+     stops lining up with the panel on a short screen. The vertical give lives on `.dialog-head` and
+     `.enquiry-send` instead. */
   padding: 0 clamp(1.5rem, 3vw, 2rem) clamp(1.5rem, 3vw, 2rem);
   /* See `.enquiry-actions` — the sticky footer reaches back out through this to the panel's edges. */
   --enquiry-shell-pad: clamp(1.5rem, 3vw, 2rem);
@@ -4178,18 +4331,29 @@ body {
    keeps it from being squeezed when the form beneath it is tall. */
 .dialog-head {
   flex-shrink: 0;
-  /* Clear of the close button, so a long title never runs under it. */
-  padding: clamp(1.5rem, 3vw, 2rem) 2.5rem 1.1rem clamp(1.5rem, 3vw, 2rem);
+  /* Clear of the close button, so a long title never runs under it.
+     ⚠ The two VERTICAL values carry the height give and the two horizontal ones do not — this is the
+     one box in the dialog where the shoulder above the title is the biggest single block of space, so
+     it is the right place to spend it. Both clamp to their authored value at a 1000px viewport
+     (3.4vh → 34px against a 2rem cap; 2.2vh → 22px against 1.1rem), so a full-height desktop is
+     untouched. The right value stays 2.5rem flat: it is clearance for the close button, which does
+     not shrink. */
+  padding: clamp(1rem, 3.4vh, 2rem) 2.5rem clamp(0.7rem, 2.2vh, 1.1rem) clamp(1.5rem, 3vw, 2rem);
 }
 
 .dialog-eyebrow {
   color: rgb(var(--accent-rgb) / 0.85);
 }
 
+/* ⚠ Two viewport terms, ADDED rather than one or the other. Display type on a panel this size is the
+   single largest block of height in it, and on a landscape phone the frame is short precisely where
+   it is wide — a `vw`-only clamp reads the 932px and sets the title at its maximum on a 430px screen.
+   Summed, each axis can only ever spend what it has: 1.1vw + 1.8vh of a 1400 × 1000 desktop is 33.4px
+   and still clamps to the 2rem it has always been. */
 .dialog-title {
   margin-top: 0.4rem;
   font-weight: 700;
-  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  font-size: clamp(1.35rem, 1.1vw + 1.8vh, 2rem);
   line-height: 1.05;
   letter-spacing: -0.02em;
   color: var(--fg);
@@ -4198,6 +4362,60 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .dialog-close {
     transition: none;
+  }
+}
+
+/* ─── SHORT FRAMES ───────────────────────────────────────────────────
+   ⚠ THE ONLY TWO HEIGHT BREAKPOINTS ON THE SITE, and they are kept in one block on purpose — the
+   width pair (51.25em / 30em) is scattered through this file by section, which works because a width
+   question is local to a layout. A height question is not: the same 430px frame is squeezing the
+   contact section, the sheet and the dialog at once, and reading it as one thing is the only way the
+   numbers stay in step.
+
+   Everything above already gives on height fluidly (see .enquiry-form). These two are for what a
+   clamp cannot express: a layout CHOICE, and a change of shape.
+
+     38em / 608px — THE SHORT FRAME
+       Where the contact section runs out of room. Measured, not chosen: below it the compacted panel
+       no longer fits between the section's padding, the action row and the footer, and no rhythm will
+       make a form, a lead paragraph and a five-row footer share a 500px frame. `useIsShortViewport`
+       mirrors this number in JS and moves the form into the sheet — see its header.
+
+     32em / 512px — THE LANDSCAPE PHONE
+       932 × 430 is the shape that breaks all of this, and note that it is WIDER than the 51.25em
+       narrow breakpoint: a landscape phone gets the desktop layout and none of the desktop's height.
+       The sheet gives up nearly the whole frame here, because there is nothing else left to give.
+
+   ⚠ Keep them in this order. Both are `max-height`, so the 32em rule only wins by coming second.
+
+   ⚠ THE ENQUIRY FORM DOES NOT PAIR ITS FIELDS AT THIS HEIGHT, and that was a decision rather than an
+   oversight. A `(max-height: 32em) and (min-width: 34em)` rule pairing Name and Email inside the two
+   full-width shells was built and then dropped in the merge: `.enquiry-form--application` already owns
+   the pairing on this site, keyed on the VARIANT rather than on the frame, and two owners of one
+   behaviour is how they drift. The cost is real and small — a landscape phone opening the four-field
+   enquiry dialog scrolls it by a few tens of pixels rather than fitting exactly. If that ever needs
+   closing, extend the application rule's reach; do not add a second grid here. */
+@media (max-height: 38em) {
+  /* Stop paying for the desktop's shoulder. 5rem clears the 4.5rem navbar and not a great deal more —
+     the same figure, for the same reason, as the true-phone block. */
+  .contact-section {
+    padding-top: 5rem;
+    padding-bottom: 1rem;
+  }
+
+  /* The sheet is now the contact form's shell at this height, not just a phone's, and four fifths of
+     a 560px frame is 448px — less than the form and its heading need. It has to read as covering the
+     screen partially rather than wholly, which 88% still does. */
+  .drawer-sheet {
+    max-height: 88vh;
+    max-height: 88svh;
+  }
+}
+
+@media (max-height: 32em) {
+  .drawer-sheet {
+    max-height: 92vh;
+    max-height: 92svh;
   }
 }
 

@@ -42,7 +42,6 @@ import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
-import { createSunPlasma, type SunPlasma } from './sunPlasma';
 import { SUN_OMITTED_PARTS, isOmittedSunPart } from './sunParts';
 import { warmSceneMaterials } from '@/lib/warmScene';
 import { SLATE_400 } from '@/lib/coolPalette';
@@ -201,10 +200,12 @@ const SUN_GLOW_STRIDE = 2;
  * reason this list exists rather than a resolution knob.
  *
  * ── Why `sunouter` is NOT in the list ──
- * It is the sun's ATMOSPHERE. The core is an opaque ball; those eleven layered translucent shells over
- * it are what make it read as burning rather than as a rock. They are also the thing a procedural
- * plasma shader would REPLACE — one animated surface instead of eleven static ones — so they should be
- * superseded, never simply deleted. `SUN_ABLATION_KEEP_SHELLS` stays for measuring that, at 0.
+ * It is the sun's ATMOSPHERE, and it carries `sunouter_baseColor` — the largest map in the file and
+ * the star's actual skin. The core is an opaque ball; those layered translucent shells over it are
+ * what make it read as burning rather than as a rock. A procedural plasma stood in for them for four
+ * days and was removed on 2026-08-12: it saved the blend cost and painted over the model's own
+ * surface to do it. `SUN_ABLATION_KEEP_SHELLS` buys that cost back honestly instead, by drawing only
+ * the shells that are not already hidden behind the ones in front of them.
  *
  * ⚠ HIDING IS NOT REMOVING. This buys frame time only; the geometry and its textures are still
  * downloaded. Reclaiming those means rebuilding the GLB, which changes the mesh table `compareModels`
@@ -213,7 +214,26 @@ const SUN_GLOW_STRIDE = 2;
 // ⚠ The list itself lives in `sunParts.ts`, shared with `Contact/singularityScene`. There are two
 // stars built from this model and CLAUDE.md requires them not to drift; a copy here is how the star
 // at contact would have kept its flares and its eleven shells after the hero star lost them.
-/** DIAGNOSTIC. Keep only the N LARGEST `sunouter` shells. 0 = keep all, and that is the shipping value. */
+/**
+ * DIAGNOSTIC. Keep only the N LARGEST `sunouter` shells. 0 = keep all, and that is the shipping value.
+ *
+ * ⚠ IT WAS BRIEFLY 4, ON AN ARGUMENT THAT DOES NOT HOLD, and the reason is worth keeping so nobody
+ * re-derives it. The reasoning was: each shell is `BLEND` at α 0.815, so transmission after n of them
+ * is 0.185ⁿ, so shells five and beyond composite into a pixel already 99.9 % decided. **That is true
+ * only if the shells are CONCENTRIC, and they are not.** The model's node tree is:
+ *
+ *     Root › Sphere.001 › Sphere.001_0            ← ONE central shell, the full 2.00-across sphere
+ *     Sphere_0_cell.00N › transp_Sphere_0_cell.00N ← and TEN more, one skin per fracture shard
+ *
+ * So a view ray crosses about two of them, never eleven, and "the four largest" is not four layers of
+ * one atmosphere — it is the central sphere plus three shards' skins, leaving **seven shards with no
+ * skin at all**. Not a thinner atmosphere: a patchy one.
+ *
+ * Any real ablation here has to be all-or-nothing, or it has to cull by something other than size.
+ * The cost of the honest answer is what `sunPlasma` existed to avoid: all eleven measured ~5.8 ms of
+ * `sun · bloom` on the reference laptop (7.4 with them, 1.58 for the bare shards), where these
+ * double-sided full-coverage blended spheres are fill-bound rather than submission-bound.
+ */
 const SUN_ABLATION_KEEP_SHELLS = 0;
 
 /**
@@ -452,10 +472,29 @@ const COLLAPSE_FLARE_SPIN_DEGREES_PER_SECOND = 40;
 /** White-hot compression light, well past the cracks' warm amber. */
 const COLLAPSE_CORE_LIGHT_COLOR = 0xffe6c8;
 const COLLAPSE_CORE_LIGHT_INTENSITY = 18;
-/** Super-glowy: the grade is most of why a collapse reads as violent rather than as a shrink. */
-const COLLAPSE_BLOOM_STRENGTH = 2.5;
+/**
+ * Super-glowy: the grade is most of why a collapse reads as violent rather than as a shrink.
+ *
+ * ⚠ The MIDDLE stop of the journey-wide bloom ramp (2026-08-12) — **+17.5 %**, between the hero's
+ * +5 % (`BLOOM_STRENGTH` in `sunBloom`) and contact's +30 % (`CONTACT_BLOOM_STRENGTH`). Not authored
+ * by eye: it is the midpoint of the two ends that were, so the three stops sit on one line and the
+ * star's heat climbs evenly across the whole journey rather than jumping at one crossing.
+ *
+ * ⚠ Only STRENGTH moved. `COLLAPSE_BLOOM_RADIUS` and `COLLAPSE_BLOOM_THRESHOLD` are what decide the
+ * SHAPE of the collapse's glow and they were graded together against the old strength — pushing the
+ * threshold down here would widen what blooms rather than brighten what already does, which is a
+ * different change wearing the same name.
+ */
+const COLLAPSE_BLOOM_STRENGTH = 2.94; // was 2.5
 const COLLAPSE_BLOOM_RADIUS = 1;
-const COLLAPSE_BLOOM_THRESHOLD = 0.42;
+/**
+ * ⚠ Moved with `BLOOM_THRESHOLD` (0.59 → 0.42) and for its reason, not for one of its own: both were
+ * graded against the plasma's output and both were stranded above the model's own surface. The ratio
+ * to the resting threshold is preserved exactly (0.42/0.59 = 0.712, so 0.42 × 0.712 = 0.30), because
+ * what this number encodes is *how much further the collapse opens the glow than the hero does* — and
+ * that relationship was authored, while the absolute value was inherited from a dead surface.
+ */
+const COLLAPSE_BLOOM_THRESHOLD = 0.3; // was 0.42
 const COLLAPSE_EXPOSURE = 1.6;
 const COLLAPSE_MAGMA_EMISSIVE = 5;
 
@@ -606,11 +645,6 @@ export default function SunModelCanvas() {
     // Built only once the model has loaded — the ring radii are fractions of the visible frame, which
     // isn't known until the camera has been fitted to the model.
     let sunParticles: ReturnType<typeof createSunParticles> | null = null;
-    /**
-     * The star's burning surface. Null under reduced motion, where a churning field is exactly the
-     * ambient movement that setting asks us not to run — the crust and its emissive still read.
-     */
-    let plasma: SunPlasma | null = null;
     /**
      * Visible half-height at the sun's own distance, set when the camera is fitted. The particle
      * rings are sized against this so they can never spill past the canvas edge — which is what drew
@@ -1212,21 +1246,12 @@ export default function SunModelCanvas() {
       // off-screen at that depth".
       const frameHalfPerUnit = Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV * 0.5));
 
-      // ── The plasma surface, in place of the eleven `sunouter` shells ──
-      //
-      // Added as a child of `modelRoot` and BEFORE `coronaParts` is built below, which is the whole
-      // trick: it is picked up by that list automatically, so `positionShards` scales it from nothing
-      // at CORONA_APPEAR exactly like every other non-shard part. Miss this and the star burns on
-      // screen for the entire download and the loader's finale has nothing left to reveal.
-      //
-      // ⚠ Added AFTER the framing above, so it cannot move the camera fit. Its radius matches the
-      // shells it replaces, so the bounding box is unchanged either way — but that is a property of
-      // today's numbers, not a guarantee, and the framing should not depend on a constant in another
-      // file. See `sunPlasma.ts` for what PLASMA_RADIUS chooses.
-      if (!reduceMotion) {
-        plasma = createSunPlasma();
-        modelRoot.add(plasma.mesh);
-      }
+      // ⚠ Nothing is added to `modelRoot` here any more. A procedural plasma sphere used to be, in
+      // place of the `sunouter` shells, and it had to go in at exactly this point so that the
+      // `coronaParts` walk below would pick it up and `positionShards` would scale it in at
+      // CORONA_APPEAR with everything else. The shells are the star's surface again and they are
+      // already model-root children, so they are in that list by construction — which is what the
+      // plasma was imitating.
 
       // The ten fracture shards are Groups at the model root; their local positions carry the real
       // assembly offsets, so "outward" is measured entirely within that one frame.
@@ -1586,11 +1611,6 @@ export default function SunModelCanvas() {
       // across it flickered them on and off. The freeze is meant to stop paying for a frame nobody can
       // see; it must never CHANGE the frame it freezes on, or scrubbing back across the threshold pops.
       sunParticles?.update(elapsed, ringForm, ringWorksForm);
-      // The burning surface, on the same two ramps everything else in this file reads — so it is a
-      // pure function of scroll progress and reverses for free, like the rest of the star. Three
-      // uniform writes; the work is all in the fragment shader.
-      plasma?.update(elapsed, cracks, collapse);
-
       // Demand-render: only draw while the image is actually changing — while the state ramp eases,
       // while the star still turns, or while the shards are still arriving.
       //
@@ -1722,7 +1742,6 @@ export default function SunModelCanvas() {
         materials.forEach((material) => material.dispose());
       });
       sunParticles?.dispose();
-      plasma?.dispose();
       bloom.dispose();
       environmentTexture.dispose();
       pmrem.dispose();

@@ -22,18 +22,27 @@ export type SunPartMaterial = 'flare' | 'blowout' | 'sunouter';
  * machines — hiding `flare` and `blowout` took `sun · bloom` from 2.00 to 0.87 ms per call on a
  * desktop (a 57 % cut) and 17.5 to 7.4 ms on the reference laptop.
  *
- * `sunouter` — the eleven translucent shells that were the star's atmosphere — is omitted because
- * `sunPlasma.ts` replaces it: one procedural surface instead of eleven blended meshes drawn twice a
- * frame. **It must not be omitted without that plasma present**, or the star is a bare fractured rock.
+ * ── ⚠ `sunouter` CAME BACK on 2026-08-12, and the procedural plasma went with it ──────────────────
+ * It had been omitted because `sunPlasma.ts` replaced it: one animated surface instead of eleven
+ * blended meshes drawn twice a frame. That trade was sound on frame time and wrong on identity — the
+ * shells carry `sunouter_baseColor`, the largest map in the file and the star's ACTUAL SKIN, and the
+ * plasma painted over it with something the model never had. The brief asks for the model's own
+ * surface, so the shells are the star again and `sunPlasma.ts` is deleted (recoverable from git; it
+ * was itself recovered from the `enhancement` branch once already).
  *
- * ⚠ EMPTYING THIS IS NOT A COMPLETE REVERT. Three other things moved on the same day because these
- * groups left, and all would have to move back:
+ * ⚠ The frame time the plasma existed to save is NOT bought back. `SUN_ABLATION_KEEP_SHELLS` was set
+ * to 4 for one day on the theory that the shells stack and saturate; they do not — ten of the eleven
+ * are per-shard skins, so a partial keep leaves bare shards rather than a thinner atmosphere. See that
+ * constant. All eleven cost ~5.8 ms of `sun · bloom` on the reference laptop, and that is the honest
+ * price of the model's own surface.
+ *
+ * ⚠ EMPTYING THIS ENTIRELY IS STILL NOT A COMPLETE REVERT — `flare` and `blowout` took two other
+ * things with them, and both would have to move back:
  *
  *   `SUN_FRAMING_NUDGE_X`   0.05 → 0   it corrected for the asymmetry `flare` and `blowout` caused
  *   the hero's centring       now reads the drawn geometry, not the full bounding box
- *   `sunPlasma`               now supplies the atmosphere `sunouter` used to
  */
-export const SUN_OMITTED_PARTS: readonly SunPartMaterial[] = ['flare', 'blowout', 'sunouter'];
+export const SUN_OMITTED_PARTS: readonly SunPartMaterial[] = ['flare', 'blowout'];
 
 /** True when this material's meshes should not be drawn. Safe on any string. */
 export function isOmittedSunPart(materialName: string): boolean {

@@ -1,5 +1,18 @@
 # The sun's plasma — plan
 
+> ## ⛔ SUPERSEDED, 2026-08-12. Built, shipped, and REVERTED.
+>
+> `sunPlasma.ts` existed for four days and is deleted. The performance argument below is sound and its
+> measurements still hold — but the art decision it was attached to went the other way once it was on
+> screen: the shells carry `sunouter_baseColor`, the largest map in the file and the star's actual
+> skin, and one procedural surface over the top of that is a different star rather than a cheaper one.
+>
+> The 5 ms is bought back instead by `SUN_ABLATION_KEEP_SHELLS` (4 of 11) — see `sunParts.ts`. Eleven
+> shells at α 0.815 saturate after three, so most of what this plan proposed to replace was already
+> invisible and merely expensive.
+>
+> **Read this as history.** Nothing in it describes shipping code.
+
 > **Status:** PROPOSED, 2026-08-08. Nothing built. Written after the flare/blowout cull shipped and
 > the star came down from 17.5 ms to 7.4 ms per call on the reference laptop. This is the next 5 ms,
 > and unlike everything before it, **it changes how the star looks** — so it is an art decision with a

@@ -41,10 +41,44 @@ import * as THREE from 'three';
 // NOTE ON `THRESHOLD`: UnrealBloom thresholds the composer's buffer, which sits at a different
 // point in the tone-mapping chain than this pass does. The number is therefore a close analogue,
 // not a guaranteed pixel match — expect to nudge it by eye.
-/** The resting grade — Peaceful. The works section eases past these into Collapse; see `setGrade`. */
-export const BLOOM_STRENGTH = 1.26;
+/**
+ * The resting grade — Peaceful. The works section eases past these into Collapse; see `setGrade`.
+ *
+ * ⚠ STRENGTH IS THE FIRST STOP OF A RAMP ACROSS THE WHOLE JOURNEY, raised 2026-08-12. The star gets
+ * hotter the deeper you go, and the lift grows with it: **+5 % here, +17.5 % at works
+ * (`COLLAPSE_BLOOM_STRENGTH`), +30 % at contact (`CONTACT_BLOOM_STRENGTH`)**. The hero is the one
+ * place the star sits against the CREAM rather than against black, which is why it takes the
+ * smallest share — the same glow reads far hotter on a light substrate.
+ *
+ * Free: strength is a multiplier on an already-blurred mip chain. `BLOOM_RADIUS` and the mip count
+ * are what cost, and neither moved.
+ */
+export const BLOOM_STRENGTH = 1.32; // was 1.26
 export const BLOOM_RADIUS = 0.92;
-export const BLOOM_THRESHOLD = 0.59;
+/**
+ * ⚠ 0.59 → 0.42 on 2026-08-12, and this was not a taste change — at 0.59 THE STAR DID NOT BLOOM AT ALL.
+ *
+ * The bright pass reads the scene through ACES tone mapping at `EXPOSURE`, so what `uThreshold` is
+ * compared against is not the texture and not the linear colour but the TONE-MAPPED luma, which ACES
+ * compresses hard. Measured over `sunouter_baseColor` composited at its own α 0.815 over the magma's
+ * emissive backdrop, the star's whole surface lands at:
+ *
+ *     p50 0.364 · p90 0.445 · p95 0.519 · p99 0.726 · MAX 0.809
+ *
+ * At 0.59 that is 2.17 % of the surface — and `THRESHOLD_KNEE` puts full contribution at 0.81, so
+ * **the star's single brightest pixel (0.809) could not reach full bloom anywhere on it.** A sliver of
+ * a sliver, at a few percent strength. Visually: nothing.
+ *
+ * 0.59 was correct for what used to be here. The plasma's own body colour (`--heat-600`) tone-maps to
+ * 0.594 — the threshold was graded so the plasma's BODY sat exactly at the cutoff and only its hotter
+ * granules bloomed. That surface is gone; the model's own is a much darker distribution, and the
+ * threshold had to be re-graded onto it rather than inherited.
+ *
+ * 0.42 puts roughly the top fifth of the surface into the glow — the hot veins and the limb — with the
+ * top 1 % at full contribution and the mid-surface ramping softly through the knee. Below ~0.35 more
+ * than half the star blooms and it stops reading as a glow and starts reading as haze.
+ */
+export const BLOOM_THRESHOLD = 0.42; // was 0.59
 
 /** How soft the cutoff at the threshold is, so bright edges don't alias into the glow. */
 const THRESHOLD_KNEE = 0.22;
