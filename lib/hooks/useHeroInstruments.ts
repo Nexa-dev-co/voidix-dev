@@ -3,9 +3,10 @@ import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 
-// Drives the hero instrument HUD entrance, the narrow screen's scroll cue, and the square's ring: all
-// on REVEAL_EVENT (in lockstep
-// with the headline, never on mount — Contract 2). The live readouts themselves are real telemetry
+// Drives the hero instrument HUD entrance, the narrow screen's scroll cue and the square's ring: all
+// three on REVEAL_EVENT (in lockstep with the headline, never on mount — Contract 2). The cue is here
+// rather than with the HUD because it is the same entrance and the HUD is not mounted at the width the
+// cue exists at; see HeroScrollCue. The live readouts themselves are real telemetry
 // owned by useCoreTelemetry (co-located with HeroInstruments), not this hook. The ring's *fade on
 // scroll* is pure CSS off --nav-progress-home, so nothing here touches the pin. All decorative
 // motion is gated behind reduced motion.
