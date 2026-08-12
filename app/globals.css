@@ -2429,7 +2429,9 @@ body {
 .enquiry-form {
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
+  /* Five gaps between six children, so every 0.05rem here is worth ~4px of the form's total height —
+     which is what decides whether its container needs a scrollbar. */
+  gap: 0.7rem;
 }
 
 .enquiry-field {
@@ -2508,6 +2510,31 @@ body {
    `:invalid` would paint the whole form red before anyone had typed a character. */
 .enquiry-input:user-invalid {
   border-bottom-color: rgb(var(--sun-accent-rgb) / 0.7);
+}
+
+/* ⚠ 16px IS A PLATFORM THRESHOLD, NOT A TYPE DECISION — and this is why the form was unusable on a
+   phone. iOS Safari AUTOMATICALLY ZOOMS THE PAGE whenever a focused input's computed font-size is
+   under 16px. `--fs-body` is `clamp(0.8125rem, 0.77rem + 0.2vw, 0.875rem)`, which on a 390px phone
+   computes to 13.10px — so every tap into a field zoomed the whole site in.
+
+   On an ordinary page that is merely annoying; here it is close to a trap. The site is ONE pinned
+   ScrollTrigger and `useHeroAnimation`'s `touchmove` handler `preventDefault`s across the whole
+   carousel region, so the visitor cannot pan or scroll back out afterwards — the page owns the
+   gesture. `ScrollTrigger.config({ ignoreMobileResize: true })` then means the pin never re-measures
+   against the changed viewport, and the drawer is positioned against a visual viewport that no longer
+   matches it.
+
+   ⚠ The other way to stop the zoom is `maximum-scale=1` / `user-scalable=no` in the viewport meta.
+   DO NOT. That disables pinch-zoom for everyone, on every section, permanently — it is the fix that
+   trades a form bug for an accessibility one. Sizing the control correctly costs nothing.
+
+   Gated on the POINTER rather than a width: the trigger is having an on-screen keyboard, not having a
+   narrow window, so a 700px tablet in portrait needs this and a narrow desktop window does not. Wide
+   pointer-fine layouts keep the authored --fs-body exactly. */
+@media (pointer: coarse) {
+  .enquiry-input {
+    font-size: 16px;
+  }
 }
 
 .enquiry-textarea {
@@ -3600,11 +3627,23 @@ body {
   position: relative;
   display: flex;
   flex-direction: column;
-  width: min(34rem, 100%);
-  /* Small viewport, for the usual mobile-chrome reason — and a hard ceiling so the panel stays a panel
-     on a tall desktop monitor rather than growing into a page. */
-  max-height: min(84vh, 42rem);
-  max-height: min(84svh, 42rem);
+  /* Narrower than it was (34rem). Four single-line fields and a short brief do not need 544px of
+     measure — at that width the form read as a page in a box rather than as a dialog. */
+  width: min(27rem, 100%);
+  /* ⚠ `100%`, and the `min(84svh, 42rem)` it replaces is why this panel used to scroll with room to
+     spare. Two separate problems lived in that expression:
+       · 42rem is 672px, applied REGARDLESS of screen height, so a 1440px-tall monitor clipped the panel
+         at two thirds of a screen and put a scrollbar in it for no reason any visitor could see.
+       · 84svh left a further 16 % of the screen unused on top of the root's own padding, which is
+         already `clamp(1.25rem, 4vw, 3rem)` on every side.
+     This element is a grid item in a `position: fixed; inset: 0` root, so `100%` resolves against that
+     root's CONTENT box — the viewport minus its padding. It is therefore exactly "as tall as the screen
+     allows, and never taller", with no magic fraction to be wrong on somebody's monitor.
+
+     ⚠ `.dialog-scroll` keeps `overflow-y: auto` and that is deliberate — it is a SAFETY NET, not the
+     layout. With this max-height it can only engage when the content genuinely exceeds the screen, and
+     the alternative to a scroll in that case is content that cannot be reached at all. */
+  max-height: 100%;
   background: rgb(var(--card-rgb) / 0.42);
   -webkit-backdrop-filter: blur(22px) saturate(1.2);
   backdrop-filter: blur(22px) saturate(1.2);
@@ -3655,13 +3694,15 @@ body {
   /* Stop the browser chaining a scroll out of the panel and into the page. `useScrollGuard` handles the
      PIN, which is a separate problem — the pin listens on window and doesn't care about chaining. */
   overscroll-behavior: contain;
-  padding: clamp(1.5rem, 3vw, 2rem);
+  /* Tightened with the narrower panel: 2rem of inset either side of a 27rem measure is a frame around
+     a form rather than breathing room, and it was ~64px of the height that pushed this into a scroll. */
+  padding: clamp(1.25rem, 2vw, 1.5rem);
 }
 
 .dialog-head {
   /* Clear of the close button, so a long title never runs under it. */
   padding-right: 2rem;
-  margin-bottom: 1.35rem;
+  margin-bottom: 1rem;
 }
 
 .dialog-eyebrow {
@@ -3671,8 +3712,11 @@ body {
 .dialog-title {
   margin-top: 0.4rem;
   font-weight: 700;
-  font-size: clamp(1.5rem, 2.4vw, 2rem);
-  line-height: 1.05;
+  /* ⚠ Came down with the width, and the two are linked: at 27rem a 2rem title wraps to two lines for
+     most subjects, and a wrapped line here costs more height than the point size saves. This is the
+     size at which the longest service name still sets on one line. */
+  font-size: clamp(1.25rem, 1.6vw, 1.5rem);
+  line-height: 1.08;
   letter-spacing: -0.02em;
   color: var(--fg);
 }
