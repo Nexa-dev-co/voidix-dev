@@ -215,26 +215,26 @@ const SUN_GLOW_STRIDE = 2;
 // stars built from this model and CLAUDE.md requires them not to drift; a copy here is how the star
 // at contact would have kept its flares and its eleven shells after the hero star lost them.
 /**
- * How many of the eleven `sunouter` shells are drawn — LARGEST FIRST. 0 = keep all.
+ * DIAGNOSTIC. Keep only the N LARGEST `sunouter` shells. 0 = keep all, and that is the shipping value.
  *
- * ⚠ This was a diagnostic at 0 while `sunPlasma` stood in for the shells. It is a SHIPPING DIAL now
- * that they are the star's surface again, and it is what pays for them.
+ * ⚠ IT WAS BRIEFLY 4, ON AN ARGUMENT THAT DOES NOT HOLD, and the reason is worth keeping so nobody
+ * re-derives it. The reasoning was: each shell is `BLEND` at α 0.815, so transmission after n of them
+ * is 0.185ⁿ, so shells five and beyond composite into a pixel already 99.9 % decided. **That is true
+ * only if the shells are CONCENTRIC, and they are not.** The model's node tree is:
  *
- * The number is not taste. Each shell is `alphaMode: BLEND` at α 0.815, so along any view ray the
- * transmission left after n of them is 0.185ⁿ: 18.5 % after one, 3.4 % after two, 0.6 % after three.
- * **Shells five through eleven are compositing into a pixel that is already 99.9 % decided** — they
- * cost a full double-sided blended pass each to change nothing. Four keeps the silhouette, the rim
- * and every layer the eye can still resolve, at 36 % of the fill.
+ *     Root › Sphere.001 › Sphere.001_0            ← ONE central shell, the full 2.00-across sphere
+ *     Sphere_0_cell.00N › transp_Sphere_0_cell.00N ← and TEN more, one skin per fracture shard
  *
- * Cost if you move it, from the ablation below: ~0.0219 ms per draw on the dpr 1.1 desktop and every
- * shell is drawn TWICE (`sunBloom` renders the scene twice), so each shell is ~0.044 ms there. On the
- * dpr 2.5 laptop the limit is fill rather than submission and these are double-sided full-coverage
- * spheres — all eleven measured ~5.8 ms, so budget roughly 0.5 ms per shell.
+ * So a view ray crosses about two of them, never eleven, and "the four largest" is not four layers of
+ * one atmosphere — it is the central sphere plus three shards' skins, leaving **seven shards with no
+ * skin at all**. Not a thinner atmosphere: a patchy one.
  *
- * Raise it to 11 if the atmosphere reads thin; drop it to 3 if the laptop struggles. Nothing else has
- * to change either way.
+ * Any real ablation here has to be all-or-nothing, or it has to cull by something other than size.
+ * The cost of the honest answer is what `sunPlasma` existed to avoid: all eleven measured ~5.8 ms of
+ * `sun · bloom` on the reference laptop (7.4 with them, 1.58 for the bare shards), where these
+ * double-sided full-coverage blended spheres are fill-bound rather than submission-bound.
  */
-const SUN_ABLATION_KEEP_SHELLS = 4;
+const SUN_ABLATION_KEEP_SHELLS = 0;
 
 /**
  * What the ablation is doing, for the console capture.
@@ -487,7 +487,14 @@ const COLLAPSE_CORE_LIGHT_INTENSITY = 18;
  */
 const COLLAPSE_BLOOM_STRENGTH = 2.94; // was 2.5
 const COLLAPSE_BLOOM_RADIUS = 1;
-const COLLAPSE_BLOOM_THRESHOLD = 0.42;
+/**
+ * ⚠ Moved with `BLOOM_THRESHOLD` (0.59 → 0.42) and for its reason, not for one of its own: both were
+ * graded against the plasma's output and both were stranded above the model's own surface. The ratio
+ * to the resting threshold is preserved exactly (0.42/0.59 = 0.712, so 0.42 × 0.712 = 0.30), because
+ * what this number encodes is *how much further the collapse opens the glow than the hero does* — and
+ * that relationship was authored, while the absolute value was inherited from a dead surface.
+ */
+const COLLAPSE_BLOOM_THRESHOLD = 0.3; // was 0.42
 const COLLAPSE_EXPOSURE = 1.6;
 const COLLAPSE_MAGMA_EMISSIVE = 5;
 

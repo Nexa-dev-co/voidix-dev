@@ -30,9 +30,11 @@ export type SunPartMaterial = 'flare' | 'blowout' | 'sunouter';
  * surface, so the shells are the star again and `sunPlasma.ts` is deleted (recoverable from git; it
  * was itself recovered from the `enhancement` branch once already).
  *
- * The frame time the plasma existed to save is bought back a different way — see
- * `SUN_ABLATION_KEEP_SHELLS` in `SunModelCanvas`, which is no longer a diagnostic. Eleven shells at
- * α 0.815 saturate after three; the rest were paying full blend cost to be invisible.
+ * ⚠ The frame time the plasma existed to save is NOT bought back. `SUN_ABLATION_KEEP_SHELLS` was set
+ * to 4 for one day on the theory that the shells stack and saturate; they do not — ten of the eleven
+ * are per-shard skins, so a partial keep leaves bare shards rather than a thinner atmosphere. See that
+ * constant. All eleven cost ~5.8 ms of `sun · bloom` on the reference laptop, and that is the honest
+ * price of the model's own surface.
  *
  * ⚠ EMPTYING THIS ENTIRELY IS STILL NOT A COMPLETE REVERT — `flare` and `blowout` took two other
  * things with them, and both would have to move back:
