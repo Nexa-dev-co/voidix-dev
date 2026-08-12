@@ -50,10 +50,23 @@ export const DISCIPLINES: Record<DisciplineId, Discipline> = {
 
 /** What the form arrives already knowing. */
 export interface EnquiryPrefill {
-  /** Shown as a chip at the head of the form, and carried as a hidden field for a future endpoint. */
+  /**
+   * Shown as a chip at the head of the form, and submitted as the enquiry's `source` — which is
+   * what the panel's inbox shows under "Sent from" and what becomes the lead's origin label.
+   */
   subject: string;
   /** Initial value of the brief textarea. Editable — it is a starting point, not a commitment. */
   brief: string;
+  /**
+   * ⚠ CAREERS ONLY, and it is the role's identity rather than its name. The admin panel files an
+   * application against a role by slug; the `subject` beside it is the role's TITLE, which is
+   * display copy an editor can rewrite at any time and cannot be matched on.
+   *
+   * Absent for an open application, and absent for the placeholder roles this repo falls back to
+   * when the panel has published none — both file as an open application, which is the honest
+   * answer for a job that answers to no row in any database.
+   */
+  roleSlug?: string;
 }
 
 /**

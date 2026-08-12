@@ -41,11 +41,13 @@ const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
  * rather than a block in the page — there is exactly one pin on this site, and everything lives in it.
  * Nothing here draws a background: the black hole showing through IS the background.
  *
- * ⚠ FRONT END ONLY. The form validates (natively — this project has no validation library and that is
- * deliberate) but submits nowhere. `docs/contact-black-hole-plan.md` §7b has the open question about
- * where it should post; until that is answered submission is deliberately prevented rather than faking
- * a success state the visitor would believe. The form itself now lives in `components/ui/EnquiryForm`,
- * shared with the CTA that every service and every project opens — see its header.
+ * The form posts to the admin panel's inbox, through this site's own `/api/enquiry` — it is the same
+ * shared `components/ui/EnquiryForm` the CTA on every service and every project opens, so there is one
+ * form on this site and one endpoint behind it. See that component's header for what it sends and why
+ * it never posts to the panel directly.
+ *
+ * ⚠ A submission lands in an INBOX, not in the leads pipeline. Somebody at the studio decides what
+ * becomes a contact, which is what keeps bots and test posts out of the counts and the reports.
  */
 export default function ContactSection() {
   const sectionRef = useRef<HTMLElement>(null);

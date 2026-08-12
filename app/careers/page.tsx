@@ -1,5 +1,13 @@
 import type { Metadata } from 'next';
 import CareersPage from '@/components/pages/Careers/CareersPage';
+import { resolveCareersContent } from '@/components/pages/Careers/careersContent';
+import { fetchPublishedContent } from '@/lib/cms/fetchPublishedContent';
+
+/**
+ * ⚠ Must stay equal to `CONTENT_REVALIDATE_SECONDS`, and must not be removed or turned into an
+ * import — `app/about/page.tsx` carries the two reasons why, both of which fail silently.
+ */
+export const revalidate = 600;
 
 export const metadata: Metadata = {
   title: 'Careers — Voidix',
@@ -13,6 +21,8 @@ export const metadata: Metadata = {
   },
 };
 
-export default function Careers() {
-  return <CareersPage />;
+export default async function Careers() {
+  const published = await fetchPublishedContent();
+
+  return <CareersPage content={resolveCareersContent(published?.careers ?? null)} />;
 }
