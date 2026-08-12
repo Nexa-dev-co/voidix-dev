@@ -161,23 +161,6 @@ Everything ships working from ~360px phones to large desktops **in the same chan
   section: a 390px portrait phone and an 800px landscape tablet are not the same problem, and the
   contact footer's three link columns are correct at 800px and wrong at 390px. Don't reach for 30em
   when 51.25em would do.
-- **…and two on the HEIGHT axis, added 2026-08-12, kept together in one `SHORT FRAMES` block.** Until
-  then there was not a single `max-height` query in `globals.css`, which is why every height defect on
-  this site was invisible: the contact form was **clipped** (nothing there scrolls) and the enquiry
-  dialog scrolled, both from one fixed rhythm authored on a full-height desktop. ⚠ **The shape that
-  breaks it is not a small window, it is a LANDSCAPE PHONE — 932 × 430, which is WIDER than 51.25em.**
-  It gets the full desktop layout and none of the height. `38em` (608px) is where the contact section
-  runs out of room and its form moves into the sheet (`useIsShortViewport`); `32em` (512px) is the
-  landscape phone, where the form pairs its two short fields into one row. Width questions live with
-  their section; height questions do not — one short frame squeezes the section, the sheet and the
-  dialog at once, so they stay in one place.
-- **⚠ Give on height with a `clamp(floor, Nvh, today)` before reaching for either of those.** Every
-  gap in `.enquiry-form` is fluid this way, and each coefficient is picked so it **clamps to its old
-  value at a 1000px viewport** — a full-height desktop renders what it always did, to the pixel, and
-  the curve is only ever a give. Keep that property when retuning: raise a maximum without raising its
-  coefficient and every tall screen silently loses the spacing too. `.dialog-title` needs *two*
-  viewport terms summed (`1.1vw + 1.8vh`) for the same reason the landscape phone exists — it is short
-  exactly where it is wide, so a `vw`-only clamp sets display type at its maximum on a 430px frame.
 - **Full-height boxes use `100svh`, with a `100vh` line above it as the fallback.** On mobile browsers
   `100vh` is the LARGE viewport — the height the page would have with the chrome hidden — so anything
   pinned to the bottom of a `100vh` box (the fleet's carousel strip, the works arrows, the contact
@@ -196,19 +179,11 @@ Everything ships working from ~360px phones to large desktops **in the same chan
   `ScrollTrigger.config({ ignoreMobileResize: true })` so a mobile address bar doesn't re-pin.
 - **Phones don't mount the optional hero effects at all** — `useIsLowPowerViewport` unmounts
   `FluidCursor` and `HeroInstruments` below 760px / on coarse pointers. Hiding with CSS leaves the
-  rAF loops running, which is the opposite of the point. ⚠ **That gate cost one thing it shouldn't
-  have, and `HeroScrollCue` is the repair** (2026-08-12): the scroll cue lived at the bottom of the
-  HUD's left column, so unmounting the panel took it with it — and the platform that most needs
-  telling the page wants a gesture was the one left with nothing saying so. It is back as static
-  markup with one keyframe, gated in **CSS at 51.25em** rather than in JS, because the reason the HUD
-  is unmounted (four rAF loops) simply does not apply to it. The two cues are never up together.
-- **⚠ `useIsLowPowerViewport`, `useIsNarrowViewport` and `useIsShortViewport` are three different
-  questions.** The first is *how much work can this device do* (coarse pointer or <760px) and gates
-  WebGL. The second is *how much room is there, ACROSS* (the 51.25em query, mirrored from the CSS) and
-  gates LAYOUT. The third is *how much room is there, DOWN* (38em) and gates layout too — **only the
-  contact section asks it**, and it exists because a landscape phone clears the narrow breakpoint
-  while having less height than a portrait one. A phone answers yes to all three; a narrow window on a
-  fast desktop wants the narrow layout and the full effects.
+  rAF loops running, which is the opposite of the point.
+- **⚠ `useIsLowPowerViewport` and `useIsNarrowViewport` are different questions.** The first is *how
+  much work can this device do* (coarse pointer or <760px) and gates WebGL. The second is *how much
+  room is there* (the 51.25em query, mirrored from the CSS) and gates LAYOUT. A phone answers yes to
+  both; a narrow window on a fast desktop wants the narrow layout and the full effects.
 - **Copy that doesn't fit goes in the drawer, not in the bin.** `components/ui/Drawer` is the phone's
   bottom sheet: services, works, contact and the navbar all use it. Every section past the hero is one
   pinned viewport with a live scene behind it, so on a phone the screen keeps only what NAMES the thing

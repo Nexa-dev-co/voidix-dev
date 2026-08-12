@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react';
 import { LOOP_REQUEST_EVENT } from '@/lib/loopEvents';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
-import { useIsShortViewport } from '@/lib/hooks/useIsShortViewport';
 import Drawer from '@/components/ui/Drawer/Drawer';
 import EnquiryForm from '@/components/ui/EnquiryForm/EnquiryForm';
 import {
@@ -18,9 +17,8 @@ import {
 // render would tear its listener down and re-add it on each one.
 const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
   { selector: '.contact-intro > *', from: 'left' },
-  // Only where the panel is rendered — a selector that matches nothing is a no-op, so this needs no
-  // knowledge of which layout is up. Wherever the form is a sheet instead, its control is in the
-  // action row below and arrives with it.
+  // Wide only — a selector that matches nothing is a no-op, so this needs no knowledge of which layout
+  // is up. On a phone the form's control is in the action row below and arrives with it.
   { selector: '.contact-panel', from: 'right' },
   // The row's CHILDREN, not the row: on a phone it holds two buttons and they should come up together
   // rather than the wrapper sliding as one block. ⚠ Not also matched by the selector above, or the two
@@ -66,33 +64,20 @@ export default function ContactSection() {
     groups: ARRIVAL_GROUPS,
   });
 
-  // ── The compact layout ──
+  // ── The narrow layout ──
   // The form is the single biggest object on this page, and contact is ONE pinned viewport with
   // nothing below it to scroll to. On a 360×640 phone the copy, the form, the loop button and the
   // footer together overran the frame by roughly 150px — and because the body bottom-aligns at this
   // width, the overflow went off the TOP: the section's own title sat behind the navbar, unreachable.
   // Putting the form in a sheet gives back every pixel it was taking and costs one tap.
-  //
-  // ⚠ TWO AXES, AND THE SECOND ONE IS NOT A PHONE. The width test above was the whole answer for as
-  // long as "not enough room" meant "a phone" — but it never did. A landscape phone is 932 × 430, so
-  // it clears the 820px narrow breakpoint comfortably and gets this section's full two-column desktop
-  // layout, with 142px of body to put a four-field form in. It overflowed, `align-items: center` split
-  // that across both ends and `.hero-section`'s `overflow: hidden` clipped it — silently, because
-  // nothing here scrolls. Every short frame, phone or half-height desktop window, was in that case.
-  //
-  // So the question is asked on both axes and the sheet answers both. Everything else on the page
-  // gives fluidly first (see the height clamps on .enquiry-form); this is for where no rhythm is
-  // enough. See useIsShortViewport for why 38em and why nothing else on the site asks it.
   const isNarrow = useIsNarrowViewport();
-  const isShort = useIsShortViewport();
-  const isCompact = isNarrow || isShort;
   const [isFormOpen, setIsFormOpen] = useState(false);
 
-  // A sheet with no button to reopen it is a trap, and that is what a resize past either breakpoint
-  // would leave behind.
+  // A sheet with no button to reopen it is a trap, and that is what a resize past the breakpoint would
+  // leave behind.
   useEffect(() => {
-    if (!isCompact) setIsFormOpen(false);
-  }, [isCompact]);
+    if (!isNarrow) setIsFormOpen(false);
+  }, [isNarrow]);
 
   /** Ask the pin to fall into the black hole and come back out at the hero. See lib/loopEvents.ts. */
   const requestLoop = () => {
@@ -118,10 +103,9 @@ export default function ContactSection() {
           <p className="contact-lead">{CONTACT_LEAD}</p>
         </div>
 
-        {/* Only where there is room for it. Wherever there is not, the form is a sheet and the control
-            that opens it belongs down in the action row with the loop button rather than up here on
-            its own. */}
-        {!isCompact && (
+        {/* Wide only. On a phone the form is a sheet, and the control that opens it belongs down in the
+            action row with the loop button rather than up here on its own. */}
+        {!isNarrow && (
           <div className="contact-panel">
             <EnquiryForm />
           </div>
@@ -139,7 +123,7 @@ export default function ContactSection() {
           they read as one button that happened to grow a second one underneath it. On a wide screen the
           form is already a panel above, so this is the loop button alone, exactly as before. */}
       <div className="contact-loop">
-        {isCompact && (
+        {isNarrow && (
           <button
             type="button"
             className="drawer-open contact-open-form"
@@ -202,7 +186,7 @@ export default function ContactSection() {
         </p>
       </footer>
 
-      {isCompact && (
+      {isNarrow && (
         <Drawer
           open={isFormOpen}
           onClose={() => setIsFormOpen(false)}

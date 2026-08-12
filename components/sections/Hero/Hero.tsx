@@ -7,7 +7,6 @@ import { useIsLowPowerViewport } from '@/lib/hooks/useIsLowPowerViewport';
 import FluidCursor from '@/components/effects/FluidCursor/FluidCursor';
 import ConstellationFrame from '@/components/effects/ConstellationFrame/ConstellationFrame';
 import HeroInstruments from '@/components/sections/Hero/HeroInstruments/HeroInstruments';
-import HeroScrollCue from '@/components/sections/Hero/HeroScrollCue';
 import ServicesDeck from '@/components/sections/ServicesDeck/ServicesDeck';
 import WorksField from '@/components/sections/WorksField/WorksField';
 import ContactSection from '@/components/sections/Contact/ContactSection';
@@ -99,11 +98,6 @@ export default function Hero() {
       {/* Dark on the cream hero, and sits below the trail (z-index 1) so the ink
           inverts it to light — the tagline glows through the ink as the trail crosses it. */}
       <p className="hero-sub">software with its own gravity</p>
-
-      {/* The scroll cue, below the tagline and only under 51.25em — above that the HUD's left column
-          carries its own and this is display:none. Not gated in JS: it is static markup with one
-          keyframe, so unlike the HUD there are no loops to stop. See HeroScrollCue. */}
-      <HeroScrollCue />
 
       {/* Services fleet — an overlay inside the hero, revealed once the square fills the screen.
           It shares the hero's single pin (the fleet carousel is the pin's first set of stops). */}
