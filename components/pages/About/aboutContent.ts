@@ -26,7 +26,9 @@ import type { DocSectionMeta } from '@/components/layout/PageShell/docSections';
 import type { Claim } from '@/components/layout/PageShell/ClaimRow';
 import type { Phase } from '@/components/layout/PageShell/PhaseTrack';
 
-export const ABOUT_EYEBROW = 'About — Voidix';
+/* Just the document's name — same reasoning as `CAREERS_EYEBROW`: the navbar's wordmark sits directly
+   above the masthead, so repeating "Voidix" here is the brand introducing itself twice in one glance. */
+export const ABOUT_EYEBROW = 'About';
 
 /** One entry per sentence. ⚠ Never a single string with a <br/> — see PageMasthead's header. */
 export const ABOUT_TITLE = [

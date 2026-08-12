@@ -64,6 +64,27 @@ const CENTRE_Y = (CHORD_TOP_Y + CHORD_BOTTOM_Y) / 2;
 const START_ANGLE = Math.atan2(CHORD_TOP_Y - CENTRE_Y, CHORD_X - CENTRE_X);
 const END_ANGLE = Math.atan2(CHORD_BOTTOM_Y - CENTRE_Y, CHORD_X - CENTRE_X);
 
+const TWO_PI = Math.PI * 2;
+
+/**
+ * ⚠ THE SHORT WAY ROUND, AND IT MUST BE COMPUTED — THE OBVIOUS SUBTRACTION IS A BUG.
+ *
+ * The centre sits to the RIGHT of the chord, so both endpoints are at angles near ±180° — which is
+ * exactly where `atan2` wraps. It returns −166.5° for the top of the arc and +166.5° for the bottom,
+ * so a plain `END − START` reads as **+333°**: the long way round, out through 0° and the far side of
+ * a 1155-unit circle. The arc that was asked for is the 27° between them.
+ *
+ * Interpolating that 333° put every station and the travelling body **outside the 60 × 600 viewBox** —
+ * nodes 01 and 02 at x ≈ 1962 and NEGATIVE y, i.e. floating up over the masthead and off to the right
+ * of the page, while the drawn `<path>` (an SVG `A` command, which takes the short arc by construction)
+ * stayed correctly in the gutter. The precise failure this file's own header warns about: the drawn
+ * path and the placed nodes disagreeing.
+ *
+ * Rounding the raw difference to the nearest full turn and subtracting it folds any angle pair into
+ * the shortest signed sweep, whichever side of the wrap they landed on.
+ */
+const ARC_SWEEP = END_ANGLE - START_ANGLE - TWO_PI * Math.round((END_ANGLE - START_ANGLE) / TWO_PI);
+
 /**
  * A point on the orbit, at `fraction` of the way down it.
  *
@@ -72,7 +93,7 @@ const END_ANGLE = Math.atan2(CHORD_BOTTOM_Y - CENTRE_Y, CHORD_X - CENTRE_X);
  */
 export function pointOnRail(fraction: number): { x: number; y: number } {
   const clamped = fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
-  const angle = START_ANGLE + (END_ANGLE - START_ANGLE) * clamped;
+  const angle = START_ANGLE + ARC_SWEEP * clamped;
   return {
     x: CENTRE_X + ARC_RADIUS * Math.cos(angle),
     y: CENTRE_Y + ARC_RADIUS * Math.sin(angle),

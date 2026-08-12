@@ -40,12 +40,14 @@ export default function OrbitRail({ sections }: OrbitRailProps) {
   // Travel to a station. Not a bare `#anchor` href, because smooth scrolling would have to be turned on
   // globally to make one glide — and `html { scroll-behavior: smooth }` is exactly the thing that
   // fights ScrollTrigger on the homepage, which shares this stylesheet. Scoped to the press instead.
+  // ⚠ `scrollIntoView`, not a hand-built scrollTo: only it honours the sections' `scroll-margin-top`,
+  // and without that margin a travelled-to heading parks underneath the fixed navbar.
   const travelToSection = (event: React.MouseEvent<HTMLAnchorElement>, key: string) => {
     const target = document.getElementById(key);
     if (!target) return; // Let the href do whatever a browser would do; better than swallowing it.
     event.preventDefault();
-    window.scrollTo({
-      top: target.getBoundingClientRect().top + window.scrollY,
+    target.scrollIntoView({
+      block: 'start',
       behavior: prefersReducedMotion() ? 'auto' : 'smooth',
     });
   };

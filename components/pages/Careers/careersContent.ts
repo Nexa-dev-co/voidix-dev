@@ -2,27 +2,34 @@
  * Everything `/careers` says, in one place — same arrangement as `aboutContent.ts` and, before it,
  * `deckServices.ts` and `faqEntries.ts`.
  *
- * ── ⚠ EVERY ROLE BELOW IS INVENTED ───────────────────────────────────────────────────────────────
- * The four openings, their locations, their terms and every bullet in them are mock data — written
- * on-voice so the page has its real shape and rhythm, but describing no vacancy that exists. This is
- * the same warning `contactContent.ts` carries about its invented addresses, and it matters more here:
- * a person can waste an afternoon on a job posting in a way they cannot waste one on a footer link.
+ * ── ⚠ THIS FILE IS THE SEED AND THE CONTRACT, NOT THE FINAL HOME ─────────────────────────────────
+ * Decided 2026-08-11: careers content will be MANAGED FROM THE ADMIN DASHBOARD (it exists, on its own
+ * domain, not yet connected). The plan: the page fetches via ISR, `CareerRole` and `Phase` below are
+ * the shapes the dashboard must serve, and these constants become the fallback/seed. Until that is
+ * wired, this file is what ships.
  *
- * Do not ship these as they stand. Replace them with real openings, or cut the section to the open
- * application at the bottom, which is the honest version of "we are always interested".
+ * ── ⚠ EVERY ROLE BELOW IS STILL INVENTED ─────────────────────────────────────────────────────────
+ * The four openings are mock data kept as the TEMPLATE for what the dashboard will serve — on-voice,
+ * right shape, describing no vacancy that exists. A person can waste an afternoon on a job posting in
+ * a way they cannot waste one on a footer link. Before real visitors: real roles from the dashboard,
+ * or an empty list — the page renders an honest empty state (`ROLES_EMPTY_LINE`) on its own.
  *
- * ── ⚠ AND THE APPLY BUTTON POSTS NOWHERE ─────────────────────────────────────────────────────────
- * It opens the site's shared `EnquiryForm`, which prevents its own submit and has no endpoint — the
- * deliberate front-end-only state `CLAUDE.md` PART 4 records for the contact form. Dropping a project
- * enquiry silently is bad; dropping a job application silently is worse, because the person is left
- * believing they applied. When the contact form gets an endpoint, this needs one in the SAME change.
+ * ── ⚠ AND THE APPLY BUTTON POSTS NOWHERE, YET ────────────────────────────────────────────────────
+ * The application form (EnquiryForm `variant="application"`) collects name*, email*, phone, "why you",
+ * and THE WORK — a link and/or one PDF ≤ 5 MB, at least one of the two required. It validates all of
+ * that and then prevents its own submit: there is no endpoint until the admin panel is connected.
+ * Dropping a job application silently is worse than dropping an enquiry, because the person is left
+ * believing they applied. When the contact form gets an endpoint, this needs one in the SAME change —
+ * multipart (the PDF), POSTing subject + all fields to the dashboard's applications API.
  */
 
 import type { DocSectionMeta } from '@/components/layout/PageShell/docSections';
 import type { Claim } from '@/components/layout/PageShell/ClaimRow';
 import type { Phase } from '@/components/layout/PageShell/PhaseTrack';
 
-export const CAREERS_EYEBROW = 'Careers — Voidix';
+/* Just the document's name. The navbar's wordmark sits directly above the masthead on these routes, so
+   an eyebrow that says "Voidix" again is the brand introducing itself twice in one glance. */
+export const CAREERS_EYEBROW = 'Careers';
 
 /** One entry per sentence. ⚠ Never a single string with a <br/> — see PageMasthead's header. */
 export const CAREERS_TITLE = [
@@ -31,7 +38,7 @@ export const CAREERS_TITLE = [
 ] as const;
 
 export const CAREERS_LEAD =
-  'Small studio, short chain of command, work that ships with your name still on the commit. If what you want is to be the third pair of eyes on somebody else’s spec, this is the wrong door — and we would rather say so on the way in.';
+  'Four to six of us, depending on the season — engineers and designers in one room, a chain of command you can cross in a sentence, work that ships with your name still on the commit. If that sounds like your size, we would like to read what you have built.';
 
 export const CAREERS_SECTIONS: readonly DocSectionMeta[] = [
   { key: 'what-it-is-like', number: '01', title: 'What it is like here' },
@@ -65,7 +72,13 @@ export interface CareerRole {
   /** Two-digit ordinal down the left of the row. */
   index: string;
   title: string;
+  /**
+   * Where the role is worked, and it is decided PER ROLE — remote, hybrid or in the studio, whichever
+   * that opening actually needs. Not a studio-wide policy, which is why it lives on the role rather
+   * than in a line of the lead.
+   */
   location: string;
+  /** Full-time, contract or fixed term — again per role, decided by what the work needs. */
   commitment: string;
   /** What the person would be responsible for. */
   owns: readonly string[];
@@ -159,16 +172,26 @@ export const CAREER_ROLES: readonly CareerRole[] = [
   },
 ];
 
+/** What section 02 says when the dashboard serves no roles — a state the page must stand in. */
+export const ROLES_EMPTY_LINE =
+  'No roles are open right now — we hire when a surface needs an owner, not on a calendar.';
+
+/** The link that follows it, travelling to section 04. */
+export const ROLES_EMPTY_INVITE = 'Write to us anyway';
+
 export const HIRING_PHASES: readonly Phase[] = [
+  // ⚠ Phase 1 and the application form have to keep saying the same thing. The form asks for four
+  // things — name, email, the work as a link or a CV, and why you — so "a note and a link" would now
+  // be the process copy promising something smaller than the form delivers.
   {
     span: 'Day 0',
     name: 'You write',
-    detail: 'A note and a link. No cover letter, no form with nine required fields.',
+    detail: 'A note, and a link or a CV. No cover letter, no form with nine required fields.',
   },
   {
-    span: 'Inside 48 hours',
+    span: 'Inside two days',
     name: 'We read the work',
-    detail: 'The work, not the CV. You get an answer either way, from a person.',
+    detail: 'The work first, the CV second. You get an answer either way, from a person.',
   },
   {
     span: 'Week 1',
@@ -177,20 +200,30 @@ export const HIRING_PHASES: readonly Phase[] = [
   },
   {
     span: 'Week 2',
-    name: 'A paid trial piece',
-    detail: 'A real slice of real work, paid at the rate. You keep it either way.',
+    name: 'The offer, whole',
+    detail: 'Real numbers, a start date, and the name of the first surface you would own.',
   },
 ];
 
 export const OPEN_APPLICATION_TITLE = 'Then write anyway.';
 
 export const OPEN_APPLICATION_LEAD =
-  'The list above is what we know we need. It has been wrong before — twice the best application arrived for a role that did not exist yet. Tell us what you do and what you would want to own.';
+  'The list above is what we know we need, and it has been wrong before. Tell us what you do and what you would want to own.';
 
 /** The subject the open application carries, in place of a role title. */
 export const OPEN_APPLICATION_SUBJECT = 'Open application';
 
 export const OPEN_APPLICATION_SEED = 'What I do, and what I would want to own: ';
+
+/**
+ * The one question a role posting answers and an open application cannot.
+ *
+ * ⚠ It is asked ONLY on the open application. Every posted role already states its own terms in the row
+ * you opened it from, so asking again there would be the form doubting what the page just said.
+ */
+export const OPEN_APPLICATION_COMMITMENT_LABEL = 'What you are looking for';
+
+export const OPEN_APPLICATION_COMMITMENTS = ['Full-time', 'Part-time', 'Internship'] as const;
 
 /** Names the long field. The form asks for a brief by default; an applicant is answering a different question. */
 export const APPLICATION_BRIEF_LABEL = 'Why you';

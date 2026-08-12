@@ -21,9 +21,13 @@ import {
   CAREER_ROLES,
   HIRING_PHASES,
   OPEN_APPLICATION_LEAD,
+  OPEN_APPLICATION_COMMITMENTS,
+  OPEN_APPLICATION_COMMITMENT_LABEL,
   OPEN_APPLICATION_SEED,
   OPEN_APPLICATION_SUBJECT,
   OPEN_APPLICATION_TITLE,
+  ROLES_EMPTY_INVITE,
+  ROLES_EMPTY_LINE,
   WORKING_HERE,
 } from './careersContent';
 
@@ -51,10 +55,15 @@ export default function CareersPage() {
   const isNarrow = useIsNarrowViewport();
 
   // Dragging a window narrow with three roles open would land in exactly the state the accordion exists
-  // to prevent. Keep the most recently opened one and close the rest.
+  // to prevent. Keep the most recently opened one and close the rest — a Set iterates in insertion
+  // order, so the last entry is the role the visitor touched last.
   useEffect(() => {
     if (!isNarrow) return;
-    setOpenRoles((current) => (current.size > 1 ? new Set() : current));
+    setOpenRoles((current) => {
+      if (current.size <= 1) return current;
+      const mostRecentlyOpened = Array.from(current).pop();
+      return new Set(mostRecentlyOpened ? [mostRecentlyOpened] : []);
+    });
   }, [isNarrow]);
 
   const toggleRole = (roleTitle: string) => {
@@ -95,20 +104,32 @@ export default function CareersPage() {
           </ul>
         </DocSection>
 
-        {/* 02 — the roles */}
+        {/* 02 — the roles. An empty list gets an honest sentence pointing at the open application,
+            not a heading floating over nothing — the content file's own header says the mock roles
+            may simply be cut, so this state is one the page must be able to stand in. */}
         <DocSection meta={CAREERS_SECTIONS[1]} wide>
-          <ul className="doc-roles">
-            {CAREER_ROLES.map((role, index) => (
-              <RoleRow
-                key={role.title}
-                role={role}
-                order={index}
-                open={openRoles.has(role.title)}
-                onToggle={() => toggleRole(role.title)}
-                onApply={() => applyForRole(role.title, role.briefSeed)}
-              />
-            ))}
-          </ul>
+          {CAREER_ROLES.length === 0 ? (
+            <p className="doc-roles-empty">
+              {ROLES_EMPTY_LINE}{' '}
+              <a className="doc-close-link" href={`#${CAREERS_SECTIONS[3].key}`}>
+                {ROLES_EMPTY_INVITE}
+                <span aria-hidden="true"> →</span>
+              </a>
+            </p>
+          ) : (
+            <ul className="doc-roles">
+              {CAREER_ROLES.map((role, index) => (
+                <RoleRow
+                  key={role.title}
+                  role={role}
+                  order={index}
+                  open={openRoles.has(role.title)}
+                  onToggle={() => toggleRole(role.title)}
+                  onApply={() => applyForRole(role.title, role.briefSeed)}
+                />
+              ))}
+            </ul>
+          )}
         </DocSection>
 
         {/* 03 — how hiring runs */}
@@ -125,7 +146,8 @@ export default function CareersPage() {
               className="doc-close-actions"
               style={{ '--reveal-index': 1 } as CSSProperties}
             >
-              <EnquiryButton label="Write to us" onClick={applyOpen} />
+              {/* The one press this whole document exists to produce — see EnquiryButton on `hot`. */}
+              <EnquiryButton label="Write to us" onClick={applyOpen} tone="hot" />
               <a className="doc-close-link" href="/about">
                 {CAREERS_ABOUT_INVITE}
                 <span aria-hidden="true"> →</span>
@@ -143,6 +165,13 @@ export default function CareersPage() {
         prefill={prefill ?? undefined}
         briefLabel={APPLICATION_BRIEF_LABEL}
         submitLabel={APPLICATION_SUBMIT_LABEL}
+        variant="application"
+        // Only the OPEN application is asked what shape of work it wants — every posted role has
+        // already stated its own terms in the row it was opened from.
+        commitmentOptions={
+          prefill?.subject === OPEN_APPLICATION_SUBJECT ? OPEN_APPLICATION_COMMITMENTS : undefined
+        }
+        commitmentLabel={OPEN_APPLICATION_COMMITMENT_LABEL}
       />
     </>
   );
