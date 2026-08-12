@@ -84,6 +84,26 @@ const STAGE_SCROLL_VH = 100; // ...and per carousel stop after it (a craft, or a
 const SUN_SCROLL_SCALE = 1.1; // the sun grows to 1.1× as the square fills
 const SUN_SCROLL_RISE = 200; // px the sun lifts above the square's centre and holds
 
+/**
+ * Where in the fill the page BEHIND the hero stops being cream and becomes the page black.
+ *
+ * ⚠ This exists for a bug you cannot see on a desktop. `.hero-section` is `100svh` — the SMALL
+ * viewport, i.e. the height with the browser's chrome showing — and that is deliberate and correct
+ * (see the comment on the rule; `dvh` would reflow the pin mid-gesture). But it is a STATIC unit, so
+ * the moment a phone browser minimises its own chrome the visible viewport becomes the LARGE one and
+ * a strip of page shows beneath the pinned hero. Past the fill that strip is black under black and
+ * nobody has ever seen it. On the cream hero it is the most visible thing on the screen — and it
+ * grows exactly as the chrome animates, which is what makes the browser's furniture read as the SITE
+ * failing to respond to the first scroll. See docs/mobile-polish-plan.md §1.
+ *
+ * So the strip is always the colour of whatever is covering the screen. That is cream for nearly the
+ * whole fill: the square is scaled to cover the viewport at fill 1 and NOT before, so until then the
+ * hero's own bottom edge — the pixels directly above the strip — is still cream. Hence a late, short
+ * ramp rather than a lerp across the whole span, which would put a grey bar under a cream screen for
+ * most of it.
+ */
+const BAND_BLACKEN_FILL_START = 0.9;
+
 // Overlay reveal / hide, keyed to which stop the carousel is on.
 const DECK_REVEAL_DURATION = 0.6;
 const DECK_HIDE_DURATION = 0.4;
@@ -825,6 +845,46 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       });
     };
 
+    // ── The strip a minimised browser chrome uncovers below the pinned hero ──
+    // See BAND_BLACKEN_FILL_START for what this is and why it is invisible on a desktop.
+    //
+    // Both colours are READ, never restated: the cream is `.hero-section`'s own background (a
+    // non-token colour, deliberately — see CLAUDE.md) and the black is `body`'s `--bg`. Taking them
+    // off the live computed style is what stops the band drifting if either is ever retuned.
+    //
+    // ⚠ It has to be `body` that gets painted, not `html`: body's box spans the whole document —
+    // it contains the pin's spacer — so its own background paints over anything on `html` at exactly
+    // the place the strip appears.
+    const heroCream = getComputedStyle(heroSection).backgroundColor;
+    const bodyBlack = getComputedStyle(document.body).backgroundColor;
+    let lastBandColor = "";
+    const applyChromeBand = (fill: number) => {
+      // At 1 the inline style is dropped rather than set to the black: the stylesheet's own `--bg` is
+      // where the ramp lands, so handing back is a no-op on screen and leaves nothing overriding body
+      // for the rest of the journey.
+      const bandColor =
+        fill >= 1
+          ? ""
+          : gsap.utils.interpolate(
+              heroCream,
+              bodyBlack,
+              gsap.utils.clamp(
+                0,
+                1,
+                (fill - BAND_BLACKEN_FILL_START) / (1 - BAND_BLACKEN_FILL_START),
+              ),
+            );
+      if (bandColor === lastBandColor) return;
+      lastBandColor = bandColor;
+      document.body.style.backgroundColor = bandColor;
+    };
+    // Primed here rather than left to the pin's first update, because the pin does not exist until
+    // REVEAL and a visitor can reach the hero with the chrome ALREADY minimised — `/about` and
+    // `/careers` are ordinary scrolling documents and the navbar's links to them are client-side
+    // navigations, so nothing re-expands it on the way back. Safe this early: the intro's veil is
+    // `position: fixed; inset: 0`, so it covers the strip whatever colour it is.
+    applyChromeBand(0);
+
     // ── The hero → services transition ──
     // The square filling the screen IS this transition, and the sun comes apart across it. Published
     // as two plain fractions (see lib/heroServicesEvents): the pin owns the LAYOUT of the span — where
@@ -841,11 +901,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // whether anything moved.
       if (transitionProgress === lastHeroServicesProgress) return;
       lastHeroServicesProgress = transitionProgress;
+      const fill = gsap.utils.clamp(0, 1, progress / fillFraction);
+      applyChromeBand(fill);
       window.dispatchEvent(
         new CustomEvent<HeroServicesProgressDetail>(HERO_SERVICES_PROGRESS_EVENT, {
           detail: {
             progress: transitionProgress,
-            fill: gsap.utils.clamp(0, 1, progress / fillFraction),
+            fill,
           },
         }),
       );
@@ -1649,6 +1711,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       window.clearTimeout(fallbackTimeout);
       window.clearTimeout(rearmTimer);
       window.clearTimeout(coveredJumpNet);
+      // Hand `body` back to the stylesheet — this hook is the only writer of that inline style, and
+      // leaving a cream one behind would outlive the homepage on a client-side route change.
+      document.body.style.backgroundColor = "";
       gsap.killTweensOf(window);
       scrollTimeline?.scrollTrigger?.kill();
       scrollTimeline?.kill();
