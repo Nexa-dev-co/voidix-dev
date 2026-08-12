@@ -464,7 +464,15 @@ const SUN_PARALLAX_MAX_OFFSET_RATIO = 2;
 // onto the pad, so the whole handoff cleanly undoes. Perspective grows each rock as it nears (NOT
 // scaled up from a speck, so it never reads as spawning). They stay far/small until the ship has
 // cleared frame-centre (see EXIT_PROGRESS_* in useServicesDeck), so ship and rocks never clash.
-const METEOR_ARRIVE_PROGRESS_START = 0.8;  // handoff progress where the rock begins its approach
+//
+// ⚠ That last sentence was ASPIRATIONAL until 2026-08-11. This sat at 0.80 while the ship only began
+// its exit whoosh at EXIT_PROGRESS_START = 0.88, so the mark started its approach a third of a second
+// BEFORE the craft began to clear and the two shared the frame — the thing the comment promises does
+// not happen. It is now pinned to that same 0.88, and HANDOFF_STEP_DURATION went 4 s → 5 s in the same
+// change so the approach still has room to read after it (0.12 of a 5 s glide, ~0.6 s).
+// ⚠ Keep this and EXIT_PROGRESS_START equal. They are two constants in two scenes describing one
+// baton pass, and nothing enforces it.
+const METEOR_ARRIVE_PROGRESS_START = 0.88; // handoff progress where the rock begins its approach
 const METEOR_ARRIVE_OFFSET = new THREE.Vector3(0, 0.5, -42); // how far behind its spot it starts
 const METEOR_APPEAR_FRACTION = 0.12; // gentle fade-up from the far dark as it emerges
 const METEOR_VISIBLE_EPSILON = 0.001; // below this the rock is hidden (during the flight)
@@ -2123,6 +2131,46 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       screenComposer.render();
     };
 
+    /**
+     * ── The marks have to be DRAWN once, not merely compiled ─────────────────────────────────────
+     *
+     * They are hidden at rest (`markVisible` is false until the handoff reaches
+     * METEOR_ARRIVE_PROGRESS_START), so every warm-up draw above skips them — and `compileAsync`
+     * covers only their PROGRAMS, because `compile` walks with `traverse`. Neither their multi-megabyte
+     * vertex buffers nor their textures reach the GPU until the frame they first turn visible, which is
+     * inside the services → works crossing.
+     *
+     * That froze the SHIP, which is drawn by a completely different renderer on a different canvas —
+     * the tell that this is GPU-process work, exactly as `lib/warmScene.ts`'s header describes. The
+     * compositor cannot present anyone's frames while the GPU process is uploading.
+     *
+     * Four marks land together, each carrying its own cut geometry plus cloned stone/cavity maps —
+     * and a clone is a SEPARATE upload however much of its image it shares (see
+     * `accretionTransition`'s note on `Texture.clone`). The deck's `prewarmPipeline` has always shown
+     * every hull for its warm draw for this reason; the field simply never did the same for its marks.
+     *
+     * ⚠ `frustumCulled` off as well as visible: a culled object never reaches the render list, so
+     * whether this uploaded anything would otherwise depend on where the camera happened to be
+     * pointing during the warm-up. Both are restored by the returned function.
+     */
+    const showMarksForWarmupDraw = (): (() => void) => {
+      const unculled: THREE.Object3D[] = [];
+      markRigs.forEach((rig) => {
+        rig.group.visible = true;
+        rig.group.traverse((child) => {
+          if (!child.frustumCulled) return;
+          child.frustumCulled = false;
+          unculled.push(child);
+        });
+      });
+      return () => {
+        unculled.forEach((child) => { child.frustumCulled = true; });
+        // Back to hidden — the arrival block re-asserts this every frame anyway, but leaving four
+        // landed marks in shot for the frames between here and the first scroll would be visible.
+        markRigs.forEach((rig) => { rig.group.visible = false; });
+      };
+    };
+
     let warmupStarted = false;
     const warmUpField = async () => {
       if (warmupStarted || disposed) return;
@@ -2145,7 +2193,13 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         if (disposed) return;
 
         smaaPass.enabled = true;
+        // The marks ride on THIS draw and are put back before the next one — see
+        // `showMarksForWarmupDraw`. This is already the draw that carries the allocations, and keeping
+        // them off the probe below means the measurement that sizes the whole session still sees
+        // exactly the frame it has always been calibrated against.
+        const restoreMarks = showMarksForWarmupDraw();
         drawWarmupFrame();
+        restoreMarks();
 
         await nextWarmupFrame();
         if (disposed) return;

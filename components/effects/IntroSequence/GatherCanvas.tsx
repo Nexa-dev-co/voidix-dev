@@ -159,9 +159,14 @@ export default function GatherCanvas() {
       if (rect.width === 0 && rect.height === 0) return null;
       const { width, height } = canvasSize();
       const aspect = width / height;
-      // The sun is framed slightly left of the glyph's centre (SUN_FRAMING_NUDGE_X), so the stream has to
-      // follow it or the dust would be absorbed off to one side of the star. The nudge is a fraction of
-      // the sun camera's half-frame, and that half-frame is half the sun element's height on screen.
+      // Wherever the sun is framed, the stream has to follow it or the dust would be absorbed off to
+      // one side of the star. The nudge is a fraction of the sun camera's half-frame, and that
+      // half-frame is half the sun element's height on screen.
+      //
+      // ⚠ `SUN_FRAMING_NUDGE_X` is 0 as of 2026-08-08, so this term currently resolves to zero — the
+      // star is dead centre in its own canvas and the dust converges on the glyph's centre. Kept live
+      // rather than deleted: it is the single dial for the star's horizontal framing, and the two
+      // sides must not drift apart if it is ever nudged again. See the constant.
       const sunNudge = (SUN_FRAMING_NUDGE_X * (rect.height * SUN_IN_O_RATIO)) / height;
       // Screen pixels → NDC → aspect units. Y flips: screens count downward.
       return {

@@ -127,6 +127,21 @@ let lapNetworkCount = 0;
 let lapCacheCount = 0;
 let lapSiteBytes = 0;
 let lapBuildBytes = 0;
+/**
+ * The same two totals for what came from CACHE, kept apart from the wire figures on purpose.
+ *
+ * ⚠ THEY ARE NOT THE SAME UNIT AND MUST NEVER BE ADDED. A network entry reports `transferSize` — what
+ * crossed the wire, compressed. A cached entry has `transferSize` 0 and only `decodedBodySize` — the
+ * UNCOMPRESSED size. For a GLB the two are within a few percent (it is already compressed); for a JS
+ * chunk decoded is ~3× the wire (`2200cc46` read 54.1 KB over the wire and 168.8 KB from cache).
+ * Summing them would invent a number that is neither.
+ *
+ * They exist because without them a fully cached lap printed `0.0 KB site assets · 0.0 KB bundle`
+ * while every individual line above it showed a real size — which reads as "nothing loaded" and cost
+ * an afternoon of arguing about whether a rebuilt model had actually deployed.
+ */
+let lapSiteCacheBytes = 0;
+let lapBuildCacheBytes = 0;
 let lapRedownloads = 0;
 let lapOpaqueCount = 0;
 let previousLap: LapTotals | null = null;
@@ -242,6 +257,9 @@ function record(entry: PerformanceResourceTiming & ResourceTimingExtras): Detail
   } else if (delivery === 'cache') {
     lapCacheCount += 1;
     stats.cacheCount += 1;
+    // Decoded, not transferred — `transferSize` is 0 by definition here. See the declarations.
+    if (BUILD_CATEGORIES.has(category)) lapBuildCacheBytes += entry.decodedBodySize;
+    else lapSiteCacheBytes += entry.decodedBodySize;
   }
 
   // ── The one that matters: paid for twice ──
@@ -395,10 +413,20 @@ function summarise(nextLabel: string): void {
   const bundleNote = process.env.NODE_ENV === 'development' ? ' (unminified — not a real number)' : '';
   const opaqueNote = lapOpaqueCount > 0 ? ` · ${lapOpaqueCount} cross-origin, sizes withheld` : '';
 
+  // The headline keeps its original meaning — what this lap actually pulled over the wire — and the
+  // cache line is added only when there is one, so an ordinary cold load reads exactly as it always did.
   console.log(
+    // ⚠ "over the wire" goes BEFORE `opaqueNote`, not after. The first cut appended it at the end of
+    // the clause and produced "2 cross-origin, sizes withheld over the wire", which reads as a claim
+    // about the withheld sizes rather than about the totals.
     `%c[cache] ── ${lapLabel} complete ──%c  ${formatBytes(lapSiteBytes)} site assets · ` +
-      `${formatBytes(lapBuildBytes)} bundle${bundleNote}${opaqueNote} · ` +
-      `${seen.size} distinct URLs this session`,
+      `${formatBytes(lapBuildBytes)} bundle${bundleNote} over the wire${opaqueNote} · ` +
+      `${seen.size} distinct URLs this session` +
+      (lapCacheCount > 0
+        ? `\n  …plus ${formatBytes(lapSiteCacheBytes)} site + ${formatBytes(lapBuildCacheBytes)} bundle ` +
+          `from CACHE across ${lapCacheCount} request${lapCacheCount === 1 ? '' : 's'} ` +
+          `(decoded size — not comparable with the wire figures above)`
+        : ''),
     STYLE_HEADER,
     STYLE_DIM,
   );
@@ -424,6 +452,8 @@ function summarise(nextLabel: string): void {
   lapCacheCount = 0;
   lapSiteBytes = 0;
   lapBuildBytes = 0;
+  lapSiteCacheBytes = 0;
+  lapBuildCacheBytes = 0;
   lapRedownloads = 0;
   lapOpaqueCount = 0;
   lapStats.clear();

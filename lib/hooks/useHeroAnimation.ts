@@ -166,7 +166,14 @@ const HANDOFF_FIELD_FADE: [number, number] = [0.33, 0.55];
 const HANDOFF_WORKS_UI_FADE: [number, number] = [0.8, 0.94];
 // A crossing's step is a long, cinematic glide — the whole flight on one gesture — so it stays
 // locked for the full duration and a second gesture can't cut it short.
-const HANDOFF_STEP_DURATION = 4.0; // seconds to fly across the services → works handoff on one step
+// ⚠ 4.0 → 5.0 on 2026-08-11, to buy the MARK its entrance. It used to start arriving at handoff 0.80
+// and the ship only began clearing at 0.88 (EXIT_PROGRESS_START in useServicesDeck), so the incoming
+// mark and the departing craft shared the frame for ~0.3 s — despite a comment on that constant
+// claiming the arrival "begins only once the ship is clearing". METEOR_ARRIVE_PROGRESS_START now
+// matches 0.88 exactly, and the extra second is what stops that costing the mark its approach: at 4 s
+// there were only 0.8 s of crossing left after 0.88, and the arrival had nowhere to go.
+// The input lock is `stepDurationSeconds * 1000 + settleMs`, so it follows this on its own.
+const HANDOFF_STEP_DURATION = 5.0; // seconds to fly across the services → works handoff on one step
 const HANDOFF_SETTLE_MS = 150; // grace on the handoff's input lock so the flight fully lands
 
 // ── The works → chamber reveal ──

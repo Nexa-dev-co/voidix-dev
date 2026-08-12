@@ -403,6 +403,30 @@ way, or a restored scroll position moves things while the loader is still up.
 model a deleted editor authored, and its constants ARE that editor's "Peaceful" stage. This file is
 now the only copy of them.
 
+⚠ **The star does not ship all of that model. `SUN_OMITTED_PARTS` drops two of its four groups**
+(2026-08-08): the 8 spun `flare` discs and the 20 `blowout` hot-spot planes. Measured `sun · bloom`
+**2.00 → 0.87 ms**, a 57 % cut, and the star was the largest single span on the page — 42–47 % of the
+hero's frame on a dpr 2.5 laptop.
+
+- ⚠ **The cost is per DRAW CALL, ~0.02 ms each, not per pixel.** Three groups with completely
+  different areas came out within 10 % of each other per draw; projected area predicted none of it.
+  `sunBloom` renders the scene **twice**, so every mesh is submitted twice. That is why the fix is a
+  shorter mesh list and not a resolution knob. (On the dpr 2.5 laptop the same call costs 16–19 ms and
+  the limit there is GPU fill instead — fewer meshes wins in both.)
+- ⚠ **`sunouter` — the 11 translucent shells — is NOT omitted and must not be.** It is the star's
+  ATMOSPHERE: the core is an opaque ball and those shells are what make it read as burning. They are
+  also what a procedural plasma shader would REPLACE, one animated surface for eleven static ones. To
+  be superseded, never simply deleted. `SUN_ABLATION_KEEP_SHELLS` stays at 0 and exists to measure that.
+- **Hiding is not removing** — the geometry still downloads. After the texture cap below it is worth
+  ~15 KB, so it is not worth the GLB rebuild that would break `compareModels`' mesh table.
+- ⚠ Omitting `flare` also **skips its recentre-and-spin setup**. `flareSpins` would otherwise keep
+  rebuilding quaternions for eight invisible discs every frame — hiding the draw while keeping the
+  work is the one way this cull could have cost more than it saved.
+
+**Its textures are capped at 512²** (`buildModels.mjs` recipe, same day): the maps were 2048² on a star
+that never exceeds ~250 device pixels across. **1346 KB → 505 KB, −62 %.** Bytes and VRAM only — it
+cannot move `sun · bloom`, for the per-draw-call reason above.
+
 It is driven through exactly **three nested elements, one owner each** — sharing one between two
 owners is how you get a sun that jumps:
 
@@ -551,6 +575,16 @@ sits near its floor. Solved once, in the loader, behind the veil. Full rationale
   (the star draws from mount, so phase A already contains it), phase A slower than B (the star solves
   negative), and a difference too small to be anything but jitter. Failing any of them logs
   `[pixels] split REFUSED` and falls back to one number for the whole frame.
+- ⚠ **…and none of the three catches the one that is actually wrong: `starMilliseconds` IS A LOWER
+  BOUND.** Both phases run before `SUN_ASSEMBLE_EVENT`, and `positionShards(0, 0)` at model-land has
+  already set `visible = false` on every one of `coronaParts` — the core sphere, the outer glow, the
+  flares and the twenty corona planes. **Phase B times ten tumbling shards.** The corona is not part of
+  the star's cost, it *is* the cost. The checks ask *is this a real difference*; they cannot ask *is
+  this the star we are budgeting for*. `STAR_RAISE_OVER_MODELS` bounds the damage, `sunCeiling()` is
+  capped at native so a 1× panel cannot supersample the star past a field held to 1.0, and
+  `docs/per-section-quality-budget-plan.md` §9 has the arithmetic and the three ways to fix it
+  properly. Severity, honestly: it does not blow the frame — the bias and `SUN_IDLE_STRIDE` nearly
+  cancel — it **eats both conservatisms below**, including the one reserved for the chamber.
 - **Two conservatisms, both deliberate, both the same direction**: `fieldMilliseconds` carries the
   fixed cost so scaling it over-charges the field; and the star is measured at full rate while through
   services and works it draws at `SUN_IDLE_STRIDE`. The second is also what makes the **hero** safe
@@ -558,7 +592,10 @@ sits near its floor. Solved once, in the loader, behind the veil. Full rationale
 - ⚠ **The star having its own ratio is NOT a return to what `SunModelCanvas`'s header warns about.**
   The old `min(devicePixelRatio, 2)` had measured nothing while the renderer beside it had; this one is
   the remainder of a measured frame. The star still may not out-vote the field about how fast the
-  machine is — it may only spend what the field did not need.
+  machine is — it may only spend what the field did not need, and never more than
+  `STAR_RAISE_OVER_MODELS` (1.35×) of what the models got. That cap earns its place twice: the solve it
+  bounds is inflated (above), and past ~1.35× density a star composited over softer marks stops reading
+  as sharper and starts reading as pasted on.
 - ⚠ **The emergency valve moves BOTH ratios.** A drowning machine has to be able to put down the
   heaviest thing it is holding, and after allocation that may well be the star.
 - **Read it on the console:** `[pixels] ALLOCATED` in the loader, then the `ratio` and **`sun ratio`**

@@ -99,6 +99,25 @@ const ETC1S_QUALITY = 160;
  * mis-lit one and costs 4× less.
  */
 const TEXTURE_RECIPES = {
+  'fractured_sun.glb': {
+    maxTextureSize: 512,
+    // 2048² maps (the set is literally named Lava004_2K) on a star that is **~250 device pixels
+    // across** at its largest. `.hero-sun-card` is `clamp(7rem, 20vw, 11rem)` — 176 CSS px — and the
+    // camera pulls back by `SUN_CANVAS_HEADROOM` so the star renders at that size inside a padded
+    // canvas; the pin's `SUN_SCROLL_SCALE` of 1.1 is a CSS transform and never touches the backing
+    // store. So the maps are ~8× oversampled per axis, ~64× in texels, for the entire session.
+    //
+    // 512 is still 2× oversampled, which is why this is the cheap knob and not a codec argument.
+    //
+    // ⚠ It buys BYTES AND VRAM, NOT FRAME TIME, and the distinction is measured rather than assumed:
+    // hiding whole material groups showed the star's cost is ~0.02 ms per DRAW CALL and independent of
+    // texture area (see SUN_OMITTED_PARTS in SunModelCanvas). Nothing here will move `sun · bloom`.
+    //
+    // ⚠ The largest set (Lava004, ~797 KB of the 1231 KB) belongs to `magma` — the shard interiors,
+    // which are what the cracks and the collapse actually show. If anything reads soft, it will be
+    // there and during those beats, not on the resting hero.
+    why: '2048² maps on a star that never exceeds ~250 device pixels across',
+  },
   'spaceship3.glb': {
     maxTextureSize: 512,
     // Four 1024² maps — 4.2 megatexels — on a model with 2,819 VERTICES. Whatever this ship is, it is

@@ -971,6 +971,10 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     let disposed = false;
     let warmupStarted = false;
     let warmupFrame = 0;
+    /** Program cache keys present at the end of the warm-up — see the diagnostic in `prewarmPipeline`. */
+    let warmedProgramKeys: Set<string> | null = null;
+    /** Latches after the first drawn frame has been compared against them. */
+    let programDiffReported = false;
     const nextWarmupFrame = () =>
       new Promise<void>((resolve) => {
         warmupFrame = requestAnimationFrame(() => resolve());
@@ -1012,6 +1016,36 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         // Forces the bloom + SMAA passes to compile, and — the expensive part — allocates the
         // composer's targets, so neither lands on the frame the fleet is first revealed.
         composer.render();
+        // ── ⚠ DIAGNOSTIC: did this warm-up actually cover the frame the reveal will draw? ──
+        //
+        // A Chrome trace of the hero → services boundary found ONE real hitch: a 69 ms task, 67 ms of
+        // it inside `FunctionCall`, and the sampler charged 55 % of what it could sample to
+        // `getProgramInfoLog` — reached through `renderFrame` → `RenderPass.render` → `setProgram`.
+        // That call blocks the main thread until the driver finishes LINKING a shader program, so a
+        // program is being built on the deck's first real render despite everything above.
+        //
+        // ── ANSWERED 2026-08-11. It was the PORTAL GATES' POINT LIGHTS. ──
+        // The reasoning that stalled here was right up to its last step: `applyShipLighting` tweens
+        // light colours and intensities, and those are indeed not part of three's program cache key.
+        // The NUMBER OF VISIBLE POINT LIGHTS is (`WebGLPrograms.js`, `getProgramCacheKeyParameters`).
+        // This warm-up opens the gates to PORTAL_PREWARM_FORMATION, so everything below is compiled
+        // with two point lights in the scene — and the `finally` then shuts them, so the first real
+        // frame drew with zero and every program missed. `portalGate.update` now keeps the lights in
+        // the scene permanently at intensity 0; its comment has the whole mechanism, including why the
+        // same bug bit far harder at the gate's CLOSE than it ever did here.
+        //
+        // The instrument stays, telemetry-gated, because it is now the check that the fix HOLDS: this
+        // should report `added NONE` on every load. Anything else means a program parameter is still
+        // differing between the warm-up and the first drawn frame, and the key it prints names which.
+        //
+        // ⚠ Gated on telemetry. three's cache keys are long concatenations of every program
+        // parameter, so ~9 of them is several KB held for the whole session — pointless in a build
+        // that can never print them.
+        if (telemetryEnabled) {
+          warmedProgramKeys = new Set(
+            (renderer.info.programs ?? []).map((program) => program.cacheKey),
+          );
+        }
       } catch {
         // A failed compile is not a reason to trap the loader; whatever failed compiles on first draw.
       } finally {
@@ -1450,6 +1484,26 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       const isDrawing = deckShouldRender && !document.hidden && !parkedAtWorks;
       if (isDrawing) {
         profileMeasure('deck · render', () => composer.render(), true);
+        // ── ⚠ DIAGNOSTIC, one shot: what did the warm-up miss? ──
+        // Compared AFTER the draw, because the missing program is created BY that draw — checking
+        // before it would compare the warmed set against itself and report nothing. See the snapshot
+        // in `prewarmPipeline` for what this is chasing.
+        if (!programDiffReported && warmedProgramKeys !== null && telemetryEnabled) {
+          programDiffReported = true;
+          const added = (renderer.info.programs ?? [])
+            .map((program) => program.cacheKey)
+            .filter((key) => !warmedProgramKeys!.has(key));
+          console.log(
+            added.length === 0
+              ? `%c[voidix] deck programs%c first drawn frame added NONE — the ${warmedProgramKeys.size} warmed` +
+                  ` programs covered it, so the link stall is coming from somewhere else.`
+              : `%c[voidix] deck programs%c first drawn frame added ${added.length} of ` +
+                  `${renderer.info.programs?.length ?? 0} — THE WARM-UP MISSED THESE:\n` +
+                  added.map((key) => `  ${key}`).join('\n'),
+            'color:#e0b341;font-weight:700',
+            'color:#888',
+          );
+        }
         profileGauge('deck draws', renderer.info.render.calls);
         // Also published here, not only from the works field — otherwise the whole fleet section
         // reports no ratio and no controller reading, which is exactly the span where the first step
@@ -1477,7 +1531,15 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
       // tab backgrounded. Also frozen entirely through the handoff — and through a portal swap, which
       // is the same hazard for the same reason: ~2.8s of tweened motion the user is watching, where a
       // reallocation stall would let the timeline advance behind it and land the craft somewhere else.
-      if (!handoffActive && !swapActive) {
+      if (handoffActive || swapActive) {
+        // ⚠ The freeze must not BANK credit while it is frozen. `swapActive` is cleared by the swap
+        // timeline's onComplete, which is the same instant the gate finishes closing — so a grace
+        // period that had almost run out before the swap began would come off the freeze already
+        // spent and reallocate on that exact frame. The stall comment above describes what that
+        // looks like from the outside: the tweens advance in real time through it and the craft
+        // lands somewhere else. Restart the countdown on the far side instead.
+        ratioPendingSeconds = 0;
+      } else {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
           ratioPendingSeconds = 0;

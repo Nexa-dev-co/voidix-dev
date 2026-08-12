@@ -721,3 +721,97 @@ star's). Those two numbers together are the entire output of this system.
 ⚠ If `[pixels] split REFUSED` appears instead, the two phases did not separate credibly and everything
 falls back to one number for the whole frame — exactly the behaviour before this section existed. The
 line says which of the three credibility checks failed.
+
+---
+
+## 9 · ⚠ The allocator measures the wrong star
+
+> **Found 2026-08-08** by reading §8's code, not by measuring it. The architecture is sound; one input
+> to it is wrong. That is the better failure to have — the fix is upstream of the solver and the solver
+> does not change.
+
+### 9a · The finding
+
+`beginBurnIn` fires after warm-up; `SUN_ASSEMBLE_EVENT` fires later, in the finale timeline
+(`IntroSequence.tsx:985`). So through **both** phases the star sits in the drift branch at
+`assembly = 0` — and `SunModelCanvas.tsx:1150` has already run `positionShards(0, 0)` at model-land:
+
+```ts
+coronaGrowth = smoothstep(arrival = 0, CORONA_APPEAR = 0.55, 1) = 0
+coronaParts.forEach(part => part.visible = false)
+```
+
+`coronaParts` is, in that file's own words (`SunModelCanvas.tsx:214`), *"the core sphere, the outer
+glow, the flares and the twenty corona planes."*
+
+```
+   what §8b thinks it is measuring          what phase B actually draws
+   ────────────────────────────────         ───────────────────────────
+   ● core sphere                            ○  hidden
+   ● outer glow                             ○  hidden
+   ● flares                                 ○  hidden
+   ● 20 additive corona planes  ◄── the     ○  hidden
+   ● sunParticles rings             cost    ○  ringForm 0, collapsed to the knot
+   ● 10 shards                              ●  10 shards, several off the frame edge
+```
+
+And the corona is not incidental to the star's cost — §1c blames exactly those twenty overlapping
+additive planes for a 0.28 Mpx canvas reaching 9–22 ms. **The overdraw is the corona, and the corona is
+invisible when the measurement is taken.**
+
+### 9b · Why all three credibility checks pass anyway
+
+`MIN_CREDIBLE_STAR_MS` (0.6) exists for the *noise* version of this — its own comment says a too-small
+difference *"would divide by very nearly nothing and hand the star its ceiling."* A shard-only star
+measuring ~1.5 ms clears it comfortably, and the conclusion is wrong regardless. Every check asks **is
+this a real difference?**; none can ask **is this the star we are budgeting for?**
+
+### 9c · The honest severity — less than it first looks
+
+Worked on §8g's own example (field 12.4 ms @ 1.15, real star 6.1 ms, measured 1.5 ms, dpr 2.5):
+
+```
+   believed         star solves 3.21 → clamped to ceiling 2.00, budgeted 4.5 ms
+   actual           6.1 × (2.00/1.15)² = 18.5 ms   ← 4× its allocation
+   at SUN_IDLE_STRIDE                     9.2 ms   ← 2× its allocation
+   frame            18.9 + 9.2 = 28.1 ms against a 33.3 budget   ← SURVIVES
+```
+
+The bias is ~2× after the square root; the stride is a 2× margin; they very nearly cancel. **So this
+does not blow the frame — it eats the margins.** Both of §8d's conservatisms are consumed by the error
+instead of doing the jobs they were reserved for, including the one meant to absorb the chamber, which
+is measured with SMAA off and never re-checked with the room in frame.
+
+### 9d · What shipped now — a bound, not a fix
+
+| | |
+|---|---|
+| `STAR_RAISE_OVER_MODELS = 1.35` | The star may be sharper than the section's models, never unboundedly. Justified twice over: `starSolved` is an upper bound, and past ~1.35× density a star composited over softer marks reads as **pasted on** rather than sharper. |
+| `sunCeiling()` capped at **native** | It omitted `deviceRatio`, which the field's `ceil` includes — so on a **1× panel** the star could be allocated 1.5 while the field was held to 1.0. Supersampling, on the machines least able to afford it, in exactly the regime the bias escapes into. A probe-gated exception was tried and rejected: the probe has an eightfold spread across loads, and a binary gate on it supersamples on some loads and not others. |
+| the `ALLOCATED` log | Now names the cap as a third binding constraint, prints what the star *wanted*, and states that its measurement is a lower bound with the comparison to make. |
+
+⚠ The cap changes almost nothing on dpr 2–2.5 (the field's own ceiling is already close). It bites on
+1× panels. That is intentional and it is where the arithmetic says the escape is.
+
+### 9e · Still open — measuring the star in its real state
+
+Ranked. **Take a reading first** — `ALLOCATED`'s `star X ms` against `sun · bloom` per call on the hero
+at the same ratio. The quotient is the bias, and it decides whether this is worth doing at all.
+
+| | | |
+|---|---|---|
+| **A** | **Measure the star off-screen.** A short star-only burn-in during the warm-up, corona forced visible, rendered into a target rather than the canvas — nothing reaches the screen, so the loader's finale is untouched and the star is measured as it really is. | needs a render-to-target variant of `bloom.render`; the only option that keeps §8's "solved once, behind the veil" claim true |
+| **B** | Measure on the hero, apply once, early. Cheaper than §2.6 feared: the star's targets are ~9 MB, and `ringForm` is 0 on the hero so `sunParticles`' grain-size change is **hidden**, which was that section's main objection. | one reallocation after `REVEAL_EVENT` |
+| **C** | Move phase B into the post-assembly hold. | lengthens the finale and makes the field draw through it — worst of the three |
+
+### 9f · Two unrelated things this pass raised
+
+- **The burn-in helps least where it is needed most.** `BURN_IN_PHASE_MAX_MS` 600 with
+  `BURN_IN_MIN_SAMPLES` 5 and 3 discarded needs ~8 frames in 600 ms, so **below ~15 fps in the loader
+  phase B returns null** — and the early return skips `reportBurnIn` too. The slowest machines get no
+  burn-in *and* no allocator, falling back to the runtime calibration and its two mid-session
+  reallocations. Splitting one phase into two roughly doubled the frames required.
+- **`renderClock` was reverted while its target was kept.** `PRIORITY_TARGET_FPS` is still 30, but
+  nothing caps delivery any more — so the cross-section variance the clock was written to remove (hero
+  42 · fleet 35 · works 32 · chamber 43 · contact 49) is still there, and sizing one resolution for the
+  heaviest section does not remove it. Worth knowing why it went before it is written off.
