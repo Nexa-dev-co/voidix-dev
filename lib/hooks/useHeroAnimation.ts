@@ -79,10 +79,21 @@ ScrollTrigger.config({ ignoreMobileResize: true });
 // The stop layout is DATA (see the carousel section list below + lib/carouselLayout.ts), not
 // arithmetic spread through this file: adding a section or a crossing is one entry in that list.
 const SCROLL_SCRUB = 1.8;
-const FILL_SCROLL_VH = 120; // viewport-heights of scroll the square takes to fill
+// Viewport-heights of scroll the square takes to fill.
+//
+// ⚠ Shorter on a phone, and the reason is the INPUT, not the screen. A wheel delivers scroll in a
+// continuous stream you can keep feeding; a swipe delivers one finite arc of travel and then stops.
+// 120vh is about 940px on a 780px phone — more than one comfortable swipe — so the hero was the one
+// beat on the site that could not be got through in a single gesture, which is exactly the grammar
+// every other span here is built on. Gated on the POINTER rather than the width: a narrow desktop
+// window still scrolls with a wheel and wants the long authored version.
+const FILL_SCROLL_VH = 120;
+const FILL_SCROLL_VH_TOUCH = 80;
 const STAGE_SCROLL_VH = 100; // ...and per carousel stop after it (a craft, or a project meteor)
 const SUN_SCROLL_SCALE = 1.1; // the sun grows to 1.1× as the square fills
 const SUN_SCROLL_RISE = 200; // px the sun lifts above the square's centre and holds
+/** One curve for the square AND the sun — they are anchored together. See the phase-1 tween. */
+const FILL_EASE = "power1.out";
 
 /**
  * Where in the fill the page BEHIND the hero stops being cream and becomes the page black.
@@ -702,8 +713,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       section.crossingAfter ? [section.crossingAfter] : [],
     );
 
+    // Latched, not live: the layout is derived once and every stop's progress hangs off it, so a
+    // window dragged across a breakpoint must not re-space the whole journey underneath the visitor.
+    // Same reasoning `deviceTier` records for latching its own answer.
+    const isTouchInput = window.matchMedia("(pointer: coarse)").matches;
+
     const layout = computeCarouselLayout(carouselSections, {
-      fillScrollVh: FILL_SCROLL_VH,
+      fillScrollVh: isTouchInput ? FILL_SCROLL_VH_TOUCH : FILL_SCROLL_VH,
       stageScrollVh: STAGE_SCROLL_VH,
       settleFraction: CAROUSEL_SETTLE_FRACTION,
     });
@@ -1280,6 +1296,21 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // it every frame of the fill on an element that by the end of the span covers the whole viewport,
       // so every one of those frames invalidated a full-screen repaint underneath whatever else was
       // drawing. Transforms composite; keeping this list to transforms is what makes the fill cheap.
+      //
+      // ⚠ `power1.out`, and it was `power1.inOut` until the mobile pass. An ease-IN on a SCRUBBED
+      // tween is a dead zone: the ease's whole job is to accelerate away from rest, but a scrub has
+      // no rest to accelerate from — the visitor's own gesture already carries the acceleration, and
+      // all the curve does is attenuate their input at the one moment they are asking whether the
+      // page is listening. The arithmetic is brutal. `power1.inOut` is `2t²` in its first half, so a
+      // tenth of the way through the fill the square had moved TWO per cent of its journey — about
+      // 30px of growth on a phone, arriving up to SCROLL_SCRUB seconds late. That is the "nothing is
+      // happening, the browser chrome is what's moving" the mobile pass was chasing; the chrome
+      // eating the head of the gesture only made a dead zone that was already there impossible to
+      // miss. `power1.out` is `1-(1-t)²` — the same tenth is now 19% of the way — and it keeps the
+      // authored soft landing, which was always the half of `inOut` that was earning its place.
+      //
+      // ⚠ The sun's tween below MUST carry the identical ease. It is anchored to the square through
+      // the same `geometry`, and two different curves over the same span is how the star comes off it.
       scrollTimeline.to(
         heroCardElement,
         {
@@ -1287,7 +1318,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           y: () => geometry.translateY,
           scaleX: () => geometry.scaleX,
           scaleY: () => geometry.scaleY,
-          ease: "power1.inOut",
+          ease: FILL_EASE,
           duration: fillFraction,
         },
         0,
@@ -1300,7 +1331,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
             x: () => geometry.translateX,
             y: () => geometry.translateY - SUN_SCROLL_RISE, // sits a little above centre and holds
             scale: SUN_SCROLL_SCALE,
-            ease: "power1.inOut",
+            ease: FILL_EASE, // ⚠ the square's ease, never a second opinion — see the tween above
             duration: fillFraction,
           },
           0,
