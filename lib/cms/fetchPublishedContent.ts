@@ -48,7 +48,47 @@ export const CONTENT_REVALIDATE_SECONDS = 600;
  */
 const REQUEST_TIMEOUT_MS = 8_000;
 
-export async function fetchPublishedContent(): Promise<PublishedContent | null> {
+/**
+ * Why a render has the payload it has.
+ *
+ * ⚠ `'nothing-published'` and `'rejected'` look identical from the page — both serve this repo's
+ * copy — and they need completely different fixes. The first is somebody not having pressed
+ * Publish; the second is usually the two secrets having drifted apart. Keeping them separate is the
+ * whole reason this is an enum rather than a boolean.
+ */
+export type ReleaseOutcome =
+  /** The panel answered with a release. */
+  | 'panel'
+  /** No `VOIDIX_CMS_URL` / `VOIDIX_CMS_CONTENT_SECRET` — a fresh clone, or a laptop with no panel. */
+  | 'unconfigured'
+  /** The panel is there and has never published. 404. */
+  | 'nothing-published'
+  /** Down, deploying, or too slow. */
+  | 'unreachable'
+  /** The panel refused us — almost always a 401 from mismatched secrets. */
+  | 'rejected';
+
+/**
+ * One attempt at reading the panel, and what came of it.
+ *
+ * ⚠ The version and date are carried rather than discarded because they are the only way to tell
+ * "the panel answered" from "the panel answered with what I published". A page rendering correct-
+ * looking copy from release v3 when you just published v7 is invisible without this.
+ */
+export interface FetchedRelease {
+  payload: PublishedContent | null;
+  outcome: ReleaseOutcome;
+  /** Both null unless `outcome` is `'panel'`. */
+  version: number | null;
+  publishedAt: string | null;
+}
+
+/** The shape every failure returns — one payload-less result, differing only in why. */
+function noRelease(outcome: ReleaseOutcome): FetchedRelease {
+  return { payload: null, outcome, version: null, publishedAt: null };
+}
+
+export async function fetchPublishedContent(): Promise<FetchedRelease> {
   const baseUrl = process.env.VOIDIX_CMS_URL;
   const secret = process.env.VOIDIX_CMS_CONTENT_SECRET;
 
@@ -56,7 +96,7 @@ export async function fetchPublishedContent(): Promise<PublishedContent | null> 
     // Not an error — it is the state of every fresh clone and of any environment that has not
     // been pointed at a panel yet. Silent, because logging it once per render would drown the
     // console of anyone working on the 3D scenes.
-    return null;
+    return noRelease('unconfigured');
   }
 
   try {
@@ -70,10 +110,12 @@ export async function fetchPublishedContent(): Promise<PublishedContent | null> 
       // 404 is the ordinary "nothing published yet" answer and is not worth a warning; anything
       // else is a misconfiguration somebody needs to see. 401 in particular means the two secrets
       // have drifted apart, which is invisible from the page — it just serves old copy forever.
-      if (response.status !== 404) {
-        console.warn(`[cms] content request failed: ${response.status} ${response.statusText}`);
+      if (response.status === 404) {
+        return noRelease('nothing-published');
       }
-      return null;
+
+      console.warn(`[cms] content request failed: ${response.status} ${response.statusText}`);
+      return noRelease('rejected');
     }
 
     const release = (await response.json()) as Partial<PublishedRelease>;
@@ -83,17 +125,22 @@ export async function fetchPublishedContent(): Promise<PublishedContent | null> 
     // proxy's error document is the realistic failure here, not a malformed field.
     if (!release.payload || typeof release.payload !== 'object') {
       console.warn('[cms] content response carried no payload');
-      return null;
+      return noRelease('rejected');
     }
 
-    return release.payload as PublishedContent;
+    return {
+      payload: release.payload as PublishedContent,
+      outcome: 'panel',
+      version: typeof release.version === 'number' ? release.version : null,
+      publishedAt: typeof release.publishedAt === 'string' ? release.publishedAt : null,
+    };
   } catch (error) {
     console.warn(
       `[cms] could not reach the content panel: ${
         error instanceof Error ? error.message : 'unknown error'
       }`,
     );
-    return null;
+    return noRelease('unreachable');
   }
 }
 

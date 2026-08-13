@@ -30,19 +30,57 @@
  * is precisely the failure that would then ship.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
+import type { ContentReport } from '@/lib/cms/contentReport';
+import { logContentReport } from '@/lib/cms/logContentReport';
 import type { SiteContent, SiteSections } from '@/lib/cms/siteContent';
 
 const SiteContentContext = createContext<SiteContent | null>(null);
 
 export default function SiteContentProvider({
   content,
+  report,
   children,
 }: {
   content: SiteContent;
+  /**
+   * ⚠ Present only where `telemetryEnabled` is true — each route builds it behind that constant, so
+   * a production render passes `undefined` and none of it is serialised into the RSC payload. It is
+   * optional for that reason and not because a route may skip it.
+   */
+  report?: ContentReport;
   children: ReactNode;
 }) {
+  useContentReportLog(report);
+
   return <SiteContentContext.Provider value={content}>{children}</SiteContentContext.Provider>;
+}
+
+/**
+ * Prints the report to the browser console, once.
+ *
+ * ⚠ THE REF GUARD IS NOT BELT-AND-BRACES. The app runs under `reactStrictMode`, which deliberately
+ * double-invokes effects in development — precisely the environment this log exists for. Without it
+ * every page would print two identical nine-line blocks, and the first thing anyone would conclude
+ * from a doubled diagnostic is that the fetch ran twice.
+ *
+ * ⚠ In an effect rather than during render, because logging is a side effect and React may render a
+ * component any number of times before committing it.
+ */
+function useContentReportLog(report: ContentReport | undefined): void {
+  const printedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!report) return;
+
+    // Keyed by route and version so a client-side navigation between two routes still reports the
+    // page you just arrived at, while a re-render of the same one stays quiet.
+    const identity = `${report.route}@${report.version ?? 'none'}`;
+    if (printedFor.current === identity) return;
+    printedFor.current = identity;
+
+    logContentReport(report);
+  }, [report]);
 }
 
 export function useSiteContent(): SiteContent {

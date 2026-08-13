@@ -6,6 +6,7 @@ import LoopVeil from '@/components/effects/LoopVeil/LoopVeil';
 import SectionJumpVeil from '@/components/effects/SectionJumpVeil/SectionJumpVeil';
 import FaqHologram from '@/components/sections/Chamber/FaqHologram/FaqHologram';
 import { fetchPublishedContent } from '@/lib/cms/fetchPublishedContent';
+import { reportContent } from '@/lib/cms/contentReport';
 import { resolveFullContent } from '@/lib/cms/siteContent';
 import SiteContentProvider from '@/lib/cms/SiteContentProvider';
 import {
@@ -37,8 +38,10 @@ export const metadata: Metadata = {
 };
 
 export default async function HomePage() {
-  const published = await fetchPublishedContent();
-  const content = resolveFullContent(published);
+  const release = await fetchPublishedContent();
+  const content = resolveFullContent(release.payload);
+
+  const report = reportContent({ route: '/', release, scope: 'full' });
 
   return (
     <main>
@@ -56,7 +59,7 @@ export default async function HomePage() {
           provider renders no DOM node of its own, so nothing in the pin's geometry changes.
           It wraps everything because `FaqHologram` is NOT a descendant of Hero — it sits out here
           for the transformed-pin reason below, and it is one of the seven consumers. */}
-      <SiteContentProvider content={content}>
+      <SiteContentProvider content={content} report={report}>
         {/* Hero owns the services fleet AND the works field as overlays — one pin fills the square,
             reveals the fleet, cycles the craft, then hands over to the works field and cycles the
             projects. One continuous scroll, no second pinned section. */}

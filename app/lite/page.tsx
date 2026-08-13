@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import LitePage from '@/components/pages/Lite/LitePage';
 import { fetchPublishedContent } from '@/lib/cms/fetchPublishedContent';
+import { reportContent } from '@/lib/cms/contentReport';
 import { resolveFullContent } from '@/lib/cms/siteContent';
 import SiteContentProvider from '@/lib/cms/SiteContentProvider';
 
@@ -33,13 +34,15 @@ export const metadata: Metadata = {
 };
 
 export default async function Lite() {
-  const published = await fetchPublishedContent();
+  const release = await fetchPublishedContent();
+
+  const report = reportContent({ route: '/lite', release, scope: 'full' });
 
   // ⚠ This page has no content of its own beyond its masthead — it re-presents the site's services,
   // work and answers as a document. So it reads exactly what the homepage reads, and `liteContent.ts`
   // stays the only file here with words in it.
   return (
-    <SiteContentProvider content={resolveFullContent(published)}>
+    <SiteContentProvider content={resolveFullContent(release.payload)} report={report}>
       <LitePage />
     </SiteContentProvider>
   );

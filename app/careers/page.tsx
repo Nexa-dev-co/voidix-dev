@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import CareersPage from '@/components/pages/Careers/CareersPage';
 import { resolveCareersContent } from '@/components/pages/Careers/careersContent';
 import { fetchPublishedContent } from '@/lib/cms/fetchPublishedContent';
+import { reportContent } from '@/lib/cms/contentReport';
 import { resolveSharedContent } from '@/lib/cms/siteContent';
 import SiteContentProvider from '@/lib/cms/SiteContentProvider';
 
@@ -25,12 +26,19 @@ export const metadata: Metadata = {
 };
 
 export default async function Careers() {
-  const published = await fetchPublishedContent();
+  const release = await fetchPublishedContent();
+
+  const report = reportContent({
+    route: '/careers',
+    release,
+    scope: 'shared',
+    pageKey: 'careers',
+  });
 
   // ⚠ Two resolves off ONE fetch — see `app/about/page.tsx` for the reasoning; identical here.
   return (
-    <SiteContentProvider content={resolveSharedContent(published)}>
-      <CareersPage content={resolveCareersContent(published?.careers ?? null)} />
+    <SiteContentProvider content={resolveSharedContent(release.payload)} report={report}>
+      <CareersPage content={resolveCareersContent(release.payload?.careers ?? null)} />
     </SiteContentProvider>
   );
 }

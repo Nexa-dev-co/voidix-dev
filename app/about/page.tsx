@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import AboutPage from '@/components/pages/About/AboutPage';
 import { resolveAboutContent } from '@/components/pages/About/aboutContent';
 import { fetchPublishedContent } from '@/lib/cms/fetchPublishedContent';
+import { reportContent } from '@/lib/cms/contentReport';
 import { resolveSharedContent } from '@/lib/cms/siteContent';
 import SiteContentProvider from '@/lib/cms/SiteContentProvider';
 
@@ -38,14 +39,16 @@ export const metadata: Metadata = {
 };
 
 export default async function About() {
-  const published = await fetchPublishedContent();
+  const release = await fetchPublishedContent();
+
+  const report = reportContent({ route: '/about', release, scope: 'shared', pageKey: 'about' });
 
   // ⚠ Two resolves off ONE fetch. `about` is this page's own and arrives as a prop; the rest is the
   // shared vocabulary — the enquiry form's strings, the disciplines it seeds from, the footer — which
   // this page renders exactly as the homepage does. See `lib/cms/siteContent.ts`.
   return (
-    <SiteContentProvider content={resolveSharedContent(published)}>
-      <AboutPage content={resolveAboutContent(published?.about ?? null)} />
+    <SiteContentProvider content={resolveSharedContent(release.payload)} report={report}>
+      <AboutPage content={resolveAboutContent(release.payload?.about ?? null)} />
     </SiteContentProvider>
   );
 }
