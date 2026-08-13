@@ -137,8 +137,14 @@ const MAX_DEVICE_PIXEL_RATIO = 2;
  * spend what the field did not need.
  *
  * ⚠ The cap stays. `getSunPixelRatio()` clamps to the same `MAX_PIXEL_RATIO` of 2 that this constant
- * names, so the two cannot drift; it is kept here because `particleFrameExtent` and the camera fit are
- * reasoned about in terms of it.
+ * names, so the two cannot drift.
+ *
+ * ⚠ ITS ONLY CONSUMER IS `sunPixelRatio()` BELOW. This used to add that it was kept here "because
+ * `particleFrameExtent` and the camera fit are reasoned about in terms of it" — neither reads it, and
+ * both work in device-independent units. It is simply a second clamp sitting on top of the allocator's
+ * own, and on a dpr 3 phone the pair of them is what holds the star to 67 % of the panel's density at
+ * its very best. See `docs/sun-mobile-quality-plan.md` §4.1: lifting it means importing one constant
+ * from `adaptivePixelRatio`, not editing two copies.
  */
 const sunPixelRatio = () => Math.min(getSunPixelRatio(), MAX_DEVICE_PIXEL_RATIO);
 const MAX_FRAME_SECONDS = 0.05;

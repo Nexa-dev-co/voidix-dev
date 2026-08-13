@@ -23,7 +23,8 @@ import * as THREE from 'three';
  * so the halo appears over the cream and the canvas box never does.
  *
  * The cost is rendering the scene twice per DRAWN frame, on the most overdraw-heavy surface on the
- * site (twenty additive corona planes over a fractured shell). That used to be justified by the star
+ * site (twenty additive corona planes over a fractured shell) — though step 1 now draws at
+ * `GLOW_SOURCE_SCALE`, so the pair costs 1.25 full-resolution renders rather than 2. That used to be justified by the star
  * drawing "nothing at all for the whole services → works → chamber span" — which stopped being true
  * when the cracked star was given a collapse to play across the handoff. It now draws alongside the
  * fleet AND alongside the works field, so the second render is paid for most of the journey.
@@ -58,9 +59,23 @@ export const BLOOM_RADIUS = 0.92;
 /**
  * ⚠ 0.59 → 0.42 on 2026-08-12, and this was not a taste change — at 0.59 THE STAR DID NOT BLOOM AT ALL.
  *
- * The bright pass reads the scene through ACES tone mapping at `EXPOSURE`, so what `uThreshold` is
- * compared against is not the texture and not the linear colour but the TONE-MAPPED luma, which ACES
- * compresses hard. Measured over `sunouter_baseColor` composited at its own α 0.815 over the magma's
+ * ── ⚠ WHAT IT IS COMPARED AGAINST — CORRECTED 2026-08-13 ────────────────────────────────────────
+ * This block used to open *"the bright pass reads the scene through ACES tone mapping at `EXPOSURE`,
+ * so what `uThreshold` is compared against is not the texture and not the linear colour but the
+ * TONE-MAPPED luma"*. **It does not.** three applies tone mapping ONLY when the render target is null
+ * — both `WebGLPrograms.js` and `WebGLRenderer.js` gate it on `currentRenderTarget === null` — and
+ * `sceneTarget` is a render target. So step 1 writes LINEAR HDR, `BRIGHT_PASS_FRAGMENT_SHADER` applies
+ * no curve of its own, and this number is a cut in LINEAR space. Against ACES at `EXPOSURE` 1.42, a
+ * linear 0.42 displays at ≈ 0.56.
+ *
+ * ⚠ Which leaves the table below reading against an unstated space. If those percentiles were taken
+ * off the tone-mapped image — which the sentence they were written under implies — the effective cut
+ * sits nearer the surface's top 3–4 % than the "top fifth" claimed at the end of this block. **The
+ * VALUE is not in doubt**: 0.42 was arrived at by eye, on screen, and the star blooms correctly at it.
+ * Only the explanation was wrong. A future re-grade should re-measure the distribution in linear
+ * rather than trust either reading here.
+ *
+ * Measured over `sunouter_baseColor` composited at its own α 0.815 over the magma's
  * emissive backdrop, the star's whole surface lands at:
  *
  *     p50 0.364 · p90 0.445 · p95 0.519 · p99 0.726 · MAX 0.809
@@ -113,6 +128,33 @@ const MIP_COUNT: number = 5;
 
 /** Never let a mip collapse to nothing on a small canvas — a 0-sized target is a WebGL error. */
 const MIN_MIP_SIZE = 4;
+
+/**
+ * How much of the canvas the GLOW'S SOURCE is rendered at.
+ *
+ * ── ⚠ THE STAR USED TO BE DRAWN INTO THIS AT FULL RESOLUTION AND AVERAGED DOWN ONE PASS LATER ────
+ * Step 1 rendered the whole scene into `sceneTarget` at the canvas's full device resolution, and step
+ * 2 — the only pass that ever reads it — downsampled it by half into `mipTargets[0]`. Three quarters
+ * of those fragments were thrown away immediately, on the most overdraw-heavy surface on the site:
+ * eleven double-sided blended shells over the core and ten magma cells, submitted TWICE per drawn
+ * frame (steps 1 and 4).
+ *
+ * At 0.5 the source lands at exactly the size `mipTargets[0]` already had, so the chain below is
+ * IDENTICAL and the bright pass simply stops resampling. `MIP_WEIGHTS`, `BLOOM_RADIUS` and
+ * `BLOOM_STRENGTH` all keep their exact meanings — nothing is re-graded, and that is the whole reason
+ * this is free rather than a change to the star's look. The scene's per-frame fill goes from 2.0
+ * full-resolution renders to 1.25: **−37.5 %**, which is not spent here but handed back to
+ * `adaptivePixelRatio` and turned into resolution for the star AND the field.
+ *
+ * ⚠ WHAT IT COSTS: mip 0's texels used to be bilinear averages of four full-resolution texels, and are
+ * now single texels of a half-resolution render. Level 0 is the TIGHT core glow, so if anything shows,
+ * it will be a faint shimmer on the hot veins as the star turns — with five blur passes downstream of
+ * it. **If it shows, raise this to 0.707 rather than reverting**: half the pixels instead of a quarter
+ * (−25 % fill), the bright pass resamples 1.41:1, and the chain below is still untouched.
+ *
+ * See `docs/sun-mobile-quality-plan.md` §4.3.
+ */
+const GLOW_SOURCE_SCALE = 0.5;
 
 /**
  * How the levels are weighted into the final glow, at each end of the `uRadius` dial.
@@ -360,7 +402,12 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
     const pixelRatio = renderer.getPixelRatio();
     const deviceWidth = Math.max(MIN_MIP_SIZE, Math.round(width * pixelRatio));
     const deviceHeight = Math.max(MIN_MIP_SIZE, Math.round(height * pixelRatio));
-    sceneTarget.setSize(deviceWidth, deviceHeight);
+    // ⚠ The SOURCE scales, the CHAIN does not. `mipTargets[0]` below keeps the size it has always had
+    // — that is what makes this a saving rather than a re-grade. See GLOW_SOURCE_SCALE.
+    sceneTarget.setSize(
+      Math.max(MIN_MIP_SIZE, Math.floor(deviceWidth * GLOW_SOURCE_SCALE)),
+      Math.max(MIN_MIP_SIZE, Math.floor(deviceHeight * GLOW_SOURCE_SCALE)),
+    );
 
     let mipWidth = deviceWidth;
     let mipHeight = deviceHeight;

@@ -2302,7 +2302,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
        * Median, not mean: one garbage collection inside the window is worth sixteen real frames at
        * 25 fps, and the mean would carry it straight into the solve.
        */
-      const samplePhase = async (): Promise<number | null> => {
+      const samplePhase = async (phaseName: string): Promise<number | null> => {
         const samples: number[] = [];
         const phaseStartedAt = performance.now();
         let previousFrameAt = 0;
@@ -2331,6 +2331,32 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           if (samples.length >= BURN_IN_TARGET_SAMPLES) break;
           if (frameAt - phaseStartedAt >= BURN_IN_PHASE_MAX_MS) break;
         }
+        // ── ⚠ DIAGNOSTIC, and it is asking ONE question: is this instrument quantised? ────────────
+        //
+        // `requestAnimationFrame` fires on display refresh boundaries, so an rAF-to-rAF interval can
+        // only ever be about `k × the refresh period` — 16.7 ms at 60 Hz, 8.3 at 120. If that is what
+        // these samples look like, then `B − A` cannot resolve anything smaller than one period, and
+        // the star's true cost on a phone (5–10 ms) is BELOW one period: the split comes out either 0
+        // (→ `MIN_CREDIBLE_STAR_MS` refuses it) or a whole period (→ the star is charged 2× and solves
+        // to nothing). Both land the star on the floor, which is what "the sun is soft on mobile"
+        // actually is.
+        //
+        // Printed raw and unsorted, because the SHAPE is the finding and a median hides it:
+        //
+        //     33.3 33.3 50.0 33.3 33.3   → quantised. Build the direct measurement.
+        //     27.4 31.9 24.8 29.1 26.6   → genuinely spread. This diagnosis is wrong; look elsewhere.
+        //
+        // Logged before the refusal below, because a phase that produced too FEW samples is itself
+        // evidence — that is the other way a phone loses the split. See
+        // `docs/sun-mobile-quality-plan.md` §3, which this line exists to confirm or refute.
+        if (telemetryEnabled) {
+          console.log(
+            `%c[pixels] phase "${phaseName}"%c ${samples.length} samples @ ratio ` +
+              `${renderer.getPixelRatio().toFixed(2)}: ${samples.map((ms) => ms.toFixed(1)).join(' ')}`,
+            'color:#e0b341;font-weight:700',
+            'color:#888',
+          );
+        }
         if (samples.length < BURN_IN_MIN_SAMPLES) return null;
         samples.sort((left, right) => left - right);
         return samples[Math.floor(samples.length / 2)];
@@ -2341,7 +2367,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         if (disposed) return;
 
         // ── Phase A · the field alone. The star has not been permitted to draw yet. ──
-        const fieldOnlyMs = await samplePhase();
+        const fieldOnlyMs = await samplePhase('A · field alone');
         if (disposed) return;
 
         // ── The star joins, and phase B measures both. B − A is what the star costs. ──
@@ -2358,7 +2384,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // star's first draw out of the samples.
         window.dispatchEvent(new Event(SUN_MEASURE_BEGIN_EVENT));
         window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
-        const fieldAndStarMs = await samplePhase();
+        const fieldAndStarMs = await samplePhase('B · field + star');
         // Closed the moment the samples are in, not in `finally` — everything between here and there
         // is field work that would otherwise run with the star holding a formed pose it cannot keep.
         window.dispatchEvent(new Event(SUN_MEASURE_END_EVENT));
