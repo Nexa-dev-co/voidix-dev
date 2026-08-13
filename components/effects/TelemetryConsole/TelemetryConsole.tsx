@@ -12,9 +12,6 @@
  * function returns immediately and the bundler drops the body.
  */
 import '@/lib/telemetryLog';
-// ⚠ AFTER the capture, never before. The beacon installs `voidix.send` onto the API the line above
-// creates, so importing it first would find no `window.voidix` to extend.
-import './telemetryBeacon';
 
 export default function TelemetryConsole() {
   return null;

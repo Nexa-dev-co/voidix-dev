@@ -5,7 +5,15 @@
 > §5 keeps it, refuted, because the reasoning is still worth not repeating.
 >
 > Everything below §3 is derived from one iPhone (iOS 18.7, Safari 26.5.2, **375 × 549 · dpr 2 ·
-> 4 cores**, `deviceMemory` unreported → `device tier: low`), captured through `/api/telemetry`.
+> 4 cores**, `deviceMemory` unreported → `device tier: low`).
+>
+> ⚠ **How those captures were taken, and why you cannot repeat them as written.** iOS Safari cannot be
+> attached to a console from Windows, so a temporary `/api/telemetry` route re-logged the browser's
+> capture server-side where `vercel logs` could read it, and a beacon in `TelemetryConsole` posted it on
+> four triggers. **Both were scaffolding and both were removed on 2026-08-13.** To re-measure: restore a
+> route that `console.log`s a POSTed body, post `window.voidix.text()` to it from a `pagehide` /
+> `visibilitychange` listener, and read `vercel logs`. Everything else below is permanent telemetry that
+> still prints on a preview build.
 
 ---
 
@@ -459,9 +467,12 @@ on any multiple of 16.7 or 8.3. Whatever iOS Safari does with rAF scheduling und
 delivering a quantised clock, and a difference of medians is not destroyed by it.
 
 **Kept because the reasoning is sound and only the premise was false.** If this instrument is ever
-moved to a platform whose rAF *is* strictly vsync-aligned, the argument comes back — and the one-line
-diagnostic that settles it now lives in `samplePhase`. That log line is the most useful thing the first
-draft produced.
+moved to a platform whose rAF *is* strictly vsync-aligned, the argument comes back.
+
+⚠ The one-line diagnostic that settled it — `samplePhase` printing its raw, unsorted intervals — was
+**removed with the rest of the scaffolding**. It was the most useful thing the first draft produced, and
+it is four lines to put back: log `samples` before the `BURN_IN_MIN_SAMPLES` check. Do that before
+theorising about this instrument again.
 
 ## 6 · ⚠ REJECTED: crediting `SUN_IDLE_STRIDE` in the star's budget
 
@@ -514,7 +525,8 @@ by default rather than by measurement, and §4.4–4.6 are all decisions that ne
 
 ## 9 · How to know it worked
 
-Same capture route (`/api/telemetry` → `vercel logs`). Before:
+On a preview build's console (`telemetryEnabled`), or through a restored capture route — see the
+warning at the top of this file. Before:
 
 ```
 [voidix] gpu probe: 5.0 ms … → affordable 1.24, ceiling 1.24

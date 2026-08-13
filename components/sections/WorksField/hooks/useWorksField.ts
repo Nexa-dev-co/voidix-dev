@@ -2388,13 +2388,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
        * Median, not mean: one garbage collection inside the window is worth sixteen real frames at
        * 25 fps, and the mean would carry it straight into the solve.
        */
-      const samplePhase = async (phaseName: string): Promise<number | null> => {
+      const samplePhase = async (): Promise<number | null> => {
         const samples: number[] = [];
         const phaseStartedAt = performance.now();
         let previousFrameAt = 0;
         let discarded = 0;
-        /** Frames the ceiling threw out — the number that made the iPhone refusal legible. */
-        let rejected = 0;
         for (let frame = 0; frame < BURN_IN_MAX_FRAMES; frame += 1) {
           await nextWarmupFrame();
           if (disposed) return null;
@@ -2417,36 +2415,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           // ⚠ Reject the frame, do not abandon the phase. See BURN_IN_SANE_FRAME_MS — and
           // BURN_IN_SANE_FRAME_LOW_POWER_MS for why the ceiling is not one number for every device.
           if (interval > 0 && interval <= sampleCeilingMs) samples.push(interval);
-          else if (interval > 0) rejected += 1;
           if (samples.length >= BURN_IN_TARGET_SAMPLES) break;
           if (frameAt - phaseStartedAt >= phaseBudgetMs) break;
-        }
-        // ── ⚠ DIAGNOSTIC. It has already answered two questions and is kept for the third. ────────
-        //
-        // It was added to ask whether this instrument is QUANTISED — whether rAF-to-rAF intervals come
-        // back as multiples of the display's refresh period, which would put the star's cost below the
-        // resolution of any difference taken with it. **It is not**: an iPhone returned
-        // `31 29 21 13 17 22 29 17 18`, nothing like a multiple of 16.7. That hypothesis is dead and
-        // `docs/sun-mobile-quality-plan.md` §5 records it.
-        //
-        // What the same line then exposed is the defect that mattered: phase A's median (21 ms) came
-        // out ABOVE phase B's (17 ms) — the machine was still speeding up between the two — so the
-        // star solved negative. The star is measured directly now (see `noteStarFrameCost`), and phase
-        // B survives only as the fallback below.
-        //
-        // Printed raw and unsorted, because the SHAPE is the finding and a median hides it. The
-        // rejected count and the elapsed budget are here because a phase that produced too FEW samples
-        // has to say WHICH limit stopped it — the version without them cost a full trip to the device.
-        if (telemetryEnabled) {
-          console.log(
-            `%c[pixels] phase "${phaseName}"%c ${samples.length} samples @ ratio ` +
-              `${renderer.getPixelRatio().toFixed(2)}: ${samples.map((ms) => ms.toFixed(1)).join(' ')}` +
-              `\n  ${rejected} frame${rejected === 1 ? '' : 's'} rejected over ${sampleCeilingMs} ms` +
-              ` · ${(performance.now() - phaseStartedAt).toFixed(0)} of ${phaseBudgetMs} ms budget` +
-              ` · needs ${BURN_IN_MIN_SAMPLES}`,
-            'color:#e0b341;font-weight:700',
-            'color:#888',
-          );
         }
         if (samples.length < BURN_IN_MIN_SAMPLES) return null;
         samples.sort((left, right) => left - right);
@@ -2458,7 +2428,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         if (disposed) return;
 
         // ── Phase A · the field alone. The star has not been permitted to draw yet. ──
-        const fieldOnlyMs = await samplePhase('A · field alone');
+        const fieldOnlyMs = await samplePhase();
         if (disposed) return;
 
         // ── The star joins, and TIMES ITSELF ──
@@ -2497,7 +2467,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // cost of a WHOLE frame with the star in it, and without the star's own number there is no
         // other way to obtain one.
         const fieldAndStarMs =
-          starCost === null ? await samplePhase('B · field + star (fallback)') : null;
+          starCost === null ? await samplePhase() : null;
         // Closed the moment the samples are in, not in `finally` — everything between here and there
         // is field work that would otherwise run with the star holding a formed pose it cannot keep.
         window.dispatchEvent(new Event(SUN_MEASURE_END_EVENT));

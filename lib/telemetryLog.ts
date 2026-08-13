@@ -99,16 +99,6 @@ interface VoidixConsoleApi {
   download(): string;
   /** Start again from here. */
   clear(): string;
-  /**
-   * POST the capture to `/api/telemetry`, which re-logs it into Vercel's runtime logs.
-   *
-   * ⚠ Optional because it is installed by a DIFFERENT module — `TelemetryConsole/telemetryBeacon.ts`
-   * — and only where that module is mounted. This file knows nothing about it and must not: the
-   * capture has to work on its own, on a page with no network and no route behind it. The beacon
-   * exists for one platform's inability to attach a console (iOS from Windows); the capture exists
-   * for everyone.
-   */
-  send?(): string;
 }
 
 declare global {

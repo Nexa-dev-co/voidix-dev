@@ -1852,14 +1852,15 @@ export default function SunModelCanvas() {
             if (cost.milliseconds !== null) {
               noteStarFrameCost(cost.milliseconds, appliedPixelRatio);
             }
+            // Same family as `[pixels] gpu probe` / `BURN-IN` / `ALLOCATED`: the observable output of
+            // one measurement stage, behind the same build-time flag, dropped entirely in production.
             if (telemetryEnabled) {
               console.log(
                 `%c[pixels] star self-measured%c ${
                   cost.milliseconds === null
-                    ? 'REFUSED — reading outside gpuProbe MIN/MAX_BELIEVABLE'
-                    : `${cost.milliseconds.toFixed(2)} ms drained, for ${cost.megapixels.toFixed(3)} Mpx at ratio ${appliedPixelRatio.toFixed(2)}`
-                }` +
-                  `\n  its own context, shipping pose, default framebuffer — no subtraction involved.`,
+                    ? 'REFUSED — outside gpuProbe MIN/MAX_BELIEVABLE'
+                    : `${cost.milliseconds.toFixed(2)} ms drained at ratio ${appliedPixelRatio.toFixed(2)}`
+                }`,
                 'color:#5bd6a0;font-weight:700',
                 'color:#888',
               );
