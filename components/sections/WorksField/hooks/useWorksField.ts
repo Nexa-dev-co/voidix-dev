@@ -189,6 +189,31 @@ const BURN_IN_MIN_SAMPLES = 5;
  */
 const BURN_IN_SANE_FRAME_MS = 120;
 /**
+ * The same judgement on a device whose ordinary frame is already near the strict cap.
+ *
+ * ── ⚠ MEASURED ON AN iPhone, 2026-08-13, AND IT IS HALF OF WHY THE BURN-IN NEVER RAN THERE ───────
+ * `docs/sun-mobile-quality-plan.md` §3.1 has the capture. Phase B on that device:
+ *
+ *     phase "B · field + star"   1 sample @ ratio 1.00: 84
+ *     burn-in REFUSED  not enough usable frames in 3376 ms (needs 5 per phase)
+ *
+ * The field alone ran ~34 ms/frame; the field WITH the star ran ~150. So at 120 the filter was not
+ * rejecting long tasks in phase B — **it was rejecting the frame the visitor actually gets**, on the
+ * one device where that frame is the whole subject. One sample slipped under the cap, and a phase that
+ * cannot reach `BURN_IN_MIN_SAMPLES` refuses, which refuses the entire burn-in and leaves the quality
+ * allocator inert for the session.
+ *
+ * ⚠ The discriminator "is this frame evidence, or is it a stall" cannot be one number across a 5×
+ * range of device speed. On a machine whose honest frame is 150 ms, 120 does not mean "unusually slow",
+ * it means "typical".
+ *
+ * ⚠ IT DOES NOT LOOSEN THE SETTLE LOOP, which keeps the strict value deliberately — see
+ * `waitForQuietMainThread`. That loop asks a different question ("has the main thread gone quiet"),
+ * and it asks it while only the FIELD is drawing, at ~34 ms on this same phone. Raising its threshold
+ * would make it declare calm on frames that are not.
+ */
+const BURN_IN_SANE_FRAME_LOW_POWER_MS = 260;
+/**
  * How long to wait for the main thread to go quiet before sampling starts.
  *
  * The stage is cued when both SCENES report *warm*, and warm means "compiled", not "the page has
@@ -237,6 +262,43 @@ const BURN_IN_CALM_FRAMES = 3;
  * **Move either and you must move the other.**
  */
 const BURN_IN_PHASE_MAX_MS = 600;
+/**
+ * The same deadline on a slow device — LONGER, which is the opposite of how the settle budget scales.
+ *
+ * ── ⚠ THE OTHER HALF OF THE iPhone REFUSAL ───────────────────────────────────────────────────────
+ * A phase needs `BURN_IN_DISCARD_FRAMES + BURN_IN_MIN_SAMPLES` = 8 frames before it can answer at all.
+ * At 600 ms that is a demand for **≤ 75 ms per frame** — which phase A meets and phase B, by
+ * construction, cannot: phase B is the same phase plus the most expensive object on the page.
+ *
+ *     phase A   field alone     ~34 ms/frame   →  12 frames in ~410 ms  →  9 samples  ✓
+ *     phase B   field + star   ~150 ms/frame   →   4 frames in  600 ms  →  1 sample   ✗
+ *
+ * A deadline one phase can meet and the other structurally cannot is not a deadline, it is a
+ * guaranteed refusal. The settle budget shrinks on a slow device because drawing while it waits is
+ * self-defeating there; this must GROW, because a slow device needs more wall clock to reach the same
+ * sample count. Same reasoning, opposite sign.
+ *
+ * ⚠ THE SERIAL BUDGET STILL FITS, and this is the constraint that sizes the number:
+ *
+ *     settle (low power)  1200        BURN_IN_SETTLE_MAX_LOW_POWER_MS
+ *     phase A             1800        here
+ *     phase B             1800        here
+ *     ───────────────────────────
+ *                         4800   <  5500   BURN_IN_WAIT_MAX_MS   ✓
+ *     SUN_PERMIT_FALLBACK_MS 4800  >=  settle + ONE phase (3000) ✓
+ *
+ * **Move this and you must re-check both of those**, exactly as the strict value's note says.
+ *
+ * ⚠ It buys a device up to ~2.4 s more loader. Deliberate, and the same trade the settle budget
+ * already makes: the loader is holding regardless, and the alternative is a whole session rendered at
+ * an unmeasured resolution.
+ *
+ * ⚠ It does not rescue EVERY device, and the limit is worth naming: 8 frames inside 1800 ms is
+ * ~225 ms/frame. Slower than that and the phase still refuses — correctly, since the runtime
+ * calibration is then the better instrument anyway. `BURN_IN_MIN_SAMPLES` is deliberately NOT lowered
+ * to chase it; five is already thin for a median, and buying time is the honest fix.
+ */
+const BURN_IN_PHASE_MAX_LOW_POWER_MS = 1800;
 /**
  * The smallest star cost worth believing, in ms.
  *
@@ -2267,6 +2329,17 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       smaaPass.enabled = false;
       const burnStartedAt = performance.now();
 
+      // ── What this device is measured with ──
+      // Read ONCE, so the two phases cannot be sampled under different rules — a phase A judged by one
+      // ceiling and a phase B by another would make `B − A` a difference of two different instruments.
+      // `getDeviceTier` is latched, so this is a formality today; it stops being one the moment anyone
+      // makes the tier reactive.
+      const slowDevice = isLowPowerDevice();
+      const phaseBudgetMs = slowDevice ? BURN_IN_PHASE_MAX_LOW_POWER_MS : BURN_IN_PHASE_MAX_MS;
+      const sampleCeilingMs = slowDevice
+        ? BURN_IN_SANE_FRAME_LOW_POWER_MS
+        : BURN_IN_SANE_FRAME_MS;
+
       /**
        * Draw works frames until the main thread stops throwing long tasks at us.
        *
@@ -2275,7 +2348,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
        * empty wait would hand phase A its own first-draw costs all over again.
        */
       const waitForQuietMainThread = async () => {
-        const settleBudgetMs = isLowPowerDevice()
+        const settleBudgetMs = slowDevice
           ? BURN_IN_SETTLE_MAX_LOW_POWER_MS
           : BURN_IN_SETTLE_MAX_MS;
         let calmFrames = 0;
@@ -2307,6 +2380,8 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         const phaseStartedAt = performance.now();
         let previousFrameAt = 0;
         let discarded = 0;
+        /** Frames the ceiling threw out — the number that made the iPhone refusal legible. */
+        let rejected = 0;
         for (let frame = 0; frame < BURN_IN_MAX_FRAMES; frame += 1) {
           await nextWarmupFrame();
           if (disposed) return null;
@@ -2326,10 +2401,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
             discarded += 1;
             continue;
           }
-          // ⚠ Reject the frame, do not abandon the phase. See BURN_IN_SANE_FRAME_MS.
-          if (interval > 0 && interval <= BURN_IN_SANE_FRAME_MS) samples.push(interval);
+          // ⚠ Reject the frame, do not abandon the phase. See BURN_IN_SANE_FRAME_MS — and
+          // BURN_IN_SANE_FRAME_LOW_POWER_MS for why the ceiling is not one number for every device.
+          if (interval > 0 && interval <= sampleCeilingMs) samples.push(interval);
+          else if (interval > 0) rejected += 1;
           if (samples.length >= BURN_IN_TARGET_SAMPLES) break;
-          if (frameAt - phaseStartedAt >= BURN_IN_PHASE_MAX_MS) break;
+          if (frameAt - phaseStartedAt >= phaseBudgetMs) break;
         }
         // ── ⚠ DIAGNOSTIC, and it is asking ONE question: is this instrument quantised? ────────────
         //
@@ -2352,7 +2429,10 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         if (telemetryEnabled) {
           console.log(
             `%c[pixels] phase "${phaseName}"%c ${samples.length} samples @ ratio ` +
-              `${renderer.getPixelRatio().toFixed(2)}: ${samples.map((ms) => ms.toFixed(1)).join(' ')}`,
+              `${renderer.getPixelRatio().toFixed(2)}: ${samples.map((ms) => ms.toFixed(1)).join(' ')}` +
+              `\n  ${rejected} frame${rejected === 1 ? '' : 's'} rejected over ${sampleCeilingMs} ms` +
+              ` · ${(performance.now() - phaseStartedAt).toFixed(0)} of ${phaseBudgetMs} ms budget` +
+              ` · needs ${BURN_IN_MIN_SAMPLES}`,
             'color:#e0b341;font-weight:700',
             'color:#888',
           );

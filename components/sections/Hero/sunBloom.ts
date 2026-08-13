@@ -170,6 +170,22 @@ const GLOW_SOURCE_SCALE = 0.5;
  * then renormalised to the sums those literals had. See MIP_COUNT for why the renormalisation is not
  * optional.
  */
+/**
+ * Where the glow starts and finishes fading toward the canvas edge, in the composite's own radial
+ * metric: **0 is the centre, 1.0 is the nearest edge, 1.414 is a corner.**
+ *
+ * The star's BODY only reaches ~0.28 in that metric (`SUN_BODY_FILL` 0.723 ÷ `SUN_CANVAS_HEADROOM`
+ * 2.6, halved), so a fade beginning at 0.75 leaves the glow untouched out to nearly three body radii
+ * and only takes hold across the last quarter — where the alternative is not "more glow", it is a
+ * straight-edged cut. Ending exactly at 1.0 puts zero on the edge itself.
+ *
+ * ⚠ Raising START toward 1.0 makes the fade tighter and brings the hard cut back; lowering it dims a
+ * corona that is not in any trouble. If the halo now reads clipped rather than cut, the fix is a
+ * bigger canvas (§4.6 stage 2), not this pair.
+ */
+const EDGE_FADE_START = 0.75;
+const EDGE_FADE_END = 1;
+
 const TIGHT_FALLOFF_PER_LEVEL = 1 / 3;
 const WIDE_WEIGHT_NEAR = 0.4;
 const WIDE_WEIGHT_FAR = 1;
@@ -268,6 +284,28 @@ const COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
     ).join('\n    ')}
 
     glow *= uStrength;
+
+    // ── Fade the glow out before the canvas edge, so running out of room is invisible ────────────
+    //
+    // ⚠ THE GLOW REACHES THE EDGE AND IS CUT FLAT, which draws a straight-sided rectangle around the
+    // star. SUN_CANVAS_HEADROOM (2.6) exists to stop exactly this and is no longer enough — most
+    // visibly on a phone, where the hero square hits its 7rem floor and the layer is only ~291 CSS px
+    // while the pin scales the star to SUN_SCROLL_SCALE across the fill.
+    //
+    // (No backticks anywhere in here. They terminate the template literal — the trap this file's
+    // header and CLAUDE.md both record, and it has now bitten three times, every one from a comment.)
+    //
+    // This does NOT give the glow more room; it makes the boundary unfindable, which is the actual
+    // complaint. Real room means a bigger canvas — see sun-mobile-quality-plan §4.6 stage 2, which is
+    // a project rather than a constant and costs 2.4x the fill on the device least able to pay it.
+    //
+    // Measured from the CENTRE in UV space, so it is aspect-correct on a square canvas and slightly
+    // oval on any other — which is what you want, since the falloff should follow the frame it is
+    // hiding rather than a circle inscribed in it. Multiplicative on the summed glow, so it costs one
+    // length, one smoothstep and one multiply per pixel, and cannot alter the grade anywhere the star
+    // actually is: FADE_START is beyond where a correctly-framed corona has anything left.
+    float edgeDistance = length(vUv - vec2(0.5)) * 2.0;
+    glow *= 1.0 - smoothstep(${EDGE_FADE_START.toFixed(5)}, ${EDGE_FADE_END.toFixed(5)}, edgeDistance);
 
     // Alpha carries the glow's own brightness, so the halo is visible over the cream hero while a
     // pixel with no glow contributes exactly nothing and the canvas stays transparent there.

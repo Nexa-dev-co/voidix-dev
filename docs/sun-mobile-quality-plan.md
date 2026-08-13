@@ -1,425 +1,387 @@
 # The star is soft on phones — diagnosis and plan
 
-> **Status: PROPOSED. Written 2026-08-13.** Nothing here is built yet.
+> **Rewritten 2026-08-13 against a real device capture.** The first draft of this document reasoned
+> from first principles about a handset nobody had measured, and **its central hypothesis was wrong**.
+> §5 keeps it, refuted, because the reasoning is still worth not repeating.
 >
-> The complaint is *"the sun looks low quality on my mobile device"*. It is not a model problem, not a
-> texture problem and not a tier problem — `SunModelCanvas` never consults `getDeviceTier()` at all. It
-> is one number: **the star is allocated 46–67 % of the panel's density on a phone, and 150 % of it on a
-> 1× desktop.** This is why, and what to do.
+> Everything below §3 is derived from one iPhone (iOS 18.7, Safari 26.5.2, **375 × 549 · dpr 2 ·
+> 4 cores**, `deviceMemory` unreported → `device tier: low`), captured through `/api/telemetry`.
 
 ---
 
-## 1 · The measurement that states the problem
+## 1 · The complaint
 
-The star's canvas is sized by `HeroSun.syncToSquare` from `.hero-sun-card`'s untransformed rect ×
-`SUN_CANVAS_HEADROOM` (2.6). The body fills `0.723` of the square (`SUN_BODY_FILL` × the headroom).
+*"The sun looks low quality on my mobile device"* — plus, reported later and confirmed as a separate
+defect: **the canvas edge is visible and the bloom is cut off** (§4.6).
 
-| | 1440 × 900, dpr 1 | 390 × 844 phone, dpr 3 |
-|---|---|---|
-| `.hero-sun-card` — `clamp(7rem, 20vw, 11rem)` | 176 px | **112 px** (the 7rem floor; 20vw = 78) |
-| canvas = card × 2.6 | 458 px | 291 px |
-| star **body** = 0.723 × card | 127 CSS px | **81 CSS px** |
-| body at the panel's native density | 127 device px | **243 device px** |
-| ratio the star may be allocated | up to 1.5 | **1.38 – 2.0** |
-| body as actually rendered | **190 device px** | **112 – 162 device px** |
-| → density against the panel | **150 %** | **46 – 67 %** |
-
-```
-   desktop, dpr 1                          phone, dpr 3
-   ┌────────────────┐                      ┌────────────────┐
-   │ rendered  190  │  supersampled        │ rendered  112  │  drawn at 46 %,
-   │ displayed 127  │  1.5× — sharper      │ displayed 243  │  compositor blows
-   └────────────────┘  than the panel      └────────────────┘  it up 2.17×
-```
-
-Same code, a **2.2–3.3× gap in effective sharpness**, entirely in the phone's disfavour.
+It is not a model problem, not a texture problem and not a tier problem — `SunModelCanvas` never
+consults `getDeviceTier()` at all.
 
 ---
 
-## 2 · Where that number comes from
+## 2 · What the phone actually reported
 
 ```
-  deviceTier ──────► gpuProbe ──────► BURN-IN (2 phases) ──────► locked for the session
-  hints, latched     1 drained        real rAF frames in          emergency valve only
-  potato|low|mid     works frame      the loader, star            (±√2, twice, one way)
-  |high              → CEILING only   drawing alongside
-       │                                    │
-       │ allocates shards, MSAA             │  phase A: field alone
-       │ floor, bloom strength              │  phase B: field + star
-       │ (the star reads NONE of it)        │  B − A  =  "what the star costs"
-       ▼                                    ▼
-                              reportSectionCosts(): spend a 33.3 ms frame
-                              1 · reserve the star's floor
-                              2 · models take what they can afford, capped at `ceil`
-                              3 · star takes the remainder, capped at field × 1.6
+[voidix] device tier: low      pointer coarse, width 375, dpr 2
+                               deviceMemory unreported, cores 4
+
+[voidix] gpu probe: 5.0 ms for 0.21 Mpx at ratio 1 → affordable 1.24, ceiling 1.24
+
+[pixels] phase "A · field alone"   9 samples @ ratio 1.00: 112 31 14 14 13 19 33 36 33
+[pixels] phase "B · field + star"  1 sample  @ ratio 1.00: 84
+[pixels] burn-in REFUSED  not enough usable frames in 3376 ms (needs 5 per phase)
 ```
 
-Run it for a dpr 3 phone at 390 × 844:
-
-```
-floor  = 3 / MAX_COMPOSITE_UPSCALE 2.17          = 1.382   ← binds nearly everything
-ceil   = min(MAX_PIXEL_RATIO 2, dpr 3, √(3/0.33)) = 2.00   ← the probe usually pulls this to ~1.4
-sunCeiling = min(hardwareCeil 2, MAX_PIXEL_RATIO 2, native 3) = 2.00
-
-field: a FULL-VIEWPORT 0.63 Mpx buffer that cannot go below 1.382 → eats most of the 33.3 ms
-star:  gets whatever is left
-```
-
-So even a perfect measurement cannot hand the star more than **2.0 against a panel of 3.0**.
-`MAX_PIXEL_RATIO`'s own comment reads *"hard cap (retina native)"* — it was written for dpr 2 desktops.
+Everything below follows from those four lines.
 
 ---
 
-## 3 · ⚠ THE ROOT CAUSE: the instrument's resolution is one vsync interval
+## 3 · ⚠ THE ROOT CAUSE: the allocator never runs at all on this device
 
-The cap explains why the star can never exceed 67 %. It does not explain why it sits at **46 %**, which
-is the floor. This does, and it is the finding this document exists for.
-
-**`runBurnIn` measures rAF-to-rAF wall clock.** `requestAnimationFrame` callbacks fire on display
-refresh boundaries, so a measured interval is always ≈ `k × 16.67 ms` on a 60 Hz panel (8.33 ms at
-120 Hz). The instrument therefore has a **resolution of one refresh interval**, and it always rounds
-*up*.
-
-The star's true marginal cost on a phone is somewhere around 5–10 ms. **That is smaller than one
-quantum.** So `B − A` — a difference of two quantised numbers — cannot represent it. It can only come
-out 0, or a whole 16.7:
+### 3.1 · Phase B cannot produce enough samples. Ever.
 
 ```
-                    true          measured (60 Hz)      B − A        what the allocator concludes
-  ─────────────────────────────────────────────────────────────────────────────────────────────
-  A: field alone    22 ms   →     33.3 ms
-  B: field + star   30 ms   →     33.3 ms            →   0.0 ms   →  below MIN_CREDIBLE_STAR_MS
-                                                                     ⇒ split REFUSED
-
-  A: field alone    30 ms   →     33.3 ms
-  B: field + star   38 ms   →     50.0 ms            →  16.7 ms   →  the star "costs" 2.1× what it
-                                                                     does; remaining ms ≈ 0
-                                                                     ⇒ starSolved ≈ 0
+  BURN_IN_PHASE_MAX_MS   600 ms      the wall-clock deadline for one phase
+  BURN_IN_DISCARD_FRAMES   3         thrown away before sampling starts
+  BURN_IN_MIN_SAMPLES      5         below this the phase returns null
+  ─────────────────────────────────────────────────────────────────────────
+  ⇒ 8 frames inside 600 ms  ⇒  the device must sustain ≤ 75 ms/frame
 ```
 
-**Both roads end at the floor.** On the refusal road `sunPixelRatio` stays `null`, so
-`getSunPixelRatio()` falls back to `min(pixelRatio, 2)` — the field's ratio, which is the floor 1.382.
-On the overstatement road `starSolved` collapses and `Math.max(starFloor, …)` puts it at the floor
-1.382. Either way: **46 % of the panel, and no log says anything is wrong** (the refusal prints
-`[pixels] split REFUSED`, which reads like a credibility check doing its job).
+Measured on this phone:
 
-⚠ **The same quantisation biases the FIELD's number too, everywhere, including desktop.** `measured ≥
-true` always, by an average of half a quantum, so `sustainable = ratio × √(33.3 ÷ measured)` is
-systematically low. On a phone whose true frame is 25 ms and measures 33.3, that is **15 % of ratio
-lost**; on the reference dpr 2.5 laptop at 60–77 ms it is ~5 %. It is uniform and conservative, so it
-is not a correctness bug — but it is part of why this site reads soft in general, and it is worth
-knowing before anyone tunes `PIPELINE_FRAME_BUDGET_MS` again.
+```
+  phase A   field alone      ~34 ms/frame     12 frames in ~410 ms   →  9 samples  ✓
+  phase B   field + star    ~150 ms/frame      4 frames in  600 ms   →  1 sample   ✗
+```
 
-### ⚠ Confirm this before building anything
+**Phase B fails by construction, on every load.** And a refused phase B refuses the whole burn-in:
+`reportSectionCosts` never runs, `reportBurnIn` never runs, `sunPixelRatio` stays `null`. The quality
+allocator — the entire system described in CLAUDE.md's "models first, the star gets the rest" — is
+**inert on the class of device it exists for**, and says so in a line that reads like a credibility
+check doing its job.
 
-This is derived from first principles about the user's device, not measured on it. **Step zero is one
-log line**, in `samplePhase`:
+⚠ The asymmetry is the trap: the budget was sized against phase A's cost, and phase B is *the same
+phase plus the most expensive object on the page*. A deadline that one phase can meet and the other
+structurally cannot is not a deadline, it is a guaranteed refusal.
+
+### 3.2 · The probe's ceiling was never retargeted from 60 fps
+
+`reportProbedFrameCost` solves `affordable = probeRatio × √(SPENDABLE ÷ measured)`, and
+`SPENDABLE = PIPELINE_FRAME_BUDGET_MS × 0.85 = 9 × 0.85 = 7.65 ms`. The log confirms it to the digit:
+
+```
+  1 × √(7.65 ÷ 5.0)  =  1.237     → logged as "affordable 1.24, ceiling 1.24"
+```
+
+**9 ms is a 60 fps number.** Its own comment says so — *"Not 16.7. Three things share that frame"* — and
+it was written when everything on this site solved against a 16.7 ms frame. `PRIORITY_TARGET_FPS` went
+**50 → 30** on 2026-08-07, `CALIBRATION_TARGET_FRAME_MS` followed it, and **this did not.** The
+retarget's own note claims it is *"the single largest quality change available to this file"*; on this
+phone it never arrived, because the probe's ceiling clamps below where the calibration would land.
+
+```
+  today        9 ms → 7.65 spendable → ceiling 1.24     ← binds everything on this phone
+  consistent  18 ms → 15.3 spendable → ceiling 1.75     ← +41 % linear, from one constant
+```
+
+Against a native dpr of 2, a ceiling of 1.24 is **62 % of the panel at absolute best**, before the
+calibration takes its own safety margin off.
+
+### 3.3 · The star costs about 1.5× the entire works field
+
+```
+  field alone       ~34 ms
+  field + star   ~84–150 ms          ⇒  the star's marginal cost ≈ 50–115 ms
+```
+
+Even on the single most favourable sample (84 ms), the star is **~50 ms** — half again the cost of the
+heaviest scene on the site, on a canvas of 291 × 291 CSS pixels. It is fill: eleven double-sided,
+full-coverage, alpha-blended shells over the core and ten magma cells, **rendered twice per drawn
+frame**, with a bloom chain on top.
+
+⚠ One sample is not a measurement, and this figure must be re-taken once §4.1 lands. But the *order* is
+not in doubt, and it reframes the whole problem: **the star is not a victim of the budget on this
+device, it is what consumes the budget.**
+
+---
+
+## 4 · The fixes, in the order the evidence now puts them
+
+### 4.1 · Let the burn-in finish on a slow device — ✅ **DONE**
+
+**The single highest-value change in this document.** Nothing else in the allocator can matter while it
+refuses to run.
+
+⚠ **THERE WERE TWO BINDING CONSTRAINTS, NOT ONE**, and fixing only the deadline would have changed
+nothing. Re-reading the capture during implementation:
+
+```
+  phase B ran the full 600 ms and returned ONE sample, of 84 ms
+  ⇒ the other frames were not missing, they were REJECTED
+  ⇒ BURN_IN_SANE_FRAME_MS is 120, and phase B's real frames are ~150
+```
+
+So the sane-frame filter — whose job is *"above this, a frame carried a long task and is not evidence
+about rendering"* — **was rejecting the frame the visitor actually gets**, on the one device where that
+frame is the entire subject. A longer deadline would have produced more frames and thrown all of them
+away. Both constants had to move:
 
 ```ts
-console.log('[pixels] phase samples', samples.map((s) => s.toFixed(1)).join(' '));
+const BURN_IN_PHASE_MAX_LOW_POWER_MS = 1800;    // ≥ 8 frames at ~150 ms, with margin
+const BURN_IN_SANE_FRAME_LOW_POWER_MS = 260;    // "slow frame" ≠ "stall" on a slow device
 ```
 
-Deploy to a Vercel **preview** (telemetry is on there — see `lib/telemetryEnabled.ts`) and read it from
-the phone. If every sample is a near-multiple of the refresh interval — `33.3 33.3 33.3 50.0 33.3` —
-the diagnosis holds and §4.2 is the fix. If the samples are genuinely spread (`27.4 31.9 24.8 …`), the
-instrument is finer than argued here and the answer is §4.1 plus the dials in §4.5 instead.
+⚠ **The lenient ceiling is used for SAMPLING ONLY.** `waitForQuietMainThread` keeps the strict 120,
+because it asks a different question ("has the main thread gone quiet") while only the FIELD is drawing
+— ~34 ms on this same phone. Raising its threshold would make it declare calm on frames that are not.
 
----
+Both values are read **once** at the top of `runBurnIn`, so the two phases can never be sampled under
+different rules — a phase A judged by one ceiling and a phase B by another would make `B − A` a
+difference of two instruments.
 
-## 4 · The fixes
+⚠ **The serial budget has to be re-checked, and it fits.** `BURN_IN_WAIT_MAX_MS` is 5500:
 
-### 4.1 · The star's cap: `MAX_PIXEL_RATIO 2` → a star-specific `STAR_MAX_PIXEL_RATIO 3`
+```
+  settle (low power)  1200
+  phase A             1800
+  phase B             1800
+  ────────────────────────
+                      4800  <  5500      ✓
+  SUN_PERMIT_FALLBACK_MS 4800  ≥  settle + ONE phase (3000)   ✓
+```
 
-**What.** `sunCeiling()` in `lib/adaptivePixelRatio.ts` currently reads:
+⚠ It costs a slow phone up to **2.4 s of extra loader**. That is the right trade and it is the same one
+`BURN_IN_SETTLE_MAX_MS` already makes: the loader is holding anyway, and the alternative is a session
+that runs at an unmeasured resolution from beginning to end.
+
+⚠ **Consider `BURN_IN_MIN_SAMPLES` too, but do not lower it blindly.** Five is already thin for a
+median. Prefer buying time over lowering the bar.
+
+### 4.2 · Retarget the probe budget to the frame the site actually aims at — ✅ **DONE**
+
+`PIPELINE_FRAME_BUDGET_MS` (a hard 9) is replaced by a SHARE of whatever frame the site targets, so a
+future retarget cannot leave it behind again — which is the actual defect, not the number:
 
 ```ts
-return Math.max(floor, Math.min(hardwareCeil, MAX_PIXEL_RATIO, native));
+const PIPELINE_FRAME_SHARE = 0.55;
+const spendableFrameBudgetMs = () =>
+  CALIBRATION_TARGET_FRAME_MS * PIPELINE_FRAME_SHARE * (1 - SAFETY_HEADROOM_FRACTION);
 ```
 
-`hardwareCeil` is `min(MAX_PIXEL_RATIO, max(deviceRatio, SUPERSAMPLE_CEIL))`, so on a dpr 3 panel the
-expression is `min(2, 2, 3) = 2`. Replace it with:
+⚠ **A function, not a constant**, and not by preference: `CALIBRATION_TARGET_FRAME_MS` is declared ~90
+lines further down the module, so a module-scope `const` reading it would hit the temporal dead zone
+and throw on import. Its only caller is `reportProbedFrameCost`, which cannot run before the module has
+finished evaluating.
 
-```ts
-const STAR_MAX_PIXEL_RATIO = 3;   // native on the densest phone panels shipping
-…
-return Math.max(floor, Math.min(STAR_MAX_PIXEL_RATIO, native));
-```
+    old   9 × 0.85     =  7.65 spendable  →  ceiling 1.24 on the iPhone
+    new  33.3 × 0.55 × 0.85 = 15.6        →  ceiling 1.77
 
-⚠ **Dropping `hardwareCeil` from that expression is provably equivalent, not a loosening.** `native` is
-already `max(deviceRatioNative, SUPERSAMPLE_CEIL)` in the shipping-pose branch and `deviceRatioNative`
-otherwise, and `hardwareCeil` is `min(MAX_PIXEL_RATIO, max(deviceRatio, SUPERSAMPLE_CEIL))` — so
-`min(hardwareCeil, MAX_PIXEL_RATIO, native)` reduces to `min(MAX_PIXEL_RATIO, native)` in both
-branches. The only change is which cap constant is named.
+⚠ **Side effects, and they are not small:**
 
-Then in `SunModelCanvas.tsx`, `MAX_DEVICE_PIXEL_RATIO = 2` clamps a second time and would make the
-whole change inert. **Import the constant instead of keeping a second copy** — this is exactly the
-`SUN_OMITTED_PARTS`-style drift CLAUDE.md warns about, and `MAX_DEVICE_PIXEL_RATIO` has precisely one
-consumer (`sunPixelRatio()`, line 143) despite its comment claiming `particleFrameExtent` and the
-camera fit are reasoned about in terms of it.
+- It raises the ceiling on **every** device, not just phones. That is defensible precisely because it
+  is a *ceiling*: the burn-in and the calibration are what pick the destination, and both measure real
+  frames. What this removes is a cap derived from a frame rate the site no longer targets.
+- ⚠ **On this phone it stops being the binding constraint, which means something else starts binding**
+  — most likely the honest measurement, which is the intended behaviour and may well land *below* 1.24
+  anyway once §4.1 lets it run. **Do not expect this to be a free 41 %.** It removes a wrong cap; it
+  does not create headroom.
+- ⚠ `MAX_DRAWING_BUFFER_MEGAPIXELS` (3 Mpx) still applies and is untouched. That is the constant
+  standing between a dense panel and the 700 MB / 20 fps case, and it must keep doing so.
+- The `0.55` share is a judgement, not a measurement. Name it as one.
 
-**⚠ Side effects.**
+### 4.3 · Halve the glow source's resolution — ✅ **DONE**
 
-| | today | after |
-|---|---|---|
-| dpr 1 desktop | `min(1.5, 2, 1.5)` = **1.5** | `min(3, 1.5)` = **1.5** — unchanged |
-| dpr 2 laptop | `min(2, 2, 2)` = **2.0** | `min(3, 2)` = **2.0** — unchanged |
-| dpr 2.5 laptop | `min(2, 2, 2.5)` = **2.0** | `min(3, 2.5)` = **2.5** — ⚠ CHANGED |
-| dpr 3 phone | `min(2, 2, 3)` = **2.0** | `min(3, 3)` = **3.0** — the point of the change |
+`sceneTarget` rendered the whole star at full device resolution, and the bright pass — its only
+consumer — downsampled it by half one pass later. Now rendered at `GLOW_SOURCE_SCALE` (0.5), with
+`mipTargets[0]` keeping its exact previous size, so `MIP_WEIGHTS`, `BLOOM_RADIUS` and `BLOOM_STRENGTH`
+all keep their meanings and nothing is re-graded.
 
-- ⚠ **The dpr 2.5 laptop is the machine every cost figure in CLAUDE.md was taken on**, and its star's
-  ceiling moves. It cannot actually reach 2.5: `STAR_RAISE_OVER_MODELS` binds the star to
-  `field × 1.6`, and the field sits near 1.0 there, so the allowance is ~1.6. **Bounded by the models,
-  exactly as designed** — but this is the first place to look if that laptop regresses.
-- ⚠ **Memory scales with the square of the ratio, and the star's default framebuffer carries MSAA**
-  (`antialias: true`). At 291 CSS px square: ratio 1.38 → 0.16 Mpx ≈ 10 MB of MSAA colour+depth; ratio
-  2.2 → 0.41 Mpx ≈ 18 MB; ratio 3.0 → 0.76 Mpx ≈ 24 MB, plus ~10 MB for `sceneTarget` and the mip/blur
-  chain. On a phone that is a real allocation and it is the ceiling, not the expected landing.
-- **It is a cap, not a grant.** Nothing reaches it unless `starSolved` affords it, which today it
-  cannot. **§4.1 alone is inert.** It is listed first because it is the smallest change, not because it
-  is the one that works.
-- `sunParticles.setPixelRatio` is a uniform (`uPixelRatio`); grain sizes follow correctly at any ratio.
-- `getSunPixelRatio()`'s fallback keeps `MAX_PIXEL_RATIO`, deliberately: when the split is refused the
-  star tracks the field, and the field is never above 2. Leave that line alone.
+**Per-frame scene fill: 2.0 → 1.25 full-resolution renders, −37.5 %.** Given §3.3 this is worth more
+than it looked when it was written as a nice-to-have.
 
-### 4.2 · Measure the star in its own context, drained — not as a difference of two rAF intervals
+⚠ Outstanding: the halo has not been compared before/after by eye. Predicted artefact is a faint
+shimmer on the hot veins as the star turns (mip 0 loses a free 4:1 box average); the documented
+response is to raise the constant to 0.707 rather than revert.
 
-**This is the fix.** `lib/gpuProbe.ts` already contains the right instrument: `measureGpuFrameCost`
-brackets a draw with `gl.finish()` either side and takes the median of three. Its resolution is
-sub-millisecond because it does not ride the refresh clock at all. The star has its own renderer and
-its own context, so it can be measured **directly rather than by subtraction** — which removes the
-subtraction, the quantisation, and the three credibility checks' reason to exist in one move.
+### 4.4 · Measure the star directly, drained, in its own context
 
-**Shape of the change.**
+⚠ **The justification for this has changed and it is weaker than the first draft claimed** — the
+vsync-quantisation argument it was built on is refuted (§5). It survives on two different grounds:
 
-```
-  useWorksField.runBurnIn                     SunModelCanvas
-  ───────────────────────                     ──────────────
-  settle for a quiet main thread
-  phase A  (field alone, rAF)
-  SUN_MEASURE_BEGIN_EVENT ──────────────────► onMeasureBegin: shipping pose, permit,
-                                              noteStarMeasuredInShippingPose()
-  SUN_DRAW_PERMIT_EVENT   ──────────────────►
-  phase B  (field + star, rAF)                       │
-        │                                            │  ⚠ on the NEXT frame after the pose,
-        │  ◄── measureGpuFrameCost(sunRenderer,      │     NOT during phase B — see below
-        │      () => bloom.render(scene, camera))    │
-        │                                            ▼
-        │                                     noteStarFrameCost(ms, appliedPixelRatio)
-  SUN_MEASURE_END_EVENT   ──────────────────► onMeasureEnd: restore the drifting pose
-  reportSectionCosts({ fieldMilliseconds, fieldRatio })
-        └─ prefers the star's own number; falls back to B − A when it never arrived
-```
+1. **It deletes phase B**, which is the thing that cannot complete (§3.1). Settle + phase A + three
+   drained star frames replaces settle + phase A + phase B, and phase A already succeeds on this
+   device. That makes it an alternative to §4.1 rather than an addition to it.
+2. `measureGpuFrameCost` has sub-millisecond resolution against a difference of two medians, and §3.3
+   shows the star's cost is the number the whole allocation turns on.
 
-**⚠ Side effects, each of which has to be handled.**
+⚠ **It is now the SECOND choice, not the first.** §4.1 is three constants and no new failure modes;
+this is a cross-context measurement with GPU drains inside the loader. Do §4.1, re-measure, and only
+build this if the split still comes out unusable. The mechanics — `SUN_MEASURE_BEGIN/END_EVENT`, the
+refusal branches, the module as rendezvous, the ordering against `reportBurnIn` — are unchanged from
+the first draft and are recorded in git history if it is wanted.
 
-1. ⚠ **The drains must not land inside phase A or phase B.** `gl.finish()` stalls the GPU *process*,
-   which is what freezes the worker-rendered dust (`docs/loader-freeze-plan.md` §7) and would inflate
-   whichever rAF samples straddle it. Take the star's three drains **after phase B's samples are in and
-   before `SUN_MEASURE_END_EVENT`** — the pose is still held there and nobody is sampling.
-2. ⚠ **A drained frame over-reports**, because it removes the CPU/GPU overlap a real frame has. That is
-   `gpuProbe`'s own documented pessimism and it pushes the star's ratio *down*. It is worth accepting:
-   ~10–30 % pessimism against an instrument whose current error is 100–200 % in the *same* direction.
-   `PIPELINE_FRAME_BUDGET_MS`'s 9 ms already encodes an allowance for exactly this bias, and the same
-   reasoning transfers.
-3. ⚠ **The rendezvous must be the module, not an event ordering.** The star's loop is asynchronous
-   relative to `runBurnIn`'s `await nextWarmupFrame()` chain. Have the star write into
-   `adaptivePixelRatio` (`noteStarFrameCost`) and have `reportSectionCosts` read whatever is there;
-   **do not make the burn-in wait on a new event**, or a star that refuses the pose hangs the loader
-   behind `BURN_IN_WAIT_MAX_MS`.
-4. ⚠ **The refusal branches already exist and must stay the fallback.** `onMeasureBegin` refuses under
-   reduced motion, before the model lands, and once the assembly is cued. On any of those, no star
-   number is written and the allocator falls back to `B − A` — i.e. **today's behaviour, unchanged**.
-   That is the whole safety story: the new path is strictly additive.
-5. ⚠ **The gating of `reportSectionCosts` has to be restructured, and this is the subtle one.** Today
-   the three credibility checks decide whether the allocator runs *at all*; if the split is not
-   credible, `reportSectionCosts` is skipped and `reportBurnIn` sizes everything off one number. Once
-   the star measures itself, a bad `B − A` is no longer a reason to skip the allocation — phase A is
-   still a valid field measurement. So: credibility gates the **`B − A` path only**, and the allocator
-   runs whenever it has a field number and *either* star number. ⚠ Watch the order with
-   `reportBurnIn`: it early-returns once `phase === 'locked'`, so whichever runs first wins. That is
-   already true today and must stay true.
-6. ⚠ **Loader budget.** Low-power settle 1200 + 600 + 600 + ~50 ms of drains = ~2450 ms against
-   `BURN_IN_WAIT_MAX_MS` 5500. Comfortable. `SUN_PERMIT_FALLBACK_MS` (4800, *"≥ settle + ONE phase"*)
-   is untouched because nothing moves before phase A.
-7. ⚠ **It changes the star's ratio on desktop too, and not necessarily upward.** A machine where
-   `B − A` happened to land in a favourable bucket may have been over-allocating the star; a true
-   measurement will take that back. That is correct, and it is the same argument
-   `STAR_RAISE_OVER_MODELS`'s header makes about the last correction — *"expect the honest number to be
-   lower than the biased one"*. Flag it in the `ALLOCATED` log so it is visible rather than mysterious.
+### 4.5 · `STAR_MAX_PIXEL_RATIO` — ⚠ INERT on this device, deprioritised
 
-**Expected outcome on the phone.** With a true star cost of ~6 ms measured at ratio 1.38, and the field
-holding the floor: `remainingMs ≈ 33.3 − fieldSpent`, `starSolved = 1.38 × √(remaining ÷ 6) × 0.9`.
-Even 8 ms of remainder solves ≈ **1.8**; `STAR_RAISE_OVER_MODELS` allows up to `1.382 × 1.6 = 2.21`.
-So §4.2 alone moves the star **1.38 → ~1.8–2.0 (+30–45 % linear density)**, and §4.1 is what lets the
-rest of that allowance through.
+The first draft led with this. **The phone is dpr 2, not dpr 3**, so `sunCeiling()` already resolves to
+`min(hardwareCeil 2, MAX_PIXEL_RATIO 2, native 2) = 2` and the cap is not what binds. It remains
+correct for dpr 3 handsets and costs almost nothing, but it fixes nothing here.
 
-### 4.3 · `sunBloom` renders the glow source at 4× the resolution its only consumer reads
+### 4.6 · ⚠ The canvas clips the bloom, and the edge is visible — NEW, user-reported
 
-**What.** `createTarget` sizes `sceneTarget` to the full device resolution (`sunBloom.ts:363`), step 1
-renders the entire star into it, and step 2 — the only thing that ever reads it — immediately
-downsamples it by half into `mipTargets[0]`. **Three quarters of those fragments are averaged away one
-pass later.**
+Separate defect from everything above: the glow reaches the canvas boundary and is cut flat, drawing a
+rectangle around the star. `SUN_CANVAS_HEADROOM` (2.6) exists precisely to prevent this and is no
+longer sufficient — most visibly on a phone, where the square hits its `7rem` floor and the layer is
+only 291 CSS px while the star scales to `SUN_SCROLL_SCALE` 1.1 across the fill.
+
+⚠ **First, identify which edge is being seen.** Two different things can draw a box here and they have
+different fixes:
+
+- the **canvas's clipped glow** — a soft gradient ending in a hard straight cut;
+- `.hero-sun-card`'s own `box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.08)` — a crisp 1 px amber
+  outline that is *supposed* to be there.
+
+A screenshot settles it in one look. The rest of this section assumes the former.
+
+**Stage 1 — stop the hard cut — ✅ DONE.** The composite now multiplies the summed glow by a smooth
+radial falloff reaching zero at the canvas edge (`EDGE_FADE_START` 0.75 → `EDGE_FADE_END` 1.0, in a
+metric where 0 is the centre, 1.0 the nearest edge, 1.414 a corner). One length, one smoothstep, one
+multiply per pixel. It does not give the glow more room; it makes running out of room invisible, which
+is the actual complaint.
+
+⚠ **It cannot dim a corona that is in no trouble**, and the arithmetic is worth recording: the star's
+BODY reaches only `edgeDistance` **0.278** (`SUN_BODY_FILL` 0.723 ÷ `SUN_CANVAS_HEADROOM` 2.6, halved),
+so the glow is untouched out to ~2.7 body radii and rolls off only across the last quarter —
+`1.000 · 1.000 · 1.000` at 0.28 / 0.50 / 0.75, then `0.648 · 0.104 · 0.000` at 0.85 / 0.95 / 1.00.
+
+⚠ Because the composite derives its alpha from the glow (`max` of the channels), the fade carries into
+alpha automatically — so the canvas stays properly transparent at the edge and premultiplication stays
+valid. That is the mechanism the file's header depends on, and it is preserved rather than worked
+around.
+
+⚠ **Three backticks in a comment inside the shader template broke the build during this change** —
+exactly the trap CLAUDE.md and this file's own header both record. Now noted a third time, in the
+shader body itself.
+
+**Stage 2 — decouple the canvas size from the star's size (the real fix, and it is not small).**
 
 ```
-  today                                        proposed
-  ─────                                        ────────
-  sceneTarget   D × D      ← full scene         sceneTarget   D/2 × D/2   ← full scene, ¼ the fill
-       │ bright pass, 2:1 downsample                 │ bright pass, 1:1
-  mip0          D/2 × D/2                       mip0          D/2 × D/2   ← IDENTICAL size
-       │ … chain unchanged …                         │ … chain unchanged …
+  today                                    proposed
+  ─────                                    ────────
+  .hero-sun-layer = square × 2.6           .hero-sun-layer = the viewport
+  camera pulled back by the same 2.6       star placed and sized by the CAMERA
+  the pin scales the ELEMENT               the pin drives a camera/scale uniform
 ```
 
-Because mip0 keeps its absolute size, `MIP_COUNT`, `MIP_WEIGHTS`, `BLOOM_RADIUS` and `BLOOM_STRENGTH`
-all keep their exact meanings and the grade does not move. `MIN_MIP_SIZE` produces the same chain
-(`floor(D/2)` either way).
+⚠ **What this touches, and why it is a project rather than a constant:**
 
-**The saving.** The star renders its scene twice per drawn frame. Step 1 drops to a quarter of its
-pixels, so per-frame scene fill goes **2.0 → 1.25 full-resolution renders, −37.5 %** — on the most
-overdraw-heavy surface on the site (11 double-sided blended shells + the core + 10 magma cells), on
-devices where the limit is fill. That headroom is not spent as such; it is handed to the allocator,
-which converts it into ratio for **both** the star and the field.
+- `SUN_CANVAS_HEADROOM` is imported by `gatherShader` (`CAMERA_DISTANCE`, `SUN_BODY_FILL`,
+  `SUN_IN_O_RATIO`) and by `SunModelCanvas` (`CAMERA_FIT_MARGIN`). It is the shared scale between the
+  loader's dust field and the star. All of it has to move together.
+- **The intro's o→square flight measures the element.** With a full-viewport canvas there is no element
+  to fly; the flight becomes a camera move. `IntroSequence`'s `parkSunInO` is the affected code.
+- **The three-owner rule** (`layer` / `parallax` / `flight`, one owner each) is built on the pin
+  transforming the layer. A full-screen canvas means the pin's scale becomes a 3D quantity.
+- ⚠ **It costs 2.4× the fill on this phone** — 0.206 Mpx of viewport against 0.085 Mpx of layer — on the
+  device where §3.3 already measures the star at ~50 ms. **Stage 2 must not land before the cost work
+  in §4.1–4.3 has been measured**, or it will make the original complaint worse while fixing the new
+  one.
 
-**⚠ Side effects.**
+### 4.7 · Two dials that remain judgement calls
 
-1. ⚠ **The bright pass loses a free 4:1 box average.** Today mip0's texels are bilinear averages of
-   four full-resolution texels; after, they are single half-resolution texels. Level 0 is the *tight
-   core* glow, so if anything shows it will be a faint shimmer on the hot veins as the star turns —
-   and five blur passes sit downstream of it. **If it shows, render `sceneTarget` at 0.707× instead of
-   0.5×** (half the pixels rather than a quarter, −25 % fill) and keep mip0 where it is.
-2. `sceneTarget` carries no `samples` today and none after — no MSAA interaction.
-3. The visible base image (step 4, straight to the canvas) is **untouched**. This changes only what
-   feeds the glow.
-4. ⚠ After this, `sceneTarget` no longer matches the canvas resolution. Nothing else reads it today;
-   anything that ever does must not assume it does.
-
-### 4.4 · Two comments that are wrong, fixed in the same sitting
-
-Not behaviour — but CLAUDE.md's standing rule is *"if this file disagrees with the code, the code is
-right: fix this file as part of the change"*, and both of these will mislead the next person to grade
-the star.
-
-- ⚠ **`BLOOM_THRESHOLD`'s header claims the bright pass compares against *"the TONE-MAPPED luma"*. It
-  does not.** Verified in `node_modules/three/src/renderers/WebGLRenderer.js` (and `WebGLPrograms.js:175`):
-  tone mapping is applied **only when the render target is null**. `sceneTarget` is a render target, so
-  the bright pass reads **linear HDR** values, and `BRIGHT_PASS_FRAGMENT_SHADER` applies no tone curve
-  of its own. Against ACES at `EXPOSURE` 1.42, a linear 0.42 displays as ≈ 0.56 — so the effective cut
-  sits about one stop above where the comment's percentile table implies, and the *"roughly the top
-  fifth of the surface"* claim is nearer the top 3–4 %. **Nothing shipping changes** — 0.42 was tuned
-  by eye and the star blooms correctly — but the explanation must be corrected.
-- `MAX_DEVICE_PIXEL_RATIO`'s comment says it is kept *"because `particleFrameExtent` and the camera fit
-  are reasoned about in terms of it"*. Neither reads it; `sunPixelRatio()` is its only consumer.
-
-### 4.5 · Two dials that are judgement calls, not defects
-
-Neither should move until §4.2 has been measured on a real handset.
-
-- **`MAX_COMPOSITE_UPSCALE` 2.17 sets the field's floor at 1.382 on a dpr 3 phone**, for a
-  full-viewport 0.63 Mpx buffer with bloom and composer ping-pong. **That floor is what eats the frame
-  the star is taking its remainder from.** The constant's own header anticipates this: *"If it bites,
-  the fix is to read `isLowPowerDevice()` when computing the floor rather than to move this number
-  back"*. Lowering the phone's field floor trades mark/debris sharpness for star sharpness. It is a
-  real lever and it is a taste decision about which subject matters more on a phone.
-- **`.hero-sun-card` is `clamp(7rem, 20vw, 11rem)`, so a phone gets the 7rem floor: 112 px, and a star
-  body of 81 CSS px.** This is the only fix that raises the star's **apparent size** rather than its
-  density, and the plumbing risk is near zero — `HeroSun.syncToSquare`, the pin's fill geometry and the
-  intro's o→square flight all *measure* the element rather than assuming a size. It is purely a design
-  question: the square is the "o" in **we build W□rlds**, so growing it on a phone is a headline
-  composition decision, not a performance one.
+- **`MAX_COMPOSITE_UPSCALE` 2.17** sets the field's floor at `2 / 2.17 = 0.92` here — not binding on
+  this device, unlike the dpr 3 case the first draft worked through.
+- **`.hero-sun-card`'s `7rem` floor** gives a star body of ~81 CSS px on a phone against 127 on
+  desktop. The only lever that changes the star's *apparent size* rather than its density. Everything
+  measures the element live, so the plumbing risk is low; it is a headline-composition decision.
 
 ---
 
-## 5 · ⚠ REJECTED: crediting `SUN_IDLE_STRIDE` in the star's budget
+## 5 · ⚠ REFUTED: rAF quantisation (the first draft's central claim)
 
-This was proposed, looked like the largest free win in the file, and **must not be built.** Recorded
-here so it is not re-derived.
+The first draft argued that `runBurnIn` measures rAF-to-rAF wall clock, that rAF fires on refresh
+boundaries, and that the star's cost is therefore below the instrument's resolution — so `B − A` could
+only come out 0 or one whole refresh period, and both roads put the star on the floor.
 
-The argument for it: `reportSectionCosts` budgets the star at full rate, while through services and
-works it draws every other frame (`SUN_IDLE_STRIDE = 2`). The allocator says so itself — *"it actually
-spends half of this"*. Crediting the stride is worth `√2 = 1.41×` on the star's ratio for six lines.
+**The device says no.** Phase A returned `112 · 31 · 14 · 14 · 13 · 19 · 33 · 36 · 33` — not clustered
+on any multiple of 16.7 or 8.3. Whatever iOS Safari does with rAF scheduling under load, it is not
+delivering a quantised clock, and a difference of medians is not destroyed by it.
 
-**Why it is wrong: vsync quantisation turns the amortisation into visible stutter.**
+**Kept because the reasoning is sound and only the premise was false.** If this instrument is ever
+moved to a platform whose rAF *is* strictly vsync-aligned, the argument comes back — and the one-line
+diagnostic that settles it now lives in `samplePhase`. That log line is the most useful thing the first
+draft produced.
 
-Amortising is valid for *mean* frame time and invalid for *pacing*. Sizing the star so that
-`field + star/2 ≤ 33.3 ms` means the frames it actually draws on cost `field + star`, which overshoots
-the budget by exactly the credited amount. The display then quantises that overshoot to the next
-refresh boundary:
+## 6 · ⚠ REJECTED: crediting `SUN_IDLE_STRIDE` in the star's budget
 
-```
-  today   (star charged at full rate)      credited (star charged at half rate)
-  ────────────────────────────────────     ─────────────────────────────────────
-  drawn frame     field + star ≤ 33.3      drawn frame     field + star ≈ 41.6  → 50.0 ms
-  skipped frame   field       ≈ 25         skipped frame   field       ≈ 25     → 33.3 ms
-  ───────────────────────────────────      ─────────────────────────────────────
-  steady 30 fps                            alternating 50 / 33 = 24 fps average,
-                                           with a 2:1 ripple you can see
-```
+Charging the star at half rate because it draws every other frame through services and works is worth
+`√2` on its ratio and **must not be built**. Amortising is valid for mean frame time and invalid for
+pacing: the frames it actually draws on then overshoot the budget, the display quantises the overshoot
+to the next boundary, and a steady 30 fps becomes an alternating 50/33 with a visible 2:1 ripple. The
+existing full-rate charge is correct, not conservative — the star's *worst* frame is what has to fit,
+and its worst frame contains the star.
 
-So the credit buys sharpness and pays for it in **judder plus a lower average frame rate** — the exact
-trade `RESOLUTION_PRIORITY`'s header says is a decision about the site, made accidentally, in the wrong
-direction, by a constant nobody would look at again.
+## 7 · ⚠ REJECTED: reusing the canvas as the glow source
 
-⚠ **The existing full-rate charge is therefore correct, not conservative**, and the header's
-"conservatism" note should be softened to say so: the star's *worst* frame is what has to fit, and its
-worst frame contains the star.
-
-**What survives of the idea.** The hero genuinely is a different frame — the star draws at full rate
-there and the field draws *nothing*, so the whole of `fieldSpent` is free. Spending it would mean a
-hero-specific star ratio, i.e. a bloom-pyramid reallocation at the hero↔services boundary, where
-`choreographyActive` is true (the cracks ramp across the fill) and `SunModelCanvas:1787` defers the
-reallocation to the next settled frame — landing it *late and visibly*, behind the fleet, twice per lap
-on a site that loops. **Not worth it.** The star's single allocated ratio stays.
+Deleting step 1 and copying the canvas back into `sceneTarget` would save 50 % rather than 37.5 %, and
+cannot work as a drop-in: three applies tone mapping **only when the render target is null** (verified
+in `WebGLPrograms.js` and `WebGLRenderer.js`), so the canvas is ACES-mapped while `sceneTarget` is
+linear. The bright pass would threshold display-space values against a number graded for linear ones.
+It also needs an MSAA resolve into a texture every frame on the one context that sets
+`preserveDrawingBuffer`. Possible only with `BLOOM_THRESHOLD` re-graded from scratch.
 
 ---
 
-## 6 · ⚠ REJECTED: reusing the canvas as the glow source
+## 8 · Order of work
 
-The natural extension of §4.3 is to delete step 1 entirely — render the scene once to the canvas
-(step 4) and copy that back into `sceneTarget` — which would save 50 % rather than 37.5 %.
-
-**It cannot work as a drop-in.** The canvas is the default framebuffer, so three applies ACES tone
-mapping at `EXPOSURE` to it and does *not* apply it to `sceneTarget` (§4.4). The bright pass would
-suddenly be thresholding display-space values against a number graded for linear ones — a cut point
-moving from a linear 0.42 to an effective linear ~0.30, which re-grades the site's centrepiece. It also
-requires resolving the MSAA default framebuffer into a texture every frame, on the one context that
-also sets `preserveDrawingBuffer`. If it is ever wanted, it needs `BLOOM_THRESHOLD` re-graded from
-scratch against the tone-mapped distribution — a deliberate pass, not a refactor.
-
----
-
-## 7 · Order of work
-
-| # | change | risk | needs a device to verify |
+| # | change | risk | evidence behind it |
 |---|---|---|---|
-| 0 | log the raw phase samples, read them from the phone (§3) | none | **yes — do this first** |
-| 1 | §4.3 half-resolution glow source | low | no (`tsc` + eyes on the hero) |
-| 2 | §4.4 comment corrections | none | no |
-| 3 | §4.2 measure the star drained, in its own context | **medium** | yes |
-| 4 | §4.1 `STAR_MAX_PIXEL_RATIO` | low | yes |
-| 5 | §4.5 dials, only if 3+4 leave it short | — | yes |
+| ✅ | §4.3 half-resolution glow source | low | §3.3 — the star is the frame |
+| ✅ | comment corrections (tone mapping, the dead cap) | none | verified in three's source |
+| ✅ | **§4.1 phase budget + sane-frame ceiling** | low | §3.1 — measured refusal, every load |
+| ✅ | **§4.2 retarget the probe budget** | medium | §3.2 — arithmetic confirmed to the digit |
+| ✅ | **§4.6 stage 1** glow falloff | low | user-reported |
+| **→** | **RE-MEASURE on the phone** | — | **everything below depends on it** |
+| 4 | §4.4 direct star measurement | medium | only if the split is still unusable |
+| 5 | §4.5 star cap | low | inert here; correct for dpr 3 |
+| 6 | §4.6 stage 2 full-viewport canvas | **high** | must follow the cost work, not lead it |
 
-§4.1 and §4.2 ship **together**: §4.1 alone is inert (nothing solves high enough to reach the old cap),
-and §4.2 alone lands into a cap of 2.0 — still worth +30–45 %, but half the available win.
+**Everything shipped is a constant or a shader line — no architecture moved.** The next step is not
+another change, it is a measurement: until the allocator runs, every number on this page is unallocated
+by default rather than by measurement, and §4.4–4.6 are all decisions that need the real figures.
 
-## 8 · How to know it worked
+## 9 · How to know it worked
 
-Preview deploy, phone, console. Before:
-
-```
-[voidix] device tier: low   pointer coarse, width 390, dpr 3
-[pixels] split REFUSED  field 33.3 ms, both 33.3 ms → star 0.00 ms.
-[pixels] BURN-IN  1.38 → 1.38 — bound by the floor
-```
-
-After:
+Same capture route (`/api/telemetry` → `vercel logs`). Before:
 
 ```
-[voidix] device tier: low   pointer coarse, width 390, dpr 3
+[voidix] gpu probe: 5.0 ms … → affordable 1.24, ceiling 1.24
+[pixels] phase "B · field + star"  1 sample @ ratio 1.00: 84
+[pixels] burn-in REFUSED  not enough usable frames in 3376 ms (needs 5 per phase)
+```
+
+After — and the phase line now reports the rules it was measured under, so a second refusal says why
+rather than just that:
+
+```
+[voidix] gpu probe: 5.0 ms … → affordable 1.77, ceiling 1.77
+[pixels] phase "B · field + star"  9 samples @ ratio 1.00: 148 151 …
+  0 frames rejected over 260 ms · 1400 of 1800 ms budget · needs 5
 [pixels] ALLOCATED a 33.3 ms frame (30 fps), models first…
-  measured   field 30.1 ms @ 1.38  ·  star 6.2 ms @ 1.38 (17 % of the frame)
-  3 · star  1.38 → 2.05  from the 9.4 ms left, bound by the measurement
-  ✓ the star's 6.2 ms is its SHIPPING pose, measured drained in its own context
+  measured   field 34.0 ms @ 1.00  ·  star ~50 ms @ 1.00 (~60 % of the frame)
+  3 · star  1.00 → …
 ```
 
-The two numbers that matter are the `ratio` and **`sun ratio`** gauges in the frame profiler. `sun
-ratio` at or near the floor means this document's diagnosis is still live; `sun ratio` above the
-field's `ratio` means the allocator is doing what it was built to do.
+**Read the three numbers in this order:**
+
+1. `gpu probe … ceiling` — should be ~1.77, not 1.24. Confirms §4.2.
+2. `phase "B" … N samples` and `M frames rejected` — should be ≥ 5 samples, few rejections. Confirms
+   §4.1. If it still refuses, the rejected count and the elapsed budget say which of the two limits is
+   still binding, which is exactly what the old log could not.
+3. `ALLOCATED` rather than `burn-in REFUSED` — the allocator ran at all, for the first time on this
+   device.
+
+⚠ **Expect the star's share to be alarming**, and expect the allocator to cut it hard. That is the
+system working — and it is also the point at which §3.3 stops being a footnote and becomes the next
+piece of work: a star costing 60 % of a phone's frame is a cost problem, not an allocation problem, and
+no amount of correct budgeting will make it sharp.

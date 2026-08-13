@@ -116,16 +116,40 @@ export const RATIO_APPLY_GRACE_SECONDS = 1.5;
 // ── Phase 1 · the probe ────────────────────────────────────────────────────────────────────────────
 
 /**
- * How much of a frame the heaviest scene may spend, in milliseconds — the budget the probe solves
- * against.
+ * How much of a frame the heaviest scene may spend — the budget the probe solves its CEILING against.
  *
- * Not 16.7. Three things share that frame: the works field (what is measured), the sun's own canvas
- * and its bloom, and the browser's compositor with a handful of `mix-blend-mode` layers over the top.
- * 9 ms leaves room for the other two and for the probe's own pessimism — `gpuProbe` drains the
- * pipeline either side of the frame it times, so it reports rather more than a pipelined frame
- * actually costs.
+ * Three things share that frame: the works field (what is measured), the sun's own canvas and its
+ * bloom, and the browser's compositor with a handful of `mix-blend-mode` layers over the top. So the
+ * field gets a little over half of it, and the remainder covers the other two and the probe's own
+ * pessimism — `gpuProbe` drains the pipeline either side of the frame it times, so it reports rather
+ * more than a pipelined frame actually costs.
+ *
+ * ── ⚠ IT WAS A HARD 9, AND 9 IS A 60 fps NUMBER ──────────────────────────────────────────────────
+ * The comment here used to open *"Not 16.7"* — which is exactly what gives it away. It was sized when
+ * every solve on this site aimed at a 16.7 ms frame. `PRIORITY_TARGET_FPS` was retargeted **50 → 30**
+ * on 2026-08-07 and `CALIBRATION_TARGET_FRAME_MS` moved with it; **this did not.** The retarget's own
+ * note calls itself *"the single largest quality change available to this file"*, and on any machine
+ * the probe's ceiling binds, it never arrived.
+ *
+ * Measured on an iPhone (`docs/sun-mobile-quality-plan.md` §3.2), the arithmetic confirms to the digit:
+ *
+ *     gpu probe: 5.0 ms for 0.21 Mpx at ratio 1 → affordable 1.24, ceiling 1.24
+ *     1 × √(7.65 ÷ 5.0) = 1.237                          ← 7.65 is the OLD spendable budget
+ *     1 × √(15.6 ÷ 5.0) = 1.766                          ← what a 30 fps budget affords
+ *
+ * Against that panel's native 2.0, the stale constant was capping the whole session at 62 % of the
+ * display before the calibration had taken its own safety margin off.
+ *
+ * ⚠ DERIVED, NOT RESTATED. It is now a SHARE of whatever frame the site targets, so a future retarget
+ * cannot leave it behind again — which is the actual defect here, not the number.
+ *
+ * ⚠ THIS RAISES A CEILING, NOT A DESTINATION, and that is what makes it safe. The burn-in and the
+ * calibration both measure real frames and both may land below it; `MAX_DRAWING_BUFFER_MEGAPIXELS` is
+ * untouched and still stands between a dense panel and the 700 MB case its own header records. What
+ * this removes is a cap derived from a frame rate the site no longer aims at. **Do not expect it to be
+ * a free 41 % — on a machine where it stops binding, the honest measurement starts to.**
  */
-const PIPELINE_FRAME_BUDGET_MS = 9;
+const PIPELINE_FRAME_SHARE = 0.55;
 
 /**
  * How much of that budget is deliberately LEFT UNSPENT.
@@ -135,7 +159,20 @@ const PIPELINE_FRAME_BUDGET_MS = 9;
  * Applied here, to milliseconds, 15 % is 15 %: the solve targets 7.65 ms instead of 9.
  */
 const SAFETY_HEADROOM_FRACTION = 0.15;
-const SPENDABLE_FRAME_BUDGET_MS = PIPELINE_FRAME_BUDGET_MS * (1 - SAFETY_HEADROOM_FRACTION);
+/**
+ * The probe's budget, less the headroom above.
+ *
+ * ⚠ A FUNCTION, not a constant, for one boring but load-bearing reason: it now derives from
+ * `CALIBRATION_TARGET_FRAME_MS`, which is declared further down this file. A module-scope `const`
+ * reading it here would hit the temporal dead zone and throw on import. Reading it at call time is
+ * safe — the only caller is `reportProbedFrameCost`, which cannot run before the module has finished
+ * evaluating.
+ *
+ * Kept here rather than moved next to that constant so the probe's three numbers stay legible as one
+ * block. Both are the same frame, expressed for two different instruments.
+ */
+const spendableFrameBudgetMs = () =>
+  CALIBRATION_TARGET_FRAME_MS * PIPELINE_FRAME_SHARE * (1 - SAFETY_HEADROOM_FRACTION);
 
 /** Smallest frame worth believing, in megapixels (~224²). A 1×1 buffer says nothing about a machine. */
 const MIN_PROBE_MEGAPIXELS = 0.05;
@@ -520,7 +557,7 @@ export function reportProbedFrameCost(
   probed = true;
 
   const believableMilliseconds = milliseconds as number;
-  const affordable = probeRatio * Math.sqrt(SPENDABLE_FRAME_BUDGET_MS / believableMilliseconds);
+  const affordable = probeRatio * Math.sqrt(spendableFrameBudgetMs() / believableMilliseconds);
   probedAffordableRatio = affordable;
 
   // The probe reports the area it drew AND the ratio it drew at, so the CSS-pixel area falls out — and
