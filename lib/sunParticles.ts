@@ -118,11 +118,40 @@ const PARTICLE_SIZE = 8.5;
 /** Never let a grain go sub-pixel on the far side of its orbit. */
 const MIN_PARTICLE_SIZE = 2.2;
 /**
- * Additive brightness. Has to clear `sunBloom`'s BLOOM_THRESHOLD (0.59 luminance) or the grains do
- * not bloom at all: the ramp's ember end sits at ~0.30 luminance and its gold end at ~0.92, so
- * below ~1 only the very hottest grains ever cross the line.
+ * Additive brightness. Has to clear `sunBloom`'s `BLOOM_THRESHOLD` or the grains do not bloom at all:
+ * the ramp's ember end sits at ~0.30 luminance and its gold end at ~0.92.
+ *
+ * ── ⚠ 1.9 → 1.35 ON 2026-08-13. THE THRESHOLD IT WAS GRADED AGAINST MOVED AND THIS DID NOT. ──────
+ * This comment used to name the threshold inline — *"(0.59 luminance)"* — and 1.9 was chosen so that
+ * against 0.59 the ring's COLDEST grains fell just short of blooming and only its hottest crossed:
+ *
+ *     ember  0.30 × 1.9 = 0.57   just UNDER 0.59  → does not bloom      ← the authored intent
+ *     gold   0.92 × 1.9 = 1.75   well over        → blooms
+ *
+ * `BLOOM_THRESHOLD` was then lowered **0.59 → 0.42** (2026-08-12) to fix a star that was not blooming
+ * at all, and nothing came back for this. Against 0.42 the same 1.9 puts the ember end at 0.57 —
+ * comfortably OVER the line — so **every grain in both bands began blooming**, not just the hot ones.
+ * The ring stopped being embers with a few bright ones and became a uniformly glowing hoop, which is
+ * exactly the *"the ring around the sun is the one over blooming"* that was reported by eye.
+ *
+ * ⚠ THE SITE ALREADY KNEW THIS TRAP AND APPLIED THE FIX EVERYWHERE ELSE. `COLLAPSE_BLOOM_THRESHOLD`
+ * was moved in the same sitting *"with `BLOOM_THRESHOLD` and for its reason, not for one of its own"*,
+ * scaled by the ratio `0.42 / 0.59 = 0.712`. This is the same relationship — a value that only means
+ * something relative to that threshold — so it takes the same factor:
+ *
+ *     1.9 × 0.712 = 1.35     restoring, exactly:
+ *     ember  0.30 × 1.35 = 0.405   just under 0.42  → does not bloom
+ *     gold   0.92 × 1.35 = 1.24    past the knee    → full contribution
+ *
+ * ⚠ **DO NOT hard-code the threshold into this comment again.** Naming it inline is what let the two
+ * drift silently for a day — the number was wrong and read as authoritative. CLAUDE.md records the
+ * identical trap for `ACCRETION_TUNING` against `useWorksField`'s own threshold; that pair is still
+ * unenforced too.
+ *
+ * ⚠ Separate from `BLOOM_STRENGTH`, and both were needed. Strength dims every glow on the canvas
+ * uniformly; this is about WHICH grains cross the line at all, which no amount of strength changes.
  */
-const PARTICLE_BRIGHTNESS = 1.9;
+const PARTICLE_BRIGHTNESS = 1.35;
 
 /** Twinkle depth and rate — a slow shimmer so the rings never read as a static texture. */
 const TWINKLE_AMOUNT = 0.35;

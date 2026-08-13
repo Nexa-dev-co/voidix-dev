@@ -23,7 +23,8 @@ import * as THREE from 'three';
  * so the halo appears over the cream and the canvas box never does.
  *
  * The cost is rendering the scene twice per DRAWN frame, on the most overdraw-heavy surface on the
- * site (twenty additive corona planes over a fractured shell). That used to be justified by the star
+ * site (twenty additive corona planes over a fractured shell) — though step 1 now draws at
+ * `GLOW_SOURCE_SCALE`, so the pair costs 1.25 full-resolution renders rather than 2. That used to be justified by the star
  * drawing "nothing at all for the whole services → works → chamber span" — which stopped being true
  * when the cracked star was given a collapse to play across the handoff. It now draws alongside the
  * fleet AND alongside the works field, so the second render is paid for most of the journey.
@@ -44,23 +45,51 @@ import * as THREE from 'three';
 /**
  * The resting grade — Peaceful. The works section eases past these into Collapse; see `setGrade`.
  *
- * ⚠ STRENGTH IS THE FIRST STOP OF A RAMP ACROSS THE WHOLE JOURNEY, raised 2026-08-12. The star gets
- * hotter the deeper you go, and the lift grows with it: **+5 % here, +17.5 % at works
- * (`COLLAPSE_BLOOM_STRENGTH`), +30 % at contact (`CONTACT_BLOOM_STRENGTH`)**. The hero is the one
- * place the star sits against the CREAM rather than against black, which is why it takes the
- * smallest share — the same glow reads far hotter on a light substrate.
+ * ── ⚠ 1.32 → 0.85 ON 2026-08-13. THE HERO STAR WAS TOO BRIGHT, REPORTED TWICE. ──────────────────
+ * This was the first stop of a journey-wide ramp added 2026-08-12 — **+5 % here, +17.5 % at works
+ * (`COLLAPSE_BLOOM_STRENGTH`), +30 % at contact (`CONTACT_BLOOM_STRENGTH`)** — and that ramp's own
+ * argument is what says this stop is the one to cut:
+ *
+ * > *"The hero is the one place the star sits against the CREAM rather than against black, which is
+ * > why it takes the smallest share — the same glow reads far hotter on a light substrate."*
+ *
+ * The ramp was right that the hero needs the least and still gave it a rise. It needed a fall.
+ *
+ * ⚠ THE OTHER TWO STOPS ARE DELIBERATELY UNTOUCHED, and the ramp's "three stops on one line" property
+ * is knowingly given up. Both of them play on BLACK — the collapse across the handoff and the death at
+ * contact — where a hot star is the point and nothing has been reported as wrong. Dimming a finale to
+ * preserve the evenness of a curve would be optimising the wrong thing. What actually changes is that
+ * the collapse now climbs further from a lower base, which reads as more violent, not less.
+ *
+ * ⚠ It compounds with `MAGMA_EMISSIVE` 2.4 → 1.5 in the same sitting. The two are independent halves
+ * of the same complaint: the magma is the light the star EMITS, this is the halo that light throws.
+ * Cutting only one left it *"still a lot of brightness"*.
  *
  * Free: strength is a multiplier on an already-blurred mip chain. `BLOOM_RADIUS` and the mip count
  * are what cost, and neither moved.
  */
-export const BLOOM_STRENGTH = 1.32; // was 1.26
+export const BLOOM_STRENGTH = 0.85; // was 1.32, and 1.26 before the ramp
 export const BLOOM_RADIUS = 0.92;
 /**
  * ⚠ 0.59 → 0.42 on 2026-08-12, and this was not a taste change — at 0.59 THE STAR DID NOT BLOOM AT ALL.
  *
- * The bright pass reads the scene through ACES tone mapping at `EXPOSURE`, so what `uThreshold` is
- * compared against is not the texture and not the linear colour but the TONE-MAPPED luma, which ACES
- * compresses hard. Measured over `sunouter_baseColor` composited at its own α 0.815 over the magma's
+ * ── ⚠ WHAT IT IS COMPARED AGAINST — CORRECTED 2026-08-13 ────────────────────────────────────────
+ * This block used to open *"the bright pass reads the scene through ACES tone mapping at `EXPOSURE`,
+ * so what `uThreshold` is compared against is not the texture and not the linear colour but the
+ * TONE-MAPPED luma"*. **It does not.** three applies tone mapping ONLY when the render target is null
+ * — both `WebGLPrograms.js` and `WebGLRenderer.js` gate it on `currentRenderTarget === null` — and
+ * `sceneTarget` is a render target. So step 1 writes LINEAR HDR, `BRIGHT_PASS_FRAGMENT_SHADER` applies
+ * no curve of its own, and this number is a cut in LINEAR space. Against ACES at `EXPOSURE` 1.42, a
+ * linear 0.42 displays at ≈ 0.56.
+ *
+ * ⚠ Which leaves the table below reading against an unstated space. If those percentiles were taken
+ * off the tone-mapped image — which the sentence they were written under implies — the effective cut
+ * sits nearer the surface's top 3–4 % than the "top fifth" claimed at the end of this block. **The
+ * VALUE is not in doubt**: 0.42 was arrived at by eye, on screen, and the star blooms correctly at it.
+ * Only the explanation was wrong. A future re-grade should re-measure the distribution in linear
+ * rather than trust either reading here.
+ *
+ * Measured over `sunouter_baseColor` composited at its own α 0.815 over the magma's
  * emissive backdrop, the star's whole surface lands at:
  *
  *     p50 0.364 · p90 0.445 · p95 0.519 · p99 0.726 · MAX 0.809
@@ -77,6 +106,17 @@ export const BLOOM_RADIUS = 0.92;
  * 0.42 puts roughly the top fifth of the surface into the glow — the hot veins and the limb — with the
  * top 1 % at full contribution and the mid-surface ramping softly through the knee. Below ~0.35 more
  * than half the star blooms and it stops reading as a glow and starts reading as haze.
+ */
+/**
+ * ⚠ THINGS GRADED AGAINST THIS VALUE, WHICH MOVING IT SILENTLY RE-GRADES. Nothing enforces this list;
+ * it exists because the 0.59 → 0.42 move below updated one of them and missed the other for a day.
+ *
+ *   · `COLLAPSE_BLOOM_THRESHOLD` (SunModelCanvas) — moved with it, ratio 0.712 preserved.
+ *   · `PARTICLE_BRIGHTNESS` (lib/sunParticles) — ⚠ MISSED. It is an additive brightness chosen so the
+ *     ring's coldest grains fall just short of blooming, so a lower threshold means every grain blooms
+ *     and the ring reads as a solid glowing hoop. Re-graded 2026-08-13 by the same 0.712.
+ *
+ * Anything whose job is described as "must clear the bloom threshold" belongs here.
  */
 export const BLOOM_THRESHOLD = 0.42; // was 0.59
 
@@ -115,6 +155,33 @@ const MIP_COUNT: number = 5;
 const MIN_MIP_SIZE = 4;
 
 /**
+ * How much of the canvas the GLOW'S SOURCE is rendered at.
+ *
+ * ── ⚠ THE STAR USED TO BE DRAWN INTO THIS AT FULL RESOLUTION AND AVERAGED DOWN ONE PASS LATER ────
+ * Step 1 rendered the whole scene into `sceneTarget` at the canvas's full device resolution, and step
+ * 2 — the only pass that ever reads it — downsampled it by half into `mipTargets[0]`. Three quarters
+ * of those fragments were thrown away immediately, on the most overdraw-heavy surface on the site:
+ * eleven double-sided blended shells over the core and ten magma cells, submitted TWICE per drawn
+ * frame (steps 1 and 4).
+ *
+ * At 0.5 the source lands at exactly the size `mipTargets[0]` already had, so the chain below is
+ * IDENTICAL and the bright pass simply stops resampling. `MIP_WEIGHTS`, `BLOOM_RADIUS` and
+ * `BLOOM_STRENGTH` all keep their exact meanings — nothing is re-graded, and that is the whole reason
+ * this is free rather than a change to the star's look. The scene's per-frame fill goes from 2.0
+ * full-resolution renders to 1.25: **−37.5 %**, which is not spent here but handed back to
+ * `adaptivePixelRatio` and turned into resolution for the star AND the field.
+ *
+ * ⚠ WHAT IT COSTS: mip 0's texels used to be bilinear averages of four full-resolution texels, and are
+ * now single texels of a half-resolution render. Level 0 is the TIGHT core glow, so if anything shows,
+ * it will be a faint shimmer on the hot veins as the star turns — with five blur passes downstream of
+ * it. **If it shows, raise this to 0.707 rather than reverting**: half the pixels instead of a quarter
+ * (−25 % fill), the bright pass resamples 1.41:1, and the chain below is still untouched.
+ *
+ * See `docs/sun-mobile-quality-plan.md` §4.3.
+ */
+const GLOW_SOURCE_SCALE = 0.5;
+
+/**
  * How the levels are weighted into the final glow, at each end of the `uRadius` dial.
  *
  * `uRadius` is what turns one number into *"how far does the light spread"* — at 0 the tight mip
@@ -128,6 +195,22 @@ const MIN_MIP_SIZE = 4;
  * then renormalised to the sums those literals had. See MIP_COUNT for why the renormalisation is not
  * optional.
  */
+/**
+ * Where the glow starts and finishes fading toward the canvas edge, in the composite's own radial
+ * metric: **0 is the centre, 1.0 is the nearest edge, 1.414 is a corner.**
+ *
+ * The star's BODY only reaches ~0.28 in that metric (`SUN_BODY_FILL` 0.723 ÷ `SUN_CANVAS_HEADROOM`
+ * 2.6, halved), so a fade beginning at 0.75 leaves the glow untouched out to nearly three body radii
+ * and only takes hold across the last quarter — where the alternative is not "more glow", it is a
+ * straight-edged cut. Ending exactly at 1.0 puts zero on the edge itself.
+ *
+ * ⚠ Raising START toward 1.0 makes the fade tighter and brings the hard cut back; lowering it dims a
+ * corona that is not in any trouble. If the halo now reads clipped rather than cut, the fix is a
+ * bigger canvas (§4.6 stage 2), not this pair.
+ */
+const EDGE_FADE_START = 0.75;
+const EDGE_FADE_END = 1;
+
 const TIGHT_FALLOFF_PER_LEVEL = 1 / 3;
 const WIDE_WEIGHT_NEAR = 0.4;
 const WIDE_WEIGHT_FAR = 1;
@@ -226,6 +309,28 @@ const COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
     ).join('\n    ')}
 
     glow *= uStrength;
+
+    // ── Fade the glow out before the canvas edge, so running out of room is invisible ────────────
+    //
+    // ⚠ THE GLOW REACHES THE EDGE AND IS CUT FLAT, which draws a straight-sided rectangle around the
+    // star. SUN_CANVAS_HEADROOM (2.6) exists to stop exactly this and is no longer enough — most
+    // visibly on a phone, where the hero square hits its 7rem floor and the layer is only ~291 CSS px
+    // while the pin scales the star to SUN_SCROLL_SCALE across the fill.
+    //
+    // (No backticks anywhere in here. They terminate the template literal — the trap this file's
+    // header and CLAUDE.md both record, and it has now bitten three times, every one from a comment.)
+    //
+    // This does NOT give the glow more room; it makes the boundary unfindable, which is the actual
+    // complaint. Real room means a bigger canvas — see sun-mobile-quality-plan §4.6 stage 2, which is
+    // a project rather than a constant and costs 2.4x the fill on the device least able to pay it.
+    //
+    // Measured from the CENTRE in UV space, so it is aspect-correct on a square canvas and slightly
+    // oval on any other — which is what you want, since the falloff should follow the frame it is
+    // hiding rather than a circle inscribed in it. Multiplicative on the summed glow, so it costs one
+    // length, one smoothstep and one multiply per pixel, and cannot alter the grade anywhere the star
+    // actually is: FADE_START is beyond where a correctly-framed corona has anything left.
+    float edgeDistance = length(vUv - vec2(0.5)) * 2.0;
+    glow *= 1.0 - smoothstep(${EDGE_FADE_START.toFixed(5)}, ${EDGE_FADE_END.toFixed(5)}, edgeDistance);
 
     // Alpha carries the glow's own brightness, so the halo is visible over the cream hero while a
     // pixel with no glow contributes exactly nothing and the canvas stays transparent there.
@@ -360,7 +465,12 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
     const pixelRatio = renderer.getPixelRatio();
     const deviceWidth = Math.max(MIN_MIP_SIZE, Math.round(width * pixelRatio));
     const deviceHeight = Math.max(MIN_MIP_SIZE, Math.round(height * pixelRatio));
-    sceneTarget.setSize(deviceWidth, deviceHeight);
+    // ⚠ The SOURCE scales, the CHAIN does not. `mipTargets[0]` below keeps the size it has always had
+    // — that is what makes this a saving rather than a re-grade. See GLOW_SOURCE_SCALE.
+    sceneTarget.setSize(
+      Math.max(MIN_MIP_SIZE, Math.floor(deviceWidth * GLOW_SOURCE_SCALE)),
+      Math.max(MIN_MIP_SIZE, Math.floor(deviceHeight * GLOW_SOURCE_SCALE)),
+    );
 
     let mipWidth = deviceWidth;
     let mipHeight = deviceHeight;
