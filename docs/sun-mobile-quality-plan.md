@@ -88,21 +88,30 @@ phone it never arrived, because the probe's ceiling clamps below where the calib
 Against a native dpr of 2, a ceiling of 1.24 is **62 % of the panel at absolute best**, before the
 calibration takes its own safety margin off.
 
-### 3.3 · The star costs about 1.5× the entire works field
+### 3.3 · ⚠ WITHDRAWN — "the star costs 1.5× the works field" was a COLD-LOAD ARTEFACT
+
+This section originally read *"the star's marginal cost ≈ 50–115 ms … the star is not a victim of the
+budget on this device, it is what consumes the budget."* **The second capture refutes it**, and the
+error is worth keeping because it is the same error the first draft's §5 made: reading a number off a
+machine that was still busy doing something else.
+
+The first capture was a **cold load** — 2.75 MB `cargo_spaceship`, a 1286 ms mark build, textures
+decoding. The second is warm, and the same device reports:
 
 ```
-  field alone       ~34 ms
-  field + star   ~84–150 ms          ⇒  the star's marginal cost ≈ 50–115 ms
+   4.6s  [frame]  7 fps · 146.0 ms avg     ← still finishing the mark build
+   9.3s  [frame] 29 fps ·  34.8 ms avg     ← recovering
+  12.4s  [frame] 54 fps ·  18.7 ms avg     ← the actual steady state, star drawing at FULL rate
+                 sun · bloom 2.67 ms · 162 calls
 ```
 
-Even on the single most favourable sample (84 ms), the star is **~50 ms** — half again the cost of the
-heaviest scene on the site, on a canvas of 291 × 291 CSS pixels. It is fill: eleven double-sided,
-full-coverage, alpha-blended shells over the core and ten magma cells, **rendered twice per drawn
-frame**, with a bloom chain on top.
+**18.7 ms with the star at full rate against a 33.3 ms budget.** The star's own CPU submission is
+2.67 ms/frame. There is no 50 ms star. The phone is comfortable, and the original complaint is entirely
+an *allocation* problem after all — which is what the first draft assumed and §3.3 briefly talked us
+out of.
 
-⚠ One sample is not a measurement, and this figure must be re-taken once §4.1 lands. But the *order* is
-not in doubt, and it reframes the whole problem: **the star is not a victim of the budget on this
-device, it is what consumes the budget.**
+⚠ **The lesson is procedural, not numerical: never take a burn-in figure off a cold load.** Both
+captures were honest about what they measured; only one of them was measuring the site.
 
 ---
 
@@ -204,22 +213,71 @@ than it looked when it was written as a nice-to-have.
 shimmer on the hot veins as the star turns (mip 0 loses a free 4:1 box average); the documented
 response is to raise the constant to 0.707 rather than revert.
 
+### 3.4 · ⚠ THE REMAINING DEFECT: phase A is measured on a colder machine than phase B
+
+Second capture, after §4.1 and §4.2:
+
+```
+[voidix] gpu probe: 3.0 ms … → affordable 2.28, ceiling 2.00      ← was 1.24 ✓ §4.2
+[pixels] phase "A · field alone"  9 samples: 31 29 21 13 17 22 29 17 18   → median 21
+[pixels] phase "B · field + star" 9 samples: 16 15 25 20 17 15 18 16 22   → median 17   ← was 1 sample ✓ §4.1
+[pixels] split REFUSED  field 21.0 ms, both 17.0 ms → star -4.00 ms
+[pixels] BURN-IN 1.00 → 1.26
+```
+
+**Phase B is FASTER than phase A**, so the star solves negative and credibility check 2 refuses it.
+Nothing is wrong with either measurement — the machine simply got faster between them. It is going
+7 fps → 29 fps → 54 fps across this whole window, and **the warming trend is larger than the quantity
+being measured.**
+
+⚠ **The bias is SYSTEMATIC, not noise.** Phase A is always first, so it is always the colder one, so
+the star's cost is always under-stated — on every load, on every device that arrives at the burn-in
+still recovering from the loader's own CPU work. Running the phases again would not help; running them
+in the other order would just reverse the sign of the error.
+
+⚠ **And a difference of two medians cannot be rescued by more samples**, because the contaminant is a
+trend rather than a variance. The instrument has to stop being a subtraction.
+
+### 3.5 · A secondary finding: the solve over-charges for fixed cost
+
+The burn-in solved 1.26 from a 17 ms median, predicting `17 × 1.26² = 27 ms` at the new ratio. The
+device actually renders **18.7 ms** there — because much of that 17 ms is compositor, DOM and the
+loader's own dust field, none of which scale with the render's pixel count. `reportSectionCosts`'
+header already admits this (*"scaling the whole thing by (r'/r)² therefore over-charges the field"*).
+
+At 18.7 ms against a 33.3 ms budget the device is holding **54 fps** — it has room for roughly
+`√(33.3 ÷ 18.7) = 1.33×` more ratio and nothing will ever spend it: the emergency valve needs 58 fps
+for six seconds to raise, and 54 does not reach it. Worth its own pass; not urgent while §3.4 is open.
+
 ### 4.4 · Measure the star directly, drained, in its own context
 
-⚠ **The justification for this has changed and it is weaker than the first draft claimed** — the
-vsync-quantisation argument it was built on is refuted (§5). It survives on two different grounds:
+⚠ **Its justification has now changed TWICE, and the current one is the strongest yet.** The first
+draft argued vsync quantisation — **refuted** (§5). The rewrite demoted it to a second choice behind
+§4.1 — and §4.1 has now shipped, the phases both complete, and **the split still refuses** (§3.4). So:
 
-1. **It deletes phase B**, which is the thing that cannot complete (§3.1). Settle + phase A + three
-   drained star frames replaces settle + phase A + phase B, and phase A already succeeds on this
-   device. That makes it an alternative to §4.1 rather than an addition to it.
-2. `measureGpuFrameCost` has sub-millisecond resolution against a difference of two medians, and §3.3
-   shows the star's cost is the number the whole allocation turns on.
+> **A difference of two medians taken 0.5 s apart on a machine that is warming from 7 fps to 54 fps
+> cannot measure the star, and no amount of sampling fixes a trend.** The instrument has to stop being
+> a subtraction.
 
-⚠ **It is now the SECOND choice, not the first.** §4.1 is three constants and no new failure modes;
-this is a cross-context measurement with GPU drains inside the loader. Do §4.1, re-measure, and only
-build this if the split still comes out unusable. The mechanics — `SUN_MEASURE_BEGIN/END_EVENT`, the
-refusal branches, the module as rendezvous, the ordering against `reportBurnIn` — are unchanged from
-the first draft and are recorded in git history if it is wanted.
+That is what this does. The star has its own renderer and its own context, so `measureGpuFrameCost`
+(already in `lib/gpuProbe.ts`, `gl.finish()` either side, median of three) can time it **directly**.
+One measurement, one moment, no second phase to compare against and no ordering to bias it.
+
+⚠ **It also deletes phase B entirely**, which removes the §3.1 failure mode at its root rather than
+buying it more budget, and gives back most of the loader time §4.1 spent.
+
+**The prize is concrete.** With a working split on this device: the field holds ~1.26, and the star's
+allowance becomes `min(sunCeiling 2.0, 1.26 × STAR_RAISE_OVER_MODELS 1.6 = 2.02)` = **2.00 — exactly
+native on this dpr 2 panel.** The star goes from **63 % of the display to 100 %**, which is the user's
+original complaint, answered.
+
+**Mechanics** (unchanged from the first draft): `SUN_MEASURE_BEGIN_EVENT` already puts the star in its
+shipping pose; take the three drained frames **after phase A's samples are in and before
+`SUN_MEASURE_END_EVENT`**, so the `gl.finish()` stalls land where nobody is sampling; the star writes
+its number into `adaptivePixelRatio` (`noteStarFrameCost`) rather than the burn-in awaiting a new
+event, so a refused pose cannot hang the loader; the existing refusal branches (reduced motion, model
+not landed, assembly cued) stay as the fallback to today's behaviour; and credibility gates the
+`B − A` path only, so a bad subtraction no longer prevents the allocator running at all.
 
 ### 4.5 · `STAR_MAX_PIXEL_RATIO` — ⚠ INERT on this device, deprioritised
 
@@ -341,8 +399,8 @@ It also needs an MSAA resolve into a texture every frame on the one context that
 | ✅ | **§4.1 phase budget + sane-frame ceiling** | low | §3.1 — measured refusal, every load |
 | ✅ | **§4.2 retarget the probe budget** | medium | §3.2 — arithmetic confirmed to the digit |
 | ✅ | **§4.6 stage 1** glow falloff | low | user-reported |
-| **→** | **RE-MEASURE on the phone** | — | **everything below depends on it** |
-| 4 | §4.4 direct star measurement | medium | only if the split is still unusable |
+| ✅ | **RE-MEASURED on the phone** | — | §3.3 withdrawn · §3.4, §3.5 found |
+| **→** | **§4.4 direct star measurement** | medium | **§3.4 — the split still refuses, systematically** |
 | 5 | §4.5 star cap | low | inert here; correct for dpr 3 |
 | 6 | §4.6 stage 2 full-viewport canvas | **high** | must follow the cost work, not lead it |
 

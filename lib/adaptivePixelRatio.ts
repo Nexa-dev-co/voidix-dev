@@ -813,6 +813,10 @@ export function reportSectionCosts(split: SectionCostSplit): void {
           : '') +
         `\n  ⚠ the star is budgeted at FULL rate; through services and works it draws at` +
         ` SUN_IDLE_STRIDE, so it actually spends half of this.` +
+        (starFrameCost !== null
+          ? `\n  ✓ the star's ${starMilliseconds.toFixed(1)} ms is its OWN drained measurement, not a` +
+            ` subtraction — see noteStarFrameCost.`
+          : '') +
         (starMeasuredInShippingPose
           ? `\n  ✓ the star's ${starMilliseconds.toFixed(1)} ms is its SHIPPING pose — corona grown,` +
             ` rings formed (SUN_MEASURE_BEGIN_EVENT). Cross-check it against \`sun · bloom\` per call` +
@@ -962,6 +966,51 @@ export function noteRatioApplied(): void {
  */
 export function noteStarMeasuredInShippingPose(): void {
   starMeasuredInShippingPose = true;
+}
+
+/**
+ * What the star cost when it timed ITSELF, drained, in its own context — and the ratio it did it at.
+ *
+ * ── ⚠ WHY THE STAR MEASURES ITSELF INSTEAD OF BEING SUBTRACTED OUT ───────────────────────────────
+ * The burn-in used to obtain the star's cost as `phase B − phase A`: one set of frames with the star
+ * dark, one with it lit, half a second apart. Measured on an iPhone
+ * (`docs/sun-mobile-quality-plan.md` §3.4), after both phases were made to complete:
+ *
+ *     phase "A · field alone"   9 samples: 31 29 21 13 17 22 29 17 18   → median 21
+ *     phase "B · field + star"  9 samples: 16 15 25 20 17 15 18 16 22   → median 17
+ *     split REFUSED  field 21.0 ms, both 17.0 ms → star -4.00 ms
+ *
+ * **Phase B came out FASTER than phase A**, so the star solved negative. Neither phase is wrong — the
+ * machine simply got quicker between them, climbing 7 fps → 29 fps → 54 fps as it finished recovering
+ * from the loader's own CPU work. The warming trend was larger than the quantity being measured.
+ *
+ * ⚠ That bias is SYSTEMATIC, not noise: phase A is always first, so it is always the colder one, so
+ * the star is always under-stated. More samples cannot fix it — the contaminant is a TREND, not a
+ * variance — and running the phases in the other order would only flip the sign of the error.
+ *
+ * So the subtraction is gone. The star owns a separate renderer and a separate context, which means it
+ * can be timed directly (`lib/gpuProbe.ts`, `gl.finish()` either side, median of three): one
+ * measurement, one moment, nothing to compare against and no ordering to bias it.
+ *
+ * ⚠ It is a PESSIMISTIC number, deliberately. A drained frame removes the CPU/GPU overlap a real frame
+ * has, so this over-reports — the same bias `gpuProbe`'s header documents, and it pushes the star's
+ * ratio down rather than up. Accepted: the alternative was an instrument that returned a negative
+ * number for a thing that plainly costs something.
+ */
+let starFrameCost: { milliseconds: number; ratio: number } | null = null;
+
+/**
+ * The star reporting its own measured cost. Called from `SunModelCanvas` while it holds the shipping
+ * pose, and only when `measureGpuFrameCost` returned a reading it was willing to believe.
+ */
+export function noteStarFrameCost(milliseconds: number, ratio: number): void {
+  if (!(milliseconds > 0) || !(ratio > 0)) return;
+  starFrameCost = { milliseconds, ratio };
+}
+
+/** What the star measured, or `null` if it never answered. Read by the burn-in. */
+export function getStarFrameCost(): { milliseconds: number; ratio: number } | null {
+  return starFrameCost;
 }
 
 /**

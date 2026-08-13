@@ -54,6 +54,7 @@ import {
 import {
   getControllerFps,
   getPixelRatio,
+  getStarFrameCost,
   getSunPixelRatio,
   hasEarnedExtraQuality,
   noteRatioApplied,
@@ -316,6 +317,18 @@ const MIN_CREDIBLE_STAR_MS = 0.6;
  * nothing. This is a bound on the failure, not a claim about the star.
  */
 const MAX_CREDIBLE_STAR_SHARE = 0.8;
+/**
+ * How long the burn-in will wait for the star to time itself before giving up and using phase B.
+ *
+ * ⚠ A BOUND, NOT A HANDSHAKE. The star answers from its own rAF loop and is entitled to refuse the
+ * pose outright — before its model has landed, under reduced motion, or once the assembly has been
+ * cued. A refusal must cost the fallback below, never a loader wedged behind `BURN_IN_WAIT_MAX_MS`.
+ *
+ * Generous, because on the normal path the wait is short: the star needs one posed frame before it may
+ * measure (see `posedFramesDrawn`) and then three drained draws. Eight frames covers that even on a
+ * device rendering at 150 ms, and any device slower still has a refusal waiting for it anyway.
+ */
+const STAR_SELF_MEASURE_MAX_FRAMES = 8;
 /**
  * ⚠ A HARD CEILING IN TIME, and it is not decoration. This stage is capped by `BURN_IN_WAIT_MAX_MS`
  * (2.5 s) in IntroSequence, and past that the gate stops waiting and moves on regardless. A burn-in
@@ -2408,24 +2421,22 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           if (samples.length >= BURN_IN_TARGET_SAMPLES) break;
           if (frameAt - phaseStartedAt >= phaseBudgetMs) break;
         }
-        // ── ⚠ DIAGNOSTIC, and it is asking ONE question: is this instrument quantised? ────────────
+        // ── ⚠ DIAGNOSTIC. It has already answered two questions and is kept for the third. ────────
         //
-        // `requestAnimationFrame` fires on display refresh boundaries, so an rAF-to-rAF interval can
-        // only ever be about `k × the refresh period` — 16.7 ms at 60 Hz, 8.3 at 120. If that is what
-        // these samples look like, then `B − A` cannot resolve anything smaller than one period, and
-        // the star's true cost on a phone (5–10 ms) is BELOW one period: the split comes out either 0
-        // (→ `MIN_CREDIBLE_STAR_MS` refuses it) or a whole period (→ the star is charged 2× and solves
-        // to nothing). Both land the star on the floor, which is what "the sun is soft on mobile"
-        // actually is.
+        // It was added to ask whether this instrument is QUANTISED — whether rAF-to-rAF intervals come
+        // back as multiples of the display's refresh period, which would put the star's cost below the
+        // resolution of any difference taken with it. **It is not**: an iPhone returned
+        // `31 29 21 13 17 22 29 17 18`, nothing like a multiple of 16.7. That hypothesis is dead and
+        // `docs/sun-mobile-quality-plan.md` §5 records it.
         //
-        // Printed raw and unsorted, because the SHAPE is the finding and a median hides it:
+        // What the same line then exposed is the defect that mattered: phase A's median (21 ms) came
+        // out ABOVE phase B's (17 ms) — the machine was still speeding up between the two — so the
+        // star solved negative. The star is measured directly now (see `noteStarFrameCost`), and phase
+        // B survives only as the fallback below.
         //
-        //     33.3 33.3 50.0 33.3 33.3   → quantised. Build the direct measurement.
-        //     27.4 31.9 24.8 29.1 26.6   → genuinely spread. This diagnosis is wrong; look elsewhere.
-        //
-        // Logged before the refusal below, because a phase that produced too FEW samples is itself
-        // evidence — that is the other way a phone loses the split. See
-        // `docs/sun-mobile-quality-plan.md` §3, which this line exists to confirm or refute.
+        // Printed raw and unsorted, because the SHAPE is the finding and a median hides it. The
+        // rejected count and the elapsed budget are here because a phase that produced too FEW samples
+        // has to say WHICH limit stopped it — the version without them cost a full trip to the device.
         if (telemetryEnabled) {
           console.log(
             `%c[pixels] phase "${phaseName}"%c ${samples.length} samples @ ratio ` +
@@ -2450,31 +2461,63 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         const fieldOnlyMs = await samplePhase('A · field alone');
         if (disposed) return;
 
-        // ── The star joins, and phase B measures both. B − A is what the star costs. ──
+        // ── The star joins, and TIMES ITSELF ──
         // Dispatched even if phase A refused: the measurement is optional, the star appearing is not.
         //
-        // ⚠ THE POSE FIRST, THEN THE PERMIT, AND THE ORDER IS THE POINT. Until 2026-08-13 this phase
-        // timed a star with its corona hidden and its rings collapsed — ten tumbling shards — because
-        // both phases run before `SUN_ASSEMBLE_EVENT` and `positionShards(0, 0)` has already hidden
-        // everything that is not a shard. The corona IS the star's cost, so `starMilliseconds` came out
-        // a lower bound and the allocation downstream of it was decided by a cap instead of by the
-        // measurement. `SUN_MEASURE_BEGIN_EVENT` carries the whole finding.
-        //
-        // Both land inside `BURN_IN_DISCARD_FRAMES` below, which is what keeps the pose change and the
-        // star's first draw out of the samples.
+        // ⚠ THE POSE FIRST, THEN THE PERMIT, AND THE ORDER IS THE POINT. Until 2026-08-13 the star was
+        // timed with its corona hidden and its rings collapsed — ten tumbling shards — because this all
+        // runs before `SUN_ASSEMBLE_EVENT` and `positionShards(0, 0)` has already hidden everything
+        // that is not a shard. The corona IS the star's cost. `SUN_MEASURE_BEGIN_EVENT` carries the
+        // whole finding.
         window.dispatchEvent(new Event(SUN_MEASURE_BEGIN_EVENT));
         window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
-        const fieldAndStarMs = await samplePhase('B · field + star');
+
+        // ⚠ WAIT FOR THE STAR, BUT NEVER ON THE STAR. It answers from its own rAF loop, and it is
+        // entitled to refuse the pose outright — before its model has landed, under reduced motion, or
+        // once the assembly has been cued. So this is a bounded poll and not an event handshake: a
+        // refusal must cost a fallback, never a loader stuck behind `BURN_IN_WAIT_MAX_MS`.
+        //
+        // ⚠ The field draws nothing while it waits, deliberately. The star is about to block the GPU
+        // process on three `gl.finish()` drains, and anything this renderer submitted into that window
+        // would be timed as part of the star.
+        for (
+          let frame = 0;
+          frame < STAR_SELF_MEASURE_MAX_FRAMES && getStarFrameCost() === null;
+          frame += 1
+        ) {
+          await nextWarmupFrame();
+          if (disposed) return;
+        }
+        const starCost = getStarFrameCost();
+
+        // ── Phase B · ONLY as the fallback, and only when the star did not answer ──
+        // On the normal path this does not run at all: it is the subtraction that returned a NEGATIVE
+        // star on a warming phone (see `noteStarFrameCost`), and skipping it also gives back most of
+        // the loader time the low-power phase budget spends. It stays because `reportBurnIn` needs the
+        // cost of a WHOLE frame with the star in it, and without the star's own number there is no
+        // other way to obtain one.
+        const fieldAndStarMs =
+          starCost === null ? await samplePhase('B · field + star (fallback)') : null;
         // Closed the moment the samples are in, not in `finally` — everything between here and there
         // is field work that would otherwise run with the star holding a formed pose it cannot keep.
         window.dispatchEvent(new Event(SUN_MEASURE_END_EVENT));
         if (disposed) return;
 
-        if (fieldAndStarMs === null) {
+        // What a full frame costs, however we came by it. With the star's own number this is modelled
+        // rather than sampled — ⚠ and it mixes two instruments, a drained star against rAF-sampled
+        // field frames, so it is deliberately used ONLY for `reportBurnIn`'s fallback sizing and never
+        // for the split itself.
+        const wholeFrameMs =
+          starCost !== null && fieldOnlyMs !== null
+            ? fieldOnlyMs + starCost.milliseconds
+            : fieldAndStarMs;
+
+        if (wholeFrameMs === null) {
           if (telemetryEnabled) {
             console.log(
               `%c[pixels] burn-in REFUSED%c not enough usable frames in ` +
-                `${(performance.now() - burnStartedAt).toFixed(0)} ms (needs ${BURN_IN_MIN_SAMPLES} per phase).` +
+                `${(performance.now() - burnStartedAt).toFixed(0)} ms (needs ${BURN_IN_MIN_SAMPLES} per phase),` +
+                ` and the star did not self-measure either.` +
                 `\n  The runtime calibration will decide instead — expect a CALIBRATED line per scene.`,
               'color:#e0b341;font-weight:700',
               'color:#888',
@@ -2483,46 +2526,64 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           return;
         }
 
-        // ── Hand the allocator the split, if we got one ──
+        // ── Hand the allocator the split ──
         //
-        // ⚠ THREE THINGS HAVE TO HOLD, and each of them is a way the split can be quietly wrong rather
-        // than obviously broken. A split that fails any of them is simply not reported, and the
-        // allocator falls back to sizing everything off one number exactly as it did before.
+        // ⚠ TWO PATHS, AND THE FIRST ONE NEEDS NO CREDIBILITY CHECKS AT ALL. The star's own drained
+        // measurement is not a difference, so none of the ways a difference goes wrong can apply to
+        // it: there is no ordering to bias it, no second phase to come out faster, and no jitter floor
+        // to clear. It is simply what the star cost.
+        //
+        // The `B − A` path below keeps all three checks, because it keeps all three failure modes:
         //
         //   1 · REDUCED MOTION draws the star from mount (`drawingPermitted = reduceMotion` in
         //       SunModelCanvas — that path has no held beat and would otherwise show an empty box
         //       where the star goes). So phase A already contains the star, B − A is noise around
         //       zero, and the allocator would conclude the star is free and hand it the ceiling.
-        //   2 · Phase A must be the FASTER of the two. If it came out slower — a long task landing in
-        //       it, the GPU still settling, thermal drift — the star's cost solves negative.
-        //   3 · The difference must be big enough to be a measurement rather than jitter. Two medians
-        //       taken a few hundred milliseconds apart differ by a few tenths of a millisecond on a
-        //       quiet machine; below that floor we are reading noise and calling it the star.
-        const starMilliseconds = fieldOnlyMs === null ? 0 : fieldAndStarMs - fieldOnlyMs;
-        const splitIsCredible =
+        //   2 · Phase A must be the FASTER of the two. ⚠ THIS IS THE ONE THAT FIRES IN PRACTICE — an
+        //       iPhone returned field 21.0 ms against both 17.0 ms, i.e. a star costing MINUS 4 ms,
+        //       because the machine sped up between the phases. That is the whole reason path one
+        //       exists.
+        //   3 · The difference must be big enough to be a measurement rather than jitter.
+        //
+        // ⚠ A REFUSED SPLIT NO LONGER SKIPS THE ALLOCATION on the star's own path — it cannot, since
+        // there is nothing to disbelieve. Where the subtraction is used and refused, the behaviour is
+        // exactly as it was: `reportBurnIn` sizes everything off one number.
+        const subtractedStarMs =
+          fieldOnlyMs === null || fieldAndStarMs === null ? 0 : fieldAndStarMs - fieldOnlyMs;
+        const subtractionIsCredible =
+          fieldAndStarMs !== null &&
           !prefersReducedMotion() &&
           fieldOnlyMs !== null &&
-          starMilliseconds >= MIN_CREDIBLE_STAR_MS &&
-          starMilliseconds <= fieldAndStarMs * MAX_CREDIBLE_STAR_SHARE;
-        if (splitIsCredible && fieldOnlyMs !== null) {
+          subtractedStarMs >= MIN_CREDIBLE_STAR_MS &&
+          subtractedStarMs <= fieldAndStarMs * MAX_CREDIBLE_STAR_SHARE;
+
+        if (fieldOnlyMs !== null && starCost !== null) {
           reportSectionCosts({
             fieldMilliseconds: fieldOnlyMs,
-            starMilliseconds,
+            starMilliseconds: starCost.milliseconds,
+            fieldRatio: renderer.getPixelRatio(),
+            starRatio: starCost.ratio,
+          });
+        } else if (subtractionIsCredible && fieldOnlyMs !== null) {
+          reportSectionCosts({
+            fieldMilliseconds: fieldOnlyMs,
+            starMilliseconds: subtractedStarMs,
             fieldRatio: renderer.getPixelRatio(),
             starRatio: getSunPixelRatio(),
           });
         } else if (telemetryEnabled) {
           console.log(
             `%c[pixels] split REFUSED%c field ${fieldOnlyMs?.toFixed(1) ?? '—'} ms, ` +
-              `both ${fieldAndStarMs.toFixed(1)} ms → star ${starMilliseconds.toFixed(2)} ms.` +
-              `\n  Not a credible separation${prefersReducedMotion() ? ' (reduced motion — the star draws from mount)' : ''};` +
+              `both ${fieldAndStarMs?.toFixed(1) ?? '—'} ms → star ${subtractedStarMs.toFixed(2)} ms.` +
+              `\n  The star did not self-measure, and the subtraction is not a credible separation` +
+              `${prefersReducedMotion() ? ' (reduced motion — the star draws from mount)' : ''};` +
               ` falling back to one number for the whole frame.`,
             'color:#e0b341;font-weight:700',
             'color:#888',
           );
         }
 
-        reportBurnIn(fieldAndStarMs, renderer.getPixelRatio());
+        reportBurnIn(wholeFrameMs, renderer.getPixelRatio());
         if (getPixelRatio() !== appliedPixelRatio) {
           // Allocate what it decided, here, behind the veil — so this section's first real frame is
           // already at its final resolution and never re-sizes in front of anyone.

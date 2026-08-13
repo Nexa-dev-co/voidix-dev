@@ -9,9 +9,11 @@ import { profileGauge, profileMeasure, profileNow, profileSpan } from '@/lib/fra
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import {
   getSunPixelRatio,
+  noteStarFrameCost,
   noteStarMeasuredInShippingPose,
   RATIO_APPLY_GRACE_SECONDS,
 } from '@/lib/adaptivePixelRatio';
+import { measureGpuFrameCost } from '@/lib/gpuProbe';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   REVEAL_EVENT,
@@ -76,13 +78,28 @@ const FLARE_SPIN_DEGREES_PER_SECOND = 15;
 /**
  * The magma's glow.
  *
- * This was raised to compensate for having no bloom pass — that reason is now GONE (see `sunBloom`),
- * so the hero sun is running a Cracks-level emissive through a bloom it was tuned without. If the
- * calm hero star reads too hot, this is the first number to pull down: the Peaceful stage
- * leaves magma at the model's own default and lets bloom do the work, and 2.4 is the value its
- * CRACKS stage authors.
+ * ── ⚠ 2.4 → 1.5 ON 2026-08-13, ON THE ADVICE THIS COMMENT WAS ALREADY GIVING ─────────────────────
+ * The previous text ended: *"If the calm hero star reads too hot, this is the first number to pull
+ * down: the Peaceful stage leaves magma at the model's own default and lets bloom do the work, and 2.4
+ * is the value its CRACKS stage authors."* The star was reported as reading much too hot, so it is
+ * pulled down.
+ *
+ * 2.4 was raised to compensate for having NO bloom pass. `sunBloom` exists now, and three separate
+ * changes since have each added light on top of a value that was already standing in for the glow:
+ * `BLOOM_THRESHOLD` 0.59 → 0.42 (the star went from barely blooming to blooming), `MIP_COUNT` 3 → 5
+ * (two more octaves of falloff) and `BLOOM_STRENGTH` 1.26 → 1.32. So the hero was running a
+ * Cracks-level emissive through a bloom none of it was graded against.
+ *
+ * ⚠ NOT taken all the way to the model's own default of 1. The collapse lerps this → 5, and the
+ * assembly multiplies it (below); at 1 the resting star loses the hot veins that make the magma read
+ * as molten rather than as an orange texture. 1.5 is a deliberate midpoint and is expected to need one
+ * more pass by eye.
+ *
+ * **If it is still too bright, the dials in order are:** `BLOOM_STRENGTH` (the halo's own multiplier,
+ * and the cheapest thing to change), then `BLOOM_THRESHOLD` upward (less of the surface blooms at
+ * all), then `EXPOSURE` (which moves the base image as well as the glow, so it is the blunt one).
  */
-const MAGMA_EMISSIVE = 2.4;
+const MAGMA_EMISSIVE = 1.5;
 const EXPOSURE = 1.42;
 const ENV_INTENSITY = 1.77;
 const KEY_COLOR = 0xfff4e0;
@@ -348,8 +365,19 @@ const IDLE_ORBIT_DEGREES_PER_SECOND = 4;
  * emissive. Infalling matter is hot and cools as it settles — but the real job is legibility: at the far
  * end of the flight a shard is a ~10px chip of unlit basalt on a black veil, under a field of bright
  * dust. Without this the early travel is invisible no matter how well it is paced.
+ *
+ * ⚠ 2.5 → 4.6 ON 2026-08-13, TO KEEP THE SHARDS EXACTLY AS BRIGHT AS THEY WERE. It is a MULTIPLE of
+ * `MAGMA_EMISSIVE`, applied as `MAGMA_EMISSIVE × (1 + receding × ASSEMBLY_HEAT)`, so pulling the
+ * resting emissive down for the hero would silently have dimmed the loader's flight with it:
+ *
+ *     before   2.4 × (1 + 2.5) = 8.4
+ *     after    1.5 × (1 + 4.6) = 8.4      ← identical, deliberately
+ *
+ * These two constants are therefore COUPLED and neither may move alone. The hero star sits on cream
+ * and was too hot; the shards sit on a black veil and were correct. Same number, two substrates, two
+ * different answers — which is the same rule `--accent-deep` exists for in the colour system.
  */
-const ASSEMBLY_HEAT = 2.5;
+const ASSEMBLY_HEAT = 4.6;
 /**
  * Seconds the parts take to fly in, as a ONE-SHOT.
  *
@@ -903,12 +931,24 @@ export default function SunModelCanvas() {
     // rather than as the ten drifting shards the allocator used to time. Invisible: the sun layer is
     // still at `autoAlpha: 0` this early. See SUN_MEASURE_BEGIN_EVENT for the whole finding.
     let measuringPose = false;
+    /**
+     * Frames drawn in the shipping pose. The self-measurement waits for one.
+     *
+     * ⚠ `gpuProbe`'s contract: the caller MUST have drawn this pipeline at least once already. The
+     * first draw after the pose change carries the corona's own first-draw costs — and, if the probe
+     * moved the shared ratio since the star was built, a bloom-pyramid reallocation as well. Timing
+     * those would report the star as far more expensive than it is, which on this path would take
+     * resolution away from the very thing being measured.
+     */
+    let posedFramesDrawn = 0;
+    let selfMeasured = false;
     const onMeasureBegin = () => {
       // ⚠ Refused once the assembly is cued — that is the case where the star is on screen (no loader
       // on the page) and a formed pose would flash. Also refused under reduced motion, where the star
       // has drawn from mount and the split is going to be rejected as incredible anyway.
       if (measuringPose || reduceMotion || !modelReady || assemblyCued) return;
       measuringPose = true;
+      posedFramesDrawn = 0;
       // Only on this branch — the early return above is every way the pose can be refused, and the
       // allocator has no other way to find out. It uses this to decide whether native is a ceiling for
       // the star on this load; a refused pose must leave it exactly where it was.
@@ -1761,6 +1801,49 @@ export default function SunModelCanvas() {
         drawnFrameCounter += 1;
         profileMeasure('sun · bloom', () => bloom.render(scene, camera, refreshGlow), true);
         forceRender = false;
+
+        // ── The star times ITSELF, once, while it holds the shipping pose ────────────────────────
+        //
+        // ⚠ This replaces `phase B − phase A` in the burn-in, which measured the star as the
+        // DIFFERENCE between two sets of frames taken half a second apart — and came out NEGATIVE on
+        // a phone, because the machine was still speeding up between them. See `noteStarFrameCost`
+        // for the capture and why that bias could never be sampled away.
+        //
+        // Done here, inside the star's own loop, because only this context can drain only this
+        // renderer. `measureGpuFrameCost` blocks on `gl.finish()` either side of three draws — a real
+        // GPU-process stall, which is why the works field takes its own samples BEFORE dispatching
+        // the pose and none while it is held. Nothing is being sampled during these frames.
+        //
+        // ⚠ The star is invisible here regardless: `IntroSequence` holds `.hero-sun-layer` at
+        // `autoAlpha: 0` until the finale. That is what lets it be measured on the DEFAULT
+        // framebuffer, through the same programs, the same MSAA resolve and the same tone mapping the
+        // visitor gets — an offscreen target would time different shaders, since three applies tone
+        // mapping only when the render target is null.
+        if (measuringPose && !selfMeasured) {
+          posedFramesDrawn += 1;
+          // Never on the first posed frame — see `posedFramesDrawn`.
+          if (posedFramesDrawn > 1) {
+            selfMeasured = true;
+            const cost = measureGpuFrameCost(renderer, () =>
+              bloom.render(scene, camera, true),
+            );
+            if (cost.milliseconds !== null) {
+              noteStarFrameCost(cost.milliseconds, appliedPixelRatio);
+            }
+            if (telemetryEnabled) {
+              console.log(
+                `%c[pixels] star self-measured%c ${
+                  cost.milliseconds === null
+                    ? 'REFUSED — reading outside gpuProbe MIN/MAX_BELIEVABLE'
+                    : `${cost.milliseconds.toFixed(2)} ms drained, for ${cost.megapixels.toFixed(3)} Mpx at ratio ${appliedPixelRatio.toFixed(2)}`
+                }` +
+                  `\n  its own context, shipping pose, default framebuffer — no subtraction involved.`,
+                'color:#5bd6a0;font-weight:700',
+                'color:#888',
+              );
+            }
+          }
+        }
       }
       // ⚠ Only a frame the stride let through may consume this. `wasAnimating` exists to draw the ONE
       // final settled frame after motion stops — and if the frame where `animating` goes false happens
