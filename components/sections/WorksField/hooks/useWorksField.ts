@@ -79,6 +79,8 @@ import {
   BURN_IN_EVENT,
   INTRO_MARKER_SELECTOR,
   SUN_DRAW_PERMIT_EVENT,
+  SUN_MEASURE_BEGIN_EVENT,
+  SUN_MEASURE_END_EVENT,
 } from '@/components/effects/IntroSequence/introEvents';
 import { SLATE_200, SLATE_400, SLATE_800 } from '@/lib/coolPalette';
 
@@ -2344,8 +2346,22 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
 
         // ── The star joins, and phase B measures both. B − A is what the star costs. ──
         // Dispatched even if phase A refused: the measurement is optional, the star appearing is not.
+        //
+        // ⚠ THE POSE FIRST, THEN THE PERMIT, AND THE ORDER IS THE POINT. Until 2026-08-13 this phase
+        // timed a star with its corona hidden and its rings collapsed — ten tumbling shards — because
+        // both phases run before `SUN_ASSEMBLE_EVENT` and `positionShards(0, 0)` has already hidden
+        // everything that is not a shard. The corona IS the star's cost, so `starMilliseconds` came out
+        // a lower bound and the allocation downstream of it was decided by a cap instead of by the
+        // measurement. `SUN_MEASURE_BEGIN_EVENT` carries the whole finding.
+        //
+        // Both land inside `BURN_IN_DISCARD_FRAMES` below, which is what keeps the pose change and the
+        // star's first draw out of the samples.
+        window.dispatchEvent(new Event(SUN_MEASURE_BEGIN_EVENT));
         window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
         const fieldAndStarMs = await samplePhase();
+        // Closed the moment the samples are in, not in `finally` — everything between here and there
+        // is field work that would otherwise run with the star holding a formed pose it cannot keep.
+        window.dispatchEvent(new Event(SUN_MEASURE_END_EVENT));
         if (disposed) return;
 
         if (fieldAndStarMs === null) {
@@ -2426,6 +2442,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // able to leave a dark square where the site's centrepiece goes. `permitDrawing` is idempotent,
         // so re-firing a permit already sent between the phases costs nothing.
         if (!disposed) {
+          // ⚠ The pose is closed here as well as after phase B, and it is the more important of the
+          // two: a throw between them would otherwise strand the star fully formed with its rings out,
+          // and the loader's finale would fly ten shards into a star that had already assembled itself.
+          // Idempotent, so the normal path firing it twice costs nothing.
+          window.dispatchEvent(new Event(SUN_MEASURE_END_EVENT));
           window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
           window.dispatchEvent(new Event(BURN_IN_DONE_EVENT));
         }

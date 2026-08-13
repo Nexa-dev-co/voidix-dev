@@ -5,9 +5,7 @@ import PageShell from '@/components/layout/PageShell/PageShell';
 import DocSection from '@/components/layout/PageShell/DocSection';
 import EnquiryButton from '@/components/ui/EnquiryButton/EnquiryButton';
 import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
-import { DECK_SERVICES } from '@/components/sections/ServicesDeck/deckServices';
-import { WORKS_PROJECTS } from '@/components/sections/WorksField/worksProjects';
-import { FAQ_ENTRIES } from '@/components/sections/Chamber/faqEntries';
+import { useSiteSections } from '@/lib/cms/SiteContentProvider';
 import {
   LITE_CLOSING_LEAD,
   LITE_CLOSING_TITLE,
@@ -40,6 +38,10 @@ import {
  * answer. Same classes, same result, one extra child.
  */
 export default function LitePage() {
+  // ⚠ The same three lists the homepage renders, from the same resolve — not a second copy. This page
+  // re-presents the site's words; it does not restate them. See `liteContent.ts`.
+  const { services, projects, faq } = useSiteSections();
+
   const [isEnquiryOpen, setIsEnquiryOpen] = useState(false);
 
   return (
@@ -53,7 +55,7 @@ export default function LitePage() {
         {/* 01 — what we build. The fleet, without the fleet. */}
         <DocSection meta={LITE_SECTIONS[0]}>
           <ul className="doc-claims">
-            {DECK_SERVICES.map((service, index) => (
+            {services.map((service, index) => (
               <li
                 key={service.index}
                 className="doc-claim"
@@ -81,7 +83,7 @@ export default function LitePage() {
         {/* 02 — selected work. The field, without the field. */}
         <DocSection meta={LITE_SECTIONS[1]}>
           <ul className="doc-claims">
-            {WORKS_PROJECTS.map((project, index) => (
+            {projects.map((project, index) => (
               <li
                 key={project.index}
                 className="doc-claim"
@@ -114,7 +116,7 @@ export default function LitePage() {
         {/* 03 — questions. The chamber's hologram, as a list. */}
         <DocSection meta={LITE_SECTIONS[2]}>
           <ul className="doc-claims">
-            {FAQ_ENTRIES.map((entry, index) => (
+            {faq.map((entry, index) => (
               <li
                 key={entry.index}
                 className="doc-claim"

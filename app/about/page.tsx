@@ -2,6 +2,8 @@ import type { Metadata } from 'next';
 import AboutPage from '@/components/pages/About/AboutPage';
 import { resolveAboutContent } from '@/components/pages/About/aboutContent';
 import { fetchPublishedContent } from '@/lib/cms/fetchPublishedContent';
+import { resolveSharedContent } from '@/lib/cms/siteContent';
+import SiteContentProvider from '@/lib/cms/SiteContentProvider';
 
 /**
  * ⚠ THIS LITERAL MUST STAY EQUAL TO `CONTENT_REVALIDATE_SECONDS`, and it cannot import it: the
@@ -24,6 +26,7 @@ export const revalidate = 600;
 
 export const metadata: Metadata = {
   title: 'About — Voidix',
+  alternates: { canonical: '/about' },
   description:
     'A small engineering studio that builds the surface which has to be fast, legible and alive at the same time. How we work, what we hold ourselves to, and what we build it in.',
   openGraph: {
@@ -37,5 +40,12 @@ export const metadata: Metadata = {
 export default async function About() {
   const published = await fetchPublishedContent();
 
-  return <AboutPage content={resolveAboutContent(published?.about ?? null)} />;
+  // ⚠ Two resolves off ONE fetch. `about` is this page's own and arrives as a prop; the rest is the
+  // shared vocabulary — the enquiry form's strings, the disciplines it seeds from, the footer — which
+  // this page renders exactly as the homepage does. See `lib/cms/siteContent.ts`.
+  return (
+    <SiteContentProvider content={resolveSharedContent(published)}>
+      <AboutPage content={resolveAboutContent(published?.about ?? null)} />
+    </SiteContentProvider>
+  );
 }

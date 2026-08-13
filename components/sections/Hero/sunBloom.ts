@@ -84,14 +84,71 @@ export const BLOOM_THRESHOLD = 0.42; // was 0.59
 const THRESHOLD_KNEE = 0.22;
 
 /**
- * Mip levels in the blur chain. UnrealBloom uses five; three is plenty at this canvas size and
- * keeps the per-frame cost of the second render path down. Each level halves again, so level 0 is
- * a tight core glow and level 2 is the wide bleed.
+ * Mip levels in the blur chain. Each level halves again, so level 0 is a tight core glow and the
+ * last one is the wide bleed.
+ *
+ * ── ⚠ 3 → 5 ON 2026-08-13, PAID FOR BY THE ABLATION ──────────────────────────────────────────────
+ * This said *"UnrealBloom uses five; three is plenty at this canvas size"*, and that was a judgement
+ * about COST, not about the look — the note it sat next to is *"keeps the per-frame cost of the second
+ * render path down"*. `SUN_OMITTED_PARTS` has since taken `flare` and `blowout` out of the star,
+ * cutting `sun · bloom` 2.00 → 0.87 ms per call on the reference desktop, and this is one of the
+ * places that budget is being spent back.
+ *
+ * What two more levels buy is REACH. At a 458² canvas and ratio ~1.9 the chain runs 435 → 217 → 108
+ * device pixels; levels 3 and 4 add 54 and 27, which upsampled across the full canvas is the very wide,
+ * very soft falloff a star's corona has and a three-level chain simply cannot express. Cost is 1/64 and
+ * 1/256 of the frame's pixels plus six small quad draws — the cheapest quality on this canvas by a wide
+ * margin.
+ *
+ * ⚠ THE GRADE IS HELD CONSTANT ACROSS THIS CHANGE, and `MIP_WEIGHTS` is what does it. More levels means
+ * more taps summed into one pixel, so the naive version of this raises the star's total glow by ~60 %
+ * at an unchanged `BLOOM_STRENGTH` — silently re-grading the site's centrepiece and breaking the
+ * journey-wide +5 % / +17.5 % / +30 % ramp this file's header documents. The weights are renormalised
+ * to the three-level sums instead, so `uStrength` means exactly what it meant before and the only thing
+ * that changes is WHERE the light sits: a little less in the core, a lot more in the far falloff.
  */
-const MIP_COUNT = 3;
+// Annotated `number` rather than left to infer the literal `5`: this is a DIAL, and the weight builder
+// below guards a one-level chain. Against the inferred literal TypeScript calls that guard dead code.
+const MIP_COUNT: number = 5;
 
 /** Never let a mip collapse to nothing on a small canvas — a 0-sized target is a WebGL error. */
 const MIN_MIP_SIZE = 4;
+
+/**
+ * How the levels are weighted into the final glow, at each end of the `uRadius` dial.
+ *
+ * `uRadius` is what turns one number into *"how far does the light spread"* — at 0 the tight mip
+ * dominates and the glow hugs the star, at 1 the wide ones do and it bleeds across the frame. The two
+ * profiles below are the shapes that produced the authored three-level look:
+ *
+ *     tight   1.00 · 0.35 · 0.10      a geometric falloff, ratio ≈ 1/3
+ *     wide    0.40 · 0.75 · 1.00      a straight ramp from near to far
+ *
+ * They are expressed as CURVES rather than as three literals so the chain length is a real dial, and
+ * then renormalised to the sums those literals had. See MIP_COUNT for why the renormalisation is not
+ * optional.
+ */
+const TIGHT_FALLOFF_PER_LEVEL = 1 / 3;
+const WIDE_WEIGHT_NEAR = 0.4;
+const WIDE_WEIGHT_FAR = 1;
+/** The sums the authored three-level chain produced, and therefore what `uStrength` is graded against. */
+const AUTHORED_TIGHT_SUM = 1.45;
+const AUTHORED_WIDE_SUM = 2.15;
+
+/** `[tight, wide]` per level, already renormalised. Mixed by `uRadius` in the composite shader. */
+const MIP_WEIGHTS = (() => {
+  const tight = Array.from({ length: MIP_COUNT }, (_, level) =>
+    TIGHT_FALLOFF_PER_LEVEL ** level,
+  );
+  const wide = Array.from({ length: MIP_COUNT }, (_, level) =>
+    MIP_COUNT === 1
+      ? WIDE_WEIGHT_FAR
+      : WIDE_WEIGHT_NEAR + (WIDE_WEIGHT_FAR - WIDE_WEIGHT_NEAR) * (level / (MIP_COUNT - 1)),
+  );
+  const tightScale = AUTHORED_TIGHT_SUM / tight.reduce((sum, value) => sum + value, 0);
+  const wideScale = AUTHORED_WIDE_SUM / wide.reduce((sum, value) => sum + value, 0);
+  return tight.map((value, level) => [value * tightScale, wide[level] * wideScale] as const);
+})();
 
 const FULLSCREEN_VERTEX_SHADER = /* glsl */ `
   varying vec2 vUv;
@@ -148,10 +205,13 @@ const BLUR_FRAGMENT_SHADER = /* glsl */ `
 `;
 
 // The one pass that touches the canvas. Pure additive on colour AND alpha — see the header.
+//
+// ⚠ BUILT FROM `MIP_COUNT`, not written out by hand. It used to name tMip0/1/2 and three literal
+// weight pairs in three places (here, the uniform block and step 5), so changing the chain length
+// meant finding all three and the compiler could not tell you if you missed one. Plain words only
+// inside the template — a backtick in here terminates the string.
 const COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
-  uniform sampler2D tMip0;
-  uniform sampler2D tMip1;
-  uniform sampler2D tMip2;
+  ${MIP_WEIGHTS.map((_, level) => `uniform sampler2D tMip${level};`).join('\n  ')}
   uniform float uStrength;
   uniform float uRadius;
   varying vec2 vUv;
@@ -159,14 +219,11 @@ const COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
   void main() {
     // uRadius blends the weighting between the tight mip and the wide ones, which is how
     // UnrealBloom turns one dial into "how far does the light spread".
-    float w0 = mix(1.0, 0.40, uRadius);
-    float w1 = mix(0.35, 0.75, uRadius);
-    float w2 = mix(0.10, 1.00, uRadius);
-
-    vec3 glow =
-      texture2D(tMip0, vUv).rgb * w0 +
-      texture2D(tMip1, vUv).rgb * w1 +
-      texture2D(tMip2, vUv).rgb * w2;
+    vec3 glow = vec3(0.0);
+    ${MIP_WEIGHTS.map(
+      ([tight, wide], level) =>
+        `glow += texture2D(tMip${level}, vUv).rgb * mix(${tight.toFixed(5)}, ${wide.toFixed(5)}, uRadius);`,
+    ).join('\n    ')}
 
     glow *= uStrength;
 
@@ -258,9 +315,10 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
 
   const compositeMaterial = new THREE.ShaderMaterial({
     uniforms: {
-      tMip0: { value: null },
-      tMip1: { value: null },
-      tMip2: { value: null },
+      // One sampler per level, built from the same list the shader was — see COMPOSITE_FRAGMENT_SHADER.
+      ...Object.fromEntries(
+        MIP_WEIGHTS.map((_, level) => [`tMip${level}`, { value: null as THREE.Texture | null }]),
+      ),
       uStrength: { value: BLOOM_STRENGTH },
       uRadius: { value: BLOOM_RADIUS },
     },
@@ -363,9 +421,9 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
     //    first by default, which would wipe the frame we just drew in step 4 and leave the glow
     //    floating on an empty canvas.
     renderer.autoClear = false;
-    compositeMaterial.uniforms.tMip0.value = mipTargets[0].texture;
-    compositeMaterial.uniforms.tMip1.value = mipTargets[1].texture;
-    compositeMaterial.uniforms.tMip2.value = mipTargets[2].texture;
+    mipTargets.forEach((target, level) => {
+      compositeMaterial.uniforms[`tMip${level}`].value = target.texture;
+    });
     drawQuad(compositeMaterial, previousTarget);
 
     renderer.autoClear = previousAutoClear;

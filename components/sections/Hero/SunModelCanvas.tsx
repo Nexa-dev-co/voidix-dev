@@ -9,6 +9,7 @@ import { profileGauge, profileMeasure, profileNow, profileSpan } from '@/lib/fra
 import { telemetryEnabled } from '@/lib/telemetryEnabled';
 import {
   getSunPixelRatio,
+  noteStarMeasuredInShippingPose,
   RATIO_APPLY_GRACE_SECONDS,
 } from '@/lib/adaptivePixelRatio';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -16,6 +17,8 @@ import {
   REVEAL_EVENT,
   INTRO_ACTIVE_EVENT,
   SUN_DRAW_PERMIT_EVENT,
+  SUN_MEASURE_BEGIN_EVENT,
+  SUN_MEASURE_END_EVENT,
   SUN_ASSEMBLE_EVENT,
   SUN_ASSEMBLED_EVENT,
   SUN_FORMING_EVENT,
@@ -167,8 +170,21 @@ const SUN_IDLE_STRIDE = 2;
  * Counted in DRAWN frames, not in loop frames, so it composes with the stride above instead of
  * multiplying against it in some way nobody could predict from either constant alone. Gated on the
  * black stage for the same reason and by the same rule.
+ *
+ * ── ⚠ 2 → 1 ON 2026-08-13: THE HALO IS NO LONGER A FRAME BEHIND THE STAR ─────────────────────────
+ * At 2 the glow's mip chain was re-derived every other DRAWN frame, and drawn frames are already
+ * strided by `SUN_IDLE_STRIDE` through services and works — so the halo could sit two loop frames
+ * behind the geometry it belongs to. `sunBloom`'s header defends that as *"0.18° of lag on a wide
+ * blurred glow"* at the star's idle 11°/s, which is fair for the IDLE turn and is not the case that
+ * bites: `applyCracks` moves the shards along their outward axes and the collapse crushes them inward
+ * by half a shard radius, and a glow lagging THAT reads as the light peeling off the star.
+ *
+ * `choreographyActive` already forced a refresh through every authored beat, so this is not a
+ * correctness fix — it buys the frames in between, where the star breathes and its dust falls. Paid
+ * for out of the same ablation budget as `MIP_COUNT`: one extra scene render on the strided frames,
+ * on a star that costs 57 % less per render than the one this stride was sized against.
  */
-const SUN_GLOW_STRIDE = 2;
+const SUN_GLOW_STRIDE = 1;
 
 // ── DIAGNOSTIC: which parts of the star are allowed to draw ──────────────────────────────────────
 /**
@@ -570,24 +586,35 @@ export default function SunModelCanvas() {
     const renderer = new THREE.WebGLRenderer({
       canvas,
       /**
-       * ── ⚠ OFF, and this is the one change in the perf pass that wants eyes on it ────────────────
+       * ── ⚠ BACK ON, 2026-08-13. THE NUMBER IT WAS TURNED OFF FOR WAS WRONG BY 14× ────────────────
        *
-       * MSAA on the DEFAULT framebuffer, on the one context that also sets `preserveDrawingBuffer`.
-       * That pair is the expensive one: the driver has to resolve the multisample buffer and then
-       * keep the result rather than discarding it, every frame, on a canvas that is 3 Mpx at this
-       * ratio and 6.7 Mpx of device pixels once composited. The profiler had `sun · bloom` at 9–22 ms
-       * — the largest measured span on the page whenever the star draws.
+       * It was off, and the case for that was: *"MSAA on the DEFAULT framebuffer, on the one context
+       * that also sets `preserveDrawingBuffer` … every frame, on a canvas that is 3 Mpx at this ratio
+       * and 6.7 Mpx of device pixels once composited."*
        *
-       * What it buys is small here, for two reasons specific to this canvas. The star goes through a
-       * bloom pass, so its bright edges are already soft; MSAA only ever helped the shards' hard
-       * silhouette against the transparent background. And the canvas renders BELOW the panel's
-       * density (ratio ~1.68 on a dpr 2.5 display), so the browser upscales it on composite, which
-       * softens those silhouettes anyway.
+       * The canvas is 458 × 458. `.hero-sun-card` is `clamp(7rem, 20vw, 11rem)` and `HeroSun` sizes
+       * the layer to that square's untransformed rect × `SUN_CANVAS_HEADROOM` — **0.209 Mpx of CSS
+       * pixels**, about 0.75 Mpx of device pixels at the ratio the allocator hands us.
+       * `docs/per-section-quality-budget-plan.md` §1b measured this and named this very line as the
+       * thing the mistake was load-bearing for. A 4× resolve on 0.75 Mpx is not the expensive pair the
+       * comment was describing; it is a rounding error next to the twenty additive corona planes.
        *
-       * If the star's edges crawl as it turns, this is the line — put it back and we find the frame
-       * time somewhere else.
+       * ⚠ AND THIS IS THE ONLY THING THAT CAN ANTIALIAS THE STAR'S SILHOUETTE. §2.5 of that plan
+       * proposes `samples: 4` on `sunBloom`'s `sceneTarget` for the job, and that would not have
+       * worked: `sceneTarget` is the BLOOM'S SOURCE and is never shown — step 4 renders the visible
+       * base image straight to this canvas, deliberately, so its pixels and their alpha can never be
+       * corrupted by a blit (see `sunBloom`'s header). Samples on that target would antialias an image
+       * that is about to be blurred down a mip chain. The silhouette lives on the default framebuffer,
+       * so the default framebuffer is where the samples have to be.
+       *
+       * ⚠ It matters MORE now than when it was switched off, not less. The old note argued MSAA *"only
+       * ever helped the shards' hard silhouette"* — and `SUN_OMITTED_PARTS` has since removed the
+       * flares and the blowout planes, so the shards' hard silhouette is a larger share of the star
+       * than it was. Removing the soft parts made the sharp part the picture.
+       *
+       * If the frame regresses, this is still the first line to pull.
        */
-      antialias: false,
+      antialias: true,
       alpha: true,
       preserveDrawingBuffer: true,
     });
@@ -864,6 +891,39 @@ export default function SunModelCanvas() {
     // and one with it, so the star has to stay dark until the field has had its phase alone — see
     // SUN_DRAW_PERMIT_EVENT for the three independent things that guarantee this still fires.
     window.addEventListener(SUN_DRAW_PERMIT_EVENT, permitDrawing);
+
+    // ── The measurement pose ──
+    // For the length of the burn-in's phase B the star draws as it SHIPS — corona grown, rings formed —
+    // rather than as the ten drifting shards the allocator used to time. Invisible: the sun layer is
+    // still at `autoAlpha: 0` this early. See SUN_MEASURE_BEGIN_EVENT for the whole finding.
+    let measuringPose = false;
+    const onMeasureBegin = () => {
+      // ⚠ Refused once the assembly is cued — that is the case where the star is on screen (no loader
+      // on the page) and a formed pose would flash. Also refused under reduced motion, where the star
+      // has drawn from mount and the split is going to be rejected as incredible anyway.
+      if (measuringPose || reduceMotion || !modelReady || assemblyCued) return;
+      measuringPose = true;
+      // Only on this branch — the early return above is every way the pose can be refused, and the
+      // allocator has no other way to find out. It uses this to decide whether native is a ceiling for
+      // the star on this load; a refused pose must leave it exactly where it was.
+      noteStarMeasuredInShippingPose();
+      // It has to actually be drawing to be measurable, and the permit is dispatched immediately after
+      // this — but not depending on that ordering is free, and the alternative is a silent zero.
+      permitDrawing();
+      forceRender = true;
+    };
+    const onMeasureEnd = () => {
+      if (!measuringPose) return;
+      measuringPose = false;
+      // Put the shards back where the drift left them. The loop's drift branch would do this on its
+      // next tick anyway, but only while `!assemblyCued` — and if the cue lands inside the same frame
+      // this runs, nothing else would ever restore `coronaParts` to hidden and the star would sit
+      // formed while the assembly tried to fly it in.
+      positionShards(assembly, frameTimer.elapsed());
+      forceRender = true;
+    };
+    window.addEventListener(SUN_MEASURE_BEGIN_EVENT, onMeasureBegin);
+    window.addEventListener(SUN_MEASURE_END_EVENT, onMeasureEnd);
 
     let modelReady = false;
     let assemblyCued = false;
@@ -1499,7 +1559,14 @@ export default function SunModelCanvas() {
       // screen changes nothing anyone can see — and leaving it running would keep the canvas drawing,
       // which is one of the two things that force a draw below. Gating one without the other would
       // have saved nothing at all.
-      if (modelReady && !assemblyCued && !reduceMotion && drawingPermitted) {
+      // ⚠ The measurement pose OVERRIDES the drift, and this is the only place the two could fight —
+      // both own shard positions and `coronaParts` visibility. Phase B has to time the star the site
+      // ships, so for its length the shards sit home and the corona is grown; `elapsed` still advances
+      // so the star turns, which is what it will be doing when it competes with the field for real.
+      if (measuringPose && modelReady) {
+        positionShards(1, elapsed);
+        driftActive = true;
+      } else if (modelReady && !assemblyCued && !reduceMotion && drawingPermitted) {
         positionShards(0, elapsed);
         driftActive = true; // keep drawing: something on this canvas is moving
       }
@@ -1610,7 +1677,13 @@ export default function SunModelCanvas() {
       // so the star visibly lost its rings the moment the reveal passed the freeze point, and scrubbing
       // across it flickered them on and off. The freeze is meant to stop paying for a frame nobody can
       // see; it must never CHANGE the frame it freezes on, or scrubbing back across the threshold pops.
-      sunParticles?.update(elapsed, ringForm, ringWorksForm);
+      // ⚠ Forced to fully formed while the burn-in is timing us, for the same reason the corona is: at
+      // `ringForm` 0 every grain is collapsed inside the star and the layer is effectively not drawn,
+      // so the measurement would miss it entirely. Both rings, not one — the star competes with the
+      // works field with all three bands out, and that is the frame the allocation has to survive.
+      const measuredRingForm = measuringPose ? 1 : ringForm;
+      const measuredRingWorks = measuringPose ? 1 : ringWorksForm;
+      sunParticles?.update(elapsed, measuredRingForm, measuredRingWorks);
       // Demand-render: only draw while the image is actually changing — while the state ramp eases,
       // while the star still turns, or while the shards are still arriving.
       //
@@ -1730,6 +1803,8 @@ export default function SunModelCanvas() {
       window.removeEventListener(SUN_REGATHER_EVENT, onRegather);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_DRAW_PERMIT_EVENT, permitDrawing);
+      window.removeEventListener(SUN_MEASURE_BEGIN_EVENT, onMeasureBegin);
+      window.removeEventListener(SUN_MEASURE_END_EVENT, onMeasureEnd);
       window.removeEventListener(SUN_ASSEMBLE_EVENT, cueAssembly);
       if (introHeartbeatListener) {
         window.removeEventListener(INTRO_ACTIVE_EVENT, introHeartbeatListener);

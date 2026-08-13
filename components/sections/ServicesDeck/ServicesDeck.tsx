@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
-import { DECK_SERVICES } from './deckServices';
+import { useSiteContent, useSiteSections } from '@/lib/cms/SiteContentProvider';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import { buildEnquiryPrefill } from '@/lib/enquirySubjects';
@@ -52,7 +52,14 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
   // A horizontal flick on the craft moves one along; clamped inside goTo.
   const handleFlick = (direction: number) => goTo(activeIndex + direction);
 
-  const activeService = DECK_SERVICES[activeIndex];
+  // ⚠ The COPY comes from here; the STRUCTURE does not. `useServicesDeck` and `deckTuning` keep
+  // reading `DECK_SERVICES` directly for `profile`, `modelPath` and placement — none of which the
+  // panel owns — and `resolveDeckServices` pins the two lists to the same length, so an index means
+  // the same vessel on both sides.
+  const { disciplines, enquiryForm } = useSiteContent();
+  const { services } = useSiteSections();
+
+  const activeService = services[activeIndex];
 
   // ── The narrow layout ──
   // Four craft names in a row do not fit a phone, and the description that sits beside the ship on a
@@ -73,11 +80,16 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
   useEffect(() => setOpenSheet('none'), [isNarrow]);
 
   const isFirst = activeIndex === 0;
-  const isLast = activeIndex === DECK_SERVICES.length - 1;
+  const isLast = activeIndex === services.length - 1;
 
   // The enquiry arrives already knowing which craft it was opened from — the discipline picks the copy,
   // and the visitor never has to restate a choice they made by clicking.
-  const enquiryPrefill = buildEnquiryPrefill(activeService.discipline);
+  const enquiryPrefill = buildEnquiryPrefill({
+    discipline: activeService.discipline,
+    disciplines,
+    referenceSubjectSuffix: enquiryForm.referenceSubjectSuffix,
+    referenceBriefPrefix: enquiryForm.referenceBriefPrefix,
+  });
 
   return (
     <section id="services" className="services-deck">
@@ -163,7 +175,7 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
                 <span className="deck-stepper-number">{activeService.index}</span>
                 <span className="deck-stepper-sep" aria-hidden="true">/</span>
                 <span className="deck-stepper-total">
-                  {String(DECK_SERVICES.length).padStart(2, '0')}
+                  {String(services.length).padStart(2, '0')}
                 </span>
               </span>
               {/* Keyed so the name re-mounts and replays its fade on every change. The four-name strip
@@ -186,7 +198,7 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
           </nav>
         ) : (
           <nav className="deck-carousel" aria-label="Fleet">
-            {DECK_SERVICES.map((service, index) => {
+            {services.map((service, index) => {
               const isActive = activeIndex === index;
               return (
                 <button

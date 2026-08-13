@@ -59,12 +59,24 @@ export default function Hero() {
       {!isLowPowerViewport && <HeroInstruments />}
 
       <div className="hero-main">
-        <div
-          className="hero-title-group"
-          role="heading"
-          aria-level={1}
-          aria-label="we build worlds"
-        >
+        {/*
+          ⚠ THE PAGE'S ONLY <h1>, AND IT IS NOT THE VISIBLE ONE. Two constraints meet here:
+
+          · An <h1> may only contain PHRASING content, and the mark below is a <p> and two <div>s —
+            one of which is `[data-hero-card]`, the untransformed anchor `useHeroAnimation` and
+            `HeroSun` both measure. Wrapping it would be invalid HTML, and restructuring it to be
+            valid means changing the element types of the thing the sun's flight aims at.
+          · The star IS the "o" of "worlds", so the rendered text reads "we build W rlds". That was
+            the whole heading a crawler saw, and `aria-label` on a `role="heading"` div — which is
+            what stood here — is an accessibility affordance, not an indexing signal.
+
+          So the real sentence is carried here, and the mark below is `aria-hidden` because it now
+          says the same thing twice. This is the standard treatment for a typographically split
+          headline, not a cloak: the text is exactly what is on screen.
+        */}
+        <h1 className="sr-only">we build worlds</h1>
+
+        <div className="hero-title-group" aria-hidden="true">
           <p className="hero-line-top">
             <span className="hero-mask"><span className="hero-mask-inner">we build</span></span>
           </p>

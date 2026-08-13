@@ -2,11 +2,11 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
-import { WORKS_PROJECTS } from './worksProjects';
+import { useSiteContent, useSiteSections } from '@/lib/cms/SiteContentProvider';
 import { useWorksTextTransition } from './hooks/useWorksTextTransition';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
-import { DISCIPLINES, buildEnquiryPrefill } from '@/lib/enquirySubjects';
+import { buildEnquiryPrefill } from '@/lib/enquirySubjects';
 import Drawer from '@/components/ui/Drawer/Drawer';
 import EnquiryButton from '@/components/ui/EnquiryButton/EnquiryButton';
 import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
@@ -61,11 +61,16 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
     activeIndex,
   });
 
-  const activeProject = WORKS_PROJECTS[displayedIndex];
+  // ⚠ COPY only. `useWorksField` keeps reading `WORKS_PROJECTS` for `markId` — the body each project
+  // grows into is geometry, not words — and `resolveWorksProjects` pins the two to the same length.
+  const { disciplines, enquiryForm } = useSiteContent();
+  const { projects } = useSiteSections();
+
+  const activeProject = projects[displayedIndex];
   // The arrows reflect where the pin has COMMITTED, not what's still on screen — otherwise the "next"
   // arrow stays enabled for half a second after you've already reached the last project.
   const isFirst = activeIndex === 0;
-  const isLast  = activeIndex === WORKS_PROJECTS.length - 1;
+  const isLast  = activeIndex === projects.length - 1;
 
   // ── The narrow layout ──
   // A phone keeps only what names the thing on screen — the project's title and the year — and moves
@@ -84,10 +89,16 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
   useEffect(() => setOpenSheet('none'), [isNarrow]);
 
   // The type key above the title, and the same word the enquiry arrives already knowing.
-  const discipline = DISCIPLINES[activeProject.discipline];
+  const discipline = disciplines[activeProject.discipline];
   // Named, so the brief opens "in the orbit of Aphelion" rather than as a cold start — this CTA is
   // pressed while looking at a specific piece of work, and that is the useful part of it.
-  const enquiryPrefill = buildEnquiryPrefill(activeProject.discipline, activeProject.title);
+  const enquiryPrefill = buildEnquiryPrefill({
+    discipline: activeProject.discipline,
+    disciplines,
+    referenceSubjectSuffix: enquiryForm.referenceSubjectSuffix,
+    referenceBriefPrefix: enquiryForm.referenceBriefPrefix,
+    reference: activeProject.title,
+  });
 
   return (
     <section id="work" className="works-field">
@@ -182,7 +193,7 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
             <span className="works-counter">
               <span className="works-counter-current">{activeProject.index}</span>
               <span className="works-counter-sep" aria-hidden="true">/</span>
-              <span className="works-counter-total">{String(WORKS_PROJECTS.length).padStart(2, '0')}</span>
+              <span className="works-counter-total">{String(projects.length).padStart(2, '0')}</span>
             </span>
           </span>
 

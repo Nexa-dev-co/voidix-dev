@@ -10,6 +10,7 @@ import {
   type FormEvent,
 } from 'react';
 import type { EnquiryPrefill } from '@/lib/enquirySubjects';
+import { useSiteContent } from '@/lib/cms/SiteContentProvider';
 
 /**
  * The site's one contact form, wherever it appears — the contact section's panel, its phone sheet, and
@@ -103,8 +104,12 @@ const PHONE_MAX_DIGITS = 15;
  */
 type SubmitStatus = 'idle' | 'sending' | 'sent' | 'error' | 'rate-limited';
 
-const SENT_MESSAGE = 'Sent. You will hear back from a person, either way.';
-const ERROR_MESSAGE = 'That did not send. Try again in a moment.';
+/**
+ * ⚠ The ONLY message still written here, and it must stay here. The sent and failed lines are the
+ * panel's now (`enquiryFormContent.ts`); this one answers a specific status from the intake route
+ * rather than being section copy, and an editor softening it into something reassuring would be
+ * rewriting a system message about a limit that is still in force.
+ */
 const RATE_LIMITED_MESSAGE = 'That is a few too many in one go. Try again in a little while.';
 
 /** Where each variant posts. See the header on why an application does not share the enquiry's route. */
@@ -196,6 +201,12 @@ export default function EnquiryForm({
   commitmentOptions,
   commitmentLabel = 'What you are looking for',
 }: EnquiryFormProps) {
+  // ⚠ The FIELD labels and the status lines are the panel's, site-wide — six places render this form
+  // and they must not disagree about what the email box is called. `briefLabel` and `submitLabel`
+  // stay props because they are genuine per-section overrides: contact says "Send it", the FAQ asks
+  // for a question, an application asks for something else again.
+  const { enquiryForm: formContent } = useSiteContent();
+
   const fieldId = useId();
   const nameId = `${fieldId}-name`;
   const emailId = `${fieldId}-email`;
@@ -421,9 +432,9 @@ export default function EnquiryForm({
 
   const statusMessage =
     status === 'sent'
-      ? SENT_MESSAGE
+      ? formContent.sentMessage
       : status === 'error'
-        ? ERROR_MESSAGE
+        ? formContent.errorMessage
         : status === 'rate-limited'
           ? RATE_LIMITED_MESSAGE
           : null;
@@ -487,7 +498,7 @@ export default function EnquiryForm({
 
       <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={nameId}>
-          Name
+          {formContent.nameLabel}
           {isApplication && (
             <span className="enquiry-required" aria-hidden="true">
               *
@@ -512,7 +523,7 @@ export default function EnquiryForm({
 
       <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={emailId}>
-          Email
+          {formContent.emailLabel}
           <span className="enquiry-required" aria-hidden="true">
             *
           </span>
@@ -538,7 +549,7 @@ export default function EnquiryForm({
           shape, for the reason set out beside that constant. */}
       <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={phoneId}>
-          Mobile
+          {formContent.phoneLabel}
         </label>
         <input
           id={phoneId}
@@ -712,7 +723,7 @@ export default function EnquiryForm({
           a modal — reachable only by finding a scrollbar nobody looks for. Here it never leaves. */}
       <div className="enquiry-actions">
         <button type="submit" className="enquiry-send" disabled={status === 'sending'}>
-          {status === 'sending' ? 'Sending…' : submitLabel}
+          {status === 'sending' ? formContent.sendingLabel : submitLabel}
         </button>
 
         {/* Polite, not assertive: it follows a press the visitor made, so it is an answer rather than

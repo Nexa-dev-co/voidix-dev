@@ -286,49 +286,34 @@ const EXTRA_QUALITY_BURN_IN_SURPLUS = 1.25;
 /**
  * How much sharper than the section's models the star may ever be allocated.
  *
- * ── ⚠ WHY A CAP EXISTS AT ALL: THE STAR'S MEASUREMENT IS A LOWER BOUND ───────────────────────────
- * The burn-in's phase B does not measure the star this site actually draws. It runs before
- * `SUN_ASSEMBLE_EVENT`, and `SunModelCanvas` has already called `positionShards(0, 0)` at model-land,
- * which resolves `coronaGrowth` to 0 and sets `visible = false` on every one of `coronaParts` — the
- * core sphere, the outer glow, the flares and the twenty corona planes. `sunParticles` is at
- * `ringForm` 0, collapsed into its launch knot.
+ * ── ⚠ 1.35 → 1.6 ON 2026-08-13, BECAUSE ONE OF ITS TWO JOBS IS FINISHED ──────────────────────────
+ * This constant was carrying two arguments, and they had very different lifespans:
  *
- * So phase B times TEN TUMBLING SHARDS, several straddling the frame edge. And the corona is not
- * incidental to the star's cost, it IS the cost — twenty additive overlapping planes are the overdraw
- * that `docs/per-section-quality-budget-plan.md` §1c blames for a 0.28 Mpx canvas reaching 9–22 ms.
- *
- *     starMilliseconds  understated  →  starSolved  overstated by its square root
- *
- * `MIN_CREDIBLE_STAR_MS` guards the NOISE version of this ("would divide by very nearly nothing and
- * hand the star its ceiling") at 0.6 ms. A shard-only star measuring 1.5 ms passes it comfortably and
- * the conclusion is wrong anyway. The check asks *is this a real difference*; it cannot ask *is this
- * the star we are budgeting for*.
- *
- * ── ⚠ HOW BAD IT ACTUALLY IS, WHICH IS LESS THAN IT SOUNDS ───────────────────────────────────────
- * Worked on the log's own example (field 12.4 ms @ 1.15, real star 6.1 ms, measured 1.5 ms, dpr 2.5):
- * the star clamps to its ceiling of 2.0 and then costs 18.5 ms where 4.5 was budgeted — **4× its
- * allocation**. But it draws at `SUN_IDLE_STRIDE`, so it spends 9.2, and the frame lands at 28.1 ms
- * against a 33.3 budget. THE FRAME SURVIVES. The bias is ~2× after the square root and the stride is a
- * 2× margin, and they very nearly cancel.
- *
- * That is the honest severity: the error does not blow the budget, it EATS THE MARGINS — both of the
- * conservatisms §8d earmarked for other jobs, including the one meant to absorb the chamber, which is
- * measured with SMAA off and never re-checked with the room in frame.
- *
- * ── What this constant is therefore for ──
- * Two things, and it would be worth having for the second even if the measurement were perfect:
- *
- *   1 · a bound on an upper bound. Using `starSolved` directly spends a number we know is inflated.
+ *   1 · a bound on an upper bound. Phase B used to time the star with its corona hidden and its rings
+ *       collapsed — ten tumbling shards — so `starMilliseconds` was a LOWER BOUND and `starSolved` was
+ *       overstated by its square root. Spending that number directly would have spent a fiction.
  *   2 · COMPOSITING COHERENCE. The star is composited over the fleet and the marks. Past roughly this
  *       much extra density it stops reading as "sharper" and starts reading as pasted on — a crisp
  *       star over a soft field is a compositing error, not a quality win.
  *
- * ⚠ It bites hardest exactly where it should: on a 1× panel, where `ceil` holds the field to native
- * 1.0 while `sunCeiling()` would let the star supersample. Elsewhere (dpr 2 – 2.5) it trims only a few
- * hundredths, because the field's own ceiling is already close. Remove the bias — see §3's options for
- * measuring the star in its real state — and this can be relaxed or dropped.
+ * `SUN_MEASURE_BEGIN_EVENT` retired argument 1: phase B now draws the star in the pose it ships, so
+ * the solve is a measurement rather than a ceiling with a square root on it. Argument 2 is untouched
+ * and is why this is still a cap rather than a deleted line.
+ *
+ * ⚠ AND ARGUMENT 2 GOT WEAKER AT THE SAME TIME, WHICH IS THE REST OF THE RAISE. "Pasted on" is a
+ * statement about the star's hard silhouette against a softer field, and the star had no geometric
+ * antialiasing at all — `SunModelCanvas` shipped `antialias: false` on a justification that measured
+ * its canvas 14× too large. With MSAA back on the default framebuffer the silhouette resolves rather
+ * than steps, which is precisely the artefact this number was holding down.
+ *
+ * 1.6 on the ratio is 2.56 on the pixels. It is deliberately still a CAP and not a relaxation to the
+ * ceiling: two renderers arguing about how fast the machine is remains the thing this module exists to
+ * prevent, and the star may only ever spend what the field did not need.
+ *
+ * ⚠ It bites hardest on a 1× panel, where `ceil` holds the field to native 1.0. That is also where
+ * `sunCeiling()` now allows the star above native, so the two have to be read together.
  */
-const STAR_RAISE_OVER_MODELS = 1.35; // 1.35 on the ratio is 1.82 on the pixels
+const STAR_RAISE_OVER_MODELS = 1.6; // 1.6 on the ratio is 2.56 on the pixels
 
 // ── State ──────────────────────────────────────────────────────────────────────────────────────────
 
@@ -388,6 +373,21 @@ let probedAffordableRatio: number | null = null;
  * its own ratio"; it was "two renderers cannot both guess how fast the machine is".
  */
 let sunPixelRatio: number | null = null;
+
+/**
+ * Whether the burn-in's phase B timed the star as it actually SHIPS — corona grown, rings formed —
+ * rather than as the ten drifting shards it used to time.
+ *
+ * ⚠ ASSERTED BY THE STAR, not passed in through `SectionCostSplit`, and that is deliberate: the works
+ * field dispatches `SUN_MEASURE_BEGIN_EVENT` but has no way of knowing whether it was honoured.
+ * `SunModelCanvas` refuses the pose under reduced motion, before its model has landed, and once the
+ * assembly has been cued (where the star is on screen and a formed pose would flash). Only the star
+ * knows which of those happened, so only the star may say. Same shape as `noteRatioApplied`.
+ *
+ * It gates exactly one thing — whether `sunCeiling()` may go above native — and defaults to false, so
+ * a load where the pose was refused allocates precisely as it did before this existed.
+ */
+let starMeasuredInShippingPose = false;
 
 let emaFrameSeconds = 1 / 60;
 let dropNextSample = false;
@@ -716,9 +716,10 @@ export function reportSectionCosts(split: SectionCostSplit): void {
   const remainingMs = Math.max(0, budgetMs - fieldSpent);
   const starSolved =
     starRatio * Math.sqrt(remainingMs / starMilliseconds) * (1 - CALIBRATION_SAFETY_FRACTION);
-  // ⚠ `starSolved` is an upper bound, not a value — phase B measured the star without its corona. See
-  // STAR_RAISE_OVER_MODELS for the whole finding and for the compositing argument that would justify
-  // this cap even with a perfect measurement.
+  // ⚠ `starSolved` is only a true solve when `starMeasuredInShippingPose` — otherwise phase B timed
+  // the star without its corona and this is an upper bound with a square root on it. Either way it is
+  // capped: see STAR_RAISE_OVER_MODELS for the compositing argument that justifies the cap even on a
+  // perfect measurement.
   //
   // ⚠ The floor is applied to the ALLOWANCE as well as to the solve, so it holds however the two
   // ceilings move. Today it cannot bind here — `newFieldRatio >= floor` and `starFloor === floor`, so
@@ -775,10 +776,15 @@ export function reportSectionCosts(split: SectionCostSplit): void {
           : '') +
         `\n  ⚠ the star is budgeted at FULL rate; through services and works it draws at` +
         ` SUN_IDLE_STRIDE, so it actually spends half of this.` +
-        `\n  ⚠ the star's ${starMilliseconds.toFixed(1)} ms is a LOWER BOUND — phase B runs before the` +
-        ` assembly, so the corona is not drawn.` +
-        `\n     Compare it against \`sun · bloom\` per call on the hero at the same ratio;` +
-        ` the quotient is the bias. See STAR_RAISE_OVER_MODELS.` +
+        (starMeasuredInShippingPose
+          ? `\n  ✓ the star's ${starMilliseconds.toFixed(1)} ms is its SHIPPING pose — corona grown,` +
+            ` rings formed (SUN_MEASURE_BEGIN_EVENT). Cross-check it against \`sun · bloom\` per call` +
+            ` on the hero at the same ratio; they should agree.` +
+            `\n     Native is not a ceiling for it on this load — see sunCeiling().`
+          : `\n  ⚠ the star's ${starMilliseconds.toFixed(1)} ms is a LOWER BOUND — the shipping pose was` +
+            ` REFUSED, so phase B drew shards without the corona.` +
+            `\n     Compare it against \`sun · bloom\` per call on the hero at the same ratio;` +
+            ` the quotient is the bias. See STAR_RAISE_OVER_MODELS.`) +
         `\n  surplus ${surplus.toFixed(2)}× — extras ` +
         `${extraQualityEarned ? 'EARNED' : `not earned (needs ${EXTRA_QUALITY_BURN_IN_SURPLUS}×)`}.`,
       'color:#5bd6a0;font-weight:700',
@@ -837,14 +843,33 @@ export function getProbedAffordableRatio(): number | null {
  * is more visible than AA. If the site ever wants to supersample the star, that should be a decision
  * written down, not an emergent property of a coin flip.
  *
- * The cost is real and narrow: a strong machine on a 1080p panel leaves some quality unspent. On a weak
- * one the same unspent budget becomes frame-rate headroom, which is the better outcome there.
+ * ── ⚠ AND IT IS A DECISION NOW, WRITTEN DOWN HERE, ON A DIFFERENT INSTRUMENT ─────────────────────
+ * The paragraph above rejects the PROBE as the gate, and that ruling stands — nothing below consults
+ * it. What lifts the cap is `starMeasuredInShippingPose`: the burn-in having timed the star with its
+ * corona grown and its rings out, on real pipelined frames, which is a different measurement with a
+ * different failure mode. The objection was never "the star must never exceed native"; it was that a
+ * coin flip must not be what decides.
  *
- * ⚠ Changes NOTHING on a dpr 2 or 2.5 panel, where both readings are 2. Only displays below
- * `SUPERSAMPLE_CEIL` are affected, which is the case it exists for.
+ * The cost the old note named — *"a strong machine on a 1080p panel leaves some quality unspent"* — is
+ * exactly what this releases, and it is the one class of machine where the star is otherwise pinned:
+ * `ceil` holds the field to native 1.0, so the star was capped at 1.0 no matter how much of the frame
+ * it turned out not to need. It may now supersample to `SUPERSAMPLE_CEIL`, which on a small,
+ * overdraw-heavy, bloomed surface is the strongest antialiasing available to it.
+ *
+ * ⚠ It is still not a licence to spend freely. `starSolved` binds first on any machine that cannot
+ * afford it — a weak 1× desktop solves well below 1.5 and never reaches this — and
+ * `STAR_RAISE_OVER_MODELS` binds the star to the field regardless. This only removes native as a
+ * THIRD, unmeasured limit sitting under both of them.
+ *
+ * ⚠ Changes NOTHING on a dpr 2 or 2.5 panel, where `deviceRatioNative` already exceeds
+ * `SUPERSAMPLE_CEIL` and the cap was never what bound. Only displays below it are affected, which is
+ * the case it exists for.
  */
 function sunCeiling(): number {
-  return Math.max(floor, Math.min(hardwareCeil, MAX_PIXEL_RATIO, deviceRatioNative));
+  const native = starMeasuredInShippingPose
+    ? Math.max(deviceRatioNative, SUPERSAMPLE_CEIL)
+    : deviceRatioNative;
+  return Math.max(floor, Math.min(hardwareCeil, MAX_PIXEL_RATIO, native));
 }
 
 /** What is left after the resolution has taken its share. `1` means fully spent. */
@@ -889,6 +914,17 @@ export function getPixelRatio(): number {
  */
 export function noteRatioApplied(): void {
   dropNextSample = true;
+}
+
+/**
+ * The star saying: the burn-in is about to time me in the pose I actually ship.
+ *
+ * Called from `SunModelCanvas`'s `SUN_MEASURE_BEGIN_EVENT` handler, and only on the branch that
+ * accepts the pose. See `starMeasuredInShippingPose` for why this is asserted here rather than passed
+ * through the split, and `sunCeiling()` for the one thing it unlocks.
+ */
+export function noteStarMeasuredInShippingPose(): void {
+  starMeasuredInShippingPose = true;
 }
 
 /**

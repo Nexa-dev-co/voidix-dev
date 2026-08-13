@@ -793,16 +793,37 @@ is measured with SMAA off and never re-checked with the room in frame.
 ⚠ The cap changes almost nothing on dpr 2–2.5 (the field's own ceiling is already close). It bites on
 1× panels. That is intentional and it is where the arithmetic says the escape is.
 
-### 9e · Still open — measuring the star in its real state
+### 9e · ~~Still open~~ — SHIPPED 2026-08-13, as option A without the render target
 
-Ranked. **Take a reading first** — `ALLOCATED`'s `star X ms` against `sun · bloom` per call on the hero
-at the same ratio. The quotient is the bias, and it decides whether this is worth doing at all.
+Option A, with the one part that turned out to be unnecessary removed. The plan called for rendering
+the measurement *"into a target rather than the canvas"* so that nothing reaches the screen. Nothing
+reaches the screen anyway: **`IntroSequence` leaves `.hero-sun-layer` at `autoAlpha: 0` until the
+finale timeline** (`IntroSequence.tsx:943`), which runs long after the burn-in, so during phase B the
+star's canvas is already `visibility: hidden`.
 
-| | | |
-|---|---|---|
-| **A** | **Measure the star off-screen.** A short star-only burn-in during the warm-up, corona forced visible, rendered into a target rather than the canvas — nothing reaches the screen, so the loader's finale is untouched and the star is measured as it really is. | needs a render-to-target variant of `bloom.render`; the only option that keeps §8's "solved once, behind the veil" claim true |
-| **B** | Measure on the hero, apply once, early. Cheaper than §2.6 feared: the star's targets are ~9 MB, and `ringForm` is 0 on the hero so `sunParticles`' grain-size change is **hidden**, which was that section's main objection. | one reallocation after `REVEAL_EVENT` |
-| **C** | Move phase B into the post-assembly hold. | lengthens the finale and makes the field draw through it — worst of the three |
+⚠ **And the render target would have been actively worse, not merely redundant.** three applies tone
+mapping only when the render target is null (`getToneMapping()` returns `NoToneMapping` otherwise), so
+a target-bound star compiles a **second program set without the tone-mapping chunk** and then times a
+cheaper fragment than the one that ships — a new bias introduced by the fix for a bias. Measuring on
+the default framebuffer keeps the same programs, the same MSAA resolve and the same compositing path.
+
+| what shipped | |
+|---|---|
+| `SUN_MEASURE_BEGIN_EVENT` / `SUN_MEASURE_END_EVENT` | The works field brackets phase B with them. For that span `SunModelCanvas` draws `positionShards(1, …)` and forces `sunParticles` to both bands, so the corona is grown and the rings are out. END fires twice — after the samples, and in the burn-in's `finally` — because a throw between them would strand the star fully formed and leave the finale nothing to assemble. |
+| the refusal branch | The pose is refused under reduced motion, before the model lands, and **once the assembly is cued** — that last one is the no-loader case, where the layer *is* visible and a formed pose would flash. |
+| `noteStarMeasuredInShippingPose()` | Asserted by the star, not passed through `SectionCostSplit`: the field dispatches the event and has no way to know it was honoured. Same shape as `noteRatioApplied`. |
+| `STAR_RAISE_OVER_MODELS` 1.35 → 1.6 | §9d gave it two jobs. Job 1 (bounding an inflated solve) is finished. Job 2 (compositing coherence) survives — and got weaker, because `antialias: true` now resolves the silhouette that "pasted on" was describing. |
+| `sunCeiling()` above native, gated | Only when the pose was measured. The §9d ruling against gating on the **probe** stands untouched — eightfold spread, coin flip. The burn-in is a different instrument. This releases exactly the cost §9d named: *"a strong machine on a 1080p panel leaves some quality unspent."* |
+
+⚠ **Expect the star's ratio to go DOWN on a dense panel, and that is the correction landing.** §9c's
+worked example has the star clamped to 2.00 while actually costing **4× its allocation**; an honest
+measurement gives that overspend back to the frame. What replaces it as quality is §2.5's MSAA and the
+bloom chain — both of which show on a ~250-device-pixel object in a way a ratio point does not.
+
+| still open | |
+|---|---|
+| **B** | Measure on the hero, apply once, early. No longer needed for the bias; still the only way to measure the star in the *collapse* pose, which is the one it competes with the works field in. | 
+| **C** | Move phase B into the post-assembly hold. Rejected: lengthens the finale and makes the field draw through it. |
 
 ### 9f · Two unrelated things this pass raised
 
