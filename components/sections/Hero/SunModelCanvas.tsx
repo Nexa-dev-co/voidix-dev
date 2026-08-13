@@ -525,17 +525,39 @@ const COLLAPSE_CORE_LIGHT_INTENSITY = 18;
 /**
  * Super-glowy: the grade is most of why a collapse reads as violent rather than as a shrink.
  *
- * ⚠ The MIDDLE stop of the journey-wide bloom ramp (2026-08-12) — **+17.5 %**, between the hero's
- * +5 % (`BLOOM_STRENGTH` in `sunBloom`) and contact's +30 % (`CONTACT_BLOOM_STRENGTH`). Not authored
- * by eye: it is the midpoint of the two ends that were, so the three stops sit on one line and the
- * star's heat climbs evenly across the whole journey rather than jumping at one crossing.
+ * ── ⚠ 2.94 → 1.90 ON 2026-08-13, TO PUT BACK A RATIO I BROKE EARLIER THE SAME DAY ───────────────
+ * `BLOOM_STRENGTH` (the hero stop) was cut 1.32 → 0.85 because the resting star read far too bright,
+ * and this stop was deliberately left alone on the argument that *"the collapse plays on BLACK, where a
+ * hot star is the point"*. **That was half right and it showed up in the works section**, which was
+ * then reported as over-blooming.
+ *
+ * Two things make works the worst case for that decision, and neither applies to the hero:
+ *
+ *   1 · `RINGS` erupts ONE band on services and TWO MORE on the way into works, so the field carries
+ *       roughly double the additive grains there — and they are `AdditiveBlending`, so they stack.
+ *   2 · `COLLAPSE_BLOOM_THRESHOLD` is 0.30 against the hero's 0.42, so MORE of everything crosses the
+ *       line, the ring grains included.
+ *
+ * Leaving this at 2.94 while the hero fell to 0.85 turned the authored ramp from a 2.23× step into a
+ * 3.46× one — so the exact moment the site adds two more glowing bands was also the moment the glow
+ * multiplier jumped hardest. 1.90 restores the authored relationship exactly (1.90 ÷ 0.85 = 2.235,
+ * against the original 2.94 ÷ 1.32 = 2.227), so the collapse still opens the glow by the same
+ * proportion it always did — it simply does it from a star that is no longer too bright to begin with.
+ *
+ * ⚠ THE RAMP'S SHAPE IS THE THING TO PRESERVE, NOT ITS ABSOLUTE STOPS. It was authored as *"+5 % / +17.5
+ * % / +30 %, three stops on one line"*, and what carries the meaning is that the star gets hotter the
+ * deeper you go. Scaling the stops together keeps that; scaling one of them does not.
+ *
+ * ⚠ `CONTACT_BLOOM_STRENGTH` (1.37, in `singularityScene`) is the third stop and is NOT rescaled here,
+ * because it grades a different renderer — the works composer's bloom, not this canvas's — and nothing
+ * has been reported wrong with the finale. If the dying star ever reads too hot, that is its dial.
  *
  * ⚠ Only STRENGTH moved. `COLLAPSE_BLOOM_RADIUS` and `COLLAPSE_BLOOM_THRESHOLD` are what decide the
  * SHAPE of the collapse's glow and they were graded together against the old strength — pushing the
  * threshold down here would widen what blooms rather than brighten what already does, which is a
  * different change wearing the same name.
  */
-const COLLAPSE_BLOOM_STRENGTH = 2.94; // was 2.5
+const COLLAPSE_BLOOM_STRENGTH = 1.9; // was 2.94, and 2.5 before the ramp
 const COLLAPSE_BLOOM_RADIUS = 1;
 /**
  * ⚠ Moved with `BLOOM_THRESHOLD` (0.59 → 0.42) and for its reason, not for one of its own: both were

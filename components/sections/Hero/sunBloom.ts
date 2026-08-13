@@ -45,16 +45,30 @@ import * as THREE from 'three';
 /**
  * The resting grade — Peaceful. The works section eases past these into Collapse; see `setGrade`.
  *
- * ⚠ STRENGTH IS THE FIRST STOP OF A RAMP ACROSS THE WHOLE JOURNEY, raised 2026-08-12. The star gets
- * hotter the deeper you go, and the lift grows with it: **+5 % here, +17.5 % at works
- * (`COLLAPSE_BLOOM_STRENGTH`), +30 % at contact (`CONTACT_BLOOM_STRENGTH`)**. The hero is the one
- * place the star sits against the CREAM rather than against black, which is why it takes the
- * smallest share — the same glow reads far hotter on a light substrate.
+ * ── ⚠ 1.32 → 0.85 ON 2026-08-13. THE HERO STAR WAS TOO BRIGHT, REPORTED TWICE. ──────────────────
+ * This was the first stop of a journey-wide ramp added 2026-08-12 — **+5 % here, +17.5 % at works
+ * (`COLLAPSE_BLOOM_STRENGTH`), +30 % at contact (`CONTACT_BLOOM_STRENGTH`)** — and that ramp's own
+ * argument is what says this stop is the one to cut:
+ *
+ * > *"The hero is the one place the star sits against the CREAM rather than against black, which is
+ * > why it takes the smallest share — the same glow reads far hotter on a light substrate."*
+ *
+ * The ramp was right that the hero needs the least and still gave it a rise. It needed a fall.
+ *
+ * ⚠ THE OTHER TWO STOPS ARE DELIBERATELY UNTOUCHED, and the ramp's "three stops on one line" property
+ * is knowingly given up. Both of them play on BLACK — the collapse across the handoff and the death at
+ * contact — where a hot star is the point and nothing has been reported as wrong. Dimming a finale to
+ * preserve the evenness of a curve would be optimising the wrong thing. What actually changes is that
+ * the collapse now climbs further from a lower base, which reads as more violent, not less.
+ *
+ * ⚠ It compounds with `MAGMA_EMISSIVE` 2.4 → 1.5 in the same sitting. The two are independent halves
+ * of the same complaint: the magma is the light the star EMITS, this is the halo that light throws.
+ * Cutting only one left it *"still a lot of brightness"*.
  *
  * Free: strength is a multiplier on an already-blurred mip chain. `BLOOM_RADIUS` and the mip count
  * are what cost, and neither moved.
  */
-export const BLOOM_STRENGTH = 1.32; // was 1.26
+export const BLOOM_STRENGTH = 0.85; // was 1.32, and 1.26 before the ramp
 export const BLOOM_RADIUS = 0.92;
 /**
  * ⚠ 0.59 → 0.42 on 2026-08-12, and this was not a taste change — at 0.59 THE STAR DID NOT BLOOM AT ALL.
@@ -92,6 +106,17 @@ export const BLOOM_RADIUS = 0.92;
  * 0.42 puts roughly the top fifth of the surface into the glow — the hot veins and the limb — with the
  * top 1 % at full contribution and the mid-surface ramping softly through the knee. Below ~0.35 more
  * than half the star blooms and it stops reading as a glow and starts reading as haze.
+ */
+/**
+ * ⚠ THINGS GRADED AGAINST THIS VALUE, WHICH MOVING IT SILENTLY RE-GRADES. Nothing enforces this list;
+ * it exists because the 0.59 → 0.42 move below updated one of them and missed the other for a day.
+ *
+ *   · `COLLAPSE_BLOOM_THRESHOLD` (SunModelCanvas) — moved with it, ratio 0.712 preserved.
+ *   · `PARTICLE_BRIGHTNESS` (lib/sunParticles) — ⚠ MISSED. It is an additive brightness chosen so the
+ *     ring's coldest grains fall just short of blooming, so a lower threshold means every grain blooms
+ *     and the ring reads as a solid glowing hoop. Re-graded 2026-08-13 by the same 0.712.
+ *
+ * Anything whose job is described as "must clear the bloom threshold" belongs here.
  */
 export const BLOOM_THRESHOLD = 0.42; // was 0.59
 

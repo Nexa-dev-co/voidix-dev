@@ -238,6 +238,59 @@ in the other order would just reverse the sign of the error.
 ⚠ **And a difference of two medians cannot be rescued by more samples**, because the contaminant is a
 trend rather than a variance. The instrument has to stop being a subtraction.
 
+### 3.6 · ⚠ AFTER §4.4: the allocator runs — and the FIELD is charged for a frame it does not own
+
+Third capture, with the star measuring itself:
+
+```
+[voidix] gpu probe: 2.0 ms for 0.21 Mpx at ratio 1 → affordable 2.79, ceiling 2.00
+[pixels] phase "A · field alone"  9 samples: 16 12 18 16 17 16 17 24 21   → median 17
+  0 frames rejected over 260 ms · 215 of 1800 ms budget · needs 5
+[pixels] star self-measured 4.00 ms drained, for 0.085 Mpx at ratio 1.00
+[pixels] ALLOCATED a 33.3 ms frame (30 fps), models first, each ratio less 10% safety.
+  measured   field 17.0 ms @ 1.00  ·  star 4.0 ms @ 1.00 (19 % of the frame)
+  1 · reserved the star's floor          3.4 ms
+  2 · models  1.00 → 1.19  spending 24.2 ms, bound by the measurement
+  3 · star    1.00 → 1.36  from the 9.1 ms left (27 % of the budget), bound by the measurement
+  ✓ the star's 4.0 ms is its OWN drained measurement, not a subtraction
+```
+
+**The subtraction problem is solved** — 4.00 ms, positive, credible, first try, and the allocator ran on
+this device for the first time. Star **1.26 → 1.36**.
+
+⚠ **But put the two instruments side by side and the remaining defect is unmissable:**
+
+```
+                    drained, in-context      as charged by the allocator
+  field  render          2.0 ms                     17.0 ms
+  star   render          4.0 ms                      4.0 ms
+```
+
+**The field's own render is 2 ms. It is charged 17.** The other 15 ms is compositor, DOM, the browser,
+and the loader's own dust worker — none of which scales with the field's pixel count, and all of which
+`reportSectionCosts` multiplies by `(r'/r)²` anyway. So the field "spends" 24.2 ms of a 33.3 ms budget,
+72 % of the frame, and the star is left to solve out of 9.1 ms.
+
+⚠ **The star is bound by `the measurement`, not by `STAR_RAISE_OVER_MODELS` and not by `sunCeiling`.**
+Its allowance was `1.19 × 1.6 = 1.90` and its ceiling 2.00; it reached neither. The cap is not what is
+holding the star down — **the field's over-charge is**, and §4.5's `STAR_MAX_PIXEL_RATIO` remains inert
+for a second, independent reason.
+
+⚠ **Per pixel, the star is 5× the field** (47 ms/Mpx against 9.5), exactly as CLAUDE.md's cost table
+claims — eleven blended shells, drawn twice per frame. In *absolute* terms it is 4 ms and entirely
+affordable. Both things are true, and only the second one matters to the budget.
+
+**What a fixed-cost-aware solve would give**, with `FIXED = 17 − 2 = 15 ms` and `18.3 ms` of genuinely
+scalable render left:
+
+```
+  field at its ceiling 2.00  →  2.0 × 2.00² =  8.0 ms
+  star from the rest         →  (18.3 − 8.0) ÷ 4.0 = 2.58  →  ratio 1.60
+```
+
+Field at **native**, star at **1.60** — against 1.19 and 1.36 today. That is the last big lever, and
+§4.8 is where it is written up.
+
 ### 3.5 · A secondary finding: the solve over-charges for fixed cost
 
 The burn-in solved 1.26 from a 17 ms median, predicting `17 × 1.26² = 27 ms` at the new ratio. The
@@ -345,6 +398,46 @@ shader body itself.
   in §4.1–4.3 has been measured**, or it will make the original complaint worse while fixing the new
   one.
 
+### 4.8 · ⚠ NEXT: stop charging the field for the fixed cost of the frame
+
+**The last big lever, and the numbers for it are already measured** (§3.6). `reportSectionCosts` models
+a frame as `cost × (r'/r)²` — i.e. it assumes *everything it measured scales with pixel count*. On this
+phone 15 of the field's 17 ms does not scale at all.
+
+The honest model, and every term in it is now a number we hold:
+
+```
+  frame(rField, rStar)  =  FIXED  +  fieldRender × rField²  +  starRender × rStar²
+
+  FIXED        = phase A − the field's own drained render      15.0 ms
+  fieldRender  = the gpu probe, already taken every load        2.0 ms
+  starRender   = the star's self-measurement (§4.4)             4.0 ms
+```
+
+⚠ **This is the module's own documented conservatism, and it is no longer affordable.**
+`reportSectionCosts`' header already says it *"over-charges the field for pixels the fixed part never
+spends"* and calls that *"the correct direction for a number that can only be applied once"*. That was
+a fair call when nothing downstream depended on the leftover. It is now the single thing standing
+between the star and its allowance.
+
+⚠ **The danger is real and has to be designed around: this promotes `gpuProbe` from a CEILING to a TERM
+in the solve**, and the module header's warning about it is emphatic — an **eightfold spread across
+four loads of one page** (0.5 / 2.3 / 3.0 / 7.5 ms). Mitigations, in order of preference:
+
+1. **Bound `FIXED` rather than trusting it.** Clamp the derived fixed cost to a sane fraction of the
+   measured frame (say 30–85 %), so a wild probe cannot make the field look free *or* make the whole
+   frame look fixed.
+2. **Give the field the same treatment the star got** — its own drained self-measurement taken at the
+   same moment as phase A rather than reusing the probe from seconds earlier. This is strictly better
+   and is barely more work, since `measureGpuFrameCost` is already imported there.
+3. **Keep the safety fraction on the ratio**, unchanged, so the result is still held back from what was
+   solved.
+
+⚠ **And one caveat about WHEN this is measured:** during the burn-in the fixed cost includes the
+loader's dust worker, which will not be there later — so `FIXED` is over-stated and the allocation
+comes out conservative. That is the safe direction, and it is the same trade-off the header already
+records about measuring the burn-in inside the loader at all.
+
 ### 4.7 · Two dials that remain judgement calls
 
 - **`MAX_COMPOSITE_UPSCALE` 2.17** sets the field's floor at `2 / 2.17 = 0.92` here — not binding on
@@ -400,9 +493,20 @@ It also needs an MSAA resolve into a texture every frame on the one context that
 | ✅ | **§4.2 retarget the probe budget** | medium | §3.2 — arithmetic confirmed to the digit |
 | ✅ | **§4.6 stage 1** glow falloff | low | user-reported |
 | ✅ | **RE-MEASURED on the phone** | — | §3.3 withdrawn · §3.4, §3.5 found |
-| **→** | **§4.4 direct star measurement** | medium | **§3.4 — the split still refuses, systematically** |
-| 5 | §4.5 star cap | low | inert here; correct for dpr 3 |
+| ✅ | **§4.4 direct star measurement** | medium | §3.4 — worked first try: star 4.00 ms, 1.26 → **1.36** |
+| ✅ | brightness: `MAGMA_EMISSIVE` 2.4 → 1.5, `BLOOM_STRENGTH` 1.32 → 0.85 | low | reported by eye, twice |
+| **→** | **§4.8 fixed-cost-aware solve** | medium | **§3.6 — the field is charged 17 ms for a 2 ms render** |
+| 5 | §4.5 star cap | low | inert here, now for TWO independent reasons |
 | 6 | §4.6 stage 2 full-viewport canvas | **high** | must follow the cost work, not lead it |
+
+**Where the star's ratio has travelled**, all measured on the same iPhone (native = 2.00):
+
+```
+  1.00   burn-in refused outright — the allocator never ran
+  1.26   §4.1 + §4.2: the burn-in completes, the probe's ceiling stops being a 60 fps number
+  1.36   §4.4: the star measures itself instead of being subtracted out
+  1.60   §4.8, projected: the field stops being charged for the compositor
+```
 
 **Everything shipped is a constant or a shader line — no architecture moved.** The next step is not
 another change, it is a measurement: until the allocator runs, every number on this page is unallocated
