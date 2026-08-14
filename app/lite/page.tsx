@@ -41,8 +41,15 @@ export default async function Lite() {
   // ⚠ This page has no content of its own beyond its masthead — it re-presents the site's services,
   // work and answers as a document. So it reads exactly what the homepage reads, and `liteContent.ts`
   // stays the only file here with words in it.
+  //
+  // ⚠ …with one exception, and it is the exception this page exists for: `withMarks: false`. There
+  // is no WebGL here, so no project mark is ever drawn, and a Server Component's props are
+  // serialised into the HTML — shipping several kilobytes of SVG source would put the heaviest thing
+  // in `sections` into the one page whose whole purpose is to be the light one.
+  const content = await resolveFullContent(release.payload, { withMarks: false });
+
   return (
-    <SiteContentProvider content={resolveFullContent(release.payload)} report={report}>
+    <SiteContentProvider content={content} report={report}>
       <LitePage />
     </SiteContentProvider>
   );

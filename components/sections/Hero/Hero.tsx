@@ -12,11 +12,22 @@ import ServicesDeck from '@/components/sections/ServicesDeck/ServicesDeck';
 import WorksField from '@/components/sections/WorksField/WorksField';
 import ContactSection from '@/components/sections/Contact/ContactSection';
 import { DECK_SERVICES } from '@/components/sections/ServicesDeck/deckServices';
-import { WORKS_PROJECTS } from '@/components/sections/WorksField/worksProjects';
+import { useSiteSections } from '@/lib/cms/SiteContentProvider';
 
 export default function Hero() {
   const heroSectionRef = useRef<HTMLElement>(null);
   const heroCardRef    = useRef<HTMLDivElement>(null);
+
+  // ⚠ The projects are read here, not just in the works field, because the PIN's stop count is one
+  // of them. The panel decides how many projects exist, so the length of the scroll journey does
+  // too — `computeCarouselLayout` derives every stop and crossing from this number. It used to be
+  // `WORKS_PROJECTS.length`, which pinned the spine to this repo's four and is exactly why the
+  // panel could not add a project.
+  //
+  // The fleet is NOT the same case and still reads `DECK_SERVICES`: `deckTuning.ts` keys ship
+  // placements by array position, so the count there is structural and `resolveDeckServices`
+  // refuses a payload that disagrees with it.
+  const { projects } = useSiteSections();
 
   // The one hero pin runs the whole journey: it fills the square, reveals the fleet, cycles the
   // craft, then hands straight over to the works field and cycles the projects — no second pin. So
@@ -30,7 +41,7 @@ export default function Hero() {
     setActiveCraft,
     craftCount: DECK_SERVICES.length,
     setActiveProject,
-    projectCount: WORKS_PROJECTS.length,
+    projectCount: projects.length,
   });
 
   // Instrument HUD + the square's ring: entrance in lockstep with the headline, plus the live

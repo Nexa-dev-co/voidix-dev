@@ -116,6 +116,17 @@ export interface PublishedProject {
   description: string;
   tags: string[];
   discipline: string;
+  /**
+   * The project's uploaded mark, as a public storage URL — or null, which is a real state rather
+   * than a missing one: the field grows the project's INITIAL instead.
+   *
+   * ⚠ THIS URL MUST NEVER REACH A BROWSER. `lib/cms/markSource.ts` dereferences it on the server
+   * during ISR and the page is handed the SVG source. That is not about the file being sensitive —
+   * it is that a `<project-ref>.supabase.co` address in the page advertises where the studio's
+   * leads database lives, which is the one thing `panelIntake.ts` proxies intake to avoid. Anything
+   * that starts fetching this client-side undoes the reason it is a URL at all.
+   */
+  markSvgUrl: string | null;
 }
 
 export interface PublishedFaqEntry {

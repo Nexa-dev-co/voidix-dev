@@ -39,7 +39,9 @@ export const metadata: Metadata = {
 
 export default async function HomePage() {
   const release = await fetchPublishedContent();
-  const content = resolveFullContent(release.payload);
+  // Awaited: the projects' marks are dereferenced server-side here so the loader never has to fetch
+  // them and the storage host never reaches the page. See `lib/cms/markSource.ts`.
+  const content = await resolveFullContent(release.payload);
 
   const report = reportContent({ route: '/', release, scope: 'full' });
 

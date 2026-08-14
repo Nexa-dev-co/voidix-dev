@@ -36,6 +36,7 @@
  */
 
 import type { PublishedContent } from '@/lib/cms/publishedContent';
+import { resolveMarkSources } from '@/lib/cms/markSource';
 import {
   resolveDeckServices,
   type DeckService,
@@ -116,13 +117,34 @@ export interface FullSiteContent extends SiteContent {
   sections: SiteSections;
 }
 
-/** The shared vocabulary plus the scene sections — `/` and `/lite` only. */
-export function resolveFullContent(published: PublishedContent | null): FullSiteContent {
+/**
+ * The shared vocabulary plus the scene sections — `/` and `/lite` only.
+ *
+ * ── ⚠ ASYNC, AND ONLY BECAUSE OF THE MARKS ──────────────────────────────────────────────────────
+ * Every other resolver here is a pure function over the payload. This one is not, because a
+ * project's mark arrives as a URL and the SVG behind it has to be fetched — on the server, during
+ * ISR, for the reasons in `lib/cms/markSource.ts`. Doing it here rather than in the scene is what
+ * keeps the storage host out of the page and the loader free of network round trips.
+ *
+ * ── ⚠ `withMarks: false` IS NOT AN OPTIMISATION FLAG ────────────────────────────────────────────
+ * `/lite` re-presents the same sections as a document. It renders no WebGL, so it renders no marks —
+ * and a Server Component's props are serialised into the HTML, so passing them anyway would put
+ * several kilobytes of SVG source into the one page whose entire purpose is to be the light one.
+ * Same reasoning as the `sections` split above, one level further in.
+ */
+export async function resolveFullContent(
+  published: PublishedContent | null,
+  { withMarks = true }: { withMarks?: boolean } = {},
+): Promise<FullSiteContent> {
+  const publishedProjects = published?.projects ?? null;
+  const markSources =
+    withMarks && publishedProjects ? await resolveMarkSources(publishedProjects) : [];
+
   return {
     ...resolveSharedContent(published),
     sections: {
       services: resolveDeckServices(published?.services ?? null),
-      projects: resolveWorksProjects(published?.projects ?? null),
+      projects: resolveWorksProjects(publishedProjects, markSources),
       faq: resolveFaqEntries(published?.faq ?? null),
       contact: resolveContactContent(published?.contact ?? null),
     },

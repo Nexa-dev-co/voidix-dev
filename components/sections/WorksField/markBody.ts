@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
+import { SVGLoader, type SVGResultPaths } from 'three/examples/jsm/loaders/SVGLoader.js';
 import type { Font } from 'three/examples/jsm/loaders/FontLoader.js';
 
 /**
@@ -44,10 +44,34 @@ const LETTER_SOURCE_SIZE = 100;
  *
  * `createShapes` resolves each path's subpaths into outer contours plus their holes, honouring the
  * fill rule — which is what carves the ring out of the compass and the cutouts out of the shield.
+ *
+ * ── ⚠ UNFILLED PATHS ARE SKIPPED, AND THAT IS A FIX, NOT A FILTER (2026-08-14) ───────────────────
+ * `SVGLoader.parseNode` pushes EVERY geometry element onto `paths` whatever its fill — `fill: none`
+ * only skips setting a colour — and the parse is seeded with `fill: '#000'`, so `style.fill` is
+ * never undefined. Handing all of them to `createShapes` therefore triangulates a stroke-only
+ * drawing as though its outlines were fills: an outlined circle comes out as a SOLID DISC.
+ *
+ * That mattered nowhere while the marks were three logos chosen by hand. It matters now that anyone
+ * with the admin panel can upload one, because stroke-only icons are the commonest kind there is and
+ * the failure has no symptom — nothing throws, nothing is empty, the section just shows a blob.
+ *
+ * Skipping them means a mixed file draws its fills and ignores its stroke decoration, and a
+ * stroke-only file yields ZERO shapes — which is what lets `prepareMarks` fall back to the project's
+ * initial instead. A wrong mark becomes a graceful one.
+ *
+ * ✓ Verified a no-op for the three logos this repo ships: none contains `fill="none"`, none has a
+ * stroke, none has a `<style>` block. ⚠ Paired with `inspectMarkSvg` in the admin panel, which
+ * refuses an upload by this same rule so the editor hears about it rather than the visitor.
  */
 export function svgToShapes(svgText: string): THREE.Shape[] {
   const parsed = new SVGLoader().parse(svgText);
-  return parsed.paths.flatMap((path) => SVGLoader.createShapes(path));
+  return parsed.paths.filter(isFilledPath).flatMap((path) => SVGLoader.createShapes(path));
+}
+
+/** `userData` is typed loosely by three; narrowed to the one field read rather than trusted whole. */
+function isFilledPath(path: SVGResultPaths): boolean {
+  const style = (path.userData as { style?: { fill?: string } } | undefined)?.style;
+  return style?.fill !== undefined && style.fill !== 'none';
 }
 
 /** Outlines for a glyph (or short word) in a loaded typeface. */

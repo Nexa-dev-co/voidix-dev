@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { findNavItem } from '@/components/layout/Navbar/navItems';
-import { JUMP_DESTINATIONS, type JumpDestinationRow } from './jumpDestinations';
+import { useSiteSections } from '@/lib/cms/SiteContentProvider';
+import { buildJumpDestinations, type JumpDestinationRow } from './jumpDestinations';
 import {
   JUMP_ARRIVED_EVENT,
   JUMP_BEGIN_EVENT,
@@ -111,6 +112,14 @@ export default function SectionJumpVeil() {
     rows: readonly JumpDestinationRow[];
   } | null>(null);
 
+  // ⚠ Through a ref, because the handler that reads it is registered once in the effect below and
+  // must not be re-bound every render. The sections are resolved on the server and arrive as props,
+  // so this value never actually changes within a session — the ref is about not making the effect
+  // depend on it, not about staleness.
+  const sections = useSiteSections();
+  const destinationsRef = useRef(buildJumpDestinations(sections));
+  destinationsRef.current = buildJumpDestinations(sections);
+
   useEffect(() => {
     const root = rootRef.current;
     const fill = fillRef.current;
@@ -161,7 +170,7 @@ export default function SectionJumpVeil() {
 
       destinationKey = request.key;
       const navItem = findNavItem(request.key);
-      const content = JUMP_DESTINATIONS[request.key];
+      const content = destinationsRef.current[request.key];
       setDestination(
         navItem
           ? {

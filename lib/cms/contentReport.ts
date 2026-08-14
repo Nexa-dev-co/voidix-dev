@@ -1,5 +1,4 @@
 import { DECK_SERVICES } from '@/components/sections/ServicesDeck/deckServices';
-import { WORKS_PROJECTS } from '@/components/sections/WorksField/worksProjects';
 import { DISCIPLINES } from '@/lib/enquirySubjects';
 import type { FetchedRelease } from '@/lib/cms/fetchPublishedContent';
 import { logContentReport } from '@/lib/cms/logContentReport';
@@ -15,12 +14,19 @@ import { telemetryEnabled } from '@/lib/telemetryEnabled';
  * the FAQ quietly serves seven placeholder answers. "Did the panel answer?" is one boolean and it
  * cannot see that; this can.
  *
- * ⚠ TWO OF THE CONDITIONS ARE NOT "IS IT NULL", and they are the ones worth having this file for.
- * `resolveDeckServices` and `resolveWorksProjects` discard the panel's copy ENTIRELY when the number
- * published differs from the number of models in this build — because `deckTuning.ts` keys ship
- * placements by array position, so a fifth service would bind every placement to the wrong vessel.
- * Publish a fifth service and the fleet silently reverts to this repo's four, with correct-looking
- * copy and no visible fault. That is the exact failure this report exists to make loud.
+ * ⚠ ONE OF THE CONDITIONS IS NOT "IS IT NULL", and it is the one worth having this file for.
+ * `resolveDeckServices` discards the panel's copy ENTIRELY when the number published differs from
+ * the number of models in this build — because `deckTuning.ts` keys ship placements by array
+ * position, so a fifth service would bind every placement to the wrong vessel. Publish a fifth
+ * service and the fleet silently reverts to this repo's four, with correct-looking copy and no
+ * visible fault. That is the exact failure this report exists to make loud.
+ *
+ * ⚠ `projects` USED TO BE THE SECOND ONE and no longer is (2026-08-14). A project now carries its
+ * own uploaded mark and the camera path is generated from however many exist, so there is nothing
+ * left for a fifth project to collide with and the count guard is gone. What replaced it on that
+ * line is the mark tally: a project with no mark is not broken — it grows its initial — but
+ * "4 marks, 1 of them an initial" is the difference between a designed fallback and an upload
+ * somebody thinks they did.
  *
  * ── ⚠ IT MIRRORS THE RESOLVERS; IT DOES NOT ASK THEM ────────────────────────────────────────────
  * Each verdict below re-states the condition inside the matching `resolve*` function, because those
@@ -119,7 +125,7 @@ export function buildContentReport({
         'vessels',
         release,
       ),
-      describeCountedList('projects', payload?.projects, WORKS_PROJECTS.length, 'marks', release),
+      describeProjects(payload?.projects, release),
       describeList('faq', payload?.faq, 'answers', release),
       describeObject('contact', payload?.contact, release),
     );
@@ -208,6 +214,33 @@ function describeCountedList(
   return { key, source: 'panel', detail: `${list.length} ${noun}` };
 }
 
+/**
+ * `projects` — falls back on null or empty, and reports how many are showing an INITIAL.
+ *
+ * ⚠ The count only says what the panel PUBLISHED a mark for. Whether the server could actually
+ * fetch it is `markSource.ts`'s business and it warns there — so a project counted here as having a
+ * mark can still be growing its initial if the fetch was refused. The two logs read together.
+ */
+function describeProjects(
+  projects: PublishedContent['projects'] | undefined,
+  release: FetchedRelease,
+): ContentKeyReport {
+  if (!projects || projects.length === 0) {
+    return { key: 'projects', source: 'fallback', detail: fallbackDetail(release, 'none published') };
+  }
+
+  const initials = projects.filter((project) => !project.markSvgUrl).length;
+
+  return {
+    key: 'projects',
+    source: 'panel',
+    detail:
+      initials === 0
+        ? `${projects.length} projects, all marked`
+        : `${projects.length} projects, ${initials} growing an initial`,
+  };
+}
+
 /** `footer` — null OR no groups, because a footer with no links is not a published footer. */
 function describeFooter(
   payload: PublishedContent | null,
@@ -261,8 +294,8 @@ function describeDisciplines(
 /**
  * ⚠ Printing lives in `logContentReport.ts`, deliberately, and not because two files are tidier.
  * The browser logs this report too, and `SiteContentProvider` is a client component — so anything
- * the printer imports lands in the client bundle. This module reaches for `DECK_SERVICES`,
- * `WORKS_PROJECTS` and `DISCIPLINES` to check its counts, which is the fleet's, the field's and the
- * form's entire fallback copy. Keeping the printer free of those imports is what stops a diagnostic
- * shipping the very content it exists to tell you was not used.
+ * the printer imports lands in the client bundle. This module reaches for `DECK_SERVICES` and
+ * `DISCIPLINES` to check its counts, which is the fleet's and the form's entire fallback copy.
+ * Keeping the printer free of those imports is what stops a diagnostic shipping the very content it
+ * exists to tell you was not used.
  */

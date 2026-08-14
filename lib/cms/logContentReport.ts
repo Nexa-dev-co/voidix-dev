@@ -6,10 +6,10 @@ import { telemetryEnabled } from '@/lib/telemetryEnabled';
  *
  * ── ⚠ WHY THIS IS NOT IN `contentReport.ts` ─────────────────────────────────────────────────────
  * The browser needs this function and `SiteContentProvider` is a client component, so whatever this
- * module imports goes into the client bundle. `contentReport.ts` imports `DECK_SERVICES`,
- * `WORKS_PROJECTS` and `DISCIPLINES` in order to check its counts — the fleet's, the field's and the
- * form's entire fallback copy. A diagnostic that shipped the content it exists to warn you about
- * would be a poor joke, so the type comes across (erased at compile time) and nothing else does.
+ * module imports goes into the client bundle. `contentReport.ts` imports `DECK_SERVICES` and
+ * `DISCIPLINES` in order to check its counts — the fleet's and the form's entire fallback copy. A
+ * diagnostic that shipped the content it exists to warn you about would be a poor joke, so the type
+ * comes across (erased at compile time) and nothing else does.
  *
  * ── ⚠ ONE RENDERER FOR TWO CONSOLES, AND `%c` IS WHY IT WORKS ───────────────────────────────────
  * Node's `util.format` accepts `%c`, discards the directive and SKIPS the CSS argument after it, so

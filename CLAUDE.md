@@ -355,12 +355,22 @@ and nothing about what a connected one says. Keep them in voice anyway — they 
 if the panel is down.
 
 ⚠ **The panel owns words; this repo owns the machine that says them.** A service has no `modelPath`,
-`profile`, `light` or placement in the payload; a project has no `markId`; `ABOUT_SECTIONS` and
-`CAREERS_SECTIONS` stay here because each `key` is simultaneously an anchor id and an orbit-rail
-station. Where a shape carries both — `DeckService`, `WorksProject` — resolution is a **merge**, and
-⚠ the join is **array position**, because `deckTuning.ts` keys ship placements positionally and buries
-that position inside `hiddenParts` strings like `"2:14"`. This is why the panel cannot add, reorder or
-delete a service.
+`profile` or `light` in the payload; `ABOUT_SECTIONS` and `CAREERS_SECTIONS` stay here because each
+`key` is simultaneously an anchor id and an orbit-rail station. `DeckService` resolution is therefore
+a **merge**, and ⚠ the join is **array position**, because `deckTuning.ts` keys ship placements
+positionally and buries that position inside `hiddenParts` strings like `"2:14"`. **This is why the
+panel cannot add, reorder or delete a SERVICE.**
+
+⚠ **A PROJECT is no longer in that category, and the difference is worth reading before you assume
+symmetry** (2026-08-14). A project used to carry a repo-owned `markId` naming one of four logos in
+`marks.ts`, and `worksTuning.ts` held four hand-authored camera poses — so the count was pinned at
+both ends and `resolveWorksProjects` discarded the whole payload when the panel disagreed. Both are
+gone: the mark is **uploaded per project** (`markSvgUrl`, dereferenced server-side by
+`lib/cms/markSource.ts`) and the camera path is **generated from the count**
+(`buildProjectViewKeys`). There is nothing structural left for a fifth project to collide with, so
+`WorksProject` is now a straight resolve rather than a merge and **the panel adds, reorders and
+deletes projects freely.** A project with no upload grows its own **initial**. Plan of record:
+`docs/works-marks-cms-plan.md`.
 
 ⚠ **`lib/cms/publishedContent.ts` mirrors `voidix-cms/lib/content/contentPayload.ts` and NOTHING
 ENFORCES IT.** Two repos, one JSON document, no shared package. A field renamed on one side and not
@@ -1010,10 +1020,10 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | **Contact** | **BUILT, AND THE FORM POSTS NOW** (2026-08-13). `handleSubmit` sends to `/api/enquiry`, which forwards to the panel's `POST /api/submissions` holding `VOIDIX_CMS_INTAKE_SECRET` — see `lib/cms/panelIntake.ts` for why the route exists at all rather than the browser posting direct. ⚠ It lands in an **inbox**, not the leads pipeline: a submission becomes a contact only when an admin promotes it, so a bot or a "hi" never reaches the counts. **Still placeholder:** every address, social handle and legal route in `contactContent.ts` is invented. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
 | **Process content** | **The section is now called FAQ** (renamed 2026-08-05, key and label both — it was `process` everywhere). The chamber's content was always the FAQ hologram, and a key that said `process` was describing an intention rather than the room. The hologram's list now ends in an **Ask us anything** control that opens the shared enquiry panel with no prefill. **Still open:** the decided-but-unbuilt idea that process steps appear on the chamber's walls as the camera tours. |
 | **The collapse finale** | **BUILT** — ported into `components/sections/Contact/singularityScene.ts`, a SECOND star living inside the works renderer (the hero sun's canvas has no compositor and nothing behind it for lensing to bend). Collapse, flash, black hole, accretion and lensing all ship. See `docs/contact-singularity-plan.md`. |
-| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). `careersContent.ts`'s four roles are likewise invented — and there they are the **template for the dashboard**, see below. |
+| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder — and since 2026-08-14 `worksProjects.ts` is a **fallback** rather than the source: real projects and their marks are uploaded in the panel. The deck ships 4 services; the brief names 6. The fallback marks are still three stock SVG logos, plus one project deliberately left with none so the **initial** fallback is visible in the shipped data; a letter mark extrudes in **helvetiker, not Syne** (`markBody.ts` says why — `marks.ts` is gone). `careersContent.ts`'s four roles are likewise invented — and there they are the **template for the dashboard**, see below. |
 | **Careers content** | **DASHBOARD-MANAGED AND CONNECTED** (decided 2026-08-11, wired 2026-08-13). `app/careers/page.tsx` is a Server Component on **ISR** — `fetchPublishedContent()` → `resolveCareersContent()`, with `careersContent.ts` as the fallback when the panel has published nothing or is unreachable. Section 02 renders an honest **empty state** when the list is empty; ⚠ an empty published list must NEVER fall back to this repo's four invented roles, and `PublishedCareers.roles` says why. The application form is `EnquiryForm variant="application"` — name\*, email\*, and **the work** (a link and/or one PDF ≤ 5 MB, at least one of the two, checked in JS because `required` cannot express "either"). It posts multipart to `/api/application`, which uploads the PDF to UploadThing server-side and files the rest with the panel against the role's **`slug`** — never its title, which an editor can rewrite. |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
-| **CMS wiring** | **2 of 9 payload keys read.** `about` and `careers` are live; `services`, `projects`, `faq`, `contact`, `footer`, `disciplines` and `enquiryForm` are published by the panel and consumed by nobody. All seven are on the homepage — see the section above for why that is harder than the document routes. `docs/cms-integration-plan.md` §③. |
+| **CMS wiring** | **9 of 9 payload keys read.** ⚠ This row said "2 of 9" long after it stopped being true. `lib/cms/siteContent.ts` resolves every key, split so the document routes never carry the scene sections' copy (`resolveSharedContent`) and `/` and `/lite` get the lot (`resolveFullContent`). `lib/cms/contentReport.ts` prints per-key provenance in dev — read that rather than trusting this table. `docs/cms-integration-plan.md` §③. |
 | **Search visibility** | **NOT BUILT, and measured 2026-08-13.** No `sitemap.ts`, no `robots.ts`, no canonical, no JSON-LD of any type, no OG image. ⚠ `metadataBase` is still a **guess** at the post-rebrand domain and carries a TODO — every relative canonical and OG URL resolves against it. ⚠ And the homepage's markup is the bigger problem: **0 `<h1>` elements** (the hero is a `div` with `role="heading"`, DOM text `"we build W rlds"`), **1 service description in 4**, **1 project in 4**, and **0 FAQ answers** — the render is a ternary, list *or* one answer. `/lite` carries all of it and is deliberately `noindex`. Numbers and the fix order in `docs/cms-integration-plan.md` §④–⑥. |
 
 ⚠ **The `docs/` directory is nearly empty**, and most of this file's `docs/*.md` citations point at

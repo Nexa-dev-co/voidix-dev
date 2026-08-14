@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
 import { useSiteContent, useSiteSections } from '@/lib/cms/SiteContentProvider';
 import { useWorksTextTransition } from './hooks/useWorksTextTransition';
+import { WORKS_FIELD_PHRASE, worksCountPhrase } from './worksProjects';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import { buildEnquiryPrefill } from '@/lib/enquirySubjects';
@@ -30,6 +31,7 @@ const FieldCanvas = dynamic(() => import('./FieldCanvas/FieldCanvas'), { ssr: fa
 
 /** Which panel is up. One at a time — two stacked sheets is not a state. */
 type OpenSheet = 'none' | 'details' | 'enquiry';
+
 
 interface WorksFieldProps {
   /** The focused project — driven by the hero pin's works stops. */
@@ -61,8 +63,10 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
     activeIndex,
   });
 
-  // ⚠ COPY only. `useWorksField` keeps reading `WORKS_PROJECTS` for `markId` — the body each project
-  // grows into is geometry, not words — and `resolveWorksProjects` pins the two to the same length.
+  // ⚠ NOT copy only, and it used to be. `useWorksField` read `WORKS_PROJECTS` directly for its
+  // `markId`, because the body a project grows into was geometry this repo owned. A project now
+  // carries its own mark and its own place on a generated camera path, so this list is the whole
+  // truth about the section and the scene is handed it rather than importing a constant.
   const { disciplines, enquiryForm } = useSiteContent();
   const { projects } = useSiteSections();
 
@@ -105,7 +109,7 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
       {/* Solid backdrop so the field reads on its own black — matches the filled square. */}
       <div className="works-backdrop" aria-hidden="true" />
 
-      <FieldCanvas activeIndex={activeIndex} />
+      <FieldCanvas activeIndex={activeIndex} projects={projects} />
 
       <div ref={overlayRef} className="works-overlay">
         <header className="works-head">
@@ -118,9 +122,13 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
                 DESKTOP instruction, and on a 360px screen it compounds with the natural wrap into four
                 ragged lines out of two words each. Each sentence now wraps on its own terms and
                 `text-wrap: balance` evens whatever lines it needs. */}
+            {/* ⚠ The count is spelled from the live list, not written into the markup. It used to
+                read "Four fires." while the panel could publish any number of projects, so the
+                heading was one edit away from contradicting the section under it — and nothing on
+                either side would have said so. */}
             <h2 className="works-title font-display">
-              <span className="works-title-line">Four fires.</span>{' '}
-              <span className="works-title-line">One field.</span>
+              <span className="works-title-line">{worksCountPhrase(projects.length)}</span>{' '}
+              <span className="works-title-line">{WORKS_FIELD_PHRASE}</span>
             </h2>
           </div>
 

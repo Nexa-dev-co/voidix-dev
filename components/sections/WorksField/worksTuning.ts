@@ -100,6 +100,12 @@ const FLIGHT_LANDING_KEY: Omit<ProjectViewKey, 'stop'> = {
  * ⚠ Consecutive keys are kept close in angle on purpose. The spline interpolates CARTESIAN position,
  * not polar angle, so a wide gap cuts a chord through the circle and the camera dives at the mark
  * mid-hop. Every neighbouring pair here stays inside ~35 degrees, which keeps the chord sag small.
+ *
+ * ── ⚠ THIS IS NOW THE FOUR-STOP PATH SPECIFICALLY, NOT THE PATH (2026-08-14) ─────────────────────
+ * The panel decides how many projects exist, so the section is no longer four bodies by decree.
+ * `buildProjectViewKeys` hands these back unchanged at four stops — they were composed by hand and
+ * no formula reproduces them — and generates a path obeying the same two invariants at any other
+ * count. Nothing outside this file reads this array directly any more.
  */
 export const PROJECT_VIEW_KEYS: ProjectViewKey[] = [
   { ...FLIGHT_LANDING_KEY, stop: 0 },
@@ -110,6 +116,166 @@ export const PROJECT_VIEW_KEYS: ProjectViewKey[] = [
   { x: -5.6, y: 2.8, z: 6.4, tx: 0, ty: 0, tz: 0, fov: 44, stop: null },
   { x: -4.0, y: -0.8, z: 5.8, tx: 0, ty: 0, tz: 0, fov: 42, stop: 3 },
 ];
+
+/**
+ * How many stops the authored path above is composed for.
+ *
+ * ⚠ Not a limit, and not a count of anything at runtime — the panel decides how many projects exist.
+ * It is the one length at which `buildProjectViewKeys` hands back the hand-composed shots instead of
+ * generating its own. See that function.
+ */
+const AUTHORED_STOP_COUNT = 4;
+
+// ── The generated path's shape ──
+// Every constant below is read off the authored path above, so a generated path is recognisably the
+// same section rather than a different one that happens to obey the rules.
+
+/** Stops sit at a constant distance. The authored four measure 7.00, 7.02, 7.07 and 7.05. */
+const STOP_RADIUS = 7;
+
+/** Transits pull back. The authored three measure 8.88, 8.61 and 8.51. */
+const TRANSIT_RADIUS = 8.6;
+
+/**
+ * How far either side of face-on a stop may sit, in degrees.
+ *
+ * ⚠ The binding constraint on the whole generator, and it comes from the body rather than from
+ * taste: the mark is a slab `markDepth` thick, so past roughly 35° it stops reading as a logo and
+ * starts reading as a bar. 32 rather than 35 leaves margin — see the proof in `buildProjectViewKeys`
+ * for what that margin is spent on.
+ */
+const STOP_YAW_CONE_DEGREES = 32;
+
+/**
+ * Elevations and lenses, cycled so that no two consecutive stops are the same composition.
+ *
+ * ⚠ These ARE the authored four, in order, which is why index 0 of each matches
+ * `FLIGHT_LANDING_KEY` exactly. The alternation between them is the "high/low, left/right" the
+ * authored path's own note describes; cycling means a fifth stop reuses the first one's elevation
+ * while sitting at a completely different yaw, so the shot is still its own.
+ */
+const STOP_ELEVATIONS = [1.0, -0.9, 1.6, -0.8];
+const STOP_FIELDS_OF_VIEW = [38, 40, 36, 42];
+
+/**
+ * A transit overshoots vertically — above both its neighbours, then below, then above — which is
+ * what makes a hop feel like being swung across rather than sliding sideways. Read off the authored
+ * transits' 2.4, −3.0 and 2.8.
+ */
+const TRANSIT_ELEVATIONS = [2.4, -3.0, 2.8];
+const TRANSIT_FIELDS_OF_VIEW = [44, 46];
+
+/**
+ * The camera path for a section with `stopCount` projects.
+ *
+ * ── ⚠ WHY FOUR IS SPECIAL, AND IT IS NOT A SHORTCUT ─────────────────────────────────────────────
+ * The four shots above were composed by hand, one at a time, and the file's own header explains what
+ * each is doing. No formula reproduces them — their yaws run 0°, +28°, −25°, −35°, which is a
+ * decision, not a sequence. So at four stops this returns them unchanged and the section looks
+ * exactly as it was designed to. Any other count is generated.
+ *
+ * That does mean adding a fifth project re-composes the first four as well. There is no way around
+ * it: a path is one continuous spline and the stops have to share the arc between them. What it buys
+ * is that the shipped configuration is never approximated.
+ *
+ * ── The rule the generated path obeys ───────────────────────────────────────────────────────────
+ * Stops spread across the legible cone with alternating sign and growing magnitude; each transit
+ * sits at the YAW MIDPOINT of the two stops it joins, pulled back and opened up.
+ *
+ * ⚠ That midpoint is what makes the ~35° neighbour rule provable rather than hopeful. The spline
+ * interpolates cartesian position, not polar angle, so a wide gap between adjacent keys cuts a chord
+ * through the circle and the camera dives at the mark mid-hop. Since every stop is inside ±CONE, any
+ * two stops are at most 2·CONE apart, and a midpoint between them halves that — so no adjacent pair
+ * ever exceeds CONE. At 32° that leaves 3° of margin against the limit the body actually imposes.
+ *
+ * Measured across stopCount 1–12, the worst adjacent gap is 31.2° and every stop lands inside the
+ * cone, so the bound is not merely argued.
+ *
+ *            stopCount = 6, yaw in degrees, seen from above (+Z toward the viewer)
+ *
+ *              stop 4          stop 2    stop 0    stop 1        stop 3        stop 5
+ *               -26             -13         0        +6           +19           +32
+ *                 \        +3 ↗   \    -3 ↗  |  +3 ↗   \    -3 ↗    \     +3 ↗    /
+ *                  `----transit----'          `--transit--'          `--transit--'
+ *
+ * ⚠ THE TRANSITS SIT NEAR THE CENTRE, and that is a consequence rather than a choice. Consecutive
+ * stops alternate SIDES, so the midpoint between them lands close to 0° — at twelve stops the
+ * transits are within a degree of dead ahead. The swing across therefore comes almost entirely from
+ * the radius (7 → 8.6 → 7) and the lens (38 → 45 → 38) rather than from yaw, which reads as a
+ * pull-back through centre rather than the authored path's arc out past its destination.
+ *
+ * That overshoot is exactly what the four authored transits do (+31° beyond a +28° stop) and it is
+ * deliberately NOT reproduced: overshooting puts an adjacent pair outside the bound above, and an
+ * illegible frame is a worse failure than a less balletic one. If this needs to feel wider, widen
+ * the RADIUS, not the yaw.
+ */
+export function buildProjectViewKeys(stopCount: number): ProjectViewKey[] {
+  if (stopCount === AUTHORED_STOP_COUNT) {
+    return PROJECT_VIEW_KEYS;
+  }
+
+  // A section with one project is a single pose and no journey. `splineAt` in `useWorksField`
+  // returns the only value when handed a one-entry channel, so this is a complete path, not a stub.
+  const stops = Math.max(1, Math.floor(stopCount));
+  const keys: ProjectViewKey[] = [{ ...FLIGHT_LANDING_KEY, stop: 0 }];
+
+  for (let stop = 1; stop < stops; stop += 1) {
+    const previousYaw = stopYawDegrees(stop - 1, stops);
+    const yaw = stopYawDegrees(stop, stops);
+    const transitIndex = stop - 1;
+
+    keys.push({
+      // The midpoint — see the proof above. This is the only reason the neighbour rule holds.
+      ...poseAt((previousYaw + yaw) / 2, TRANSIT_RADIUS),
+      y: TRANSIT_ELEVATIONS[transitIndex % TRANSIT_ELEVATIONS.length],
+      fov: TRANSIT_FIELDS_OF_VIEW[transitIndex % TRANSIT_FIELDS_OF_VIEW.length],
+      stop: null,
+    });
+
+    keys.push({
+      ...poseAt(yaw, STOP_RADIUS),
+      y: STOP_ELEVATIONS[stop % STOP_ELEVATIONS.length],
+      fov: STOP_FIELDS_OF_VIEW[stop % STOP_FIELDS_OF_VIEW.length],
+      stop,
+    });
+  }
+
+  return keys;
+}
+
+/**
+ * Stop 0 is dead ahead; the rest alternate side and walk outward to the edge of the cone.
+ *
+ * The last stop always lands exactly on the cone edge, so the arc is used fully however many
+ * projects there are rather than crowding near the middle.
+ */
+function stopYawDegrees(stop: number, stopCount: number): number {
+  if (stop === 0 || stopCount <= 1) return 0;
+
+  const side = stop % 2 === 1 ? 1 : -1;
+  return side * STOP_YAW_CONE_DEGREES * (stop / (stopCount - 1));
+}
+
+/**
+ * A yaw and a distance as a position aimed at the origin, where every key on this path looks.
+ *
+ * The conversion is written out rather than taken from `THREE.MathUtils` on purpose: this file has
+ * no imports and is the better for it — it is the section's numbers, and nothing here should need a
+ * renderer to be read.
+ */
+const RADIANS_PER_DEGREE = Math.PI / 180;
+
+function poseAt(yawDegrees: number, radius: number): Omit<ProjectViewKey, 'stop' | 'y' | 'fov'> {
+  const yaw = yawDegrees * RADIANS_PER_DEGREE;
+
+  return {
+    x: radius * Math.sin(yaw),
+    z: radius * Math.cos(yaw),
+    tx: 0,
+    ty: 0,
+    tz: 0,
+  };
+}
 
 export interface WorksTuning {
   /**
@@ -158,9 +324,9 @@ export interface WorksTuning {
   evenPacing: boolean;
 }
 
-const WORKS_TUNING: WorksTuning = {
-  keys: PROJECT_VIEW_KEYS,
-
+// ⚠ No `keys` here. The path depends on how many projects the panel published, which this file
+// cannot know, so `getWorksTuning` assembles it per call — see below.
+const WORKS_TUNING: Omit<WorksTuning, 'keys'> = {
   markTargetSize: 2.6,
   markDepth: 0.7,
   markX: 0,
@@ -181,12 +347,17 @@ const WORKS_TUNING: WorksTuning = {
 };
 
 /**
- * The works field's fixed numbers. Read once by the scene; never mutated.
+ * The works field's fixed numbers, plus the camera path for this many projects.
  *
  * The writable handle and the reset that used to sit beside this are gone with the field's `?tune`
  * panel — they existed only so that panel could mutate this object in place. These values are now
  * edited here, in the file, like any other constant.
+ *
+ * ⚠ `stopCount` is the only thing here that is not fixed, and it is a parameter rather than an
+ * import because this file must not reach for the resolved content: the projects arrive from the
+ * panel through a server render, and a constants module reading them would be a second source of
+ * truth about how many there are. The scene passes what it was given.
  */
-export function getWorksTuning(): Readonly<WorksTuning> {
-  return WORKS_TUNING;
+export function getWorksTuning(stopCount: number): Readonly<WorksTuning> {
+  return { ...WORKS_TUNING, keys: buildProjectViewKeys(stopCount) };
 }

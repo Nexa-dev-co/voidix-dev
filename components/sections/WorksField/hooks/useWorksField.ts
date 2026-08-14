@@ -15,7 +15,7 @@ import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/l
 import { flightPullbackScale, portraitPullbackScale } from '@/lib/portraitPullback';
 import { createStoneMaterial } from '../meteorMaterial';
 import { getWorksTuning } from '../worksTuning';
-import { WORKS_PROJECTS } from '../worksProjects';
+import type { WorksProject } from '../worksProjects';
 import { MARK_CHANGE_SECONDS } from '../worksTransition';
 import { prepareMarks } from '../prepareMarks';
 import { createAccretionMark } from '../transitions/accretionTransition';
@@ -750,6 +750,16 @@ interface FieldOptions {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   /** The focused project — read live from the render loop / handlers via a ref. */
   activeIndex: number;
+  /**
+   * The resolved projects, marks and all.
+   *
+   * ⚠ READ ONCE, AT SETUP, and deliberately not in the effect's dependencies. It decides the camera
+   * path's shape and cuts one body per entry, so reacting to it would mean tearing down and
+   * rebuilding the whole scene. It cannot change within a session in any case: it is resolved on the
+   * server and arrives as a prop, so the array the effect reads at mount is the array for the life
+   * of the page.
+   */
+  projects: WorksProject[];
   onStatus: (status: FieldStatus) => void;
 }
 
@@ -938,11 +948,17 @@ function createShardGeometry(seed: number, detail: number): THREE.BufferGeometry
   return geometry;
 }
 
-export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions) {
+export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: FieldOptions) {
   // The render loop + handlers read the freshest focus through a ref, so the persistent setup
   // effect never re-runs when the active project changes.
   const activeIndexRef = useRef(activeIndex);
   activeIndexRef.current = activeIndex;
+
+  // Same trick, different reason: the projects cannot change within a session, but reading them
+  // through a ref keeps them out of the effect's closure-freshness question entirely and documents
+  // that the setup below takes a snapshot rather than subscribing.
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
 
   // Set up inside the persistent effect; called from the selection effect below so a focus change
   // re-stages the existing scene instead of rebuilding it.
@@ -1102,7 +1118,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // camera splines on its way. One Catmull-Rom over the whole list, parameterised by `pathU` in
     // [0, keys.length - 1], means a journey and its arrival are the same curve — so the camera never
     // brakes to a halt at an intermediate key the way a chain of per-leg tweens would.
-    const tuning = getWorksTuning();
+    // ⚠ Snapshotted here, at setup, and used for the rest of this effect. The camera path's shape,
+    // the number of bodies cut and the HUD's total all come from this one array, so they cannot
+    // disagree about how many projects there are.
+    const fieldProjects = projectsRef.current;
+    // The path is built for however many projects the panel published — see `buildProjectViewKeys`.
+    const tuning = getWorksTuning(fieldProjects.length);
     const viewKeys = tuning.keys;
     // Where each project's stop sits in the key list, by project index. Rebuilt with the path.
     let stopKeyIndex: number[] = [];
@@ -1541,11 +1562,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     disposableTextures.push(surfaceMap);
 
     // ── Which mark each project shows ──
-    // Resolved by id against whatever `prepareMarks` actually returned, because a mark whose file
-    // failed to load is simply absent — matching by position would quietly shift every later project
-    // onto its neighbour's logo, which looks like a content mistake rather than a load failure.
-    // Filled in by buildMark; until then every project points at mark 0.
-    let markIndexOfProject: number[] = WORKS_PROJECTS.map(() => 0);
+    // ⚠ The identity, and it took a rewrite to be allowed to be. `prepareMarks` used to resolve a
+    // shared REGISTRY and drop any mark whose file failed, so a project had to find its own by id —
+    // matching by position would have shifted every later project onto its neighbour's logo. A
+    // project now carries its own mark and can always produce one (its initial, at worst), so
+    // `prepareMarks` returns exactly one entry per project, in order, and there is nothing left to
+    // look up. Kept as an array rather than inlined because the transition state indexes MARKS, and
+    // conflating the two names is how that stops being true the next time something changes.
+    const markIndexOfProject: number[] = fieldProjects.map((_project, index) => index);
 
     // ── The transition, as ONE piece of state ──
     // `setTransition(from, to, progress)` is a pure function by contract — no timers, no "arrived"
@@ -1609,18 +1633,16 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      */
     const buildMark = async () => {
       traceBuild('prepareMarks: start');
-      const marks = await prepareMarks();
+      // No network in here for a panel-published mark: `lib/cms/markSource.ts` dereferenced it on
+      // the server, so this is parsing text the page already had. Only the repo's own fallback
+      // projects still fetch, and only from our own origin.
+      const marks = await prepareMarks(fieldProjects);
       traceBuild(`prepareMarks: done (${marks.length} marks)`);
       if (disposed || marks.length === 0) {
         traceBuild(`buildMark: bailing (disposed=${disposed}, marks=${marks.length})`);
         return;
       }
       reportAssetProgress('works', WORKS_OUTLINES_DONE);
-
-      markIndexOfProject = WORKS_PROJECTS.map((project) => {
-        const found = marks.findIndex((mark) => mark.id === project.markId);
-        return found >= 0 ? found : 0;
-      });
 
       traceBuild('createAccretionMark: start (loads 2 textures, then cuts every mark)');
       const strategy = await createAccretionMark(marks, {
@@ -3074,7 +3096,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       );
       hud.update({
         feedIndex: activeIndexRef.current + 1,
-        feedTotal: WORKS_PROJECTS.length,
+        feedTotal: fieldProjects.length,
         fovDegrees: camera.fov,
         panRadians: viewYaw,
         tiltRadians: viewPitch,
