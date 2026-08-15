@@ -45,10 +45,21 @@ const GESTURE_IDLE_MS = 300;
 
 export function useScrollGuard(
   scrollRef: RefObject<HTMLDivElement | null>,
+  /**
+   * ⚠ Doubles as the RE-ATTACH signal, and that is the reason it exists rather than a convenience.
+   * A ref is mutated, not observed: an effect keyed on the ref object alone runs once with
+   * `current === null` and never again, so a scroller that is rendered CONDITIONALLY would never be
+   * guarded. Contact's panel is exactly that — it is swapped for a bottom sheet below 480px of height —
+   * so it passes the same condition here, and the listeners follow the element in and out.
+   *
+   * Defaults to true: every other caller renders its scroller unconditionally and wants today's
+   * behaviour untouched.
+   */
+  enabled: boolean = true,
 ): void {
   useEffect(() => {
     const scroller = scrollRef.current;
-    if (!scroller) return;
+    if (!scroller || !enabled) return;
 
     /** Can this scroller still move that way? (`delta > 0` = the user is scrolling down.) */
     const canScroll = (delta: number) => {
@@ -126,5 +137,5 @@ export function useScrollGuard(
       scroller.removeEventListener('touchend', handleTouchEnd);
       scroller.removeEventListener('touchcancel', handleTouchEnd);
     };
-  }, [scrollRef]);
+  }, [scrollRef, enabled]);
 }

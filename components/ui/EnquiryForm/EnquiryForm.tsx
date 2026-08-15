@@ -32,6 +32,14 @@ import type { EnquiryPrefill } from '@/lib/enquirySubjects';
  * of the two. ⚠ The either-of rule cannot be a `required` attribute (marking both would demand both),
  * so it is checked on submit and told to the visitor in a `role="alert"` line under the fieldset.
  *
+ * ⚠ They are LAID OUT the same way — one grid on `.enquiry-form`. `enquiry-field--half` marks a field
+ * as PAIRABLE (Name and Mobile always; Email only in the application, where the aside fills the cell
+ * beside it), and a single custom property decides whether pairing actually happens. **The enquiry's
+ * default is a field per row**; it pairs only below 608px of viewport height, where a row has to come
+ * out of the stack. The application pairs at every height — seven fields are too tall for any frame.
+ * This used to be a variant modifier that swapped flex for grid, which made it the sole owner of
+ * pairing and left a short screen unable to ask for the same thing.
+ *
  * ── ⚠ VALIDATION IS OURS NOW, AND THE FORM CARRIES `noValidate` ──────────────────────────────────
  * This file used to say "native constraint validation only". That is no longer true and the attribute
  * is the reason: with the browser's own checking left on, a bad email produced a NATIVE BUBBLE at
@@ -353,6 +361,10 @@ export default function EnquiryForm({
   return (
     <form
       ref={formRef}
+      // ⚠ The modifier no longer carries a LAYOUT — both variants are the same grid on `.enquiry-form`,
+      // and all this class does now is set `--enquiry-half-span: 1`, which is the one knob that decides
+      // whether pairable fields pair. It used to swap flex for grid, which made it the sole owner of
+      // pairing and left a short screen with no way to ask for the same thing.
       className={isApplication ? 'enquiry-form enquiry-form--application' : 'enquiry-form'}
       onSubmit={handleSubmit}
       // ⚠ Suppresses the browser's submit-time bubbles ONLY — the attributes stay on the inputs. See
@@ -403,30 +415,12 @@ export default function EnquiryForm({
         )}
       </div>
 
-      <div className="enquiry-field enquiry-field--half">
-        <label className="enquiry-label" htmlFor={emailId}>
-          Email
-          <span className="enquiry-required" aria-hidden="true">
-            *
-          </span>
-        </label>
-        <input
-          id={emailId}
-          name="email"
-          type="email"
-          className="enquiry-input"
-          autoComplete="email"
-          required
-          {...fieldProps('email')}
-        />
-        {fieldErrors.email && (
-          <p className="enquiry-field-error" id={errorIdFor('email')}>
-            {fieldErrors.email}
-          </p>
-        )}
-      </div>
+      {/* ⚠ DIRECTLY AFTER Name, because those two are the pair — see `.enquiry-form`'s grid. They have a
+          row each until the frame is too short for four of them, and then they are the ones that share:
+          they are the two shortest answers in the form and the two a visitor gives without thinking,
+          whereas Email is the one that has to be right and keeps its own line as long as there is one.
 
-      {/* `type="tel"` rather than `text`: it is what puts the numeric keypad up on a phone. It carries
+          `type="tel"` rather than `text`: it is what puts the numeric keypad up on a phone. It carries
           no `pattern` — the check is in `validatePhone`, which counts digits rather than demanding a
           shape, for the reason set out beside that constant. */}
       <div className="enquiry-field enquiry-field--half">
@@ -449,7 +443,34 @@ export default function EnquiryForm({
         )}
       </div>
 
-      {/* Fills the cell beside Mobile, and earns it: three asterisks scattered down a seven-field form
+      {/* ⚠ PAIRABLE ONLY IN THE APPLICATION, and the asymmetry is the point. The enquiry is four fields,
+          so on a short frame exactly one row has to go and Name + Mobile are it; marking Email too would
+          leave it half width with an EMPTY CELL beside it, which reads as a missing input rather than as
+          a deliberate line. The application has the aside below to fill that cell, so there it pairs. */}
+      <div className={`enquiry-field${isApplication ? ' enquiry-field--half' : ''}`}>
+        <label className="enquiry-label" htmlFor={emailId}>
+          Email
+          <span className="enquiry-required" aria-hidden="true">
+            *
+          </span>
+        </label>
+        <input
+          id={emailId}
+          name="email"
+          type="email"
+          className="enquiry-input"
+          autoComplete="email"
+          required
+          {...fieldProps('email')}
+        />
+        {fieldErrors.email && (
+          <p className="enquiry-field-error" id={errorIdFor('email')}>
+            {fieldErrors.email}
+          </p>
+        )}
+      </div>
+
+      {/* Fills the cell beside Email, and earns it: three asterisks scattered down a seven-field form
           read as "most of this is compulsory", which is the opposite of true here. */}
       {isApplication && (
         <p className="enquiry-aside enquiry-field--half">

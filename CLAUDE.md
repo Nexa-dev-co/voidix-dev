@@ -161,24 +161,41 @@ Everything ships working from ~360px phones to large desktops **in the same chan
   section: a 390px portrait phone and an 800px landscape tablet are not the same problem, and the
   contact footer's three link columns are correct at 800px and wrong at 390px. Don't reach for 30em
   when 51.25em would do.
-- **…and two on the HEIGHT axis, added 2026-08-12, kept together in one `SHORT FRAMES` block.** Until
+- **…and three on the HEIGHT axis, added 2026-08-12, kept together in one `SHORT FRAMES` block.** Until
   then there was not a single `max-height` query in `globals.css`, which is why every height defect on
   this site was invisible: the contact form was **clipped** (nothing there scrolls) and the enquiry
   dialog scrolled, both from one fixed rhythm authored on a full-height desktop. ⚠ **The shape that
   breaks it is not a small window, it is a LANDSCAPE PHONE — 932 × 430, which is WIDER than 51.25em.**
   It gets the full desktop layout and none of the height. `38em` (608px) is where the contact section
-  runs out of room and its form moves into the sheet (`useIsShortViewport`); `32em` (512px) is the
-  landscape phone, where the bottom sheet gives up nearly the whole frame. ⚠ **Field PAIRING is not a
-  height rule and deliberately isn't one** — `.enquiry-form--application` owns it, keyed on the
-  variant, because the seven-field application is too tall at *any* height. One owner; don't add a
-  second grid in the height block. Width questions live with
-  their section; height questions do not — one short frame squeezes the section, the sheet and the
-  dialog at once, so they stay in one place.
-- **⚠ Give on height with a `clamp(floor, Nvh, today)` before reaching for either of those.** Every
-  gap in `.enquiry-form` is fluid this way, and each coefficient is picked so it **clamps to its old
-  value at a 1000px viewport** — a full-height desktop renders what it always did, to the pixel, and
-  the curve is only ever a give. Keep that property when retuning: raise a maximum without raising its
-  coefficient and every tall screen silently loses the spacing too. `.dialog-title` needs *two*
+  starts giving its rhythm back; `32em` (512px) is the landscape phone, where the bottom sheet gives up
+  nearly the whole frame; `30em` (480px) is where the contact form finally becomes a sheet
+  (`useIsShortViewport` — no CSS rule, it is a choice of component). Width questions live with their
+  section; height questions do not — one short frame squeezes the section, the sheet and the dialog at
+  once, so they stay in one place.
+- ⚠ **The sheet's height gate was `38em` until 2026-08-15 and it was catching ORDINARY LAPTOPS.** 608px
+  of viewport is not a small screen — a 1080p laptop at 125% display scaling has ~500–560px once the
+  browser's chrome is off the top — so a large share of real desktops reached the one place the site asks
+  for your details and were handed a button. The fix was to make the form **fit** rather than to hide it
+  sooner: below 38em the section's own rhythm gives ~40px more **and** Name and Mobile fold onto one
+  row, plus `.contact-panel` is bounded to its body (`max-height: 100%`, with `align-items: safe center`
+  above it) so it can never climb under the navbar. Note the order — **a field per row is the default and
+  the form only spends a row once the section has spent everything else.**
+- ⚠ **Field PAIRING is a NUMBER now (`--enquiry-half-span`), read by exactly one declaration.** This file
+  used to forbid pairing on a height query, and the reason was sound but was about mechanism: the variant
+  modifier owned `grid-column` and a height rule would have owned it too, so two rules would write one
+  property and drift. `--half` marks a field *pairable*; the knob says whether pairing happens; the
+  variant (`.enquiry-form--application`, always) and the frame (`max-height: 38em`) both only ever set
+  the knob. **Never write `grid-column` on a field anywhere else** — that is still the rule. ⚠ The frame's
+  boundary was 32em for one revision and shipped a **scrollbar inside the contact panel** — a height
+  budget assembled out of estimated line-heights is worth about 30px, so put such a boundary where there
+  is real margin on both sides of it, not where the sum came out at zero.
+- **⚠ Give on height with a `clamp(floor, Nvh, ceiling)` before reaching for either of those.** Every
+  gap in `.enquiry-form` is fluid this way, and each coefficient is picked so it **hits its 2026-08-12
+  value at a 1000px viewport** — a full-height desktop renders what it always did, to the pixel, and the
+  curve is only ever a give below that. ⚠ **The maxima were raised on 2026-08-15 and NOT ONE COEFFICIENT
+  MOVED**, which is exactly what kept that property: the raise only opens the curve *above* 1000px, so a
+  1440-tall monitor gets a rhythm to match its screen instead of a phone's spacing in a 34rem panel.
+  Retune a coefficient and you break both ends at once. `.dialog-title` needs *two*
   viewport terms summed (`1.1vw + 1.8vh`) for the same reason the landscape phone exists — it is short
   exactly where it is wide, so a `vw`-only clamp sets display type at its maximum on a 430px frame.
 - **Full-height boxes use `100svh`, with a `100vh` line above it as the fallback.** On mobile browsers
@@ -208,7 +225,7 @@ Everything ships working from ~360px phones to large desktops **in the same chan
 - **⚠ `useIsLowPowerViewport`, `useIsNarrowViewport` and `useIsShortViewport` are three different
   questions.** The first is *how much work can this device do* (coarse pointer or <760px) and gates
   WebGL. The second is *how much room is there, ACROSS* (the 51.25em query, mirrored from the CSS) and
-  gates LAYOUT. The third is *how much room is there, DOWN* (38em) and gates layout too — **only the
+  gates LAYOUT. The third is *how much room is there, DOWN* (30em) and gates layout too — **only the
   contact section asks it**, and it exists because a landscape phone clears the narrow breakpoint
   while having less height than a portrait one. A phone answers yes to all three; a narrow window on a
   fast desktop wants the narrow layout and the full effects.

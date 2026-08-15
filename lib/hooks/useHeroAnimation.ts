@@ -1234,6 +1234,16 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
               setStage("fill");
               // No carousel section has been entered yet.
               carouselSections.forEach((section) => setNavMeter(section.key, 0));
+              // ⚠ CLEARED HERE TOO, AND ITS ABSENCE WAS A BUG. `justTeleported` is meant to suppress the
+              // arrival glide for ONE update after the loop's teleport; it was only ever cleared below
+              // this early return, and after a teleport every update is a fill update. So the flag
+              // stayed raised for as long as the visitor stood on the hero, and the first scroll past
+              // the fill spent it instead of gliding onto craft 01 — which is the glide that absorbs the
+              // flick's momentum, so the second lap of the site landed on craft 02.
+              //
+              // The guard's real job survives: a STALE update carries the pre-teleport progress (≈1),
+              // which is past the fill, so it cannot reach this branch and is still caught below.
+              justTeleported = false;
               return;
             }
 
