@@ -343,6 +343,26 @@ const REVERSE_ARRIVAL_DIVE = 0.66;
  * the contact copy fades up underneath it.
  */
 const REVERSE_ARRIVAL_SECONDS = 5;
+/**
+ * The lensing SWELLS in before it relaxes, rather than being on at full strength the moment the cover
+ * lifts.
+ *
+ * The first cut armed the dive at `REVERSE_ARRIVAL_DIVE` while the frame was still black, so the iris
+ * opened onto a fully-formed lens — the strongest thing in the shot arrived as a pop, and everything
+ * after it was a decrease. Ramping up across the reveal means the eye catches the distortion GROWING,
+ * which is what reads as arriving somewhere rather than being placed there.
+ *
+ * `power2.out`: it rushes in and eases into the peak, so the swell is felt early and the top of the
+ * curve is calm enough to hand over to the release without a corner.
+ */
+const REVERSE_SWELL_SECONDS = 1.1;
+/**
+ * ⚠ The swell starts HERE, not at 0, and the floor is not cosmetic: `LOOP_CONTACT_UI_FADE` ends at 0.2,
+ * so a dive below it puts contact's copy back on screen. Starting at 0 would flash the whole section in
+ * for a few frames at the top of the return — under a closing iris, but only just. From 0.22 the copy is
+ * hidden from the first frame and the lensing still starts faint enough to be seen arriving.
+ */
+const REVERSE_SWELL_FROM = 0.22;
 const REVERSE_WHEEL_THRESHOLD = 180;
 /** The accumulator forgets after a quiet gap, so small nudges minutes apart never add up to a journey. */
 const REVERSE_WHEEL_IDLE_MS = 500;
@@ -1044,8 +1064,8 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     let reverseWheelIdleTimer = 0;
     /** Armed while waiting for the cover to answer — see beginReverse for why it must exist. */
     let reverseNet = 0;
-    /** The zoom-out. Tweens `reverseArrivalProxy.dive` down to 0 — see REVERSE_ARRIVAL_DIVE. */
-    let reverseArrival: gsap.core.Tween | null = null;
+    /** The return's two beats — the lensing swelling in, then relaxing out. See REVERSE_ARRIVAL_DIVE. */
+    let reverseArrival: gsap.core.Timeline | null = null;
     const reverseArrivalProxy = { dive: 0 };
     let stepLocked = false;
     let wheelAccum = 0;
@@ -1755,8 +1775,8 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // crossing at the contact stop is 0 — so if the arrival were armed afterwards the very first frame
       // out from under the cover would publish contact's RESTING state: no lensing, no zoom, and the copy
       // already on screen. The whole return would be over before the iris finished opening.
-      reverseArrivalProxy.dive = REVERSE_ARRIVAL_DIVE;
-      diveFromArrival = REVERSE_ARRIVAL_DIVE;
+      reverseArrivalProxy.dive = REVERSE_SWELL_FROM;
+      diveFromArrival = REVERSE_SWELL_FROM;
 
       commitReverseTeleport();
 
@@ -1771,15 +1791,12 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // "here". Everything it drives — the camera's distance, the lensing's strength and liquid, the
       // horizon's shadow, the contact copy's fade — is already a pure function of that one number, so
       // there is nothing else to write.
+      const publishArrival = () => {
+        diveFromArrival = reverseArrivalProxy.dive;
+        publishDive();
+      };
       reverseArrival?.kill();
-      reverseArrival = gsap.to(reverseArrivalProxy, {
-        dive: 0,
-        duration: reduceMotion ? 0 : REVERSE_ARRIVAL_SECONDS,
-        ease: "power2.inOut",
-        onUpdate: () => {
-          diveFromArrival = reverseArrivalProxy.dive;
-          publishDive();
-        },
+      reverseArrival = gsap.timeline({
         onComplete: () => {
           reverseArrival = null;
           // Exactly 0, not 0.0001: from here the crossing owns the dive again and the two must agree.
@@ -1787,9 +1804,26 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           publishDive();
         },
       });
+      // 1 · The swell — the distortion growing as the iris uncovers it. See REVERSE_SWELL_SECONDS.
+      reverseArrival.to(reverseArrivalProxy, {
+        dive: REVERSE_ARRIVAL_DIVE,
+        duration: reduceMotion ? 0 : REVERSE_SWELL_SECONDS,
+        ease: "power2.out",
+        onUpdate: publishArrival,
+      });
+      // 2 · …and the release: the zoom-out, the lensing relaxing into a plain hole, the copy returning.
+      reverseArrival.to(reverseArrivalProxy, {
+        dive: 0,
+        duration: reduceMotion ? 0 : REVERSE_ARRIVAL_SECONDS,
+        ease: "power2.inOut",
+        onUpdate: publishArrival,
+      });
 
       lockStepping(
-        reduceMotion ? 0 : REVERSE_ARRIVAL_SECONDS * 1000 + LOOP_SETTLE_MS,
+        reduceMotion
+          ? 0
+          : (REVERSE_SWELL_SECONDS + REVERSE_ARRIVAL_SECONDS) * 1000 +
+              LOOP_SETTLE_MS,
       );
       // Nothing is left to cover: the pin does not move again, and the arrival owns the stepper's lock.
       reverseActive = false;

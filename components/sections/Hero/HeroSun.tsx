@@ -69,6 +69,22 @@ export default function HeroSun() {
       layer.style.height = `${height}px`;
       layer.style.left = `${rect.left - (width - rect.width) / 2}px`;
       layer.style.top = `${rect.top - (height - rect.height) / 2}px`;
+
+      // ── Where the star is, for anything that has to sit relative to it ──
+      //
+      // ⚠ PUBLISHED RATHER THAN LOOKED UP, and that is the whole reason it exists. The only DOM anchor
+      // for "under the sun" is the square's own box — and this function is proof of how carefully that
+      // box has to be treated: it is measured with the transform stripped, because reading it live gave
+      // a sun that ballooned and drifted. Hanging UI inside it to borrow its position puts a second
+      // thing in the one subtree two systems already measure and transform. Two numbers cost nothing
+      // and can be read from anywhere.
+      //
+      // Viewport pixels, exactly like the layer's own placement above. The hero's return control is the
+      // only consumer today; it is `position: absolute` inside `.hero-section`, which sits at the
+      // viewport origin for the whole time it is on screen.
+      const rootStyle = document.documentElement.style;
+      rootStyle.setProperty('--hero-square-x', `${rect.left + rect.width / 2}px`);
+      rootStyle.setProperty('--hero-square-bottom', `${rect.bottom}px`);
     };
     syncToSquare();
 
@@ -136,6 +152,38 @@ export default function HeroSun() {
     };
     window.addEventListener('resize', handleResize);
 
+    // ── ⚠ AND ANYTHING ELSE THAT MOVES THE SQUARE ──
+    //
+    // `resize` is not the only thing that re-lays-out the hero, and the sun coming adrift of its square
+    // is one of the ugliest failures this page has: the star simply hangs beside the black box. It has
+    // happened twice, both times from a sibling appearing AFTER this measured — a control rendered into
+    // the hero's flex column, and a phone-only readout strip that mounted once a viewport hook resolved.
+    // Neither fires `resize`, so the sun kept the box it had been given and the square moved out from
+    // under it.
+    //
+    // ⚠ OBSERVING THE SQUARE ALONE DOES NOT CATCH THAT, and it is worth writing down because it is the
+    // obvious thing to reach for. A ResizeObserver reports SIZE, not position — and in both failures the
+    // square never changed size, it was pushed DOWN the column. What changes size is whatever is between
+    // it and the section: `.hero-main` is `flex: 1`, so any sibling appearing or leaving resizes it, and
+    // `.hero-title-group` resizes whenever the headline itself reflows (a late font swap, a copy edit).
+    // All three are observed, because a square cannot move without one of them changing shape.
+    //
+    // Deliberately NOT routed through `handleResize`'s hide-and-settle: that dance exists because a live
+    // window drag updates this box and the pin's transform on different cadences and the sun skids
+    // between them. A one-off reflow has no such contest; it just needs the new number.
+    const squareWatcher =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => syncToSquare());
+    if (squareWatcher) {
+      [
+        HERO_SQUARE_SELECTOR,
+        '.hero-main',
+        '.hero-title-group',
+      ].forEach((selector) => {
+        const element = document.querySelector<HTMLElement>(selector);
+        if (element) squareWatcher.observe(element);
+      });
+    }
+
     // While a full-black scene is on screen the sun drops BEHIND the hero, so the fleet, the marks and
     // their labels all sit in front of it (the intervening layers go transparent via .is-services). It
     // comes back to the front when the page returns to the hero.
@@ -161,6 +209,7 @@ export default function HeroSun() {
     return () => {
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener('resize', handleResize);
+      squareWatcher?.disconnect();
       window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       window.clearTimeout(settleTimer);
     };

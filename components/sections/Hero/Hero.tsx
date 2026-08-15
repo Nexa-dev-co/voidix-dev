@@ -9,7 +9,6 @@ import ConstellationFrame from '@/components/effects/ConstellationFrame/Constell
 import HeroInstruments from '@/components/sections/Hero/HeroInstruments/HeroInstruments';
 import HeroScrollCue from '@/components/sections/Hero/HeroScrollCue';
 import HeroReturnCue from '@/components/sections/Hero/HeroReturnCue';
-import HeroMobileReadout from '@/components/sections/Hero/HeroMobileReadout';
 import ServicesDeck from '@/components/sections/ServicesDeck/ServicesDeck';
 import WorksField from '@/components/sections/WorksField/WorksField';
 import ContactSection from '@/components/sections/Contact/ContactSection';
@@ -60,15 +59,6 @@ export default function Hero() {
           Desktop only — its live readouts are four rAF loops, and it's hidden at this width anyway. */}
       {!isLowPowerViewport && <HeroInstruments />}
 
-      {/* The phone's slice of that panel, on exactly the frames the HUD above is missing from — ONE
-          boolean, read both ways, so the two renderings of one instrument cannot both be on screen and
-          cannot both be absent. (A CSS width gate would have managed the first and not the second: a
-          landscape phone is 932px wide and coarse, so it loses the HUD to the line above while clearing
-          any width query comfortably.) Static markup, so none of the rAF reasoning applies to it.
-          Before `.hero-main` (which is `flex: 1`) so it sits at the top of the frame, under the navbar,
-          exactly where the desktop's columns begin. */}
-      {isLowPowerViewport && <HeroMobileReadout />}
-
       <div className="hero-main">
         <div
           className="hero-title-group"
@@ -107,15 +97,6 @@ export default function Hero() {
         </div>
       </div>
 
-      {/* The way back into the site, for a visitor who has already fallen out of the bottom of it.
-          Renders nothing until a loop has completed — see HeroReturnCue for why the hero's first
-          impression stays free of it.
-          ⚠ Directly after `.hero-main`, which is what puts it UNDER THE SUN: the main block is
-          `flex: 1` and centres the headline, so the next flow child lands immediately beneath the
-          square. It was absolutely positioned at the bottom of the frame and printed straight over
-          the tagline. */}
-      <HeroReturnCue />
-
       {/* Dark on the cream hero, and sits below the trail (z-index 1) so the ink
           inverts it to light — the tagline glows through the ink as the trail crosses it. */}
       <p className="hero-sub">software with its own gravity</p>
@@ -124,6 +105,14 @@ export default function Hero() {
           carries its own and this is display:none. Not gated in JS: it is static markup with one
           keyframe, so unlike the HUD there are no loops to stop. See HeroScrollCue. */}
       <HeroScrollCue />
+
+      {/* The way back, placed UNDER THE SUN and living nowhere near it.
+          ⚠ NOT inside `.hero-sun-slot`. That box is measured (transform-stripped) by `HeroSun` to
+          place the star and transformed by the pin to fill the screen; putting UI in it disturbed the
+          very thing it was borrowing a position from. It reads `--hero-square-x` / `--hero-square-bottom`
+          instead — two numbers `HeroSun` already had — so it is pinned to the square's real box while
+          being a plain sibling out here. Renders nothing until a loop has completed. */}
+      <HeroReturnCue />
 
       {/* Services fleet — an overlay inside the hero, revealed once the square fills the screen.
           It shares the hero's single pin (the fleet carousel is the pin's first set of stops). */}

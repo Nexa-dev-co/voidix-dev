@@ -35,20 +35,13 @@ export default function HeroReturnCue() {
     return () => window.removeEventListener(LOOP_ARRIVED_EVENT, onLoopArrived);
   }, []);
 
-  // ⚠ THE ANCHOR RENDERS ALWAYS, THE BUTTON DOES NOT, and the asymmetry is load-bearing rather than
-  // tidy. This component sits in the hero's flex column between the headline and the tagline; a child
-  // that appears mid-session would resize `.hero-main` (`flex: 1`) and move the headline — and the
-  // headline carries `[data-hero-card]`, the untransformed box `HeroSun` measured once to place the
-  // star. The star does not re-measure, so it would simply come adrift of its square. A zero-height
-  // anchor that is always present makes the column's geometry constant. See the CSS.
-  return (
-    <div className="hero-return-anchor">
-      {isAvailable && <ReturnButton />}
-    </div>
-  );
-}
+  // ⚠ Nothing is rendered before a loop lands, and nothing needs to be. An earlier cut kept an
+  // always-present zero-height anchor here so that the control appearing mid-session could not change
+  // the hero's flex column and move the star out from under itself. It is `position: absolute` now,
+  // placed from the square's published box rather than from the flow, so it costs the layout nothing
+  // whether it exists or not — and the reason for the anchor went with it.
+  if (!isAvailable) return null;
 
-function ReturnButton() {
   return (
     <button
       type="button"

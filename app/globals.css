@@ -1274,11 +1274,7 @@ body {
    dropping the class puts it straight back at 1. */
 .hero-section.is-services .hero-mask,
 .hero-section.is-services .hero-sub,
-.hero-section.is-services .hero-touch-cue,
-/* The phone's instrument strip is hero-only for exactly the reasons above it on this list — it is the
-   HUD, and the HUD is hidden here. It carries no blend, so it needs no `!important` and no instant
-   hide: nothing about it flashes bright on the frame the cream goes transparent. */
-.hero-section.is-services .hero-readout {
+.hero-section.is-services .hero-touch-cue {
   opacity: 0 !important;
   transition: none;
 }
@@ -1563,28 +1559,27 @@ body {
    must not, because it is a CONTROL whose colour is a brand decision rather than a contrast trick, and
    a blended button inverts its hover state along with everything else. It is hidden the moment the page
    stops being cream, so it never needs the blend's help. */
-/* ⚠ ZERO HEIGHT, AND THAT IS THE ENTIRE POINT OF IT EXISTING. The control is rendered CONDITIONALLY
-   — it appears the moment a loop lands — and the first cut put it straight into the hero's flex column.
-   So the instant it appeared it took ~40px out of `.hero-main`, which is `flex: 1`, which moved the
-   headline up… and with it `[data-hero-card]`, the untransformed box `HeroSun` MEASURED to place the
-   star. The measurement was already taken. The sun stayed where the old layout said it should be and
-   the square slid out from under it.
-   An always-present 0-height anchor makes the column identical whether or not the button exists, so
-   nothing the control does can ever move the star again. It is also why the button is positioned FROM
-   here rather than from the section: this line sits exactly under the headline block, which is to say
-   under the sun. */
-.hero-return-anchor {
-  position: relative;
-  z-index: 6;
-  width: 100%;
-  height: 0;
-}
-
+/* ⚠ PLACED FROM THE SQUARE'S OWN BOX, AND DELIBERATELY NOT INSIDE IT.
+   `--hero-square-x` and `--hero-square-bottom` are published by `HeroSun` from the same measurement it
+   uses to park the star — so this sits under the SQUARE rather than under the page, which matters
+   because the sun is not centred: it lives inside the word "w□rlds" and sits well left of the frame's
+   middle at every width.
+   ⚠ The obvious anchor was the square's own element, and it was wrong. That box is measured with its
+   transform stripped by `HeroSun` and scaled to fill the screen by the pin; hanging UI in it disturbed
+   the very thing it was borrowing a position from. Two published numbers cost nothing and cannot.
+   ⚠ Viewport pixels, read inside `.hero-section` — which sits at the viewport origin for the whole
+   time this is on screen (`.is-services` takes it away at the fill boundary). The percentage fallbacks
+   are only for the frame before `HeroSun` has measured. */
 .hero-return {
   position: absolute;
-  left: 50%;
-  top: clamp(0.9rem, 2.4vh, 1.75rem);
+  left: var(--hero-square-x, 50%);
+  top: calc(var(--hero-square-bottom, 62%) + clamp(0.9rem, 2.4vh, 1.75rem));
   transform: translateX(-50%);
+  /* ⚠ Explicit, because the anchor above is zero-width. Shrink-to-fit would still resolve to the full
+     label here (the label is `nowrap`, so its min-content and max-content widths are the same figure) —
+     but that is an accident of the label's own styling, and the day someone lets it wrap, the button
+     would collapse against a containing block with no width to offer. Stated, not relied upon. */
+  width: max-content;
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
@@ -1665,72 +1660,6 @@ body {
   .hero-return-glyph {
     animation: none;
     transition: none;
-  }
-}
-
-/* ─── The phone's instrument strip ─────────────────────────
-   See HeroMobileReadout for why this exists as static markup rather than as the HUD at a smaller size.
-
-   ⚠ THERE IS NO WIDTH GATE HERE, DELIBERATELY. The rule is "show this exactly when the HUD is not
-   mounted", and the HUD is unmounted by `useIsLowPowerViewport` — coarse pointer OR under 760px. CSS
-   can express the second half and not the first, so a width query would have left a landscape phone
-   (932px wide, coarse) with the HUD unmounted and this hidden: no panel at all, which is the hole
-   `.hero-touch-cue` still has. Rendering is gated in Hero.tsx on the same boolean that removes the HUD,
-   so the two are mutually exclusive by construction rather than by two numbers agreeing. */
-.hero-readout {
-  position: relative;
-  z-index: 5;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0.6rem clamp(1.1rem, 5vw, 2rem);
-  width: 100%;
-  /* Clears the 4.5rem navbar with a shoulder of its own. */
-  padding: clamp(5.5rem, 13vh, 7rem) clamp(1.25rem, 5vw, 2rem) 0;
-}
-
-.hero-readout-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  /* Centred, because the strip is centred. Left-aligning the pairs under a centred headline reads as
-     three things that failed to line up rather than as one instrument. */
-  align-items: center;
-  text-align: center;
-}
-
-/* ⚠ #565656 rather than the HUD's own `--hud-label-muted` (#6f6f6f), and the difference is not taste.
-   That value is graded to pass THROUGH `mix-blend-mode: difference` against the cream; read straight,
-   as it is here, it lands at 3.76:1 — a fail at this size. #565656 holds 5.46:1 on `#e2dfd2`. The token
-   is also declared on `.hero-hud`, which does not exist wherever this is rendered. */
-.hero-readout-label {
-  font-size: var(--fs-micro);
-  font-weight: 500;
-  letter-spacing: 0.1875em;
-  text-transform: uppercase;
-  color: #565656;
-}
-
-.hero-readout-value {
-  font-size: var(--fs-tiny);
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--hero-dust);
-}
-
-/* The ONLINE light. Amber deepened for the cream, as everywhere on this section. */
-.hero-readout-value[data-accent='true'] {
-  color: var(--accent-deep);
-}
-
-/* ⚠ The one frame this cannot have: a LANDSCAPE PHONE. 932 × 430 renders it (coarse pointer, so the
-   HUD is gone) into 430px of height that already has to hold a navbar, a headline, a tagline and a
-   scroll cue. 32em is the site's landscape-phone height and this is what it is for — the strip is
-   atmosphere, and atmosphere is the first thing a frame with no room should stop paying for. */
-@media (max-height: 32em) {
-  .hero-readout {
-    display: none;
   }
 }
 
