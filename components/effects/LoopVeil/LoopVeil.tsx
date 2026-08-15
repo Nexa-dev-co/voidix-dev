@@ -7,6 +7,8 @@ import {
   LOOP_COVERED_EVENT,
   LOOP_PROGRESS_EVENT,
   LOOP_RESET_EVENT,
+  LOOP_REVERSE_BEGIN_EVENT,
+  LOOP_REVERSE_COVERED_EVENT,
   readLoopProgress,
 } from '@/lib/loopEvents';
 
@@ -44,14 +46,40 @@ const CREAM_CLEAR_SECONDS = 0.7;
 /** A beat of held cream before it clears, so the flood lands rather than passing straight through. */
 const CREAM_HOLD_SECONDS = 0.25;
 
+// ── The reverse's iris ──
+// Radii are gradient-line percentages, so 100 reaches the farthest corner of the frame.
+/** Wide enough to be entirely off-frame, so the cover reads as absent rather than as a ring at the edge. */
+const IRIS_OPEN_RADIUS = 112;
+/**
+ * The soft shoulder between clear and black.
+ *
+ * ⚠ IT SCALES WITH THE APERTURE, AND THAT IS A BUG FIX RATHER THAN A REFINEMENT. Held at a constant
+ * width, the closed state is `transparent 0%, black 9%` — which is not black at all, it is black with a
+ * hole punched through the middle of the screen. The cover never closed: you could watch the site
+ * through it for the whole return. Multiplied by the aperture it collapses to `transparent 0%, black 0%`
+ * at the end, which is opaque everywhere.
+ */
+const IRIS_FEATHER = 9;
+/** Slower than the forward loop's flood — this is a departure, and a departure that happens in a
+    second reads as a glitch rather than as a decision the visitor made. */
+const IRIS_CLOSE_SECONDS = 1.3;
+/** Unhurried too, because what it uncovers IS the shot: the hole under full lensing, arriving already
+    zoomed in. The pin's zoom-out starts the moment the jump lands, so this opens ONTO the motion rather
+    than before it — the first thing the eye catches is the lensing already relaxing. */
+const IRIS_OPEN_SECONDS = 0.9;
+/** A beat of full black at the pivot, so the two halves read as one gesture rather than a bounce. */
+const IRIS_HOLD_SECONDS = 0.3;
+
 export default function LoopVeil() {
   const blackRef = useRef<HTMLDivElement>(null);
   const creamRef = useRef<HTMLDivElement>(null);
+  const irisRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const black = blackRef.current;
     const cream = creamRef.current;
-    if (!black || !cream) return;
+    const iris = irisRef.current;
+    if (!black || !cream || !iris) return;
 
     const reduceMotion = prefersReducedMotion();
     let creamTimeline: gsap.core.Timeline | null = null;
@@ -71,6 +99,17 @@ export default function LoopVeil() {
      * ordering is a timing fix and this needs to hold by construction.
      */
     let coveringLoop = false;
+
+    /**
+     * ⚠ ITS OWN TIMELINE, AND SHARING ONE WITH THE CREAM WAS A REAL DEFECT.
+     *
+     * `onLoopProgress`'s `progress <= 0` branch kills `creamTimeline` — correctly, because scrolling back
+     * out of a dive has to clear a half-played arrival. The iris ran on that same variable, so the first
+     * dive report of 0 to arrive during a return killed the cover mid-gesture and left the black frozen
+     * on screen with no way to clear it. Two covers, two timelines, and neither can reach the other.
+     */
+    let irisTimeline: gsap.core.Timeline | null = null;
+
 
     // 0..1 inside a window, clamped flat outside it.
     const windowed = (range: [number, number], value: number) =>
@@ -131,10 +170,81 @@ export default function LoopVeil() {
     };
     window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
 
+    /**
+     * ── The cover for the loop run BACKWARDS, and it is a different gesture in every respect ────────
+     *
+     * Not the cream, and not a flood. Forward, the cream is what you ARRIVE out of — a colour growing
+     * from the middle onto a page that is already that colour. Backwards you are going the other way,
+     * to the hole, so:
+     *
+     *   · it is BLACK, because black is what is at the other end. Flooding cream to leave for a black
+     *     hole announces the wrong destination.
+     *   · it closes INWARD, from the edges to the middle — the frame being pulled shut around the point
+     *     you are about to fall through — and then opens from that same point onto the hole itself.
+     *
+     * ⚠ An IRIS, therefore, and not `clip-path: circle()`. The shape that is wanted is a rectangle with
+     * a hole in it, which `circle()` cannot express (it fills the circle, this needs the inverse). A
+     * radial-gradient MASK can, so the mask string is written per frame from a tweened proxy — the same
+     * technique, for the same reason, as `SectionJumpVeil`'s.
+     *
+     * ⚠ The order inside the `call` is the contract with the pin and cannot be rearranged: the dispatch
+     * teleports the pin SYNCHRONOUSLY, so by the line after it the dive is parked and every scene has
+     * been told to be there. Releasing the latch after that is what lets the dive's own progress take
+     * the flat black layer back over — and at the parking depth it asks for 0, because the point of
+     * that depth is that the hole is on screen rather than blacked out.
+     */
+    // 1 = wide open (the cover is off-frame), 0 = shut (the frame is solid black).
+    const irisAperture = { openness: 1 };
+    const writeIris = () => {
+      const clear = irisAperture.openness * IRIS_OPEN_RADIUS;
+      // ⚠ The shoulder scales with the aperture so that a shut iris is genuinely shut — see IRIS_FEATHER.
+      const solid = clear + IRIS_FEATHER * irisAperture.openness;
+      const image = `radial-gradient(circle at 50% 50%, rgba(0,0,0,0) ${clear}%, rgba(0,0,0,1) ${solid}%)`;
+      iris.style.setProperty('mask-image', image);
+      iris.style.setProperty('-webkit-mask-image', image);
+    };
+
+    const onReverseBegin = () => {
+      irisTimeline?.kill();
+      irisAperture.openness = 1;
+      writeIris();
+      gsap.set(iris, { autoAlpha: 1 });
+
+      irisTimeline = gsap.timeline({
+        onComplete: () => {
+          irisTimeline = null;
+        },
+      });
+      // 1 · The frame closes around the middle.
+      irisTimeline.to(irisAperture, {
+        openness: 0,
+        duration: reduceMotion ? 0 : IRIS_CLOSE_SECONDS,
+        ease: 'power2.inOut',
+        onUpdate: writeIris,
+      });
+      // 2 · Solid black. The jump happens here, unwatched, and the pin arms its zoom-out in the same
+      //     synchronous call — so the frame this uncovers is already the lensed, zoomed-in hole.
+      irisTimeline.call(() => {
+        window.dispatchEvent(new Event(LOOP_REVERSE_COVERED_EVENT));
+      });
+      // 3 · …and opens again from the same point, onto it.
+      irisTimeline.to(irisAperture, {
+        openness: 1,
+        duration: reduceMotion ? 0 : IRIS_OPEN_SECONDS,
+        ease: 'power2.out',
+        delay: reduceMotion ? 0 : IRIS_HOLD_SECONDS,
+        onUpdate: writeIris,
+      });
+      irisTimeline.set(iris, { autoAlpha: 0 });
+    };
+    window.addEventListener(LOOP_REVERSE_BEGIN_EVENT, onReverseBegin);
+
     return () => {
       window.removeEventListener(LOOP_PROGRESS_EVENT, onLoopProgress);
       window.removeEventListener(LOOP_RESET_EVENT, onLoopReset);
+      window.removeEventListener(LOOP_REVERSE_BEGIN_EVENT, onReverseBegin);
       creamTimeline?.kill();
+      irisTimeline?.kill();
     };
   }, []);
 
@@ -160,6 +270,9 @@ export default function LoopVeil() {
 
       <div ref={blackRef} className="loop-veil loop-veil-black" aria-hidden />
       <div ref={creamRef} className="loop-veil loop-veil-cream" aria-hidden />
+      {/* The reverse's iris. Last, so it covers the other two while it is up — the reverse begins on a
+          cream hero and has to hide that, not blend with it. */}
+      <div ref={irisRef} className="loop-veil loop-veil-iris" aria-hidden />
     </>
   );
 }

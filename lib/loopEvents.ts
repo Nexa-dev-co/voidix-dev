@@ -33,7 +33,7 @@ export function readLoopProgress(event: Event): number {
 }
 
 /**
- * The scrollbar has just been thrown back to the top. Snap, do not ease.
+ * The scrollbar has just been thrown back to the TOP. Be at the hero's state now — do not ease there.
  *
  * ⚠ This exists because several scenes deliberately CHASE their scrubbed target rather than reading it
  * — `chamberState.current`, `flightState.current`, the sun's `cracks` / `collapse` ramps, the finale's
@@ -42,11 +42,29 @@ export function readLoopProgress(event: Event): number {
  * or more, so behind the cover the chamber re-assembles, the star un-dies and the shell re-cracks. Any
  * of it showing at the edge of the flood ruins the illusion.
  *
- * Every owner of an eased value listens for this and forces `current = target` in one step. The
- * alternative — holding the cover up long enough for the eases to finish — is a timing fix, and timing
- * fixes are the class of bug this codebase keeps having to undo.
+ * ⚠ IT IS THE HERO-ARRIVAL RESET, NOT A GENERAL "YOU WERE MOVED" SIGNAL, and the difference is not
+ * academic — a stale revision of this comment described it as forcing `current = target`, which is what
+ * a general signal would do. Read the handlers: every one of them writes ZERO. `useWorksField` zeroes
+ * the reveal, the return, the dive and the flight and calls `singularity.reset()`; `SunModelCanvas`
+ * zeroes all four ramps. That is correct for this event — the destination is progress 0 — and it means
+ * the event cannot be reused for a jump that lands anywhere else. The reverse loop, which lands at the
+ * BOTTOM, needs LOOP_SNAP_EVENT below.
  */
 export const LOOP_RESET_EVENT = 'voidix:loop-reset';
+
+/**
+ * The pin has just been moved outright to somewhere that is NOT the top. Be at your current targets now.
+ *
+ * The direction-agnostic half of `LOOP_RESET_EVENT`: `current = target`, and nothing else. Every
+ * handler pairs with a reset handler and does strictly less — it never writes a target, because by the
+ * time this fires the targets are already right (the pin drives the crossings to the new position
+ * before dispatching, precisely so that they are).
+ *
+ * ⚠ ORDER IS THE WHOLE CONTRACT. Dispatch this only AFTER the crossings have been applied at the new
+ * position. Fire it first and every scene snaps to the targets it is leaving, which is worse than not
+ * snapping at all — an eased value at least arrives eventually.
+ */
+export const LOOP_SNAP_EVENT = 'voidix:loop-snap';
 
 /**
  * Commit the loop from outside the scroll (the Travel in time button).
@@ -72,3 +90,33 @@ export const LOOP_COVERED_EVENT = 'voidix:loop-covered';
 
 /** The sun should come apart and gather again, as it does for the loader. */
 export const SUN_REGATHER_EVENT = 'voidix:sun-regather';
+
+/* ── The loop, run backwards: hero → contact ─────────────────────────────────────────────────────
+ *
+ * A visitor who has travelled in time can travel back. Three signals for the same reason the forward
+ * loop needs three — the cover, the jump and the arrival happen at three different moments, and each
+ * is announced by whoever actually knows it has happened rather than timed against the others.
+ *
+ *   REQUEST   the control was used, or the wheel was pushed up at the top of the page. Routed through
+ *             the pin, which is the only thing that can say no.
+ *   BEGIN     the pin said yes. Close the cover.
+ *   COVERED   the cover has the screen. The pin teleports INSIDE this dispatch, synchronously.
+ *
+ * ⚠ And then nothing else is authored. The pin parks the scrollbar just inside the far end of the dive
+ * and glides it back to contact, so what plays is the dive itself, scrubbed the other way — the whole
+ * benefit of the rule that a crossing is a pure function of its progress. There is no reverse animation
+ * anywhere in this codebase because there does not need to be one.
+ */
+export const LOOP_REVERSE_REQUEST_EVENT = 'voidix:loop-reverse-request';
+export const LOOP_REVERSE_BEGIN_EVENT = 'voidix:loop-reverse-begin';
+export const LOOP_REVERSE_COVERED_EVENT = 'voidix:loop-reverse-covered';
+
+/**
+ * A loop has completed — the visitor is standing on the hero having arrived there through the hole.
+ *
+ * The way back only exists once the way there has been taken, so this is what arms it: the hero's
+ * return control does not render before this, and the wheel-up gesture does nothing. A first visit is
+ * therefore untouched, which matters because the hero is the site's opening frame and because "scroll
+ * up at the top does something" is a surprise that should be earned rather than sprung.
+ */
+export const LOOP_ARRIVED_EVENT = 'voidix:loop-arrived';

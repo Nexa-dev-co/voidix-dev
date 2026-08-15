@@ -40,7 +40,7 @@ import {
 } from './sunBloom';
 import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
-import { LOOP_RESET_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
+import { LOOP_RESET_EVENT, LOOP_SNAP_EVENT, SUN_REGATHER_EVENT } from '@/lib/loopEvents';
 import { createSunParticles } from '@/lib/sunParticles';
 import { SUN_OMITTED_PARTS, isOmittedSunPart } from './sunParts';
 import { warmSceneMaterials } from '@/lib/warmScene';
@@ -796,6 +796,23 @@ export default function SunModelCanvas() {
       forceRender = true;
     };
     window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
+
+    // ── …and the same jump, landing at the BOTTOM ──
+    // The reverse loop parks the pin just inside the far end of the dive. Above, every target is forced
+    // to 0 because the destination is the hero; here the targets have already been set by the crossings
+    // (the pin drives them before dispatching) and all that is left is to stop chasing them. `cracks`
+    // and `collapse` walk at STATE_EASE_RATE, so without this the cover lifts on a star part-way
+    // through re-cracking — the same defect as the reset's, arrived at from the other direction.
+    // See LOOP_SNAP_EVENT.
+    const onLoopSnap = () => {
+      applyCovered();
+      cracks = targetCracks;
+      ringForm = targetRingForm;
+      ringWorksForm = targetRingWorks;
+      collapse = targetCollapse;
+      forceRender = true;
+    };
+    window.addEventListener(LOOP_SNAP_EVENT, onLoopSnap);
 
     // ── Gather again ──
     // The loader's own finale, replayed: the ten shards sweep back in from outside the frame and lock
@@ -1727,6 +1744,7 @@ export default function SunModelCanvas() {
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
       window.removeEventListener(LOOP_RESET_EVENT, onLoopReset);
+      window.removeEventListener(LOOP_SNAP_EVENT, onLoopSnap);
       window.removeEventListener(SUN_REGATHER_EVENT, onRegather);
       window.removeEventListener(REVEAL_EVENT, onReveal);
       window.removeEventListener(SUN_DRAW_PERMIT_EVENT, permitDrawing);

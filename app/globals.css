@@ -1274,8 +1274,28 @@ body {
    dropping the class puts it straight back at 1. */
 .hero-section.is-services .hero-mask,
 .hero-section.is-services .hero-sub,
-.hero-section.is-services .hero-touch-cue {
+.hero-section.is-services .hero-touch-cue,
+/* The phone's instrument strip is hero-only for exactly the reasons above it on this list — it is the
+   HUD, and the HUD is hidden here. It carries no blend, so it needs no `!important` and no instant
+   hide: nothing about it flashes bright on the frame the cream goes transparent. */
+.hero-section.is-services .hero-readout {
   opacity: 0 !important;
+  transition: none;
+}
+/* The way back is hero-only too, and unlike everything else on this list it is a CONTROL — so it has to
+   stop being CLICKABLE, not merely stop being visible. An invisible button sitting over the fleet would
+   eat presses meant for a craft.
+
+   ⚠ `animation: none` IS LOAD-BEARING, and leaving it out is a bug rather than an omission: a CSS
+   animation outranks an ordinary declaration, so for the 1.25s its arrival keyframe is running the
+   `opacity: 0` below simply loses. Scroll into the fleet inside that window — which is precisely when a
+   visitor who has just been handed a new control is most likely to — and the button rides over the
+   ships until the keyframe happens to end. Killing the animation is what lets the cascade apply.
+   (`HeroScrollCue`'s header records the same trap from the other direction.) */
+.hero-section.is-services .hero-return {
+  animation: none;
+  opacity: 0;
+  pointer-events: none;
   transition: none;
 }
 /* The instrument HUD + the square's ring belong to the hero only — hide them with the headline
@@ -1515,6 +1535,203 @@ body {
 .hero-touch-cue-glyph {
   width: clamp(0.85rem, 3vw, 1.1rem);
   height: auto;
+}
+
+/* ─── The way back — hero → contact ─────────────────────
+   Only ever on screen once a loop has completed (the component renders null before that), and only on
+   the hero: `.is-services` hides it with the headline and the tagline, and for the same reason.
+
+   ⚠ IN THE FLOW, NOT PINNED TO THE BOTTOM. It was `position: absolute; bottom: …` and printed straight
+   across the tagline. It is a flow child sitting immediately after `.hero-main` now — and because that
+   block is `flex: 1` and centres the headline, "immediately after" is directly UNDER THE SUN, which is
+   where a control that returns you to the star belongs.
+
+   ⚠ NOT A FILLED PILL, and the first cut was one. Nothing else on this cream is a solid shape: the
+   headline is type, the tagline is type, the HUD is labels over hairlines and the scroll cue is a word
+   and an arrow. A packed amber lozenge in the middle of that reads as a component pasted in from
+   another site — which is the exact failure the brief names. It is a tracked micro-cap label over a
+   hairline, in the site's own instrument voice, and the rule under it is the only chrome it gets.
+
+   ⚠ AMBER ON CREAM MUST BE THE DEEPENED ONE. The hero's substrate is `#e2dfd2`, where the raw
+   `--accent` (#ff8a1a) manages 1.77:1 — nowhere near what small tracked type needs. `--accent-deep`
+   (#8f4400) holds 5.93:1 on this cream and exists for exactly this. See docs/amber-color-system.md.
+   ⚠ `--accent-deep` DIRECTLY, not `--hud-accent`, which is the same value but is declared ON
+   `.hero-hud` — a panel that is unmounted outright below 760px. Inheriting it here would have given
+   this control no colour at all on precisely the devices where it is the only way back.
+
+   ⚠ And NO `mix-blend-mode`. Everything else down here inverts as the cream gives way to black; this
+   must not, because it is a CONTROL whose colour is a brand decision rather than a contrast trick, and
+   a blended button inverts its hover state along with everything else. It is hidden the moment the page
+   stops being cream, so it never needs the blend's help. */
+/* ⚠ ZERO HEIGHT, AND THAT IS THE ENTIRE POINT OF IT EXISTING. The control is rendered CONDITIONALLY
+   — it appears the moment a loop lands — and the first cut put it straight into the hero's flex column.
+   So the instant it appeared it took ~40px out of `.hero-main`, which is `flex: 1`, which moved the
+   headline up… and with it `[data-hero-card]`, the untransformed box `HeroSun` MEASURED to place the
+   star. The measurement was already taken. The sun stayed where the old layout said it should be and
+   the square slid out from under it.
+   An always-present 0-height anchor makes the column identical whether or not the button exists, so
+   nothing the control does can ever move the star again. It is also why the button is positioned FROM
+   here rather than from the section: this line sits exactly under the headline block, which is to say
+   under the sun. */
+.hero-return-anchor {
+  position: relative;
+  z-index: 6;
+  width: 100%;
+  height: 0;
+}
+
+.hero-return {
+  position: absolute;
+  left: 50%;
+  top: clamp(0.9rem, 2.4vh, 1.75rem);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.25rem 0.15rem 0.4rem;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid rgb(var(--accent-deep-rgb) / 0.3);
+  border-radius: 0;
+  cursor: pointer;
+  /* It arrives with the rest of the hero rather than snapping in — the loop lands, the page assembles,
+     and this is part of that. The delay is its own, not a number shared with the pin. */
+  animation: hero-return-arrive 0.7s ease-out 0.55s backwards;
+  transition:
+    color 0.3s ease,
+    border-color 0.3s ease;
+}
+
+.hero-return:hover,
+.hero-return:focus-visible {
+  border-bottom-color: var(--accent-deep);
+  outline: none;
+}
+
+/* The glyph lifts on hover — the direction it is about to take you, said once. Its own element so the
+   transform never lands on the button, which carries the arrival keyframe. */
+.hero-return-glyph {
+  width: 0.65rem;
+  height: auto;
+  flex-shrink: 0;
+  transition: transform 0.3s ease;
+}
+
+.hero-return:hover .hero-return-glyph,
+.hero-return:focus-visible .hero-return-glyph {
+  transform: translateY(-0.15rem);
+}
+
+.hero-return-label {
+  /* The label is the whole control; nothing here may wrap it to two lines. */
+  white-space: nowrap;
+}
+
+/* ⚠ The X translate is carried through both keys. The base rule uses `transform` to centre the button
+   on its anchor, and an animation that wrote a bare `translateY` would drop that centring for its whole
+   duration — the control would arrive half a width to the right and jump into place at the end. */
+@keyframes hero-return-arrive {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0.6rem);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ⚠ The tracking is what breaks first on a phone, not the font size. Nineteen characters at 0.1875em
+   is ~185px of letter-spacing alone; at 360px, with the frame's own padding, that is the line wrapping
+   inside a `nowrap` and overflowing instead. Tightened rather than shrunk — below ~11px this stops
+   being small caps and starts being a smudge. */
+@media (max-width: 51.25em) {
+  .hero-return {
+    gap: 0.4rem;
+    letter-spacing: 0.12em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* It still has to APPEAR — the control is the feature, not decoration — it just does so without
+     travel or a fade. */
+  .hero-return,
+  .hero-return-glyph {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ─── The phone's instrument strip ─────────────────────────
+   See HeroMobileReadout for why this exists as static markup rather than as the HUD at a smaller size.
+
+   ⚠ THERE IS NO WIDTH GATE HERE, DELIBERATELY. The rule is "show this exactly when the HUD is not
+   mounted", and the HUD is unmounted by `useIsLowPowerViewport` — coarse pointer OR under 760px. CSS
+   can express the second half and not the first, so a width query would have left a landscape phone
+   (932px wide, coarse) with the HUD unmounted and this hidden: no panel at all, which is the hole
+   `.hero-touch-cue` still has. Rendering is gated in Hero.tsx on the same boolean that removes the HUD,
+   so the two are mutually exclusive by construction rather than by two numbers agreeing. */
+.hero-readout {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem clamp(1.1rem, 5vw, 2rem);
+  width: 100%;
+  /* Clears the 4.5rem navbar with a shoulder of its own. */
+  padding: clamp(5.5rem, 13vh, 7rem) clamp(1.25rem, 5vw, 2rem) 0;
+}
+
+.hero-readout-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  /* Centred, because the strip is centred. Left-aligning the pairs under a centred headline reads as
+     three things that failed to line up rather than as one instrument. */
+  align-items: center;
+  text-align: center;
+}
+
+/* ⚠ #565656 rather than the HUD's own `--hud-label-muted` (#6f6f6f), and the difference is not taste.
+   That value is graded to pass THROUGH `mix-blend-mode: difference` against the cream; read straight,
+   as it is here, it lands at 3.76:1 — a fail at this size. #565656 holds 5.46:1 on `#e2dfd2`. The token
+   is also declared on `.hero-hud`, which does not exist wherever this is rendered. */
+.hero-readout-label {
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: #565656;
+}
+
+.hero-readout-value {
+  font-size: var(--fs-tiny);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hero-dust);
+}
+
+/* The ONLINE light. Amber deepened for the cream, as everywhere on this section. */
+.hero-readout-value[data-accent='true'] {
+  color: var(--accent-deep);
+}
+
+/* ⚠ The one frame this cannot have: a LANDSCAPE PHONE. 932 × 430 renders it (coarse pointer, so the
+   HUD is gone) into 430px of height that already has to hold a navbar, a headline, a tagline and a
+   scroll cue. 32em is the site's landscape-phone height and this is what it is for — the strip is
+   atmosphere, and atmosphere is the first thing a frame with no room should stop paying for. */
+@media (max-height: 32em) {
+  .hero-readout {
+    display: none;
+  }
 }
 
 /* A fall and a recovery, not a bounce: it drifts down the way the page does and eases back. */
@@ -2254,6 +2471,22 @@ body {
 
 .loop-veil-black {
   background: #000;
+}
+
+/* ── The reverse's iris ──
+   Black, and it closes INWARD from the edges rather than flooding outward from the middle: forward you
+   arrive out of the cream, backwards you leave through the dark, and a cover should say which way you
+   are going. The aperture is a radial-gradient mask written per frame by GSAP (see LoopVeil) because
+   the shape wanted is a rectangle with a HOLE in it, and `clip-path: circle()` can only express the
+   filled circle — the exact inverse.
+
+   ⚠ Overscanned like the cream, and for the identical reason: `feDisplacementMap scale=70` samples up
+   to ±35px past the layer's own edge, where there is nothing, so a viewport-sized layer tears a
+   transparent fringe around all four sides. Raise the filter's `scale` and both insets follow it. */
+.loop-veil-iris {
+  inset: -4rem;
+  background: #000;
+  filter: url(#loop-veil-liquid);
 }
 
 /* The hero's own background colour, so when this clears there is nothing to cross-fade INTO — the page

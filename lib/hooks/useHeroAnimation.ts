@@ -50,10 +50,15 @@ import {
   type HeroServicesProgressDetail,
 } from "@/lib/heroServicesEvents";
 import {
+  LOOP_ARRIVED_EVENT,
   LOOP_COVERED_EVENT,
   LOOP_PROGRESS_EVENT,
   LOOP_REQUEST_EVENT,
   LOOP_RESET_EVENT,
+  LOOP_REVERSE_BEGIN_EVENT,
+  LOOP_REVERSE_COVERED_EVENT,
+  LOOP_REVERSE_REQUEST_EVENT,
+  LOOP_SNAP_EVENT,
   SUN_REGATHER_EVENT,
   type LoopProgressDetail,
 } from "@/lib/loopEvents";
@@ -305,6 +310,52 @@ const LOOP_CONTACT_UI_FADE: [number, number] = [0.0, 0.2];
  * It is a landing pad and nothing else — one stop, no content, no navbar item reads its meter.
  */
 const LOOP_STOP_COUNT = 1;
+
+// ── The loop, run backwards: hero → contact ──
+// See docs/reverse-loop-plan.md. The reverse authors no animation of its own: it parks the scrollbar
+// just inside the far end of the dive, under a cover, and then glides it back to contact — so what
+// plays is the dive itself, scrubbed the other way.
+/**
+ * ⚠ HOW FAR "ZOOMED IN" THE RETURN ARRIVES, AND IT IS NO LONGER A POSITION ON THE SCROLLBAR.
+ *
+ * The reverse used to park the SCROLLBAR partway into the dive and then glide it back to contact. That
+ * is why the site was visibly scrolling behind the cover, and it made every frame of the arrival depend
+ * on a scrubbed pin reporting exactly what it had been told. It does neither now: the jump lands on the
+ * contact stop — the settled state a covered nav jump produces — and the zoom-out is an ARRIVAL that
+ * the pin drives itself, through the same channel the dive publishes on. Nothing scrolls.
+ *
+ * Chosen against the dive's own windows, for the shot rather than for a boundary:
+ * · the camera distance is `lerp(1, DIVE_MIN_DISTANCE, d²)`, so 0.66 puts it at ~59 % of contact's —
+ *   the hole arrives ~1.7× its resting size, which is what "as if we were zoomed in" looks like.
+ * · just BELOW `DIVE_BLACKOUT`'s 0.68, so the shadow is at rest and the hole is fully visible the
+ *   instant the iris opens rather than being swallowed by the blackout.
+ * · the eased dive is ~0.72 here, so `DIVE_LENSING_STRENGTH` is near full — and its relaxation on the
+ *   way down to 0 is the whole point of the return.
+ * · well above `LOOP_CONTACT_UI_FADE`'s 0.2, so the copy is still hidden on arrival and comes back at
+ *   the END, after the hole has settled. That ordering is free: `applyContactOpacity` reads this value.
+ */
+const REVERSE_ARRIVAL_DIVE = 0.66;
+/**
+ * How long the zoom-out takes.
+ *
+ * `power2.inOut`, deliberately: it lingers at the top, which holds the heavy lensing on screen long
+ * enough to read as a shot rather than a flash, then releases and settles gently into the plain hole as
+ * the contact copy fades up underneath it.
+ */
+const REVERSE_ARRIVAL_SECONDS = 5;
+const REVERSE_WHEEL_THRESHOLD = 180;
+/** The accumulator forgets after a quiet gap, so small nudges minutes apart never add up to a journey. */
+const REVERSE_WHEEL_IDLE_MS = 500;
+/** How close to the pin's own start counts as "at the top". A hair, not a zone. */
+const REVERSE_TOP_EPSILON = 0.0015;
+/**
+ * How long the pin waits for the cover to say it has the screen before going ahead without it.
+ *
+ * Generous against `LoopVeil`'s ~1.15s flood, because it is a NET and not a schedule — lapsing means
+ * the cover failed, and the only thing worse than an uncovered teleport is a page that has stopped
+ * answering the wheel. See `beginReverse`.
+ */
+const REVERSE_COVER_NET_MS = 2600;
 
 // The far edge of a crossing IS the next section's first stop, and browsers round the settled scroll
 // to device pixels — so a glide "onto" that stop can leave the pin a hair inside the span and the
@@ -626,20 +677,44 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // Latched so the jump fires ONCE per arrival at the far edge. `apply` runs on every update whose
     // progress moved, and after the teleport the pin immediately reports 0 through this same crossing.
     let teleported = false;
-    const applyContactToHeroLoop = (progress: number) => {
+    // ── The dive, and the TWO things that can drive it ──
+    //
+    // Forwards it is the SCROLL: the crossing between contact and the loop stop, scrubbed like every
+    // other. Backwards there is no scroll at all — the jump lands on the contact stop and the zoom-out is
+    // an ARRIVAL the pin tweens. Both end up here, and they are combined rather than allowed to take
+    // turns writing, which is the same shape `combineChamberTarget` uses in the works field and for the
+    // same reason: one published number, two contributors, an explicit rule for what wins.
+    //
+    // ⚠ `Math.max`, so the arrival can never be pulled down by the crossing sitting at its resting 0 —
+    // which it does for the entire return — and a visitor who scrolls DOWN mid-arrival is handed straight
+    // back to the scroll, because the crossing's rising value simply overtakes the decaying one.
+    let diveFromCrossing = 0;
+    let diveFromArrival = 0;
+    /** What was last sent. Nothing downstream benefits from being told the same number twice. */
+    let publishedDive = -1;
+    const publishDive = () => {
+      const progress = Math.max(diveFromCrossing, diveFromArrival);
+      if (progress === publishedDive) return;
+      publishedDive = progress;
       // Reported, never written — applyContactOpacity owns the property. See its note for what writing
       // it directly from here did.
       contactTakenProgress = progress;
       applyContactOpacity();
-
       window.dispatchEvent(
         new CustomEvent<LoopProgressDetail>(LOOP_PROGRESS_EVENT, {
           detail: { progress },
         }),
       );
-      // ⚠ Exactly 1, never a threshold. This is the one irreversible action on the site apart from the
-      // intro — once the scrollbar is at 0 there is no scrolling back — so it must never fire because a
-      // value drifted to 0.9997. CROSSING_SNAP_EPSILON guarantees the boundary is exact.
+    };
+
+    const applyContactToHeroLoop = (progress: number) => {
+      diveFromCrossing = progress;
+      publishDive();
+      // ⚠ Exactly 1, never a threshold, and read off the CROSSING rather than the published value — the
+      // forward teleport may only ever be committed by a real scroll reaching the far edge, never by an
+      // arrival that happens to be passing through a high number. This is the one irreversible action on
+      // the site apart from the intro, so it must never fire because a value drifted to 0.9997.
+      // CROSSING_SNAP_EPSILON guarantees the boundary is exact.
       if (progress >= 1 && !teleported) {
         teleported = true;
         commitTeleport();
@@ -725,6 +800,16 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     });
     const { fillFraction, carouselStart, stopProgressValues, totalStops } =
       layout;
+
+    // ── Where the reverse loop lands ──
+    // Resolved by SEARCH rather than by index arithmetic. Contact is the second-to-last section TODAY,
+    // and writing that down would be a landmine for whoever adds a section: `carouselSections` is the one
+    // place that is supposed to change.
+    const contactSectionIndex = carouselSections.findIndex(
+      (section) => section.key === "contact",
+    );
+    const contactStop =
+      contactSectionIndex >= 0 ? layout.sections[contactSectionIndex].firstStop : 0;
 
     // ── Stage transitions — which full-black scene is on screen ──
     // The sun's "behind + energised" state is turned on when the fleet first reveals and stays on
@@ -945,6 +1030,23 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     let wasInFill = true;
     /** Set by the loop's teleport, cleared by the next genuine update — see the arrival branch below. */
     let justTeleported = false;
+    /** A loop has been completed at least once, so the way back is armed. Latched for the session. */
+    let hasLooped = false;
+    /**
+     * A reverse is under way and the cover is not up yet.
+     *
+     * Its only job is to own the gesture for that window — once the teleport has happened,
+     * `committedGlide` does it, which is why this is cleared the moment the glide starts rather than
+     * timed against anything.
+     */
+    let reverseActive = false;
+    let reverseWheelAccum = 0;
+    let reverseWheelIdleTimer = 0;
+    /** Armed while waiting for the cover to answer — see beginReverse for why it must exist. */
+    let reverseNet = 0;
+    /** The zoom-out. Tweens `reverseArrivalProxy.dive` down to 0 — see REVERSE_ARRIVAL_DIVE. */
+    let reverseArrival: gsap.core.Tween | null = null;
+    const reverseArrivalProxy = { dive: 0 };
     let stepLocked = false;
     let wheelAccum = 0;
     let touchStartY = 0;
@@ -1502,10 +1604,89 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       justTeleported = true;
       lastCommittedIndex.fill(-1);
       lastCrossingProgress.fill(-1);
+      // The way back exists from here on. Latched for the session: having once been through the hole,
+      // the visitor knows what is at the other end of it. See LOOP_ARRIVED_EVENT.
+      hasLooped = true;
+      // ⚠ A return's zoom-out may not survive into a fall. Nothing normally runs both — the reverse
+      // locks the stepper for its whole length — but the two write the same published value, so the one
+      // that is leaving retires its contribution rather than leaving it to be maxed against.
+      reverseArrival?.kill();
+      reverseArrival = null;
+      diveFromArrival = 0;
       // Staged, NOT played. The screen is black and the cream has not closed yet — the hero holds this
       // pose until the veil says it has the screen (LOOP_COVERED_EVENT below), so the entrance is
       // actually watched rather than spent under the cover.
       stageHeroEntrance();
+    };
+
+    // ── The teleport, run backwards ──
+    // Also runs with the screen covered, so this too is about what must be TRUE by the next frame.
+    //
+    // ⚠ It is NOT the mirror of `commitTeleport` in one respect, and that difference is the whole reason
+    // LOOP_SNAP_EVENT exists: the forward jump can tell every scene to be at ZERO, because it knows the
+    // destination is the top. This one lands somewhere the scenes have to be told about, so it drives
+    // the crossings to the new position ITSELF and only then asks them to stop easing. Fire the snap
+    // first and every scene lands on the state it is leaving.
+    const commitReverseTeleport = () => {
+      const trigger = scrollTimeline?.scrollTrigger;
+      if (!trigger) return;
+
+      // ⚠ THE CONTACT STOP, FULL STOP — not a position partway into the dive.
+      //
+      // The first build parked the scrollbar inside the dive and then glided it back, so that the return
+      // WAS the crossing scrubbed the other way. It is a lovely idea and it cost three separate defects:
+      // the site was visibly scrolling behind the cover, every frame of the arrival depended on a
+      // scrubbed pin landing exactly where it was told, and the one destination the pin could not be
+      // trusted to report was the one it had just been thrown to.
+      //
+      // Landing on a STOP removes all three at once. It is the state a covered nav jump to contact
+      // produces, which has worked since the navbar was wired; the pin then sits perfectly still for the
+      // whole arrival; and a stale report during the scrub's settle clamps to the crossing's resting 0,
+      // which `applyCrossings` skips as unchanged. The zoom-out is authored instead — see the tween in
+      // `onLoopReverseCovered`, and `publishDive` for how the two contributors combine.
+      const targetProgress = stopProgressValues[contactStop];
+      const targetScroll =
+        trigger.start + targetProgress * (trigger.end - trigger.start);
+
+      // Whatever the visitor was doing with the scrollbar, we own it now.
+      gsap.killTweensOf(window);
+
+      // ⚠ EVERY PIECE OF BOOKKEEPING `onUpdate` READS IS SET *BEFORE* THE SCROLLBAR MOVES, AND THE
+      // ORDER IS THE WHOLE FIX.
+      //
+      // `trigger.update()` below drives the pin's `onUpdate` SYNCHRONOUSLY. This jump lands PAST the
+      // fill, so that update reaches the fill-exit arrival branch — and with `wasInFill` still true it
+      // fires `goToStop(0)`, gliding the visitor onto CRAFT 01. The return ended in Services.
+      //
+      // The forward teleport never had to think about this: its destination is progress 0, inside the
+      // fill, so its update takes the early return and the branch is unreachable. Nothing about that
+      // safety transfers to a jump that lands anywhere else — and the branch's own header records it
+      // having hijacked a navbar jump and the forward loop the same way. This is the third.
+      //
+      // `justTeleported` is belt to the reordering's braces: it exists to suppress exactly this branch
+      // for one update after a teleport, and a reverse is a teleport.
+      committedGlide = false;
+      currentStop = contactStop;
+      wasInFill = false;
+      justTeleported = true;
+      lastCommittedIndex.fill(-1);
+      lastCrossingProgress.fill(-1);
+
+      window.scrollTo(0, targetScroll);
+      trigger.scroll(targetScroll);
+      // Same pair as the forward teleport, and for the same reason: this pin is SCRUBBED, so moving the
+      // scrollbar only moves the target. Without the flush the pin would spend ~1.8s easing down the
+      // whole page — forwards, this time, playing every crossing on the way.
+      trigger.update();
+      trigger.getTween()?.progress(1);
+
+      // ⚠ DRIVEN BY HAND, and the order matters. `trigger.update()` makes the progress true "on the next
+      // frame" (the forward teleport's own note says so), which is one frame too late for a snap that has
+      // to read the new targets. Both of these are pure functions of the progress they are handed, so
+      // this is not a duplicate of the pin's work — it IS the pin's work, done now instead of next frame.
+      applyCrossings(targetProgress);
+      applyHeroServicesProgress(targetProgress);
+      window.dispatchEvent(new Event(LOOP_SNAP_EVENT));
     };
 
     // ── The cream has the screen; build the hero underneath it ──
@@ -1515,8 +1696,105 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     const onLoopCovered = () => {
       window.dispatchEvent(new Event(SUN_REGATHER_EVENT));
       playHeroEntrance();
+      // The hero's return control renders on this and not before — see LOOP_ARRIVED_EVENT. Announced
+      // here rather than at the teleport so it arrives WITH the rest of the hero, as part of the page
+      // assembling itself out of the flood, instead of appearing on a black screen a second earlier.
+      window.dispatchEvent(new Event(LOOP_ARRIVED_EVENT));
     };
     window.addEventListener(LOOP_COVERED_EVENT, onLoopCovered);
+
+    // ── The loop, run backwards ──
+    // Two ways in (the hero's control, and the wheel pushed up at the top) and ONE commit path, for the
+    // reason the forward loop gives: a control that moved the scrollbar itself would be a second route
+    // through one cinematic, and the two would drift the first time its length changed.
+    const canReverse = () =>
+      hasRevealed &&
+      hasLooped &&
+      !reverseActive &&
+      !coveredJump &&
+      // The hero is still assembling out of the cream. Leaving through a door that is still being built
+      // is the one moment this must refuse — and it is also the window a visitor is most likely to
+      // flick through, having just watched the page move on its own.
+      !heroEntrancePlaying &&
+      !!scrollTimeline?.scrollTrigger &&
+      scrollTimeline.scrollTrigger.progress <= REVERSE_TOP_EPSILON &&
+      window.scrollY <= 0;
+
+    const beginReverse = () => {
+      if (!canReverse()) return;
+      reverseActive = true;
+      reverseWheelAccum = 0;
+      window.clearTimeout(reverseWheelIdleTimer);
+      // ⚠ THE NET, AND IT IS NOT OPTIONAL. Between here and the cover answering, `reverseActive` makes
+      // this hook swallow every wheel and every touch (see swallowDuringGlide) — so if the answer never
+      // comes, the page is not merely stuck on the hero, it is UNSCROLLABLE. `LoopVeil` is mounted in
+      // page.tsx and will normally answer in about a second, but "normally" is not a guarantee: an
+      // effect that has not run yet, a throw inside it, a future refactor that moves the component.
+      //
+      // It PROCEEDS rather than aborting, which is the same call `armCoveredJumpNet` makes for the same
+      // situation: a transition the visitor can see is a blemish, a page that ignores the wheel is a
+      // bug report. Worst case the reverse simply plays in the open.
+      window.clearTimeout(reverseNet);
+      reverseNet = window.setTimeout(onLoopReverseCovered, REVERSE_COVER_NET_MS);
+      // Ask for the cover. Nothing moves until it answers — see LOOP_REVERSE_COVERED_EVENT.
+      window.dispatchEvent(new Event(LOOP_REVERSE_BEGIN_EVENT));
+    };
+
+    const onLoopReverseRequest = () => beginReverse();
+    window.addEventListener(LOOP_REVERSE_REQUEST_EVENT, onLoopReverseRequest);
+
+    // The cover has the screen. Everything below happens unwatched, and the pin is moved SYNCHRONOUSLY
+    // inside this dispatch — the veil relies on that, because the frame it paints next assumes the dive
+    // is already parked at its far end.
+    function onLoopReverseCovered() {
+      // Also the guard against the net and the veil both arriving — whichever is second is a no-op.
+      if (!reverseActive) return;
+      window.clearTimeout(reverseNet);
+
+      // ⚠ ARMED BEFORE THE JUMP, not after. `commitReverseTeleport` applies the crossings, and the dive
+      // crossing at the contact stop is 0 — so if the arrival were armed afterwards the very first frame
+      // out from under the cover would publish contact's RESTING state: no lensing, no zoom, and the copy
+      // already on screen. The whole return would be over before the iris finished opening.
+      reverseArrivalProxy.dive = REVERSE_ARRIVAL_DIVE;
+      diveFromArrival = REVERSE_ARRIVAL_DIVE;
+
+      commitReverseTeleport();
+
+      // ⚠ Set the stage explicitly rather than waiting for the pin to resolve it. We came from `fill`,
+      // so nothing has added `.is-services` — and the cover would lift on a cream page with the hero's
+      // headline still on it. `setStage` no-ops when the pin agrees a frame later.
+      setStage("contact");
+
+      // ── The zoom-out ──
+      // The only authored animation in the whole feature, and it is an ARRIVAL rather than a crossing:
+      // the pin is standing still at the contact stop and this walks the dive down from "zoomed in" to
+      // "here". Everything it drives — the camera's distance, the lensing's strength and liquid, the
+      // horizon's shadow, the contact copy's fade — is already a pure function of that one number, so
+      // there is nothing else to write.
+      reverseArrival?.kill();
+      reverseArrival = gsap.to(reverseArrivalProxy, {
+        dive: 0,
+        duration: reduceMotion ? 0 : REVERSE_ARRIVAL_SECONDS,
+        ease: "power2.inOut",
+        onUpdate: () => {
+          diveFromArrival = reverseArrivalProxy.dive;
+          publishDive();
+        },
+        onComplete: () => {
+          reverseArrival = null;
+          // Exactly 0, not 0.0001: from here the crossing owns the dive again and the two must agree.
+          diveFromArrival = 0;
+          publishDive();
+        },
+      });
+
+      lockStepping(
+        reduceMotion ? 0 : REVERSE_ARRIVAL_SECONDS * 1000 + LOOP_SETTLE_MS,
+      );
+      // Nothing is left to cover: the pin does not move again, and the arrival owns the stepper's lock.
+      reverseActive = false;
+    }
+    window.addEventListener(LOOP_REVERSE_COVERED_EVENT, onLoopReverseCovered);
 
     // The Travel in time button. Routed through the pin rather than scrolling by itself, so the button
     // and the scroll gesture commit the SAME cinematic and cannot drift apart when its length changes.
@@ -1681,10 +1959,43 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // the moment the pin lands — and owns it regardless of where we are, because one can start from the
     // hero, where `inCarouselRegion` is false and a gesture would otherwise fall through to native
     // scroll and drag the page around underneath the cover.
+    // ⚠ `reverseActive` is on this list for exactly the reason `coveredJump` is. A reverse begins at the
+    // HERO, where `inCarouselRegion` is false and the pin has not moved yet, so for the second or so the
+    // cream takes to close, every gesture would fall through to native scroll and drag the page around
+    // underneath the cover. It stops being needed the instant the teleport lands, which is when
+    // `committedGlide` takes over — see `onLoopReverseCovered`.
     const swallowDuringGlide = (event: Event) => {
-      if (!coveredJump && !(committedGlide && inCarouselRegion())) return false;
+      if (
+        !coveredJump &&
+        !reverseActive &&
+        !(committedGlide && inCarouselRegion())
+      ) {
+        return false;
+      }
       event.preventDefault();
       scheduleRearm();
+      return true;
+    };
+
+    // ── Scrolling up at the top asks for the reverse ──
+    // Wheel only, and the omission is deliberate: on a phone the equivalent gesture is a pull-down at
+    // the top of the page, which is the platform's pull-to-refresh. Claiming it would mean breaking
+    // refresh for anyone who had completed a loop, to save them a tap on a control that is right there.
+    const tryReverseWheel = (deltaY: number): boolean => {
+      if (deltaY >= 0) {
+        // Any downward intent abandons the attempt outright. This must never fire off the tail of a
+        // gesture that was trying to go INTO the site and overshot the top.
+        reverseWheelAccum = 0;
+        return false;
+      }
+      if (!canReverse()) return false;
+      reverseWheelAccum -= deltaY;
+      window.clearTimeout(reverseWheelIdleTimer);
+      reverseWheelIdleTimer = window.setTimeout(() => {
+        reverseWheelAccum = 0;
+      }, REVERSE_WHEEL_IDLE_MS);
+      if (reverseWheelAccum < REVERSE_WHEEL_THRESHOLD) return false;
+      beginReverse();
       return true;
     };
 
@@ -1694,6 +2005,14 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // the page's own. Nothing on the site scrolls independently today; if something ever does, it
       // needs an exemption here before it will respond to a wheel at all.
       if (swallowDuringGlide(event)) return;
+      // Above the carousel check, because at the top of the page `carouselDirection` returns 0 and this
+      // would never be reached. `preventDefault` only once it has actually committed: while the wheel is
+      // still accumulating, an upward scroll at scroll 0 does nothing anyway, and swallowing it early
+      // would cost the platform's own overscroll feel for no gain.
+      if (tryReverseWheel(event.deltaY)) {
+        event.preventDefault();
+        return;
+      }
       const direction = carouselDirection(event.deltaY);
       if (direction === 0) return; // fill phase or an end → native scroll handles it
       event.preventDefault(); // we own carousel movement now
@@ -1745,6 +2064,11 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       window.removeEventListener(JUMP_COVERED_EVENT, onJumpCovered);
       window.removeEventListener(LOOP_REQUEST_EVENT, onLoopRequest);
       window.removeEventListener(LOOP_COVERED_EVENT, onLoopCovered);
+      window.removeEventListener(LOOP_REVERSE_REQUEST_EVENT, onLoopReverseRequest);
+      window.removeEventListener(LOOP_REVERSE_COVERED_EVENT, onLoopReverseCovered);
+      window.clearTimeout(reverseWheelIdleTimer);
+      window.clearTimeout(reverseNet);
+      reverseArrival?.kill();
       window.removeEventListener("wheel", handleWheel);
       window.removeEventListener("touchstart", handleTouchStart);
       window.removeEventListener("touchmove", handleTouchMove);

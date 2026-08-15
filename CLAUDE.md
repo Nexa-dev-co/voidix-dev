@@ -367,6 +367,28 @@ loop is a **teleport** — `scrollTo(0)` under cover of the hole's own shadow. T
 `LOOP_RESET_EVENT` exists: everything that *eases* toward a target has to be told to stop easing and be
 there now, or the site visibly un-plays behind the cream. See `docs/contact-loop-plan.md`.
 
+**…and the loop runs BOTH WAYS as of 2026-08-15** (`docs/reverse-loop-plan.md`). Once a visitor has been
+through the hole, the hero's *Back to the horizon* control and a deliberate wheel-up at the top take them
+back — the forward cinematic mirrored beat for beat: **black closes from the EDGES in** (the iris, a
+liquid mask), solid black, the jump, then the iris opens onto a hole **already zoomed in under heavy
+lensing**, which relaxes into a plain black hole as the contact copy fades back up.
+
+⚠ **The return does not scroll, and this is the design.** The obvious build — park the scrollbar partway
+into the dive and glide it back, so the return IS the crossing scrubbed the other way — was built, and
+shipped three defects at once (`docs/reverse-loop-plan.md` §10). The jump lands on the **contact stop**,
+the pin then **does not move again**, and the zoom-out is one authored tween of one number.
+- ⚠ **`publishDive` is the single writer, and it takes `max(crossing, arrival)`.** Two contributors, one
+  published value, an explicit combine — the shape `combineChamberTarget` uses. `max` is what stops the
+  crossing's resting 0 pulling the arrival down, and what hands a visitor who scrolls mid-arrival back to
+  the scroll. The forward teleport still fires off the **crossing's own** value, never the combined one.
+- ⚠ **`REVERSE_ARRIVAL_DIVE` (0.66) is picked from the dive's WINDOWS, never from the boundary at 1.**
+  Below `DIVE_BLACKOUT[0]` so the hole is visible rather than blacked out; high enough that the lensing is
+  near full, because its relaxation is the shot; above `LOOP_CONTACT_UI_FADE`'s end so the copy returns
+  last. An earlier cut used 0.98 — chosen for its distance from 1 — and that is *inside the blackout*: it
+  shipped "there is no black hole at contact".
+- ⚠ **`LOOP_RESET_EVENT` could not be reused for the return** — see the event table. Every one of its
+  handlers writes **zero**, which is right for a jump to the top and wrong for a jump anywhere else.
+
 **The layout is data, not arithmetic spread through the file.** `useHeroAnimation` declares a list
 of sections; `lib/carouselLayout.ts` derives everything else from it:
 
@@ -587,8 +609,11 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:hero-services` | `HERO_SERVICES_PROGRESS_EVENT` | useHeroAnimation | The hero→services span. Carries **two** fractions: `progress` (to the fleet landing) and `fill` (to the square covering the viewport). The pin owns the layout; the sun owns what to do with it. |
 | `voidix:contact-progress` | `CONTACT_PROGRESS_EVENT` | useHeroAnimation | The chamber→contact return, `0..1`. Its own signal rather than the chamber's, so one number never has two writers. |
 | `voidix:loop-progress` | `LOOP_PROGRESS_EVENT` | useHeroAnimation | The dive into the hole, `0..1`. Reversible; its job is to be opaque by 1. |
-| `voidix:loop-reset` | `LOOP_RESET_EVENT` | useHeroAnimation | **The scrollbar has just jumped to the top — snap, do not ease.** Every owner of an eased value listens. |
+| `voidix:loop-reset` | `LOOP_RESET_EVENT` | useHeroAnimation | **The scrollbar has just jumped to the TOP — be at the hero's state now.** ⚠ Not a general "you were moved" signal, whatever its prose used to say: every handler writes **zero**, which is right because the destination is 0 and is exactly why a jump landing anywhere else needs the row below. |
+| `voidix:loop-snap` | `LOOP_SNAP_EVENT` | useHeroAnimation | The direction-agnostic half: **`current = target`, and nothing else.** For the reverse loop, which lands at the bottom. ⚠ Dispatch only AFTER driving the crossings to the new position, or every scene snaps to the state it is leaving. |
 | `voidix:loop-request` | `LOOP_REQUEST_EVENT` | ContactSection | The "Travel in time" button. Routed through the pin so button and scroll commit one cinematic. |
+| `voidix:loop-reverse-request` / `-begin` / `-covered` | `LOOP_REVERSE_*_EVENT` | HeroReturnCue → useHeroAnimation ↔ LoopVeil | **The loop run backwards: hero → contact.** Request (the control, or the wheel pushed up at the top) → the pin says yes and asks for the cover → the cover says it has the screen, and the pin teleports **synchronously inside that dispatch**. |
+| `voidix:loop-arrived` | `LOOP_ARRIVED_EVENT` | useHeroAnimation | A loop has completed. **Arms the way back** — the hero's return control does not render before this and the wheel gesture does nothing, so a first visit is untouched. |
 | `voidix:sun-regather` | `SUN_REGATHER_EVENT` | useHeroAnimation | Replay the shard assembly at the top. **Not** `SUN_ASSEMBLE_EVENT` — the intro is still mounted and still listening to that one. |
 
 One per-frame **store** sits alongside these, for values too hot for an event: `lib/hologramPose.ts`

@@ -1,7 +1,7 @@
 # The reverse loop — travelling back to contact
 
-> **Status: PROPOSED.** Written 2026-08-15. The two bugs described in §1 are **FIXED**; §2 onward is
-> the unbuilt feature.
+> **Status: BUILT**, 2026-08-15. §1's two bugs are fixed and §2–§6 shipped. **§6 ② was wrong and the
+> correction is the most important thing in this document — see §8.**
 
 The site loops: contact → dive into the black hole → teleport → cream flood → hero. There is no way
 back. This is the way back.
@@ -67,75 +67,90 @@ the first time the dive's length changed).
 1. **A button on the hero.**
 2. **Scrolling up at the top of the page**, where today nothing happens at all.
 
-And what they see is **the dive, played backwards**: the black recedes, the hole pulls away, the
-contact form fades back up around it.
+And what they see is a **black iris closing inward from the edges**, and then **the dive played
+backwards**: the cover opens from the middle onto a heavily lensed black hole, the lensing relaxes into
+a plain one as the camera pulls out, and the contact copy fades back up around it.
 
 ---
 
-## 3 · Why this is nearly free
+## 3 · The shape — the forward loop, mirrored
 
-> *"Every visual in a crossing is a pure function of its progress `0..1`."* — CLAUDE.md, rule 2
-
-That rule is what pays for this. **There is no reverse animation to write.** The dive already reverses
-perfectly — scroll back out of it today and you are at the contact form again. All the feature has to
-do is get the scrollbar to the far end of the dive without anyone watching, and then glide it back.
+The forward loop, as it plays:
 
 ```
- ①  HERO, pin progress 0
-     │   wheel-up at scrollY 0, or the button
-     ▼
- ②  ASK FOR THE COVER                    LOOP_REVERSE_REQUEST_EVENT → the pin
-     │                                   the pin locks stepping and asks LoopVeil to close
-     ▼
- ③  CREAM FLOODS  ░▒▓█                   the arrival's own liquid flood, run as a CLOSE
-     │                                   LoopVeil says LOOP_COVERED_EVENT when it owns the screen
-     ▼
- ④  TELEPORT — unwatched                 scrollTo(dive at REVERSE_ENTRY_DIVE_PROGRESS)
-     │                                   trigger.update(); flush the scrub tween
-     │                                   dispatch LOOP_RESET_EVENT  ← every eased value snaps
-     │                                   currentStop = loopStop
-     ▼
- ⑤  CREAM CLEARS onto BLACK              the dive is at ~0.98: the hole owns the frame anyway
-     │
-     ▼
- ⑥  THE DIVE RUNS BACKWARDS              goToStop(contactStop, LOOP_STEP_DURATION)
-     │                                   ── not new animation. The same scrubbed crossing,
-     │                                      scrolled the other way. ──
-     ▼
-    CONTACT
+  CONTACT ── zoom IN, lensing grows ──► frame goes fully BLACK ──► cream floods
+             (the dive, scroll-scrubbed)      (teleport in here)    from the MIDDLE out
+                                                                        │
+                                                            hero content + sun appear
 ```
 
-Compare the forward loop, which is the same four beats in the other order:
+So the reverse is that read backwards, beat for beat:
 
 ```
-  FORWARD   contact ─ dive (scrub) ─► black ─ teleport ─► cream floods ─► cream clears ─► hero
-  REVERSE   hero ─ cream floods ─► teleport ─► cream clears ─► black ─ dive (scrub) ─► contact
+  HERO ── black closes from the EDGES in ──► solid BLACK ──► iris opens from the middle
+          (the iris — a liquid mask)         (teleport      onto heavy lensing, ALREADY
+                                               in here)      zoomed in
+                                                                  │
+                                                       zoom OUT: the lensing relaxes into
+                                                       a plain black hole
+                                                                  │
+                                                       contact's content fades back in
 ```
 
----
+⚠ **The zoom-out is authored; nothing scrolls.** The first build made the return the dive *scrubbed
+backwards*: park the scrollbar partway into the dive, then glide it to contact. Elegant on paper — and
+it shipped three defects at once, all of them consequences of that one decision. See §10.
 
-## 4 · The one number that matters
+What replaced it is smaller. The jump lands on the **contact stop**, the settled state a covered nav
+jump has produced since the navbar was wired, and the pin then **does not move again**. The zoom-out is
+one tween of one number, and everything it drives — the camera's distance, the lensing's strength and
+liquid, the horizon's shadow, the contact copy's fade — is already a pure function of that number, so
+there is nothing else to write.
 
-`REVERSE_ENTRY_DIVE_PROGRESS = 0.98` — where the teleport parks inside the dive. It is bounded on
-**both** sides and neither bound is cosmetic:
+Two contributors, one published value, combined rather than taking turns:
 
 ```
-  0.82 ─────────── 0.97 ──── 0.98 ──── 0.995 ─────────── 1.0
-   │                │          ▲          │               │
-   │                │          │          │               └─ applyContactToHeroLoop fires
-   VEIL_BLACK_IN    black is   PARK        1 − CROSSING_      commitTeleport at EXACTLY 1
-   starts           fully in   HERE        SNAP_EPSILON       — the forward loop
-                                           (rounds up to 1)
+  published dive = max( crossing , arrival )
+                        │          └─ the return's zoom-out, tweened by the pin
+                        └─ the scroll, resting at 0 for the whole return
 ```
 
-- **Above 0.97** so the screen is already black by the veil's own rule when the cream clears. A soft
-  bound: if it drifted you would see a hair of the hole, not a break.
-- **Below 0.995** or `applyCrossings` rounds it to 1 — see `CROSSING_SNAP_EPSILON`.
-- **Below 1**, which is the hard one. Exactly 1 fires `commitTeleport`, and *"this is the one
-  irreversible action on the site apart from the intro"*. **Park on 1 and the reverse bounces straight
-  back into the forward loop, forever.** No threshold, no drift, no rounding may reach it.
+`max`, so the arrival can never be pulled down by the crossing sitting at its resting 0 — and a visitor
+who scrolls down mid-arrival is handed straight back to the scroll, because the crossing's rising value
+simply overtakes the decaying one. It is the shape `combineChamberTarget` already uses in the works
+field, for the same reason.
 
----
+## 4 · The one number that matters — and the first value of it was wrong
+
+`REVERSE_ENTRY_DIVE_PROGRESS` — where the teleport parks inside the dive.
+
+**It shipped at 0.98 and that was a bug**, reported as *"when I go back to contact there is no black
+hole."* There was one; you were inside it.
+
+```
+   0 ─── 0.2 ────────── 0.6 ───── 0.68 ───────── 0.93 ── 1.0
+   │      │              ▲          │              │      │
+ contact  LOOP_CONTACT_ PARK    DIVE_BLACKOUT   whole   commitTeleport
+ lands    UI_FADE ends  HERE    starts          frame   fires at EXACTLY 1
+                                                black
+```
+
+`DIVE_BLACKOUT` is `[0.68, 0.93]`. At 0.98 the lensing pass paints the entire frame black and the camera
+sits at the origin, inside the horizon — so the cover opened onto nothing, and the glide's
+`power2.inOut` ease meant it *stayed* on nothing for the first seconds of the return.
+
+The mistake was picking the number against the **boundary** (how close can I get to 1 without touching
+it?) instead of against the **windows the dive actually has**. 0.6 is picked the second way:
+
+| bound | why |
+|---|---|
+| below `DIVE_BLACKOUT[0]` = 0.68 | the shadow is at its resting value, so the hole is VISIBLE the instant the cover opens. This is the one that fixes the bug. |
+| high enough for the lensing | the eased dive is ~0.65 here, so `DIVE_LENSING_STRENGTH`/`_LIQUID` are near full — the cover reveals a heavily lensed hole that then relaxes to a plain one. **That relaxation is the shot.** |
+| above `LOOP_CONTACT_UI_FADE`'s end = 0.2 | the contact copy is still hidden on arrival and fades in over the last fifth of the return, rather than being there to greet you. |
+
+⚠ The old hazard is now academic and must stay that way: **exactly 1 commits the forward teleport**,
+the one irreversible action on the site apart from the intro. Park on it and the reverse bounces into
+the forward loop for ever.
 
 ## 5 · What has to change
 
@@ -143,7 +158,7 @@ Compare the forward loop, which is the same four beats in the other order:
 |---|---|
 | `lib/loopEvents.ts` | `LOOP_REVERSE_REQUEST_EVENT`. And **re-document** `LOOP_RESET_EVENT`: it means *"the scrollbar was thrown somewhere else outright — snap, do not ease"*, not *"…to the top"*. Every consumer already does `current = target`, which is direction-agnostic; only the prose is wrong. |
 | `useHeroAnimation.ts` | `commitReverseTeleport()`, the mirror of `commitTeleport`. The scroll-up detector in `handleWheel` / `handleTouchMove`. A listener for the request. |
-| `LoopVeil.tsx` | A **close** sequence (flood in, hold, clear) for the reverse, and a latch so the dive's progress reports do not kill the flood — see §6. |
+| `LoopVeil.tsx` | A third layer, `.loop-veil-iris`: black, liquid-filtered, closing inward and opening again. Plus a latch so the dive's progress reports do not kill it mid-close — see §6 ①. |
 | `Hero/` | The button, and its gate. |
 | `globals.css` | The button. |
 | `CLAUDE.md` | The loop is bidirectional now; the ASCII spine at the top says it is not. |
@@ -187,3 +202,210 @@ the hero is the past and the return is a return to the present. Candidates: **Re
 **7c · Where does it sit?** Paired with `HeroScrollCue` at the bottom of the hero reads best — the cue
 says *scroll on*, this says *or go back* — but the hero is the site's first frame and its Awwwards
 shot. That is an argument for 7a's gated answer.
+
+**Answered, and shipped as:** gated on a completed loop (7a); **"Back to the horizon"** (7b), which
+names the event horizon — the thing actually waiting at the far end and the last thing seen before the
+cream took the screen; bottom-centre of the hero, stacked above the narrow scroll cue (7c).
+
+---
+
+## 8 · ⚠ The correction: `LOOP_RESET_EVENT` is NOT direction-agnostic
+
+§6 ② said the pin jumping 0 → ~1 "is the exact mirror of the forward teleport and `LOOP_RESET_EVENT`
+already covers it." **That was wrong, and it would have broken the feature silently.**
+
+The event's own documentation described it as forcing `current = target`. The handlers do no such
+thing — **every one of them writes ZERO**:
+
+```
+useWorksField.onLoopReset      SunModelCanvas.onLoopReset
+  chamberState.reveal  = 0       revealProgress = 0
+  chamberState.contact = 0       targetCracks   = 0
+  flightState.target   = 0       targetCollapse = 0
+  diveProgress         = 0       cracks         = 0
+  singularity.reset()            collapse       = 0
+```
+
+Which is correct — the forward loop's destination *is* progress 0, so it can afford to hardcode it.
+And it means the event cannot be reused by a jump that lands anywhere else. Fired after a reverse, it
+would have told every scene to be at the **hero's** state while the pin sat at the **bottom** of the
+page: no chamber, no black hole, the star alive, and the cream lifting on all of it.
+
+**The fix is `LOOP_SNAP_EVENT`** — the direction-agnostic half. `current = target`, and nothing else.
+It never writes a target, because by the time it fires the targets are already right:
+
+```
+  commitReverseTeleport()
+    scrollTo + trigger.scroll         move the scrollbar
+    trigger.update()                  ┐ flush the 1.8s scrub, or the pin eases down the
+    trigger.getTween().progress(1)    ┘ whole page playing every crossing forwards
+
+    applyCrossings(targetProgress)          ⚠ BY HAND. trigger.update() makes progress true
+    applyHeroServicesProgress(targetProgress)  "on the next frame", one frame too late for a
+                                               snap that has to read the new targets.
+    dispatch LOOP_SNAP_EVENT          ← only now. Fire it first and every scene snaps to
+                                        the state it is LEAVING, which is worse than not
+                                        snapping at all: an eased value at least arrives.
+```
+
+`singularityScene` needed a matching `settle()` beside its `reset()` — the mirror, landing on the END
+of whatever is being asked for. Only `sequence` is time-driven in the finale; everything else is a
+closed-form function of it, of `presence` or of `dive`, all three of which the crossings have already
+set. Hence three lines, not a second copy of the scene's state.
+
+**The general lesson**, which is why this section exists: *a signal named for a destination cannot be
+reused for a different destination, however direction-agnostic its prose claims to be.* Read the
+handlers, not the doc comment. The doc comment was wrong for months and nothing noticed, because until
+now there was only ever one place to jump to.
+
+---
+
+## 8b · ⚠ The transient that killed the arrival — and why a scrubbed pin needs THREE defences
+
+Second report after §4's fix: *"the lensing appears for a split second then disappears and I cannot
+see the model."* Both halves are one cause.
+
+`CONTACT_STAR_PRESENCE` is `[0.18, 0.42]`, and `presence` multiplies **everything** in this scene:
+
+```
+  group.visible      = ready && presence > PRESENCE_EPSILON      ← the black hole MODEL hangs off this
+  lensing strength   = max(finale, dive) × presence               ← …and so does the lensing
+```
+
+So one report of `contact` below 0.18 takes the model and the lensing **together**, which is exactly
+the pair of symptoms. And `contact` below 1 also disarms: the horizon then rewinds over
+`FINALE_REWIND_SECONDS` and has to climb back over `FINALE_SECONDS` — seconds of nothing.
+
+Where does a low `contact` come from when the pin was just parked at ~0.97? **The pin is scrubbed.**
+`SCROLL_SCRUB` is 1.8s, and `commitTeleport`'s own note admits the flush only makes progress true *"on
+the next frame"*. In between, the pin can publish one update carrying a progress it is still easing
+away from. Forward that is harmless — the destination is 0, so a stale report is wrong in the direction
+everything is already heading. **Backwards it is fatal**, and nothing in the codebase had ever needed to
+care, because until now every jump landed at 0.
+
+Three defences, each closing a different frame:
+
+| | where | closes |
+|---|---|---|
+| **hold** | `REVERSE_HOLD_SECONDS` — the pull-out waits before the scroll tween starts | the window where a glide drags the pin before it has finished landing |
+| **re-assert** | one `requestAnimationFrame` after the jump, re-apply the parked crossings + snap | the single stale update, if one lands |
+| **guard** | `settleGuardSeconds` in `singularityScene` | every frame in between — a settle may not be walked BACK by a later report |
+
+⚠ The guard is a guard on a **transient**, not a second owner of the state: it only refuses reports
+that would lower presence or disarm, only for 2.4s after a settle, and nothing in it writes a value it
+was not given. Reports moving the other way land immediately.
+
+⚠ And the general lesson, which is the one worth carrying: **`SCROLL_SCRUB` means the pin's progress is
+not trustworthy for one frame after any programmatic jump.** Every existing consumer got away with it
+because the only jump was to 0. Any future jump to a non-zero destination inherits this problem and
+needs the same three answers.
+
+---
+
+## 10 · ⚠ Why the scrubbed-glide version had to go — three defects, one decision
+
+Reported: *"the black comes from the edges but never reaches the middle — there is a hole, and through
+it I can see the website scrolling; then the black stays and I can see only part of the black hole."*
+Every clause is a separate bug, and two of them are mine outright.
+
+**① The iris never closed.** The mask was
+`radial-gradient(…, transparent R%, black (R+9)%)` with `R` tweened to 0 — so the shut state was
+`transparent 0%, black 9%`, which is not black, it is black *with a hole punched through the middle of
+the screen*. The feather has to collapse with the aperture. It scales with it now, so shut is
+`transparent 0%, black 0%`: opaque everywhere.
+
+**② The iris froze.** It ran on `creamTimeline`, the forward arrival's variable — and
+`onLoopProgress`'s `progress <= 0` branch **kills that timeline** (correctly: scrolling back out of a
+dive must clear a half-played arrival). The first dive report of 0 during a return therefore killed the
+cover mid-gesture and left the black stuck on screen. Two covers, two timelines, neither able to reach
+the other.
+
+**③ The site was visibly scrolling.** That was the `goToStop` glide doing exactly what it was told. It
+is gone: there is no scroll in the return at all.
+
+⚠ **The lesson is ③, not ① or ②.** Reversing a scroll-driven crossing by driving the scroll backwards
+sounds like the smallest possible change — rule 2 seems to hand it to you free. It does not, because the
+scrollbar is shared state with a scrubbed pin, a snap, a stepper and a teleport, and borrowing it for a
+cinematic means every one of those has an opinion about where you are. Authoring the arrival against a
+**still** pin is less code, has no shared state, and cannot be outrun.
+
+---
+
+## 11 · ⚠ The fill-exit arrival glide, which has now hijacked three different journeys
+
+Reported: *"when I click back to the horizon it gets me to the first ship in services, and there is no
+lensing."* One cause; the second clause is a symptom of the first (you never reach contact, so there is
+no lensing to see).
+
+`onUpdate` has a branch that fires the first time the pin passes out of the fill:
+
+```ts
+if (wasInFill && !justTeleported) {
+  wasInFill = false;
+  if (!committedGlide) goToStop(0, CAROUSEL_ARRIVAL_DURATION);   // stop 0 = CRAFT 01
+}
+```
+
+It exists to absorb the momentum of the flick that carried you out of the hero — without it a hard
+scroll overshoots onto craft 02. It is correct, and it is a **scroll hijack**: `goToStop` overwrites
+whatever else owns the scrollbar.
+
+`commitReverseTeleport` set `wasInFill = false` at its END, but `trigger.update()` drives `onUpdate`
+**synchronously** several lines earlier. So at that instant the pin was already past the fill with
+`wasInFill` still true — and the return glided to craft 01.
+
+⚠ **The forward teleport never had to think about this, and none of its safety transfers.** Its
+destination is progress 0, *inside* the fill, so its update takes the early return and the branch is
+unreachable. Every jump that lands anywhere else inherits the problem.
+
+**Third time.** The branch's own header records the other two: a navbar jump to Work "got overwritten
+with a glide to craft 01" and needed a second click, and a stale update after the forward loop would
+have "ended in SERVICES instead of the hero".
+
+**The rule, which is the durable part:** *every piece of state `onUpdate` reads must be set BEFORE the
+scrollbar is moved* — `committedGlide`, `currentStop`, `wasInFill`, `justTeleported`,
+`lastCrossingProgress`, `lastCommittedIndex`. Moving the scroll is not a statement, it is a call into
+`onUpdate`.
+
+### The full scroll-ownership map, since it is what makes this class of bug possible
+
+Only five things ever write the scroll position on the homepage:
+
+| writer | when |
+|---|---|
+| `goToStop` → `gsap.to(window, {scrollTo, overwrite: true})` | the stepper, navbar jumps, covered jumps, **the fill-exit arrival** |
+| `commitTeleport` → `scrollTo(0,0)` | the forward loop |
+| `commitReverseTeleport` → `scrollTo(contact stop)` | the return |
+| ScrollTrigger's own `snap` | when scrolling settles |
+| `IntroSequence` → `scrollTo(0,0)` | while the loader holds the page |
+
+And four intercept gestures: the pin's `handleWheel`/`handleTouchMove` (`preventDefault` in the carousel
+region), `swallowDuringGlide`, `useModalLayer` and `useScrollGuard` (both `stopPropagation`), plus the
+intro's lock.
+
+⚠ **The return now touches none of them.** It does not call `goToStop`, so the glide primitive cannot
+fight it; the pin does not move after the jump, so `snap` resolves to the stop it is already on; and
+`lockStepping` plus `carouselDirection` swallow the residual wheel momentum of the gesture that asked
+for it. That is the main practical argument for §10's decision, beyond the three defects it fixed.
+
+---
+
+## 9 · Two more things the build added that the plan did not have
+
+**9a · The net.** Between the request and the cover answering, `reverseActive` makes the pin swallow
+every wheel and touch — so if the answer never comes the page is not merely stuck on the hero, it is
+**unscrollable**. `LoopVeil` is mounted in `page.tsx` and normally answers in ~1.15s, but *normally* is
+not a guarantee. `REVERSE_COVER_NET_MS` (2600) proceeds without it, which is the same call
+`armCoveredJumpNet` makes for the same situation: a transition you can see is a blemish, a page that
+ignores the wheel is a bug report.
+
+**9b · `setStage('contact')`, explicitly.** The stop the reverse parks on belongs to the `loop`
+section, whose `enterLoop` is a deliberate no-op — going forwards you can only reach it *from* contact,
+with every DOM change already made. Arriving there from the hero, nothing would have added
+`.is-services`, and the cover would have lifted on a cream page with the headline still on it.
+
+**And one thing that turned out to be free:** the reverse's end state is identical to a covered nav
+jump from the hero to contact, which the navbar has done since it was wired. Same crossings at 1, same
+`fill → contact` stage change, same lazily-built scenes (both preflighted in the loader — see
+`useWorksField`'s `beginPreflight`). The only differences are the dive parked at 0.98 instead of 0 and
+a cream cover instead of a black one.

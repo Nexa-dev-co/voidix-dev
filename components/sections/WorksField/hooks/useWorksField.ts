@@ -23,7 +23,12 @@ import type { MarkTransitionStrategy } from '../transitions/markTransition';
 import { createSpacePresentMaterial } from '@/lib/spacePresentMaterial';
 import { CHAMBER_PROGRESS_EVENT, readChamberProgress } from '@/lib/chamberEvents';
 import { CONTACT_PROGRESS_EVENT, readContactProgress } from '@/lib/contactEvents';
-import { LOOP_PROGRESS_EVENT, LOOP_RESET_EVENT, readLoopProgress } from '@/lib/loopEvents';
+import {
+  LOOP_PROGRESS_EVENT,
+  LOOP_RESET_EVENT,
+  LOOP_SNAP_EVENT,
+  readLoopProgress,
+} from '@/lib/loopEvents';
 // The chamber belongs to its own section, but it is drawn by THIS renderer — a GPU texture cannot
 // cross a WebGL context, and the space it displays is rendered here. So the works field hosts it.
 import {
@@ -2096,6 +2101,23 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     };
     window.addEventListener(LOOP_RESET_EVENT, onLoopReset);
 
+    // ── The pin was moved outright, but NOT to the top ──
+    // The reverse loop parks at the far end of the dive. Everything above zeroes, which is right for an
+    // arrival at the hero and wrong for anything else — so this is the same idea with the targets left
+    // alone: stop easing, be where you are already being asked to be. The pin drives the crossings to
+    // the new position before dispatching, so every target read here is current. See LOOP_SNAP_EVENT.
+    const onLoopSnap = () => {
+      chamberState.current = chamberState.target;
+      chamberState.revealEased = chamberState.reveal;
+      flightState.current = flightState.target;
+      // Same reason as the reset's: the jump moves the camera further in one frame than any hop could,
+      // and the warp is measured frame-to-frame. Without this the cover lifts on a full-tilt starfield.
+      hasPreviousCameraPosition = false;
+      warp = 0;
+      singularity?.settle();
+    };
+    window.addEventListener(LOOP_SNAP_EVENT, onLoopSnap);
+
     // ── Warm-up: build every program and allocate every buffer while nothing is watching ──
     //
     // Four beats, ONE PER FRAME, and the spacing is the whole design. Every one of these is GPU-process
@@ -3132,6 +3154,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       window.removeEventListener(CHAMBER_PROGRESS_EVENT, onChamberProgress);
       window.removeEventListener(BURN_IN_EVENT, onBurnInRequested);
       window.removeEventListener(CONTACT_PROGRESS_EVENT, onContactProgress);
+      // ⚠ Only the snap, deliberately. `LOOP_PROGRESS_EVENT` and `LOOP_RESET_EVENT` have never been
+      // removed here, and adding removals for them alongside this one was reverted: they are not this
+      // change's business, this effect is long and its teardown ordering is load-bearing, and altering
+      // the lifecycle of two working listeners to tidy up while chasing a bug is how a second bug gets
+      // introduced. If the leak is worth closing it is worth closing on its own.
+      window.removeEventListener(LOOP_SNAP_EVENT, onLoopSnap);
       traceBuild('effect: TEARDOWN — disposed is now true for this run');
       window.removeEventListener(ASSETS_WARMUP_EVENT, onWarmupRequested);
       stopPreflightWatch?.();

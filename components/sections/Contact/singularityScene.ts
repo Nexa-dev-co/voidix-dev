@@ -187,6 +187,11 @@ const FINALE_SECONDS = 3.5;
  * plan; it would leave a black hole sitting in the works section.
  */
 const FINALE_REWIND_SECONDS = 1.2;
+/**
+ * Comfortably past `SCROLL_SCRUB` (1.8), which is the window a jumped pin can still be easing across.
+ * See `settleGuardSeconds` for what it is protecting and from what.
+ */
+const SETTLE_GUARD_SECONDS = 2.4;
 
 /**
  * When the star falls in. Smoothstepped, then CUBED — see the note on `collapse`.
@@ -483,6 +488,19 @@ export interface SingularityScene {
    * LOOP_RESET_EVENT.
    */
   reset(): void;
+  /**
+   * The mirror of `reset()`: be at the END of whatever is currently being asked for, now.
+   *
+   * For the REVERSE loop, which lands the pin at the far end of the dive rather than at the top. The
+   * star is already dead down there and the hole already open, so the finale must not spend
+   * `FINALE_SECONDS` playing itself out under a cover that lifts long before it finishes — the visitor
+   * would come back to a star mid-collapse that they had already watched die.
+   *
+   * ⚠ Only `sequence` is time-driven in here; everything else in the finale is a closed-form function of
+   * it, of `presence` or of `dive`, all three of which the crossings have already set by the time this
+   * is called. That is why this is three lines and not a second copy of the scene's state.
+   */
+  settle(): void;
   dispose(): void;
 }
 
@@ -593,6 +611,27 @@ export function createSingularityScene({
   let liquidRamp = 0;
   /** The loop's dive, 0..1. Drives the lensing back on and the shadow up to full — see setDive. */
   let dive = 0;
+  /**
+   * ⚠ HOW LONG A SETTLE IS PROTECTED FROM BEING UN-DONE, AND WHY THIS EXISTS AT ALL.
+   *
+   * `settle()` places this scene at the state the REVERSE loop's parking spot implies — star dead,
+   * horizon open, hole on screen — in one step, because the cover is about to lift on it. Everything
+   * that decides that state is derived from the pin's progress, and the pin is SCRUBBED: for up to
+   * `SCROLL_SCRUB` seconds after a jump it can report a progress it is still easing away from.
+   *
+   * One such report is enough to destroy the arrival outright, and both halves of the damage are slow
+   * to repair. `contact` reading below `CONTACT_STAR_PRESENCE` drops `presence` to 0, which takes
+   * `group.visible` with it — the model AND the lensing vanish together, because the lensing is
+   * multiplied by presence. `contact` reading below 1 disarms, and the sequence then rewinds over
+   * `FINALE_REWIND_SECONDS` and has to climb back over `FINALE_SECONDS`. Observed as: *"the lensing
+   * appears for a split second then disappears and I cannot see the model."*
+   *
+   * So a settle holds against reports that would only ever WALK IT BACK — a lower presence, a disarm.
+   * Anything moving in the other direction still lands immediately, and the guard is short enough that
+   * a visitor genuinely scrolling away from contact is never blocked by it. It is a guard on a
+   * transient, not a second owner of the state: nothing in here writes a value it was not given.
+   */
+  let settleGuardSeconds = 0;
   /** The flash's screen-wide stage this frame, already damped. Read by the field's grade. */
   let screenPulse = 0;
   const reduceMotion = prefersReducedMotion();
@@ -1000,6 +1039,8 @@ export function createSingularityScene({
   // Declared above the load on purpose: the callback calls it, and a `const` arrow declared below would
   // only work by accident of the load being asynchronous.
   const setPresence = (next: number) => {
+    // ⚠ A settle may not be un-done by a report that ARRIVES AFTER IT. See `settleGuardSeconds`.
+    if (settleGuardSeconds > 0 && next < presence) return;
     presence = THREE.MathUtils.clamp(next, 0, 1);
     applyFinale();
   };
@@ -1279,6 +1320,8 @@ export function createSingularityScene({
   });
 
   const setArmed = (next: boolean) => {
+    // ⚠ Same guard, same reason: disarming un-does the settle over FINALE_REWIND_SECONDS.
+    if (!next && settleGuardSeconds > 0) return;
     if (next === armed) return;
     armed = next;
     // Restarted on every arrival rather than only the first, so coming back down to contact gives the
@@ -1291,6 +1334,9 @@ export function createSingularityScene({
     // Runs whether or not the star is on screen, so a sequence left part-played always finishes
     // unwinding. `deltaSeconds` is the field's own clamped delta, so a backgrounded tab cannot dump a
     // multi-second jump into the middle of the finale.
+    if (settleGuardSeconds > 0) {
+      settleGuardSeconds = Math.max(0, settleGuardSeconds - deltaSeconds);
+    }
     if (armed) {
       if (armDelayRemaining > 0) {
         armDelayRemaining = Math.max(0, armDelayRemaining - deltaSeconds);
@@ -1404,6 +1450,16 @@ export function createSingularityScene({
       presence = 0;
       applyFinale();
       lensingState.strength = 0;
+    },
+    settle: () => {
+      // No arm delay to serve and no sequence to walk: whatever `setArmed` was last told is already
+      // true down here, so land on its end value. `applyFinale` re-derives the entire pose from it, and
+      // `updateLensing` is a pure function of `dive`/`presence`/the envelope — so it needs nothing here
+      // and will be right on the very next frame.
+      armDelayRemaining = 0;
+      sequence = armed ? 1 : 0;
+      settleGuardSeconds = SETTLE_GUARD_SECONDS;
+      applyFinale();
     },
     dispose,
   };
