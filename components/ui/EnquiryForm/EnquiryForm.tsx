@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  useEffect,
   useId,
   useRef,
   useState,
@@ -11,6 +12,7 @@ import {
 } from 'react';
 import type { EnquiryPrefill } from '@/lib/enquirySubjects';
 import { useSiteContent } from '@/lib/cms/SiteContentProvider';
+import { useStepTransition } from './useStepTransition';
 
 /**
  * The site's one contact form, wherever it appears — the contact section's panel, its phone sheet, and
@@ -40,6 +42,33 @@ import { useSiteContent } from '@/lib/cms/SiteContentProvider';
  * out of the stack. The application pairs at every height — seven fields are too tall for any frame.
  * This used to be a variant modifier that swapped flex for grid, which made it the sole owner of
  * pairing and left a short screen unable to ask for the same thing.
+ *
+ * ── ⚠ THE APPLICATION IS TWO STEPS, AND THE REASON IS A HEIGHT BUDGET ────────────────────────────
+ * Pairing bought the application one row. It was still ~780px of content in a dialog that is ~370px
+ * tall on a landscape phone, so it scrolled — inside a modal, under a sticky bar, which is the worst
+ * place on the site to hide the thing a person came to press. Splitting it is the only give left that
+ * is structural rather than a few pixels of rhythm:
+ *
+ *     STEP 01 · You          name*, mobile, email*, and why you
+ *     STEP 02 · Your work    what you are looking for, a link, a CV
+ *
+ * The split is BALANCED rather than tidy — "why you" is a sentence about the work and would file under
+ * step 02 on meaning alone. It sits in 01 because 02 carries the drop zone, which is the tallest single
+ * control in the form, and two steps that do not fit are worse than one that reads slightly off.
+ *
+ * ⚠ BOTH STEPS STAY MOUNTED. The inactive one is `hidden`, never unmounted: this is ONE `<form>` posting
+ * ONE `FormData`, so a field that stopped existing would stop being sent, and every value already typed
+ * would be gone the moment someone stepped back to check it. The endpoint sees a single submit carrying
+ * every field — the steps are a layout, not two requests. `hidden` also takes the step out of the tab
+ * order and out of the accessibility tree, which is the whole reason not to hide it with opacity.
+ * ⚠ `.enquiry-step[hidden]` restores `display: none` — the step is a grid, and a `display` declaration
+ * beats the attribute's UA style.
+ *
+ * ⚠ A fault can therefore land on a step you are not standing on — your own (go back, clear your email,
+ * come forward, send) or the server's, since a 422 names fields from both steps. Either way the form
+ * moves to that step FIRST and focuses the field once it is on screen: focusing something inside a
+ * `hidden` subtree silently does nothing, which would leave the visitor pressing a button that appears
+ * to do nothing at all.
  *
  * ── ⚠ VALIDATION IS OURS NOW, AND THE FORM CARRIES `noValidate` ──────────────────────────────────
  * This file used to say "native constraint validation only". That is no longer true and the attribute
@@ -144,6 +173,25 @@ interface SubmitFailure {
 type ValidatedField = 'name' | 'email' | 'phone';
 type FieldErrors = Partial<Record<ValidatedField, string>>;
 
+/**
+ * The application's two steps, in order — see the header for why the split falls where it does.
+ *
+ * ⚠ These names are NOT the panel's, and that is the one string in this file's neighbourhood that
+ * stays here on purpose. They name a STRUCTURE this component owns — the same reason "The work — at
+ * least one of the two" is still written below rather than fetched. An editor renaming step 02 would
+ * be renaming a layout decision they cannot see.
+ */
+const APPLICATION_STEPS = [
+  { key: 'you', name: 'You' },
+  { key: 'work', name: 'Your work' },
+] as const;
+
+/** Which validated fields belong to step 01, so a fault on step 02 never sends anyone backwards. */
+const STEP_ONE_FIELDS: readonly ValidatedField[] = ['name', 'email', 'phone'];
+
+const STEP_CONTINUE_LABEL = 'Continue';
+const STEP_BACK_LABEL = 'Back';
+
 interface EnquiryFormProps {
   /**
    * What the visitor was looking at when they opened this. Absent on the contact section, where the
@@ -227,15 +275,72 @@ export default function EnquiryForm({
   const workErrorId = `${fieldId}-work-error`;
 
   const isApplication = variant === 'application';
+  // The application is the only thing that steps today, but the mechanism below is keyed on THIS rather
+  // than on the variant, so a second stepped form would not have to re-read the variant's meaning.
+  const isStepped = isApplication;
+  const lastStepIndex = APPLICATION_STEPS.length - 1;
+
   const asksCommitment = Boolean(commitmentOptions && commitmentOptions.length > 0);
   const cvInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const stepsRef = useRef<HTMLDivElement>(null);
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [workError, setWorkError] = useState<string | null>(null);
   const [cvFile, setCvFile] = useState<{ name: string; size: number } | null>(null);
   const [isDraggingCv, setIsDraggingCv] = useState(false);
   const [status, setStatus] = useState<SubmitStatus>('idle');
+  const [stepIndex, setStepIndex] = useState(0);
+
+  /**
+   * What to focus once the new step is on screen — a field name when a fault was found behind us,
+   * `null` when the step itself should take focus so its name is announced.
+   *
+   * ⚠ It cannot be done in the handler that changes the step: the destination is still `hidden` at that
+   * moment and `focus()` on a hidden element is a no-op. So the intent is recorded and spent in the
+   * effect below, which runs after React has swapped the attribute.
+   */
+  const pendingFocusRef = useRef<ValidatedField | null>(null);
+  /** Suppresses the focus move on mount — nothing has stepped yet, and stealing focus on open is rude. */
+  const hasSteppedRef = useRef(false);
+  /** Which way we are going, so the incoming step slides in from the side it came from. */
+  const [stepDirection, setStepDirection] = useState<1 | -1>(1);
+
+  // The panel is sized by its content, so the two steps are two different heights and swapping them
+  // would jump — see the hook for why the outgoing height has to be read before React commits.
+  const { capturePreviousHeight } = useStepTransition({
+    stepsRef,
+    stepIndex,
+    direction: stepDirection,
+  });
+
+  useEffect(() => {
+    if (!hasSteppedRef.current) return;
+
+    const pendingField = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+
+    if (pendingField) {
+      const target = formRef.current?.elements.namedItem(pendingField);
+      if (target instanceof HTMLElement) target.focus();
+      return;
+    }
+
+    // The step group carries the step's name, so focusing it is what tells a screen reader where the
+    // form now is. Focusing the first FIELD instead would be worse on a phone: the keyboard would open
+    // over a panel whose whole point is that it fits the screen.
+    stepsRef.current?.querySelector<HTMLElement>('.enquiry-step:not([hidden])')?.focus();
+  }, [stepIndex]);
+
+  const goToStep = (nextIndex: number) => {
+    if (nextIndex === stepIndex) return;
+    hasSteppedRef.current = true;
+    capturePreviousHeight();
+    setStepDirection(nextIndex > stepIndex ? 1 : -1);
+    // A message about the last press does not survive the press that follows it.
+    setStatus('idle');
+    setStepIndex(nextIndex);
+  };
 
   const errorIdFor = (field: ValidatedField) => `${fieldId}-${field}-error`;
 
@@ -335,6 +440,42 @@ export default function EnquiryForm({
     setWorkError(null);
   };
 
+  /**
+   * Everything step 01 asks for, judged on its own.
+   *
+   * Shared by `Continue` and by submit, so the two can never disagree about what a finished step 01
+   * looks like — and it returns the fault rather than acting on it, because the two callers do
+   * different things with the answer.
+   */
+  const checkStepOne = (
+    formData: FormData,
+  ): { errors: FieldErrors; firstInvalid?: ValidatedField } => {
+    const readField = (name: string) => String(formData.get(name) ?? '');
+
+    const errors: FieldErrors = {};
+    const nameError = validateName(readField('name'), isApplication);
+    const emailError = validateEmail(readField('email'));
+    const phoneError = validatePhone(readField('phone'));
+    if (nameError) errors.name = nameError;
+    if (emailError) errors.email = emailError;
+    if (phoneError) errors.phone = phoneError;
+
+    return { errors, firstInvalid: STEP_ONE_FIELDS.find((field) => errors[field]) };
+  };
+
+  /**
+   * Takes the visitor to a step-01 field that is complaining while step 02 is on screen.
+   *
+   * Returns whether it did anything, so the caller can fall through to ordinary focus when the form is
+   * not stepped or the fault is on the step already showing.
+   */
+  const reachBackToStepOne = (field: ValidatedField | undefined): boolean => {
+    if (!isStepped || !field || stepIndex === 0) return false;
+    pendingFocusRef.current = field;
+    goToStep(0);
+    return true;
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -342,13 +483,25 @@ export default function EnquiryForm({
     const formData = new FormData(formElement);
     const readField = (name: string) => String(formData.get(name) ?? '');
 
-    const nextErrors: FieldErrors = {};
-    const nameError = validateName(readField('name'), isApplication);
-    const emailError = validateEmail(readField('email'));
-    const phoneError = validatePhone(readField('phone'));
-    if (nameError) nextErrors.name = nameError;
-    if (emailError) nextErrors.email = emailError;
-    if (phoneError) nextErrors.phone = phoneError;
+    // ── The stepped form's `Continue` IS a submit ──
+    // Deliberately, and it is what makes Enter behave: a text input's Enter fires the form's submit,
+    // so a `type="button"` next control would advance on a press and send on a keystroke. Landing both
+    // here means one path forward and one definition of "step 01 is finished".
+    if (isStepped && stepIndex < lastStepIndex) {
+      const { errors, firstInvalid } = checkStepOne(formData);
+      setFieldErrors(errors);
+
+      if (firstInvalid) {
+        const target = formRef.current?.elements.namedItem(firstInvalid);
+        if (target instanceof HTMLElement) target.focus();
+        return;
+      }
+
+      goToStep(stepIndex + 1);
+      return;
+    }
+
+    const { errors: nextErrors, firstInvalid: firstInvalidField } = checkStepOne(formData);
     setFieldErrors(nextErrors);
 
     let nextWorkError: string | null = null;
@@ -362,14 +515,13 @@ export default function EnquiryForm({
     }
     setWorkError(nextWorkError);
 
-    const firstInvalidField = (['name', 'email', 'phone'] as const).find(
-      (field) => nextErrors[field],
-    );
-
     if (firstInvalidField || nextWorkError) {
       // ⚠ Focus moves to the first thing wrong. Without the browser's own submit UI (see the header)
       // nothing else would take the visitor to it — in a panel that scrolls, the message they need to
-      // read can easily be off screen at the moment they press the button.
+      // read can easily be off screen at the moment they press the button. On a stepped form it may
+      // also be a step away, which `reachBackToStepOne` handles before focus is attempted.
+      if (reachBackToStepOne(firstInvalidField)) return;
+
       const target = firstInvalidField
         ? formRef.current?.elements.namedItem(firstInvalidField)
         : cvInputRef.current;
@@ -426,6 +578,12 @@ export default function EnquiryForm({
           return;
         }
 
+        // ⚠ The server names fields from BOTH steps, and it answered a press made on step 02 — so a
+        // complaint about the email would otherwise be drawn on a step that is not on screen, leaving
+        // a form that says nothing and does nothing. `goToStep` clears the status itself, which is the
+        // same idle this branch wants.
+        if (reachBackToStepOne(STEP_ONE_FIELDS.find((field) => nextFieldErrors[field]))) return;
+
         setStatus('idle');
         return;
       }
@@ -455,23 +613,17 @@ export default function EnquiryForm({
     'aria-describedby': fieldErrors[field] ? errorIdFor(field) : undefined,
   });
 
-  return (
-    <form
-      ref={formRef}
-      // ⚠ The modifier no longer carries a LAYOUT — both variants are the same grid on `.enquiry-form`,
-      // and all this class does now is set `--enquiry-half-span: 1`, which is the one knob that decides
-      // whether pairable fields pair. It used to swap flex for grid, which made it the sole owner of
-      // pairing and left a short screen with no way to ask for the same thing.
-      className={isApplication ? 'enquiry-form enquiry-form--application' : 'enquiry-form'}
-      onSubmit={handleSubmit}
-      // ⚠ Suppresses the browser's submit-time bubbles ONLY — the attributes stay on the inputs. See
-      // the header: with both running, one mistake produced two messages in two visual languages.
-      noValidate
-      // ⚠ The application carries a file, and the default urlencoded encoding would send the filename
-      // rather than the PDF. Stated now, while nothing posts, so connecting the dashboard's endpoint
-      // is one attribute rather than one bug.
-      {...(isApplication ? { encType: 'multipart/form-data' } : {})}
-    >
+  /**
+   * ⚠ THE FIELDS ARE LIFTED OUT OF THE JSX, and the stepped variant is why: it wraps them in two group
+   * elements and the plain one does not. The alternative to a variable is these seven fields written
+   * out twice, which is exactly how two variants of one form drift apart.
+   *
+   * The subject rides along at the top of step 01. On the plain form that is where it has always been;
+   * on the application only the hidden inputs render (`showSubject` is false there), and a hidden input
+   * inside a `hidden` step is still submitted — `hidden` governs painting and focus, not FormData.
+   */
+  const youStepContent = (
+    <>
       {/* The subject is stated rather than editable: it is the answer to "which of your things is this
           about", and the visitor already answered it by choosing where to click. The hidden field runs
           whether or not the box is drawn — see `showSubject`. */}
@@ -492,21 +644,6 @@ export default function EnquiryForm({
           )}
         </>
       )}
-
-      {/* ⚠ THE HONEYPOT. A person never sees it, a bot that fills every input it finds fills it, and
-          a submission carrying anything here is answered with a success that stores nothing. It is
-          `hidden` rather than merely moved off-screen, so it is out of the tab order and out of the
-          accessibility tree — and `autoComplete="off"` keeps a password manager from filling it in
-          on a real visitor's behalf, which would silently discard their message. */}
-      <input
-        type="text"
-        name={HONEYPOT_FIELD}
-        hidden
-        tabIndex={-1}
-        autoComplete="off"
-        aria-hidden="true"
-        defaultValue=""
-      />
 
       <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={nameId}>
@@ -596,6 +733,31 @@ export default function EnquiryForm({
         </p>
       )}
 
+      {/* ⚠ IN STEP 01 ON THE APPLICATION, which is a balance call rather than a semantic one — "why you"
+          is a sentence about the work and files under step 02 on meaning alone. Step 02 carries the drop
+          zone, the tallest control in the form, so it is the step with no room to lend. */}
+      <div className="enquiry-field">
+        <label className="enquiry-label" htmlFor={briefId}>
+          {briefLabel}
+        </label>
+        {/* `defaultValue`, not `value` — the seed is a starting point the visitor immediately edits, so
+            the field has to be theirs from the first keystroke. ⚠ That makes it a MOUNT-TIME value:
+            whoever renders this must re-key the form when the prefill changes, or a second service's
+            dialog would open holding the first one's sentence. See EnquiryPanel. */}
+        <textarea
+          id={briefId}
+          name="brief"
+          className="enquiry-input enquiry-textarea"
+          rows={3}
+          defaultValue={prefill?.brief ?? ''}
+        />
+      </div>
+    </>
+  );
+
+  /** Step 02 — the evidence. Empty on the plain enquiry form, which asks for neither of these. */
+  const workStepContent = (
+    <>
       {/* ⚠ RADIOS, NOT A `<select>`, and with three options that is the textbook call rather than a
           preference: every choice is visible without a press, choosing costs one tap instead of two,
           and a native dropdown's list is drawn by the OS — on a translucent dark panel it arrives as a
@@ -721,30 +883,126 @@ export default function EnquiryForm({
           )}
         </div>
       )}
+    </>
+  );
 
-      <div className="enquiry-field">
-        <label className="enquiry-label" htmlFor={briefId}>
-          {briefLabel}
-        </label>
-        {/* `defaultValue`, not `value` — the seed is a starting point the visitor immediately edits, so
-            the field has to be theirs from the first keystroke. ⚠ That makes it a MOUNT-TIME value:
-            whoever renders this must re-key the form when the prefill changes, or a second service's
-            dialog would open holding the first one's sentence. See EnquiryPanel. */}
-        <textarea
-          id={briefId}
-          name="brief"
-          className="enquiry-input enquiry-textarea"
-          rows={3}
-          defaultValue={prefill?.brief ?? ''}
-        />
-      </div>
+  const isOnLastStep = !isStepped || stepIndex === lastStepIndex;
+
+  return (
+    <form
+      ref={formRef}
+      // ⚠ Two modifiers, two jobs. `--application` still carries no layout: it sets
+      // `--enquiry-half-span: 1`, the one knob deciding whether pairable fields pair. `--stepped` is the
+      // layout one — it turns the form from a grid into a STACK of grids, because each step is its own
+      // grid. Only the application asks for it today; the class is named for what it does anyway, so the
+      // variant never quietly comes to mean "and it is stepped".
+      className={[
+        'enquiry-form',
+        isApplication ? 'enquiry-form--application' : '',
+        isStepped ? 'enquiry-form--stepped' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      onSubmit={handleSubmit}
+      // ⚠ Suppresses the browser's submit-time bubbles ONLY — the attributes stay on the inputs. See
+      // the header: with both running, one mistake produced two messages in two visual languages.
+      noValidate
+      // ⚠ The application carries a file, and the default urlencoded encoding would send the filename
+      // rather than the PDF.
+      {...(isApplication ? { encType: 'multipart/form-data' } : {})}
+    >
+      {/* ⚠ THE HONEYPOT. A person never sees it, a bot that fills every input it finds fills it, and
+          a submission carrying anything here is answered with a success that stores nothing. It is
+          `hidden` rather than merely moved off-screen, so it is out of the tab order and out of the
+          accessibility tree — and `autoComplete="off"` keeps a password manager from filling it in
+          on a real visitor's behalf, which would silently discard their message.
+          ⚠ A child of the FORM, never of a step: it belongs to the submission rather than to anything
+          the visitor is being asked, and it must be in the FormData whichever step was on screen. */}
+      <input
+        type="text"
+        name={HONEYPOT_FIELD}
+        hidden
+        tabIndex={-1}
+        autoComplete="off"
+        aria-hidden="true"
+        defaultValue=""
+      />
+
+      {isStepped ? (
+        <>
+          {/* Where you are, in the two registers this site already uses for it: the navbar's meter and
+              the section numbers. Not a row of clickable tabs — step 02 is only reachable through a
+              finished step 01, and a control that refuses half the time is worse than no control. */}
+          <p className="enquiry-stepper">
+            <span className="enquiry-stepper-index" aria-hidden="true">
+              {String(stepIndex + 1).padStart(2, '0')}
+            </span>
+            <span className="enquiry-stepper-name">
+              {APPLICATION_STEPS[stepIndex].name}
+              {/* The track beside this says "one of two" to the eye far better than words do, and says
+                  nothing at all to anyone who cannot see it. `.sr-only` rather than a rule of this
+                  component's own — the site has one way of doing this now. */}
+              <span className="sr-only">
+                {` — step ${stepIndex + 1} of ${APPLICATION_STEPS.length}`}
+              </span>
+            </span>
+            <span className="enquiry-stepper-track" aria-hidden="true">
+              {APPLICATION_STEPS.map((step, index) => (
+                <span
+                  key={step.key}
+                  className="enquiry-stepper-segment"
+                  data-reached={index <= stepIndex}
+                />
+              ))}
+            </span>
+          </p>
+
+          <div className="enquiry-steps" ref={stepsRef}>
+            {APPLICATION_STEPS.map((step, index) => (
+              <div
+                key={step.key}
+                className="enquiry-step"
+                // ⚠ `hidden`, not unmounted — see the header. It is also what keeps the other step out
+                // of the tab order, which `opacity: 0` would not.
+                hidden={index !== stepIndex}
+                // Focused on arrival (see the effect above), so the group's name is what gets read out.
+                tabIndex={-1}
+                role="group"
+                aria-label={`${step.name}, step ${index + 1} of ${APPLICATION_STEPS.length}`}
+              >
+                {index === 0 ? youStepContent : workStepContent}
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          {youStepContent}
+          {workStepContent}
+        </>
+      )}
 
       {/* ⚠ STICKY, and it is the fix for the whole panel. The application form is ~780px of content in a
           panel that is ~510px tall on a laptop, so the submit button used to sit below the fold inside
-          a modal — reachable only by finding a scrollbar nobody looks for. Here it never leaves. */}
+          a modal — reachable only by finding a scrollbar nobody looks for. Here it never leaves.
+          ⚠ Splitting the application in two took most of that overflow away, but the bar stays sticky:
+          a 200% font setting still overflows, and this is the shell that keeps the button reachable. */}
       <div className="enquiry-actions">
+        {isStepped && stepIndex > 0 && (
+          <button type="button" className="enquiry-back" onClick={() => goToStep(stepIndex - 1)}>
+            {STEP_BACK_LABEL}
+          </button>
+        )}
+
+        {/* ⚠ `submit` on BOTH steps, and deliberately — see `handleSubmit`. A `type="button"` here would
+            advance on a press and SEND on an Enter keystroke, because a text field's Enter fires the
+            form's submit regardless of what the visible control says. */}
         <button type="submit" className="enquiry-send" disabled={status === 'sending'}>
-          {status === 'sending' ? formContent.sendingLabel : submitLabel}
+          {!isOnLastStep
+            ? STEP_CONTINUE_LABEL
+            : status === 'sending'
+              ? formContent.sendingLabel
+              : submitLabel}
         </button>
 
         {/* Polite, not assertive: it follows a press the visitor made, so it is an answer rather than

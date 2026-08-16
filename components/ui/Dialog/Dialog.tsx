@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogPanel } from './useDialogPanel';
+import { useScrollOverflow } from './useScrollOverflow';
 import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
 
 /**
@@ -57,6 +58,8 @@ export default function Dialog({
   // The same guard the sheet and the FAQ panel use: a gesture that has scrolled this content keeps the
   // rest of itself, so reaching the end of the form mid-flick doesn't hand the remainder to the pin.
   useScrollGuard(scrollRef);
+  // Only paints the sticky action bar's fade where content actually passes under it — see the hook.
+  const isOverflowing = useScrollOverflow(scrollRef, open);
 
   if (!isMounted) return null;
 
@@ -93,7 +96,7 @@ export default function Dialog({
           <p className="dialog-title font-display">{title}</p>
         </header>
 
-        <div ref={scrollRef} className="dialog-scroll">
+        <div ref={scrollRef} className="dialog-scroll" data-overflowing={isOverflowing}>
           {children}
         </div>
       </div>

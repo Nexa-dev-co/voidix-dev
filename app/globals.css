@@ -2827,15 +2827,119 @@ body {
 
    ⚠ The ROW gap gives on height and the column gap does not, and the asymmetry is the point: a short
    frame costs you rows, never columns. */
+/* ⚠ THE TWO GAPS ARE VARIABLES because a STEPPED form has two boxes that must share them — the form
+   itself becomes a stack and each step becomes the grid (see `.enquiry-form--stepped`). Anything
+   retuning the rhythm sets the variable once and both follow; writing `gap` on the form alone would
+   leave the steps on the authored value and nothing on screen would say why. */
 .enquiry-form {
+  --enquiry-row-gap: clamp(0.5rem, 1.4vh, 1.15rem);
+  --enquiry-column-gap: 1.1rem;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: clamp(0.5rem, 1.4vh, 1.15rem) 1.1rem;
+  gap: var(--enquiry-row-gap) var(--enquiry-column-gap);
   align-items: start;
 }
 
-.enquiry-form > * {
+.enquiry-form > *,
+.enquiry-step > * {
   grid-column: 1 / -1;
+}
+
+/* ── ⚠ A STACK OF GRIDS, NOT ONE GRID ──
+   The stepped form cannot stay a single grid: its children are the stepper, the step BOX and the action
+   bar, and the fields are one level further down. So the form becomes a column and each step carries the
+   grid the form used to. Everything the fields rely on still reaches them — the pairing rule below is
+   scoped to `.enquiry-form` as an ancestor, not as a parent, for exactly this reason. */
+.enquiry-form--stepped {
+  display: flex;
+  flex-direction: column;
+  gap: var(--enquiry-row-gap);
+}
+
+.enquiry-step {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--enquiry-row-gap) var(--enquiry-column-gap);
+  align-items: start;
+  outline: none; /* It is focused on arrival to be announced, not to be drawn around. */
+}
+
+/* ⚠ NOT OPTIONAL. `hidden` is a UA `display: none`, and the rule above is an author `display: grid` —
+   the author rule wins, so without this the "hidden" step would simply be on screen underneath the
+   other one. Same trap as any component that styles `display` on an element it also toggles. */
+.enquiry-step[hidden] {
+  display: none;
+}
+
+/* The box the steps live in. It has no styling of its own — its only job is to be the thing whose
+   height is tweened between two steps (see useStepTransition). */
+.enquiry-steps {
+  min-width: 0;
+}
+
+/* ── Where you are ──
+   Deliberately built out of the two registers this site already uses to say that: the section number
+   and the navbar's meter. A row of numbered TABS was the other option and is refused — step 02 is only
+   reachable through a finished step 01, so half the tabs would decline to work, and a control that
+   sometimes ignores you is worse than a readout that never claimed to be one.
+
+   One line, and it has to stay one line: this sits above a form whose whole problem is height. */
+.enquiry-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+/* The number, in the site's own display face — the same "01 / 02" the document routes count with. */
+.enquiry-stepper-index {
+  flex-shrink: 0;
+  font-family: var(--font-syne), sans-serif;
+  font-weight: 700;
+  font-size: var(--fs-small);
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.enquiry-stepper-name {
+  flex-shrink: 0;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgb(var(--fg-rgb) / 0.72);
+}
+
+/* The spoken half of the same sentence uses `.sr-only` — see the markup. There is no rule for it here
+   on purpose: the site has one visually-hidden technique and a second copy of it would be one more
+   place to get the accessibility-tree behaviour subtly wrong. */
+.enquiry-stepper-track {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.enquiry-stepper-segment {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: rgb(var(--fg-rgb) / 0.14);
+  transition: background-color 0.35s ease;
+}
+
+/* Reached, not "done" — step 01 lights while you are standing on it, so the meter reads as distance
+   travelled rather than as a score. */
+.enquiry-stepper-segment[data-reached='true'] {
+  background: rgb(var(--accent-rgb) / 0.85);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enquiry-stepper-segment {
+    transition: none;
+  }
 }
 
 /* ── ⚠ PAIRING IS A NUMBER, NOT A RULE, AND THAT NUMBER IS THE ONLY SWITCH ──
@@ -3310,11 +3414,18 @@ body {
    black hole, read as a second box floating inside the first one. It was painting there because it sat
    on `.enquiry-actions` itself, which is shared by all three shells.
 
-   Scoped to the two shells that actually scroll: the dialog (the seven-field application genuinely
-   overflows it) and the phone's sheet. The contact panel is nominally a scroller too — `overflow-y` is
-   its clipping backstop — but it is laid out to fit and never scrolls, so it gets no fade. ⚠ If that
-   ever changes, the fix is to make the form fit, not to add the rectangle back. */
-.dialog-scroll .enquiry-actions,
+   Scoped to the two shells that can scroll: the dialog and the phone's sheet. The contact panel is
+   nominally a scroller too — `overflow-y` is its clipping backstop — but it is laid out to fit and
+   never scrolls, so it gets no fade. ⚠ If that ever changes, the fix is to make the form fit, not to
+   add the rectangle back.
+
+   ⚠ AND THE DIALOG NOW HAS TO EARN IT AT RUNTIME (`data-overflowing`, see useScrollOverflow). It used
+   to qualify by being the shell the seven-field application overflowed — and then the application
+   became two steps and stopped overflowing, which would have left this painting an opaque strip across
+   the bottom of a pane of GLASS, over nothing, at exactly the size the comment above calls a defect.
+   The sheet needs no such test: its surface is already solid `--card`, so the gradient there is a
+   no-op that costs nothing to leave on. */
+.dialog-scroll[data-overflowing='true'] .enquiry-actions,
 .drawer-scroll .enquiry-actions {
   background: linear-gradient(
     to top,
@@ -3350,6 +3461,42 @@ body {
 .enquiry-send:disabled {
   cursor: progress;
   opacity: 0.65;
+}
+
+/* ── The way back ──
+   Same pill, outlined instead of filled. It has to be visibly the LESSER of the two: there is exactly
+   one thing this form wants you to do, and a matched pair of buttons makes "go back" look like half the
+   point. It sits first in the bar because it points backwards, and last in nobody's reading order —
+   it only exists on step 02. */
+.enquiry-back {
+  flex-shrink: 0;
+  padding: clamp(0.45rem, 1.1vh, 0.85rem) 1.1rem;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-small);
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: rgb(var(--fg-rgb) / 0.62);
+  background: transparent;
+  border: 1px solid rgb(var(--fg-rgb) / 0.2);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.enquiry-back:hover,
+.enquiry-back:focus-visible {
+  color: var(--fg);
+  border-color: rgb(var(--fg-rgb) / 0.45);
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enquiry-back,
+  .enquiry-send {
+    transition: none;
+  }
 }
 
 /* ── What happened, in words ──
@@ -3640,9 +3787,12 @@ body {
 
   /* These still apply wherever the form is — contact's sheet, and the enquiry sheet the fleet and the
      works field open. Tightened here because on a phone it is always inside a sheet with a ceiling of
-     80svh, and the subject block above it is one more thing competing for that height. */
+     80svh, and the subject block above it is one more thing competing for that height.
+     ⚠ The VARIABLES, not `gap` — the stepped form's rhythm lives in two boxes (the stack and each step)
+     and a shorthand here would tighten the stack while leaving every field on the desktop value. */
   .enquiry-form {
-    gap: 0.6rem;
+    --enquiry-row-gap: 0.6rem;
+    --enquiry-column-gap: 0.6rem;
   }
 
   .enquiry-field {
@@ -3666,6 +3816,7 @@ body {
      ⚠ The selector must keep the `.enquiry-form` ancestor: the base pairing rule is two classes deep, so
      a bare `.enquiry-field--half` here would lose on specificity rather than on order. */
   .enquiry-form,
+  .enquiry-step,
   .enquiry-work-fields {
     grid-template-columns: 1fr;
   }
@@ -3686,6 +3837,17 @@ body {
     flex: 1 1 100%;
     padding: 0.7rem 1.4rem;
     text-align: center;
+  }
+
+  .enquiry-back {
+    padding: 0.7rem 1.1rem;
+  }
+
+  /* ⚠ Beside Back rather than under it, and it must come after the rule above — two classes beat one,
+     but only while both are in this block. A full-width Send wrapping below a full-width Back is two
+     rows of buttons at the bottom of a sheet that is already short of height. */
+  .enquiry-back + .enquiry-send {
+    flex: 1 1 0;
   }
 
   /* Below the button on a phone rather than beside it — at this width "beside" is a 4rem column. */
@@ -4784,6 +4946,55 @@ body {
   .drawer-sheet {
     max-height: 92vh;
     max-height: 92svh;
+  }
+
+  /* ── ⚠ THIS IS THE FRAME THE APPLICATION FORM IS SIZED AGAINST ──
+     932 × 430 is WIDER than the 51.25em narrow breakpoint, so the application opens in the centred
+     DIALOG and not in the sheet: 86svh of 430px is 370px, and both steps have to come out of that with
+     the head and the action bar already spent. Splitting the form in two is what made it possible at
+     all — these are the last ~55px, and every one of them comes from somewhere a landscape phone is
+     paying for a desktop's proportions.
+
+     ⚠ Not one of them removes a field, a label or a hint. If a further give is ever needed it comes out
+     of the rhythm again, or out of a third step — never out of what the form asks for. */
+  .dialog-head {
+    padding-top: 0.55rem;
+    padding-bottom: 0.45rem;
+  }
+
+  /* Below the base clamp's own floor (1.35rem), which is authored for a panel that has room for display
+     type. At this height the title is a label, and the frame is the thing worth spending on. */
+  .dialog-title {
+    font-size: 1.15rem;
+  }
+
+  .enquiry-stepper {
+    gap: 0.45rem;
+  }
+
+  .enquiry-textarea {
+    height: 2.4rem;
+  }
+
+  .enquiry-work {
+    gap: 0.45rem;
+    padding-top: 0.4rem;
+  }
+
+  .enquiry-drop {
+    min-height: 2.6rem;
+  }
+
+  .enquiry-choice > legend {
+    margin-bottom: 0.35rem;
+  }
+
+  /* ⚠ SCOPED TO THE DIALOG, and it has to be. The bar's bottom padding is `--enquiry-shell-pad`, which
+     only the two scrolling shells declare — in the contact panel it resolves to the 0 fallback, so an
+     unscoped `padding-bottom` here would ADD 16px to the one section with no height to spare rather
+     than taking 12px off the one that needs it. */
+  .dialog-scroll .enquiry-actions {
+    padding-bottom: 1rem;
   }
 }
 
