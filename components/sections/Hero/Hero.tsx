@@ -8,6 +8,7 @@ import FluidCursor from '@/components/effects/FluidCursor/FluidCursor';
 import ConstellationFrame from '@/components/effects/ConstellationFrame/ConstellationFrame';
 import HeroInstruments from '@/components/sections/Hero/HeroInstruments/HeroInstruments';
 import HeroScrollCue from '@/components/sections/Hero/HeroScrollCue';
+import HeroReturnCue from '@/components/sections/Hero/HeroReturnCue';
 import ServicesDeck from '@/components/sections/ServicesDeck/ServicesDeck';
 import WorksField from '@/components/sections/WorksField/WorksField';
 import ContactSection from '@/components/sections/Contact/ContactSection';
@@ -127,6 +128,14 @@ export default function Hero() {
           carries its own and this is display:none. Not gated in JS: it is static markup with one
           keyframe, so unlike the HUD there are no loops to stop. See HeroScrollCue. */}
       <HeroScrollCue />
+
+      {/* The way back, placed UNDER THE SUN and living nowhere near it.
+          ⚠ NOT inside `.hero-sun-slot`. That box is measured (transform-stripped) by `HeroSun` to
+          place the star and transformed by the pin to fill the screen; putting UI in it disturbed the
+          very thing it was borrowing a position from. It reads `--hero-square-x` / `--hero-square-bottom`
+          instead — two numbers `HeroSun` already had — so it is pinned to the square's real box while
+          being a plain sibling out here. Renders nothing until a loop has completed. */}
+      <HeroReturnCue />
 
       {/* Services fleet — an overlay inside the hero, revealed once the square fills the screen.
           It shares the hero's single pin (the fleet carousel is the pin's first set of stops). */}

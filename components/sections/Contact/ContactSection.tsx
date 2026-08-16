@@ -5,6 +5,7 @@ import { LOOP_REQUEST_EVENT } from '@/lib/loopEvents';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import { useIsShortViewport } from '@/lib/hooks/useIsShortViewport';
+import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
 import Drawer from '@/components/ui/Drawer/Drawer';
 import EnquiryForm from '@/components/ui/EnquiryForm/EnquiryForm';
 import { MODEL_ATTRIBUTION } from './contactContent';
@@ -81,15 +82,27 @@ export default function ContactSection() {
   // it clears the 820px narrow breakpoint comfortably and gets this section's full two-column desktop
   // layout, with 142px of body to put a four-field form in. It overflowed, `align-items: center` split
   // that across both ends and `.hero-section`'s `overflow: hidden` clipped it — silently, because
-  // nothing here scrolls. Every short frame, phone or half-height desktop window, was in that case.
+  // nothing here scrolls.
   //
-  // So the question is asked on both axes and the sheet answers both. Everything else on the page
-  // gives fluidly first (see the height clamps on .enquiry-form); this is for where no rhythm is
-  // enough. See useIsShortViewport for why 38em and why nothing else on the site asks it.
+  // ⚠ …BUT THE HEIGHT TEST IS A LAST RESORT, NOT THE FIRST ANSWER, and for a while it was neither. It
+  // fired at 608px, which a 1080p laptop at 125% scaling falls under once Chrome's chrome is off the
+  // top — so ordinary desktops were being handed a button instead of the form they had scrolled the
+  // whole site to reach. The fix was to make the form FIT rather than to hide it earlier: below 38em a
+  // tighter section rhythm and Name + Mobile folding onto one row, plus a panel bounded to the body so
+  // it can never climb under the navbar. The sheet now takes over only below 480px, where the panel
+  // really would be a slot. See useIsShortViewport.
   const isNarrow = useIsNarrowViewport();
   const isShort = useIsShortViewport();
   const isCompact = isNarrow || isShort;
   const [isFormOpen, setIsFormOpen] = useState(false);
+
+  // The panel is bounded to the body it sits in (`max-height: 100%`) and will scroll rather than clip if
+  // some frame we did not measure overruns it. That is a backstop — no targeted viewport reaches it —
+  // but the moment it CAN scroll it has to be guarded: the pin's stepper listens on `window`, so a wheel
+  // inside the panel would also throw the visitor into the black hole. Same hook, same reason, as the
+  // FAQ hologram's list.
+  const panelRef = useRef<HTMLDivElement>(null);
+  useScrollGuard(panelRef, !isCompact);
 
   // A sheet with no button to reopen it is a trap, and that is what a resize past either breakpoint
   // would leave behind.

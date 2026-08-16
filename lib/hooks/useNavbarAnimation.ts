@@ -96,6 +96,49 @@ export function useNavbarAnimation(navbarAnimationRefs: NavbarAnimationRefs) {
       });
     };
 
+    // ── ⚠ WHY A `resize` LISTENER ALONE WAS NOT ENOUGH ───────────────────────────────────────────
+    // The meters are absolutely positioned from a MEASUREMENT, so they are only ever as correct as the
+    // last time we measured — and `resize` is not the only thing that moves a nav item. The bar is a
+    // flex row: the wordmark, the four labels and the CTA share it, so ANY of them changing width
+    // shoves the rest of them sideways without the viewport changing at all. A web font swapping in
+    // late, a label re-flowing, the CTA becoming the menu toggle — none of those fire `resize`, and
+    // each leaves four amber underlines sitting where the items used to be. Which is exactly what a
+    // visitor saw after dragging the window while browsing: two meters correct, the rest stranded to
+    // the right of every item on the bar.
+    //
+    // So watch the LAYOUT, not the window. A ResizeObserver on the bar and on everything in it that can
+    // push its neighbours along catches all of the above, `resize` included — the window listener stays
+    // only because a viewport change that resizes nothing inside the bar (a wider gap, a re-clamped
+    // font size) still needs a pass.
+    let measureFrame = 0;
+    // Coalesced to one measurement per frame: a drag fires `resize` continuously and a ResizeObserver
+    // can fire alongside it, and `getBoundingClientRect` forces a synchronous reflow every time. Taking
+    // it on the frame AFTER the change also means we measure settled layout rather than mid-reflow.
+    const scheduleMeasure = () => {
+      cancelAnimationFrame(measureFrame);
+      measureFrame = requestAnimationFrame(positionMeters);
+    };
+
+    const layoutWatcher =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scheduleMeasure);
+
+    const startWatchingLayout = () => {
+      window.addEventListener('resize', scheduleMeasure);
+      // iOS fires this without a `resize` often enough to be worth the line.
+      window.addEventListener('orientationchange', scheduleMeasure);
+      layoutWatcher?.observe(navElement);
+      [logoElement, ctaElement, ...itemElements].forEach((element) => {
+        if (element) layoutWatcher?.observe(element);
+      });
+    };
+
+    const stopWatchingLayout = () => {
+      cancelAnimationFrame(measureFrame);
+      window.removeEventListener('resize', scheduleMeasure);
+      window.removeEventListener('orientationchange', scheduleMeasure);
+      layoutWatcher?.disconnect();
+    };
+
     // ⚠ Already entered, and this is a RE-RUN (the layout swapped past the narrow breakpoint). The
     // reveal is a one-shot event that fired long ago and will not fire again, so there is nothing left
     // to wait for — present the new bar and leave. Without this the effect would arm a fresh fallback
@@ -104,8 +147,8 @@ export function useNavbarAnimation(navbarAnimationRefs: NavbarAnimationRefs) {
       gsap.set([navElement, accentElement, ...animatedParts].filter(Boolean), { clearProps: 'transform', opacity: 1 });
       positionMeters();
       if (metersElement) gsap.set(metersElement, { opacity: 1 });
-      window.addEventListener('resize', positionMeters);
-      return () => window.removeEventListener('resize', positionMeters);
+      startWatchingLayout();
+      return stopWatchingLayout;
     }
 
     const playEntrance = () => {
@@ -163,15 +206,15 @@ export function useNavbarAnimation(navbarAnimationRefs: NavbarAnimationRefs) {
       }
     };
 
-    window.addEventListener('resize', positionMeters);
-    if (document.fonts?.ready) document.fonts.ready.then(positionMeters);
+    startWatchingLayout();
+    if (document.fonts?.ready) document.fonts.ready.then(scheduleMeasure);
 
     // ⚠ Off the homepage there is no intro, so there is no reveal to be in lockstep WITH — see
     // `isHomepage` on the props for what waiting for it used to cost. The bar is the first thing on
     // a document page, so it enters immediately.
     if (!isHomepage) {
       playEntrance();
-      return () => window.removeEventListener('resize', positionMeters);
+      return stopWatchingLayout;
     }
 
     // Enter in lockstep with the hero reveal (or on the fallback if the intro is bypassed).
@@ -180,7 +223,7 @@ export function useNavbarAnimation(navbarAnimationRefs: NavbarAnimationRefs) {
 
     return () => {
       window.removeEventListener(REVEAL_EVENT, playEntrance);
-      window.removeEventListener('resize', positionMeters);
+      stopWatchingLayout();
       window.clearTimeout(fallbackTimeout);
     };
   }, [isNarrow, isHomepage]);

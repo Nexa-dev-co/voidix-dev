@@ -1301,6 +1301,22 @@ body {
   opacity: 0 !important;
   transition: none;
 }
+/* The way back is hero-only too, and unlike everything else on this list it is a CONTROL — so it has to
+   stop being CLICKABLE, not merely stop being visible. An invisible button sitting over the fleet would
+   eat presses meant for a craft.
+
+   ⚠ `animation: none` IS LOAD-BEARING, and leaving it out is a bug rather than an omission: a CSS
+   animation outranks an ordinary declaration, so for the 1.25s its arrival keyframe is running the
+   `opacity: 0` below simply loses. Scroll into the fleet inside that window — which is precisely when a
+   visitor who has just been handed a new control is most likely to — and the button rides over the
+   ships until the keyframe happens to end. Killing the animation is what lets the cascade apply.
+   (`HeroScrollCue`'s header records the same trap from the other direction.) */
+.hero-section.is-services .hero-return {
+  animation: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
 /* The instrument HUD + the square's ring belong to the hero only — hide them with the headline
    so nothing bleeds over the (transparent) fleet layers. (The ring's own fade already zeroes it by
    the time services begins; this just keeps it there.) Instant for the same reason as the headline:
@@ -1538,6 +1554,136 @@ body {
 .hero-touch-cue-glyph {
   width: clamp(0.85rem, 3vw, 1.1rem);
   height: auto;
+}
+
+/* ─── The way back — hero → contact ─────────────────────
+   Only ever on screen once a loop has completed (the component renders null before that), and only on
+   the hero: `.is-services` hides it with the headline and the tagline, and for the same reason.
+
+   ⚠ IN THE FLOW, NOT PINNED TO THE BOTTOM. It was `position: absolute; bottom: …` and printed straight
+   across the tagline. It is a flow child sitting immediately after `.hero-main` now — and because that
+   block is `flex: 1` and centres the headline, "immediately after" is directly UNDER THE SUN, which is
+   where a control that returns you to the star belongs.
+
+   ⚠ NOT A FILLED PILL, and the first cut was one. Nothing else on this cream is a solid shape: the
+   headline is type, the tagline is type, the HUD is labels over hairlines and the scroll cue is a word
+   and an arrow. A packed amber lozenge in the middle of that reads as a component pasted in from
+   another site — which is the exact failure the brief names. It is a tracked micro-cap label over a
+   hairline, in the site's own instrument voice, and the rule under it is the only chrome it gets.
+
+   ⚠ AMBER ON CREAM MUST BE THE DEEPENED ONE. The hero's substrate is `#e2dfd2`, where the raw
+   `--accent` (#ff8a1a) manages 1.77:1 — nowhere near what small tracked type needs. `--accent-deep`
+   (#8f4400) holds 5.93:1 on this cream and exists for exactly this. See docs/amber-color-system.md.
+   ⚠ `--accent-deep` DIRECTLY, not `--hud-accent`, which is the same value but is declared ON
+   `.hero-hud` — a panel that is unmounted outright below 760px. Inheriting it here would have given
+   this control no colour at all on precisely the devices where it is the only way back.
+
+   ⚠ And NO `mix-blend-mode`. Everything else down here inverts as the cream gives way to black; this
+   must not, because it is a CONTROL whose colour is a brand decision rather than a contrast trick, and
+   a blended button inverts its hover state along with everything else. It is hidden the moment the page
+   stops being cream, so it never needs the blend's help. */
+/* ⚠ PLACED FROM THE SQUARE'S OWN BOX, AND DELIBERATELY NOT INSIDE IT.
+   `--hero-square-x` and `--hero-square-bottom` are published by `HeroSun` from the same measurement it
+   uses to park the star — so this sits under the SQUARE rather than under the page, which matters
+   because the sun is not centred: it lives inside the word "w□rlds" and sits well left of the frame's
+   middle at every width.
+   ⚠ The obvious anchor was the square's own element, and it was wrong. That box is measured with its
+   transform stripped by `HeroSun` and scaled to fill the screen by the pin; hanging UI in it disturbed
+   the very thing it was borrowing a position from. Two published numbers cost nothing and cannot.
+   ⚠ Viewport pixels, read inside `.hero-section` — which sits at the viewport origin for the whole
+   time this is on screen (`.is-services` takes it away at the fill boundary). The percentage fallbacks
+   are only for the frame before `HeroSun` has measured. */
+.hero-return {
+  position: absolute;
+  left: var(--hero-square-x, 50%);
+  top: calc(var(--hero-square-bottom, 62%) + clamp(0.9rem, 2.4vh, 1.75rem));
+  transform: translateX(-50%);
+  /* ⚠ Explicit, because the anchor above is zero-width. Shrink-to-fit would still resolve to the full
+     label here (the label is `nowrap`, so its min-content and max-content widths are the same figure) —
+     but that is an accident of the label's own styling, and the day someone lets it wrap, the button
+     would collapse against a containing block with no width to offer. Stated, not relied upon. */
+  width: max-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.25rem 0.15rem 0.4rem;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  letter-spacing: 0.1875em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid rgb(var(--accent-deep-rgb) / 0.3);
+  border-radius: 0;
+  cursor: pointer;
+  /* It arrives with the rest of the hero rather than snapping in — the loop lands, the page assembles,
+     and this is part of that. The delay is its own, not a number shared with the pin. */
+  animation: hero-return-arrive 0.7s ease-out 0.55s backwards;
+  transition:
+    color 0.3s ease,
+    border-color 0.3s ease;
+}
+
+.hero-return:hover,
+.hero-return:focus-visible {
+  border-bottom-color: var(--accent-deep);
+  outline: none;
+}
+
+/* The glyph lifts on hover — the direction it is about to take you, said once. Its own element so the
+   transform never lands on the button, which carries the arrival keyframe. */
+.hero-return-glyph {
+  width: 0.65rem;
+  height: auto;
+  flex-shrink: 0;
+  transition: transform 0.3s ease;
+}
+
+.hero-return:hover .hero-return-glyph,
+.hero-return:focus-visible .hero-return-glyph {
+  transform: translateY(-0.15rem);
+}
+
+.hero-return-label {
+  /* The label is the whole control; nothing here may wrap it to two lines. */
+  white-space: nowrap;
+}
+
+/* ⚠ The X translate is carried through both keys. The base rule uses `transform` to centre the button
+   on its anchor, and an animation that wrote a bare `translateY` would drop that centring for its whole
+   duration — the control would arrive half a width to the right and jump into place at the end. */
+@keyframes hero-return-arrive {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0.6rem);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ⚠ The tracking is what breaks first on a phone, not the font size. Nineteen characters at 0.1875em
+   is ~185px of letter-spacing alone; at 360px, with the frame's own padding, that is the line wrapping
+   inside a `nowrap` and overflowing instead. Tightened rather than shrunk — below ~11px this stops
+   being small caps and starts being a smudge. */
+@media (max-width: 51.25em) {
+  .hero-return {
+    gap: 0.4rem;
+    letter-spacing: 0.12em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* It still has to APPEAR — the control is the feature, not decoration — it just does so without
+     travel or a fade. */
+  .hero-return,
+  .hero-return-glyph {
+    animation: none;
+    transition: none;
+  }
 }
 
 /* A fall and a recovery, not a bounce: it drifts down the way the page does and eases back. */
@@ -2279,11 +2425,40 @@ body {
   background: #000;
 }
 
+/* ── The reverse's iris ──
+   Black, and it closes INWARD from the edges rather than flooding outward from the middle: forward you
+   arrive out of the cream, backwards you leave through the dark, and a cover should say which way you
+   are going. The aperture is a radial-gradient mask written per frame by GSAP (see LoopVeil) because
+   the shape wanted is a rectangle with a HOLE in it, and `clip-path: circle()` can only express the
+   filled circle — the exact inverse.
+
+   ⚠ Overscanned like the cream, and for the identical reason: `feDisplacementMap scale=70` samples up
+   to ±35px past the layer's own edge, where there is nothing, so a viewport-sized layer tears a
+   transparent fringe around all four sides. Raise the filter's `scale` and both insets follow it. */
+.loop-veil-iris {
+  inset: -4rem;
+  background: #000;
+  filter: url(#loop-veil-liquid);
+}
+
 /* The hero's own background colour, so when this clears there is nothing to cross-fade INTO — the page
    underneath is already exactly this. `filter` displaces the clip-path's edge with the turbulence map,
    which is what makes the flood crawl outward like liquid instead of sweeping like a wipe. */
 .loop-veil-cream {
+  /* ⚠ OVERSCANNED, AND IT MUST BE — this is not a rounding allowance, it is what the displacement map
+     costs. `feDisplacementMap scale=70` moves every pixel by up to ±35px by SAMPLING a neighbour, and at
+     the element's own edge the neighbour it samples is outside the source graphic, which is transparent.
+     So a viewport-sized cream flooded to full coverage still came out with a torn, blobby border of
+     nothing around all four sides, and the near-black page read through it — the flood looked like a
+     ripped stamp rather than a liquid filling the frame.
+     Beyond ±35px the sampling stays inside the layer, so the tear happens off-screen instead. 4rem is
+     that with room to spare. ⚠ Raise `scale` on the filter and this has to follow it. Overscan rather
+     than a smaller `scale`: the displacement is the whole effect, and it is the FLOOD's edge — mid-frame,
+     where it is wanted — that the same number draws. */
+  inset: -4rem;
   background: #e2dfd2;
+  /* Symmetric overscan, so `50% 50%` is still the middle of the VIEWPORT — the point you fell through.
+     75% of this larger box's own diagonal still covers the corners, with the overscan on top. */
   clip-path: circle(0% at 50% 50%);
   filter: url(#loop-veil-liquid);
 }
@@ -2521,7 +2696,14 @@ body {
   flex: 1;
   min-height: 0;
   display: flex;
+  /* ⚠ `safe`, and the pair is the same shape as the `100vh` / `100svh` fallbacks elsewhere in this file:
+     a browser that does not know the keyword drops the second line and keeps the first. Ordinary
+     `center` overflows in BOTH directions, so a column half a pixel too tall puts its own title under
+     the navbar — silently, because `.hero-section` clips. `safe center` centres while there is room and
+     falls back to start the moment there is not, which is the only direction this section can afford to
+     lose. The panel's `max-height` is the other half of the same guarantee. */
   align-items: center;
+  align-items: safe center;
   justify-content: space-between;
   gap: clamp(1.5rem, 6vw, 4rem);
 }
@@ -2529,9 +2711,16 @@ body {
 /* No slab behind this one, unlike the form. It sits over near-empty starfield rather than over the
    disc, and boxing it would make the section read as two cards floating on a render instead of as
    type set into the space. */
+/* ⚠ PROPORTIONAL, and the floor is not the design width — it is a backstop. This was `min(22rem, 32%)`,
+   which meant the percentage only ever bound BELOW ~1100px: from a laptop to a 4K monitor the column was
+   the same 352px box in a frame that had tripled. Written as a clamp the middle term is the design and
+   the outer two are limits — 30% of the body all the way up, floored and capped so it stops before it
+   crowds the hole. Keep it the NARROWER of the two: the panel is what the visitor came to use, and two
+   columns of equal weight either side of the disc would read as a split screen rather than as copy
+   introducing a form. */
 .contact-intro {
   pointer-events: auto;
-  width: min(22rem, 32%);
+  width: clamp(13rem, 30%, 28rem);
 }
 
 /* A translucent slab rather than a solid card. The plan flagged legibility over a live black hole as a
@@ -2541,12 +2730,33 @@ body {
    and the lensing pass are running. */
 .contact-panel {
   pointer-events: auto;
-  width: min(24rem, 36%);
+  /* ⚠ PROPORTIONAL — see `.contact-intro`, which is the same change for the same reason. The old
+     `min(24rem, 36%)` capped at 384px, so every screen from a 1080p laptop upward got an identical box:
+     the form did not grow with the frame, it just sat further from the edges. 34% of the body is the
+     design now — ~250px at the 820px where the sheet takes over, ~441px at 1440, and the 34rem ceiling
+     from 1900 up, which is where the two columns would otherwise start closing on the black hole at
+     centre frame. ⚠ The 15rem floor binds nowhere in the inline range (34% only falls under it below
+     ~700px of body, and the sheet has taken over long before) — it is a backstop against a frame nobody
+     measured, not a design width. Two paired fields need roughly that much to stay typable. */
+  width: clamp(15rem, 34%, 34rem);
+  /* ⚠ THE PANEL MAY NOT REACH THE NAVBAR, and this is the only thing enforcing it. `.contact-body`
+     centres its columns, so a panel taller than the body grows in BOTH directions — the section's
+     padding-top clears the 4.5rem bar by 8px, which half of any overflow eats instantly, and the title
+     ends up printed under the navigation. Bounded to the body, the worst case is a panel exactly as tall
+     as the space it was given.
+     The scroll is a backstop, not a layout: at every frame this section is laid out for, the form fits
+     and no scrollbar appears. It exists so that an unanticipated one — a 250% browser font, a window
+     shape nobody measured — degrades to a scrollbar rather than silently clipping the send button, which
+     is what this panel did before the height work. `useScrollGuard` in ContactSection stops a scroll in
+     here reaching the pin and firing the dive into the hole. */
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   /* Vertical padding gives on a short frame for the same reason the form's own rhythm does — and by
-     the same rule: 3.6vh of 1000 is 36px, which is the 2.25rem maximum, so a full-height desktop is
-     unchanged. The horizontal pair stays keyed on WIDTH; nothing about a short window makes a 24rem
-     column narrower. */
-  padding: clamp(1rem, 3.6vh, 2.25rem) clamp(1.5rem, 3vw, 2.25rem);
+     the same rule: 3.6vh of 1000 is 36px, which was the old maximum, so a full-height desktop is
+     unchanged and only a taller screen sees the raised ceiling. The horizontal pair stays keyed on
+     WIDTH; nothing about a short window makes a column narrower. */
+  padding: clamp(1rem, 3.6vh, 3rem) clamp(1.5rem, 3vw, 2.75rem);
   background: rgb(var(--bg-rgb) / 0.62);
   border: 1px solid var(--border);
   border-radius: 2px;
@@ -2597,49 +2807,72 @@ body {
 
    The `@media (max-width: 30em)` block near the contact section still overrides these on a true
    phone. That is not a conflict — it is the SHEET's ceiling talking, which is a width question about
-   which shell the form is in, and it is authored tighter than the height curve reaches. */
-.enquiry-form {
-  display: flex;
-  flex-direction: column;
-  gap: clamp(0.5rem, 1.4vh, 0.85rem);
-}
+   which shell the form is in, and it is authored tighter than the height curve reaches.
 
-/* ── The application's two columns ──
-   Seven fields in one column is ~780px of form in a ~510px panel: the submit button and the required
-   work fieldset both ended up below the fold, inside a modal, behind a scrollbar nobody goes looking
-   for. Pairing the short fields takes ~160px out of that, and the sticky actions bar below takes care
-   of whatever height is left over.
+   ── ⚠ AND EVERY MAXIMUM IS NOW A CEILING FOR A **BIG** SCREEN, NOT THE DESIGN VALUE ──────────────
+   Each cap was raised on 2026-08-15 and NOT ONE COEFFICIENT MOVED, which is what makes the change
+   safe: every one of these curves already hit its old cap at a 1000px viewport, so everything at or
+   below that height still renders exactly what it always did, to the pixel. The raise only opens the
+   curve above 1000px — a 1440-tall monitor now gets a rhythm to match, instead of a laptop's spacing
+   inside a panel that has grown by half again (see `.contact-panel`). Retune a coefficient and you
+   break that property in both directions at once.
+
+   ── ⚠ ONE GRID, AND `--half` IS THE ONLY THING THAT CAN PAIR ────────────────────────────────────
+   This used to be a flex column, with `.enquiry-form--application` overriding it with a grid — so the
+   two variants of one form were laid out by two different systems and the modifier was the only owner
+   of pairing. It is one grid now for both.
 
    ⚠ Everything spans the full width by DEFAULT and pairs only where it is asked to. The other way
-   round — pairing by default, spanning by exception — is how a textarea ends up half a panel wide. */
-/* ⚠ The ROW gap gives on height and the column gap does not, and the asymmetry is the point: a short
-   frame costs you rows, never columns. 1.4vh of 1000 is 14px against the 0.85rem this was authored at,
-   so a full-height desktop renders exactly what it did before — the give only appears on the short
-   frames this form is most exposed to, being the taller of the two variants. Same curve as
-   `.enquiry-form`'s, deliberately: one rhythm, whichever variant is up. */
-.enquiry-form--application {
+   round — pairing by default, spanning by exception — is how a textarea ends up half a panel wide.
+
+   ⚠ The ROW gap gives on height and the column gap does not, and the asymmetry is the point: a short
+   frame costs you rows, never columns. */
+.enquiry-form {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: clamp(0.5rem, 1.4vh, 0.85rem) 1.1rem;
+  gap: clamp(0.5rem, 1.4vh, 1.15rem) 1.1rem;
   align-items: start;
 }
 
-.enquiry-form--application > * {
+.enquiry-form > * {
   grid-column: 1 / -1;
 }
 
-.enquiry-form--application .enquiry-field--half {
-  grid-column: span 1;
+/* ── ⚠ PAIRING IS A NUMBER, NOT A RULE, AND THAT NUMBER IS THE ONLY SWITCH ──
+   `--half` marks a field as PAIRABLE. This decides whether the pairing actually happens: **2 spans both
+   columns, so a pairable field still gets a row of its own; 1 puts two of them side by side.** Two is
+   the default because a field per row is the better form — the eye goes straight down one column, and
+   Name beside Mobile is two ~190px boxes where one 400px box would do.
+
+   ⚠ Two things set it, and they are asking genuinely different questions:
+
+     `.enquiry-form--application`  the seven-field application is too tall at ANY height, so it pairs
+                                   always. A property of the FORM.
+     `@media (max-height: 38em)`   the frame has run out of room and a row has to come out of the
+                                   stack. A property of the SCREEN.
+
+   They write the same knob, which is the whole point: this file's own warning about pairing was that a
+   height query and a variant modifier owning `grid-column` separately is how the two drift apart. One
+   declaration reads it, both callers only ever hand it a number. Do not write `grid-column` on a field
+   anywhere else. */
+.enquiry-form .enquiry-field--half {
+  grid-column: span var(--enquiry-half-span, 2);
+}
+
+.enquiry-form--application {
+  --enquiry-half-span: 1;
 }
 
 .enquiry-field {
   display: flex;
   flex-direction: column;
-  gap: clamp(0.2rem, 0.7vh, 0.4rem);
+  gap: clamp(0.2rem, 0.7vh, 0.55rem);
 }
 
-/* Sits in the cell beside Mobile. `end` so it aligns to the field's baseline row rather than floating
-   at the top of a taller cell. */
+/* Sits in the cell beside Email — it followed Mobile until the field order changed on 2026-08-15, and
+   it is placed by ADJACENCY rather than by a rule, so it goes wherever the last `--half` field leaves a
+   cell open. `end` so it aligns to the field's baseline row rather than floating at the top of a taller
+   cell. */
 .enquiry-aside {
   align-self: end;
   padding-bottom: 0.55rem;
@@ -2702,7 +2935,7 @@ body {
    precisely the aesthetic the brief rejects. */
 .enquiry-input {
   width: 100%;
-  padding: clamp(0.3rem, 0.8vh, 0.5rem) 0 clamp(0.34rem, 0.9vh, 0.55rem);
+  padding: clamp(0.3rem, 0.8vh, 0.7rem) 0 clamp(0.34rem, 0.9vh, 0.78rem);
   font-family: var(--font-dm-sans), sans-serif;
   font-size: var(--fs-body);
   color: var(--fg);
@@ -2772,14 +3005,32 @@ body {
   border-bottom-color: rgb(var(--heat-500-rgb) / 0.7);
 }
 
-/* ⚠ `min-height`, not `height` — the visitor can still drag it taller, and a short frame only decides
-   where it STARTS. Three rows of seed text is what `rows={3}` asks for and what 3.5rem shows; at
-   2.25rem it is two, which is the last thing worth spending height on when the alternative is losing
-   the send button. */
+/* ── ⚠ `height`, NOT `min-height`, AND THIS CORRECTS A REAL MISTAKE ──────────────────────────────
+   This was `min-height`, and a `min-height` on a textarea is very nearly inert: the element's height
+   comes from its `rows` attribute, and `rows={3}` at this line-height is ~65px — comfortably ABOVE the
+   floor, so the clamp only ever bound at the top end, on tall screens. Two consequences, and the second
+   one shipped:
+
+     · every short-frame "give" written against that floor (2.25rem, 2rem, 2.75rem) bought nothing at
+       all, because the box was never as short as the floor in the first place;
+     · the contact panel's height budget was computed from the floor rather than from ~65px, which is
+       most of why the panel came back with a scrollbar in it.
+
+   An explicit `height` makes the box deterministic — `rows={3}` stays as the no-CSS fallback, but from
+   here the stylesheet owns the size. Global `border-box` means this figure includes the input's own
+   padding.
+
+   ⚠ It is also DELIBERATELY NEARLY CONSTANT: 48px below ~545px of viewport, 56px above ~872px, fluid
+   between. Everything else in this form grows with the screen; a message box does not want to, because
+   past two comfortable rows it stops reading as a field and starts reading as a demand for an essay.
+
+   `resize: none` — by request. The field scrolls internally, so nothing a visitor types is ever lost;
+   what goes is the drag handle, which on a translucent panel over a live scene was a corner of chrome
+   that did not belong to anything. */
 .enquiry-textarea {
-  resize: vertical;
-  min-height: clamp(2.25rem, 6vh, 3.5rem);
-  line-height: 1.55;
+  resize: none;
+  height: clamp(3rem, 5.5vh, 3.5rem);
+  line-height: 1.5;
 }
 
 /* ── The work (careers only) ──
@@ -3050,7 +3301,21 @@ body {
   gap: 0.6rem 1rem;
   margin: 0.4rem calc(var(--enquiry-shell-pad, 0px) * -1) 0;
   padding: 0.9rem var(--enquiry-shell-pad, 0px) var(--enquiry-shell-pad, 0px);
-  /* Fades in rather than starting as a hard edge, so content passes under it instead of hitting a bar. */
+}
+
+/* ── ⚠ THE FADE BELONGS TO A SCROLLER, AND ONLY TO A SCROLLER ──
+   This gradient exists so form content passes UNDER the bar instead of hitting a hard edge. Where
+   nothing scrolls there is nothing to pass under, and all it does is stamp a near-opaque `--card`
+   rectangle across the bottom third of the panel — which on contact's translucent glass, over a live
+   black hole, read as a second box floating inside the first one. It was painting there because it sat
+   on `.enquiry-actions` itself, which is shared by all three shells.
+
+   Scoped to the two shells that actually scroll: the dialog (the seven-field application genuinely
+   overflows it) and the phone's sheet. The contact panel is nominally a scroller too — `overflow-y` is
+   its clipping backstop — but it is laid out to fit and never scrolls, so it gets no fade. ⚠ If that
+   ever changes, the fix is to make the form fit, not to add the rectangle back. */
+.dialog-scroll .enquiry-actions,
+.drawer-scroll .enquiry-actions {
   background: linear-gradient(
     to top,
     rgb(var(--card-rgb) / 0.97) 55%,
@@ -3063,11 +3328,11 @@ body {
    to be a direct child of the form and owned its own spacing. It now lives in the sticky
    `.enquiry-actions` bar, which is a ROW — `align-self: flex-start` would top-align it against the
    status line beside it, and the bar supplies the gap the margin used to. The vertical padding gives
-   on height like the rest of the form's rhythm; 1.1vh of 1000 is 11px against the 0.6rem it has always
-   been, so a full-height desktop is unchanged. */
+   on height like the rest of the form's rhythm; 1.1vh of 1000 is 11px, which is the 0.6rem this was
+   authored at, so a full-height desktop is unchanged and only a taller screen sees the raised ceiling. */
 .enquiry-send {
   flex-shrink: 0;
-  padding: clamp(0.45rem, 1.1vh, 0.6rem) 1.4rem;
+  padding: clamp(0.45rem, 1.1vh, 0.85rem) 1.4rem;
   font-family: var(--font-dm-sans), sans-serif;
   font-size: var(--fs-small);
   letter-spacing: 0.1875em;
@@ -3388,19 +3653,24 @@ body {
     padding: 0.5rem 0.7rem;
   }
 
+  /* ⚠ `height` for the same reason the base rule gives — a floor on this element never bound. In the
+     phone's sheet the whole form is under an 80svh ceiling with a subject block above it, so it gives
+     up the last few pixels the base size holds. */
   .enquiry-textarea {
-    min-height: 2.75rem;
+    height: 2.75rem;
   }
 
   /* ⚠ ONE COLUMN. The pairing exists because a 40rem dialog has room for two ~290px fields; a phone
-     has room for one, and a half-width "Mobile" beside a half-width sentence would be two cramped
-     columns of about 150px each. Everything below 51.25em is in the bottom sheet anyway. */
-  .enquiry-form--application,
+     has room for one, and a half-width "Mobile" beside a half-width "Name" would be two cramped columns
+     of about 150px each. Everything below 51.25em is in the bottom sheet anyway.
+     ⚠ The selector must keep the `.enquiry-form` ancestor: the base pairing rule is two classes deep, so
+     a bare `.enquiry-field--half` here would lose on specificity rather than on order. */
+  .enquiry-form,
   .enquiry-work-fields {
     grid-template-columns: 1fr;
   }
 
-  .enquiry-form--application .enquiry-field--half {
+  .enquiry-form .enquiry-field--half {
     grid-column: 1 / -1;
   }
 
@@ -4395,40 +4665,115 @@ body {
    contact section, the sheet and the dialog at once, and reading it as one thing is the only way the
    numbers stay in step.
 
-   Everything above already gives on height fluidly (see .enquiry-form). These two are for what a
-   clamp cannot express: a layout CHOICE, and a change of shape.
+   Everything above already gives on height fluidly (see .enquiry-form). These are for what a clamp
+   cannot express: a layout CHOICE, and a change of shape.
 
-     38em / 608px — THE SHORT FRAME
-       Where the contact section runs out of room. Measured, not chosen: below it the compacted panel
-       no longer fits between the section's padding, the action row and the footer, and no rhythm will
-       make a form, a lead paragraph and a five-row footer share a 500px frame. `useIsShortViewport`
-       mirrors this number in JS and moves the form into the sheet — see its header.
+     38em / 608px — THE SHORT FRAME, AND WHERE A ROW COMES OUT OF THE FORM
+       Where the contact section stops having room to spare. Everything in here is the section giving
+       back the desktop's generosity a few pixels at a time — the shoulder above the title, the gap
+       under the loop button, the footer's leading — and then, when that is not enough, the one
+       structural give it has: Name and Mobile fold onto one row.
 
      32em / 512px — THE LANDSCAPE PHONE
        932 × 430 is the shape that breaks all of this, and note that it is WIDER than the 51.25em
        narrow breakpoint: a landscape phone gets the desktop layout and none of the desktop's height.
        The sheet gives up nearly the whole frame here, because there is nothing else left to give.
 
-   ⚠ Keep them in this order. Both are `max-height`, so the 32em rule only wins by coming second.
+     30em / 480px — WHERE THE FORM FINALLY MOVES INTO THE SHEET
+       No rule here: `useIsShortViewport` mirrors this number in JS and swaps the panel for the bottom
+       sheet, because the choice is which COMPONENT renders, not how one is styled. It is written down
+       here anyway so the three heights can be read as one scale. See that hook's header for why it
+       moved down from 38em.
 
-   ⚠ THE ENQUIRY FORM DOES NOT PAIR ITS FIELDS AT THIS HEIGHT, and that was a decision rather than an
-   oversight. A `(max-height: 32em) and (min-width: 34em)` rule pairing Name and Email inside the two
-   full-width shells was built and then dropped in the merge: `.enquiry-form--application` already owns
-   the pairing on this site, keyed on the VARIANT rather than on the frame, and two owners of one
-   behaviour is how they drift. The cost is real and small — a landscape phone opening the four-field
-   enquiry dialog scrolls it by a few tens of pixels rather than fitting exactly. If that ever needs
-   closing, extend the application rule's reach; do not add a second grid here. */
+   ⚠ Keep them in this order. All are `max-height`, so the later rule only wins by coming second.
+
+   ⚠ THE ENQUIRY FORM *DOES* PAIR ITS FIELDS AT A HEIGHT NOW (2026-08-15), reversing what this block
+   used to refuse — and the refusal is worth reading before touching it, because the reasoning still
+   holds and only the mechanism changed. The objection was never to pairing on a short frame; it was that
+   `.enquiry-form--application` owned `grid-column` for the variant and a height rule would have owned it
+   for the frame, so two rules would have written the same property and drifted. Pairing now lives in a
+   NUMBER — `--enquiry-half-span`, read by exactly one declaration — and the variant and the frame both
+   just set it. ⚠ So the rule that survives is: **nothing in this block may write `grid-column`.** Set
+   the knob. See `.enquiry-form .enquiry-field--half`. */
 @media (max-height: 38em) {
-  /* Stop paying for the desktop's shoulder. 5rem clears the 4.5rem navbar and not a great deal more —
-     the same figure, for the same reason, as the true-phone block. */
+  /* ── ⚠ 6rem, AND THE EXTRA REM IS BOUGHT, NOT SPENT ──
+     This was 5rem, which clears the 4.5rem navbar by 8px — and 8px is not a shoulder, it is a
+     near-miss. Where the panel is nearly as tall as the body it is centred in (which at ~500px of
+     viewport it is), those 8px are the whole gap: the form ended up looking welded to the bar while an
+     obvious slab of empty frame sat underneath it, between the panel and the loop button.
+
+     ⚠ THE BODY'S HEIGHT IS UNCHANGED. Every pixel added here is taken back below — 0.4rem off the
+     section's floor, 0.25rem off the loop's gap, 0.25rem off the footer's shoulder and 0.1rem off its
+     row gap, which is 16px, the same 16px this adds. So the whole content block MOVES DOWN rather than
+     being squeezed: the navbar gets a real 24px of clearance, the empty area below shrinks by the same
+     amount, and the form has exactly the room it had before. Retune one of these five and you must
+     retune the others, or the give turns into a loss. */
   .contact-section {
-    padding-top: 5rem;
-    padding-bottom: 1rem;
+    padding-top: 6rem;
+    padding-bottom: 0.6rem;
   }
 
-  /* The sheet is now the contact form's shell at this height, not just a phone's, and four fifths of
-     a 560px frame is 448px — less than the form and its heading need. It has to read as covering the
-     screen partially rather than wholly, which 88% still does. */
+  /* ── The ~30px that keeps the form out of the sheet ──
+     Below 38em the panel and the footer are competing for the same pixels, and the form is the thing
+     that must not lose: it is the reason anyone is on this section. So the rest of the column pays.
+     None of it removes anything — every link, the credit and the whole lead paragraph are still here,
+     set tighter. Together with the paired first row this is what lets the real form survive down to
+     480px instead of collapsing into a button at 608px.
+     ⚠ This gap and the footer's two below are also three of the five values in the section-padding
+     trade — see `.contact-section` at the top of this block before retuning any of them. */
+  .contact-loop {
+    padding-bottom: 0.35rem;
+  }
+
+  /* ⚠ The vertical pair only — the sides stay keyed on WIDTH, which a short window has not changed.
+     A steeper coefficient than the base 3.6vh rather than a smaller cap, so the give is proportional
+     rather than a step. */
+  .contact-panel {
+    padding-top: clamp(0.75rem, 2.6vh, 1.5rem);
+    padding-bottom: clamp(0.75rem, 2.6vh, 1.5rem);
+  }
+
+  /* ── ⚠ WHERE THE STACK COSTS MORE THAN IT IS WORTH, AND THIS BOUNDARY IS MEASURED THE HARD WAY ──
+     A field per row is the better form and it holds for as long as the section can pay for it out of
+     its own margins — which is exactly to here. Below 608px the four stacked rows no longer fit
+     between the padding, the action row and the footer, and folding Name and Mobile together takes a
+     whole row out (~54px), which is the difference between a form that fits and a form that scrolls.
+
+     ⚠ THIS WAS 32em / 512px FOR ONE REVISION AND IT WAS TOO LOW. The arithmetic said the stack
+     survived to ~515px; on a real laptop it did not, and the panel came back with a scrollbar in it —
+     which is the one thing this section may not do, having nowhere to scroll to. The lesson is the
+     usual one: a budget assembled out of estimated line-heights is worth about 30px, so the boundary
+     belongs where there is real margin on both sides of it rather than where the sum said zero.
+     At 609px the stack clears by ~65px; at 480px the paired form clears by ~25px.
+
+     ⚠ This sets the KNOB, it does not write `grid-column`. See `.enquiry-form .enquiry-field--half`. */
+  .enquiry-form {
+    --enquiry-half-span: 1;
+  }
+
+  .contact-footer {
+    gap: 0.25rem clamp(1rem, 3vw, 2.5rem);
+    padding-top: 0.5rem;
+  }
+
+  .contact-footer-group-title {
+    margin-bottom: 0.25rem;
+  }
+
+  .contact-footer-links {
+    gap: 0.2rem clamp(0.7rem, 1.6vw, 1.1rem);
+  }
+
+  /* The bar's shoulder is generous because it is normally a fade content scrolls under. Nothing scrolls
+     under it at this height — the form fits — so the gap above the button is pure spend. */
+  .enquiry-actions {
+    margin-top: 0.2rem;
+    padding-top: 0.5rem;
+  }
+
+  /* The sheet is the contact form's shell below 30em, and the enquiry dialog's at any height, and four
+     fifths of a 560px frame is 448px — less than the form and its heading need. It has to read as
+     covering the screen partially rather than wholly, which 88% still does. */
   .drawer-sheet {
     max-height: 88vh;
     max-height: 88svh;
