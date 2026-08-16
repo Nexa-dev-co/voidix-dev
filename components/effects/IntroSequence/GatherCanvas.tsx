@@ -18,7 +18,7 @@ import {
   SUN_FORMING_EVENT,
   SUN_ASSEMBLED_EVENT,
   FINALE_EVENT,
-  MINIMUM_LOADER_MS,
+  minimumLoaderMs,
 } from "./introEvents";
 
 // The loader's gathering field — matter falling together into the star the page opens on.
@@ -247,11 +247,15 @@ export default function GatherCanvas() {
      *
      * The expected wait is the LONGER of the download estimate and the loader's own minimum — the
      * minimum is what binds on a warm cache, where the download is over before the drawings have
-     * finished and the loader is being held open on purpose (see MINIMUM_LOADER_MS).
+     * finished and the loader is being held open on purpose (see minimumLoaderMs).
+     *
+     * ⚠ `minimumLoaderMs()`, not the constant: an arrival gets a shorter floor, and a field paced for
+     * the long one in a loader that ends early is cut off mid-drawing. Read per resolve rather than
+     * captured, so this cannot go stale against the enforcer's own reading.
      */
     const resolveShapeCycle = () => {
       const remaining = pageEta.secondsRemaining();
-      const expectedWait = Math.max(MINIMUM_LOADER_MS / 1000, remaining ?? 0);
+      const expectedWait = Math.max(minimumLoaderMs() / 1000, remaining ?? 0);
       shapeCycleSeconds = Math.min(
         SHAPE_CYCLE_MAX_SECONDS,
         Math.max(SHAPE_CYCLE_MIN_SECONDS, expectedWait / SHAPES_PER_EXPECTED_WAIT),

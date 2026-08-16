@@ -7,6 +7,10 @@ import {
   MOTION_CHOICE_EVENT,
   shouldAskMotionChoice,
 } from "@/lib/motionPreference";
+import { readArrivalSection } from "@/lib/arrivalSection";
+import { requestSection } from "@/lib/sectionNavigation";
+import { JUMP_COVERED_EVENT } from "@/lib/sectionJumpEvents";
+import { findNavItem } from "@/components/layout/Navbar/navItems";
 import {
   getEntryProgress,
   areArrivedWarmupsDone,
@@ -29,7 +33,7 @@ import {
   BURN_IN_DONE_EVENT,
   SUN_DRAW_PERMIT_EVENT,
   FINALE_EVENT,
-  MINIMUM_LOADER_MS,
+  minimumLoaderMs,
 } from "./introEvents";
 import GatherCanvas from "./GatherCanvas";
 import LoaderTelemetry from "./LoaderTelemetry/LoaderTelemetry";
@@ -244,6 +248,64 @@ const WARMUP_SETTLE_MS = 250;
  */
 const ASSEMBLY_LEAD = 0.35;
 
+// ── The arrival: `/#work` opened from `/about` ─────────────────────────────
+//
+// The loader does not hand off to the hero on this path — it hands off to the section that was asked
+// for, and it stays up while the site travels there. See docs/route-arrival-plan.md.
+//
+// ⚠ THE HERO IS THE THING BEING REMOVED, and it is worth naming what used to happen: the veil lifted,
+// the star flew into the square, the hero played its entrance — and only THEN did the pin discover the
+// URL and close a SECOND full-screen cover over all of it. Two curtains, with the one section the
+// visitor had not asked for showing in the gap. Everything below exists to make it one curtain.
+
+/**
+ * The star leaves with the wordmark rather than flying to a square nobody is going to look at.
+ *
+ * ⚠ IT MUST NOT BE THE FLIGHT TWEEN. `HeroSun` tweens `.hero-sun-flight`'s scale with `overwrite: true`
+ * whenever a full-black scene comes or goes (`BLACK_STAGE_EVENT`), and the travel below crosses that
+ * boundary by definition. A flight still running would be overwritten mid-air and the star would keep
+ * its "o" offset — hanging off-centre beside its square — for the rest of the session. So the arrival
+ * FADES the star out here and PLACES it with a `gsap.set` afterwards, behind the veil, where the two
+ * cannot contest anything.
+ *
+ * Matched to `CHROME_FADE_OUT` so the loader's whole picture leaves as one thing.
+ */
+const ARRIVAL_SUN_FADE = CHROME_FADE_OUT;
+
+/**
+ * How long the loader will hold its veil waiting for the transit cover to say it has the screen.
+ *
+ * ⚠ A CAP ON A HANDSHAKE, not a delay — `SectionJumpVeil` answers on the frame after it is asked, so
+ * on every healthy load this is spent in one frame. What it protects against is that component failing
+ * to mount at all, which would otherwise leave the loader holding a veil for a partner that is never
+ * going to answer.
+ *
+ * Past it the loader fades out normally and the journey is simply watched — the behaviour this whole
+ * change replaces, which is a poor arrival but is an arrival. Sized just past the pin's own
+ * `JUMP_COVER_TIMEOUT_MS` (2000), so on a page with no cover the pin starts moving BEFORE the veil
+ * lifts rather than after, and what the visitor sees is travel rather than a stationary hero.
+ */
+const TRANSIT_COVER_WAIT_MAX_MS = 2500;
+
+/**
+ * ...and how fast the loader's veil goes once the transit cover has taken over.
+ *
+ * ⚠ SHORTER THAN `VEIL_FADE_OUT`, and not for looks — this fade is invisible on every healthy load,
+ * because the cover is opaque and above it. Two reasons it is quick anyway, and both are about what is
+ * happening UNDERNEATH:
+ *
+ *   · the loader must be UNMOUNTED before the hole opens. The shortest glide on the site is a hero →
+ *     Services jump at a little over a second; a 0.7 s fade plus React's unmount is uncomfortably
+ *     close to that, and what it would cost is the destination being revealed through a hole with the
+ *     loader's veil still hanging behind it.
+ *   · `GatherCanvas` renders until it unmounts, and every frame of it is spent on a GPU that is at
+ *     that moment scrubbing several crossings at once.
+ *
+ * It is still a fade rather than a cut, because in the one case where it IS seen — no transit cover —
+ * a hard cut from black to a site mid-journey is the harshest frame on the site.
+ */
+const ARRIVAL_VEIL_FADE = 0.35;
+
 
 // The sun is sized to a little over the "o" glyph so it reads as filling it.
 const SUN_IN_O_RATIO = 1.3;
@@ -271,6 +333,8 @@ export default function IntroSequence() {
   const veilRef = useRef<HTMLDivElement>(null);
   const oSlotRef = useRef<HTMLSpanElement>(null);
   const counterRef = useRef<HTMLDivElement>(null);
+  // Rewritten by the effect on an arrival — never by React. See the destination line below.
+  const standingLineRef = useRef<HTMLSpanElement>(null);
 
   // `done` is the only state — everything animated is driven by GSAP/DOM refs so
   // the component never re-renders mid-intro (a re-render would re-apply JSX
@@ -293,6 +357,22 @@ export default function IntroSequence() {
     const revealHero = () => window.dispatchEvent(new Event(REVEAL_EVENT));
     const sunLayer = document.querySelector(SUN_LAYER_SELECTOR);
     const sunFlight = document.querySelector(SUN_FLIGHT_SELECTOR);
+
+    // ── Did the visitor arrive asking for a section? ──
+    // `/#work`, opened from the navbar on `/about` or `/careers`, or from a shared link. Null on an
+    // ordinary visit, and everything below then behaves exactly as it always has.
+    const arrivalSection = readArrivalSection();
+    const arrivalNavItem = arrivalSection ? findNavItem(arrivalSection) : null;
+
+    // ⚠ Written from HERE and not rendered as JSX, and it is a hydration rule rather than a style
+    // preference: `readArrivalSection` reads `location`, which does not exist on the server, so the
+    // markup React sends and the markup it would build on the client would disagree. Same reason
+    // `GatherCanvas` mounts unconditionally and opts out inside itself. The `.eyebrow` class does the
+    // uppercasing, so this is written in sentence case.
+    if (arrivalNavItem && standingLineRef.current) {
+      standingLineRef.current.textContent =
+        `Bound for ${arrivalNavItem.number} · ${arrivalNavItem.label}`;
+    }
 
     // ── The motion offer ──
     // A class, not React state, for the same reason the hold pulse is one: this component must not
@@ -421,6 +501,59 @@ export default function IntroSequence() {
 
     lockScroll();
 
+    /**
+     * ── Hand the visitor to the section they asked for, with the veil still up ───────────────────
+     *
+     * Shared by both paths below (the animated finale and the reduced-motion one), because getting
+     * the ORDER wrong is the whole risk here and there must not be two copies of it:
+     *
+     *   1. the pin must EXIST         — `goToStop` no-ops without it, and a request that never moves
+     *                                   anything would leave the cover waiting on an arrival that is
+     *                                   not coming. `revealHero` is what builds it.
+     *   2. the star must be PLACED    — and only after step 1, which is what drops it from z 10001
+     *                                   (above this veil) to 9500 (below it), so a `set` that would
+     *                                   otherwise be a visible jump happens where nothing can see it.
+     *   3. scroll must be UNLOCKED    — `html.scroll-locked` is `overflow: hidden`, and under it
+     *                                   `window.scrollTo` does nothing at all. The travel is a real
+     *                                   scroll, so the lock has to come off before it is asked for.
+     *   4. THEN ask                   — and not one statement earlier.
+     *
+     * ⚠ Steps 3 and 4 are deliberately in the same synchronous block. Unlocking removes the
+     * `wheel`/`touchmove` blockers, and what takes over guarding the gesture is the pin's own
+     * `swallowDuringGlide`, which only starts swallowing once `coveredJump` is set — which happens
+     * inside the dispatch on the next line. Put a frame between them and that frame is unguarded.
+     */
+    const handOffToArrival = () => {
+      if (!arrivalSection) return;
+      revealHero();
+      if (sunFlight) gsap.set(sunFlight, { x: 0, y: 0, scale: 1 });
+      // Back to full opacity, behind the veil. The destination needs a star, and on the arrival path
+      // nothing else is going to turn it back on — the flight tween that normally would is skipped.
+      if (sunLayer) gsap.set(sunLayer, { autoAlpha: 1 });
+      unlockScroll();
+      requestSection(arrivalSection, undefined, true);
+    };
+
+    // ── The last wait of all: the transit cover taking the screen ──
+    // Same shape as `onSunAssembled` below, and for the same race: the cover answers on the frame
+    // after it is asked, and the ask happens one statement before the wait is armed. Listening from
+    // here means the answer cannot arrive before anyone is listening for it.
+    let transitCovered = false;
+    let transitCued = false;
+    let releaseTransitCover = () => {};
+    const onTransitCovered = () => {
+      transitCovered = true;
+      // Spent. The intro stays mounted after it finishes (it only returns null), so without this the
+      // listener would outlive the loader and answer an ordinary navbar jump hours later.
+      window.removeEventListener(JUMP_COVERED_EVENT, onTransitCovered);
+      if (transitCued) releaseTransitCover();
+    };
+    // Only on an arrival: on every other load this event cannot fire while the intro is up, and an
+    // idle listener on a component that exists once per session is still one more thing to explain.
+    if (arrivalSection) {
+      window.addEventListener(JUMP_COVERED_EVENT, onTransitCovered);
+    }
+
     // Offset the inner sun from the square (its home) into the "o" slot. Called
     // when the wordmark resolves and re-called right before the flight so the
     // measurements are fresh.
@@ -468,6 +601,7 @@ export default function IntroSequence() {
       const quietWaitStartedAt = performance.now();
       let quietTicker = 0;
       let quietRevealTimeout = 0;
+      let quietTransitTimeout = 0;
 
       // The real fraction, painted straight in. The counter's usual `gsap.to` ease is itself motion,
       // and the hard "100" this used to write was simply untrue while the star was still arriving.
@@ -506,6 +640,34 @@ export default function IntroSequence() {
         awaitMotionChoice(() => {
           withdrawMotionChoice();
           quietRevealTimeout = window.setTimeout(() => {
+            // ── Arriving, quietly ──
+            // ⚠ NOT optional, and not a nicety. Reduced motion is a common everyday setting on iOS,
+            // and without this branch an arrival on that path would reveal the hero and then have the
+            // pin's own net drag the visitor away from it a beat later — the exact two-curtain
+            // sequence this change exists to remove, on the platform least able to absorb it.
+            //
+            // The star needs no placing here: this path set `.hero-sun-flight` home at the top, and
+            // there is no flight tween on it to undo.
+            if (arrivalSection) {
+              let quietTransitPassed = false;
+              releaseTransitCover = () => {
+                if (quietTransitPassed) return;
+                quietTransitPassed = true;
+                window.clearTimeout(quietTransitTimeout);
+                setDone(true);
+              };
+              transitCued = true;
+              handOffToArrival();
+              // The cover may already have answered — `handOffToArrival` reaches it synchronously.
+              if (transitCovered) releaseTransitCover();
+              else {
+                quietTransitTimeout = window.setTimeout(
+                  releaseTransitCover,
+                  TRANSIT_COVER_WAIT_MAX_MS,
+                );
+              }
+              return;
+            }
             revealHero();
             unlockScroll();
             setDone(true);
@@ -541,7 +703,9 @@ export default function IntroSequence() {
       return () => {
         window.clearInterval(quietTicker);
         window.clearTimeout(quietRevealTimeout);
+        window.clearTimeout(quietTransitTimeout);
         window.clearTimeout(motionPromptTimer);
+        window.removeEventListener(JUMP_COVERED_EVENT, onTransitCovered);
         teardownMotionChoiceWait();
         unlockScroll();
       };
@@ -580,6 +744,14 @@ export default function IntroSequence() {
 
     // Release the scroll lock when the intro actually finishes (the component returns
     // null but stays mounted, so the effect cleanup can't be relied on to unlock).
+    //
+    // ⚠ CONTRACT 1 SAYS "RELEASED EXACTLY ONCE, HERE", AND ON AN ARRIVAL IT IS RELEASED EARLIER.
+    // It has to be: the travel is a real scroll and `html.scroll-locked` is `overflow: hidden`, under
+    // which `window.scrollTo` does nothing at all. It is still released exactly once — `unlockScroll`
+    // is idempotent (one `classList.remove` and three `removeEventListener`s), so this call remains a
+    // no-op on that path rather than a second release. What replaces the lock as the guard is the
+    // pin's `swallowDuringGlide`, which owns every gesture from the moment the request is made until
+    // the cover opens. See handOffToArrival.
     const timeline = gsap.timeline({
       onComplete: () => {
         window.clearInterval(introHeartbeat);
@@ -615,7 +787,7 @@ export default function IntroSequence() {
       // records fixing twice before.
       //
       // 100 means what it has always meant here: the next thing you see is the site.
-      const held = (performance.now() - loaderStartedAt) / MINIMUM_LOADER_MS;
+      const held = (performance.now() - loaderStartedAt) / minimumLoaderMs();
       gsap.to(counterDisplay, {
         value: Math.round(Math.min(getEntryProgress(), held) * 100),
         duration: COUNTER_EASE_SECONDS,
@@ -675,7 +847,7 @@ export default function IntroSequence() {
         // the intro root, so the veil's fade-out does not cover it and it would otherwise still be
         // sitting over the hero after the reveal.
         withdrawMotionChoice();
-        const owed = MINIMUM_LOADER_MS - (performance.now() - loaderStartedAt);
+        const owed = minimumLoaderMs() - (performance.now() - loaderStartedAt);
         // ⚠ The minimum holds the SHOW, never the WORK. Everything above it has already run at full
         // speed; all this delays is the wordmark. On a warm cache that is the whole of the loader,
         // and the field spends it on the drawings rather than flashing past them.
@@ -726,6 +898,18 @@ export default function IntroSequence() {
       if (assemblyCued) releaseAssembly();
     };
     window.addEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
+
+    // ── The third pause: the transit cover has the screen → let the veil go ──
+    // Only ever armed on an arrival. `releaseTransitCover` is declared alongside the listener that
+    // feeds it (see handOffToArrival above); this is the animated path's answer to it, and the quiet
+    // path installs a different one, because on that path there is no timeline to resume.
+    let transitPassed = false;
+    releaseTransitCover = () => {
+      if (transitPassed) return;
+      transitPassed = true;
+      window.clearTimeout(gateTimeout);
+      resumeFrame = requestAnimationFrame(() => timeline.resume());
+    };
 
     /**
      * ── Stage 2b: both scenes are warm → MEASURE, before anything is shown ───────────────────────
@@ -986,8 +1170,13 @@ export default function IntroSequence() {
     // Hold the handoff until the last shard lands (capped) — the flight is watched start to finish.
     timeline.addPause(">", waitForAssembly);
 
-    // 6. Handoff — chrome leaves, the dark veil lifts to reveal the cream hero,
-    //    and the sun shrinks + flies from the "o" into the hero square.
+    // 6. Handoff — chrome leaves, and then one of two things happens.
+    //
+    //    ORDINARY LOAD (6a, the `else` below): the dark veil lifts to reveal the cream hero, and the
+    //    sun shrinks and flies from the "o" into the hero square. Unchanged, to the frame.
+    //
+    //    ARRIVAL (6b): the visitor named a section in the URL, so the veil STAYS and the loader
+    //    becomes the cover for the journey to it. See the branch for the order it has to keep.
     const handoffLabel = "handoff";
     timeline.addLabel(handoffLabel);
     // Ignite the gathering field: the last rush of matter into the star, timed to land under the sun's
@@ -1007,29 +1196,84 @@ export default function IntroSequence() {
       { autoAlpha: 0, duration: CHROME_FADE_OUT },
       handoffLabel,
     );
-    timeline.to(
-      veilRef.current,
-      { autoAlpha: 0, duration: VEIL_FADE_OUT, ease: "power2.inOut" },
-      `${handoffLabel}+=0.1`,
-    );
-    timeline.add(parkSunInO, `${handoffLabel}+=0.1`); // re-measure right before the flight
-    if (sunFlight) {
+
+    if (arrivalSection) {
+      // ══ 6b. THE ARRIVAL ══════════════════════════════════════════════════════════════════════
+      //
+      // Everything above this point is byte-identical to an ordinary load — the dust, the gate, the
+      // wordmark, the ten shards. What changes is only what the loader hands off TO.
+      //
+      // ⚠ THE VEIL IS NOT TOUCHED HERE. It is the cover now: it stays opaque across the whole
+      // journey, and the transit cover slides in above it before it goes. There is no instant at
+      // which neither of them owns the screen, which is the one thing this branch must guarantee.
+
+      // The star leaves with the wordmark it was sitting in. See ARRIVAL_SUN_FADE for why this is a
+      // fade and a `set` rather than the flight the ordinary path runs.
+      if (sunLayer) {
+        timeline.to(
+          sunLayer,
+          { autoAlpha: 0, duration: ARRIVAL_SUN_FADE },
+          handoffLabel,
+        );
+      }
+
+      // ⚠ The handoff runs INSIDE the pause's callback, not as a `timeline.add` before it. Two
+      // zero-duration items at one position resolve by insertion order, which is a rule about GSAP
+      // rather than a statement of intent — and if the pause won, the loader would hold for the full
+      // cap and only then ask to travel. One callback, explicit order, nothing to know.
+      //
+      // Pin, star, unlock, ask — see handOffToArrival for why that order is the whole of it. Then hold
+      // until the transit cover says it has the screen, on the same contract as the shard assembly's
+      // pause directly above: the partner says when, this only says what it is waiting for.
+      timeline.addPause(">", () => {
+        handOffToArrival();
+        transitCued = true;
+        // The cover is reached synchronously by the line above and answers on the next frame, so it
+        // has usually not replied yet — but it may have, and a wait armed after the answer never ends.
+        if (transitCovered) releaseTransitCover();
+        else {
+          gateTimeout = window.setTimeout(
+            releaseTransitCover,
+            TRANSIT_COVER_WAIT_MAX_MS,
+          );
+        }
+      });
+
+      // ⚠ Invisible on every healthy load — the transit cover is opaque and above this — and kept for
+      // exactly the load where it is not: a page whose cover failed to mount would otherwise cut from
+      // a black veil straight to a site mid-glide. Here it degrades to watching the journey, which is
+      // what the site did before this change and is a poor arrival rather than a broken one.
+      // See ARRIVAL_VEIL_FADE for why it is quicker than the hero handoff's.
+      timeline.to(veilRef.current, {
+        autoAlpha: 0,
+        duration: ARRIVAL_VEIL_FADE,
+        ease: "power2.inOut",
+      });
+    } else {
       timeline.to(
-        sunFlight,
-        {
-          x: 0,
-          y: 0,
-          scale: 1,
-          duration: SUN_FLIGHT_DURATION,
-          ease: "power2.inOut",
-        },
+        veilRef.current,
+        { autoAlpha: 0, duration: VEIL_FADE_OUT, ease: "power2.inOut" },
         `${handoffLabel}+=0.1`,
       );
-    }
+      timeline.add(parkSunInO, `${handoffLabel}+=0.1`); // re-measure right before the flight
+      if (sunFlight) {
+        timeline.to(
+          sunFlight,
+          {
+            x: 0,
+            y: 0,
+            scale: 1,
+            duration: SUN_FLIGHT_DURATION,
+            ease: "power2.inOut",
+          },
+          `${handoffLabel}+=0.1`,
+        );
+      }
 
-    // 7. Reveal the hero (text + square fill) as the sun settles, then unmount.
-    timeline.add(revealHero, ">-0.1");
-    timeline.to({}, { duration: SETTLE_AFTER_REVEAL });
+      // 7. Reveal the hero (text + square fill) as the sun settles, then unmount.
+      timeline.add(revealHero, ">-0.1");
+      timeline.to({}, { duration: SETTLE_AFTER_REVEAL });
+    }
 
     return () => {
       timeline.kill();
@@ -1037,6 +1281,7 @@ export default function IntroSequence() {
       unlockScroll();
       stopAssetProgress();
       window.removeEventListener(SUN_ASSEMBLED_EVENT, onSunAssembled);
+      window.removeEventListener(JUMP_COVERED_EVENT, onTransitCovered);
       window.removeEventListener(BURN_IN_DONE_EVENT, onBurnInDone);
       window.clearInterval(gateTicker);
       window.clearTimeout(gateTimeout);
@@ -1109,7 +1354,13 @@ export default function IntroSequence() {
         >
           ©2026
         </span>
+        {/* ⚠ Rendered with the ordinary line and REWRITTEN BY THE EFFECT on an arrival, never
+            branched here: `readArrivalSection` reads `location`, so a branch during render would
+            differ between server and client and break hydration. Same rule `GatherCanvas` follows.
+            It says where the loader is taking you — the one thing a visitor who clicked `Work` on
+            another page needs to know while they wait. */}
         <span
+          ref={standingLineRef}
           className="intro-chrome eyebrow"
           style={{
             position: "absolute",

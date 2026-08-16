@@ -6412,6 +6412,78 @@ body {
   color: var(--doc-ink);
 }
 
+/* ── A row's own call to action ──
+   ⚠ DELIBERATELY NOT `.enquiry-cta`. The homepage shows one craft at a time, so its amber pill is one
+   pill on screen; `/lite` shows all four at once and then four projects, and eight stacked pills down a
+   column of prose is both louder than the homepage ever is and exactly the "feature grid with buttons"
+   the brief names as an anti-reference. The OFFER is identical — same words, same prefill — and only
+   the register changes to the document's. `LitePage`'s `ClaimAction` carries the full reasoning.
+
+   The page keeps one pill, at the close, which the CSS below already calls the one control the
+   document exists to produce. */
+.doc-claim-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* Vertical padding is the TAP TARGET, not rhythm: the text alone is ~14px tall and this has to be
+     pressable on a phone. The negative inline margin keeps the glyph's box from indenting the label
+     out of line with the copy above it. */
+  margin: 0.9rem 0 -0.35rem;
+  padding: 0.45rem 0;
+  font-size: var(--fs-small);
+  letter-spacing: 0.06em;
+  color: var(--doc-ink-soft);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.doc-claim-action > span:first-child {
+  border-bottom: 1px solid transparent;
+  padding-bottom: 0.15rem;
+  transition: border-color 0.25s ease;
+}
+
+/* Lights WITH the row, exactly as `.doc-claim-index` does — the offer is part of the row rather than an
+   ornament sitting on it. Brighter, not amber: the index is already the row's amber and two of them
+   would make the row argue with itself about where to look. */
+.doc-claim:hover .doc-claim-action {
+  color: var(--fg);
+}
+
+/* ...and amber only when the pointer is actually on the control, which is the one moment it is a
+   destination rather than a label. */
+.doc-claim-action:hover,
+.doc-claim-action:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
+.doc-claim-action:hover > span:first-child,
+.doc-claim-action:focus-visible > span:first-child {
+  border-bottom-color: rgb(var(--accent-rgb) / 0.4);
+}
+
+.doc-claim-action-glyph {
+  display: inline-flex;
+  transition: transform 0.25s ease;
+}
+
+.doc-claim-action:hover .doc-claim-action-glyph,
+.doc-claim-action:focus-visible .doc-claim-action-glyph {
+  transform: translateX(3px);
+}
+
+/* The one action that belongs to a whole list rather than to a row — the questions' "ask us anything",
+   which is how the chamber's hologram ends too. Sits at the section body's own left edge, outside the
+   claims' index gutter, because it is not answering any one of them. */
+.doc-claims-action {
+  margin-top: clamp(1.1rem, 2.5vh, 1.6rem);
+  padding-top: clamp(1.1rem, 2.5vh, 1.6rem);
+  border-top: 1px solid var(--border);
+}
+
 /* ── The phase track ──
    The orbit rail laid sideways: a curve running through the row with a marker per phase, each riding
    the point on it that its own column computes. Geometry in `trajectoryGeometry.ts`; the component's
@@ -6930,6 +7002,11 @@ body {
 .doc-close {
   border-top: 1px solid var(--border);
   margin-top: clamp(2rem, 5vh, 3.5rem);
+  /* ⚠ Same 4.5rem fixed navbar `.doc-section` allows for, and for the same reason — on `/lite` the
+     close is an anchor: it is where the bar's `04 Contact` and its CTA land, since that page has no
+     contact section. Without this the sign-off parks underneath the bar. Inert on `/about` and
+     `/careers`, where nothing scrolls to it. */
+  scroll-margin-top: 5.5rem;
 }
 
 .doc-close-title {
@@ -7084,6 +7161,7 @@ body {
 .doc-instrument,
 .doc-chip,
 .doc-note,
+.doc-claims-action,
 .doc-role,
 .doc-close-title,
 .doc-close-lead,
@@ -7116,6 +7194,7 @@ body {
 .is-revealed .doc-instrument,
 .is-revealed .doc-chip,
 .is-revealed .doc-note,
+.is-revealed .doc-claims-action,
 .is-revealed .doc-role,
 .is-revealed .doc-close-title,
 .is-revealed .doc-close-lead,

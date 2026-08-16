@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, type CSSProperties } from 'react';
-import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
+import { scrollToSection } from '@/lib/inPageSectionRoutes';
 import type { DocSectionMeta } from './docSections';
 import { RAIL_VIEW_BOX, nodeFraction, pointOnRail, railPath } from './railGeometry';
 import { useOrbitRail } from './hooks/useOrbitRail';
@@ -37,19 +37,15 @@ export default function OrbitRail({ sections }: OrbitRailProps) {
 
   useOrbitRail({ railRef, sectionCount: sections.length });
 
-  // Travel to a station. Not a bare `#anchor` href, because smooth scrolling would have to be turned on
-  // globally to make one glide — and `html { scroll-behavior: smooth }` is exactly the thing that
-  // fights ScrollTrigger on the homepage, which shares this stylesheet. Scoped to the press instead.
-  // ⚠ `scrollIntoView`, not a hand-built scrollTo: only it honours the sections' `scroll-margin-top`,
-  // and without that margin a travelled-to heading parks underneath the fixed navbar.
+  // Travel to a station. The body of this used to live here; it is `lib/inPageSectionRoutes.ts` now,
+  // because the navbar needs the identical behaviour on `/lite` and two copies of "scroll to a section
+  // on a document page" would drift. Both of its reasons — `scrollIntoView` for `scroll-margin-top`,
+  // and not a bare `#anchor` because global smooth scrolling fights ScrollTrigger — are recorded there.
+  //
+  // ⚠ The guard is unchanged and still matters: a miss lets the href do whatever a browser would do,
+  // which is better than swallowing the click.
   const travelToSection = (event: React.MouseEvent<HTMLAnchorElement>, key: string) => {
-    const target = document.getElementById(key);
-    if (!target) return; // Let the href do whatever a browser would do; better than swallowing it.
-    event.preventDefault();
-    target.scrollIntoView({
-      block: 'start',
-      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
-    });
+    if (scrollToSection(key)) event.preventDefault();
   };
 
   return (

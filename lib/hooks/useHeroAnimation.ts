@@ -21,7 +21,7 @@ import {
   readGotoSection,
   requestSection,
 } from "@/lib/sectionNavigation";
-import { findNavItem } from "@/components/layout/Navbar/navItems";
+import { readArrivalSection } from "@/lib/arrivalSection";
 import {
   BLACK_STAGE_EVENT,
   type BlackStageDetail,
@@ -450,6 +450,20 @@ const JUMP_ARRIVE_GRACE_MS = 2500;
  * them.
  */
 const JUMP_ARRIVE_HOLD_MS = 1600;
+
+/**
+ * How long the reveal waits for the LOADER to drive a deep-link arrival before driving it itself.
+ *
+ * On a healthy load this is mooted in the same tick it is armed — `IntroSequence` fires REVEAL_EVENT
+ * and then immediately calls `requestSection`, both inside one timeline callback. What it is really
+ * sized for is the load with no intro at all: `runReveal` also fires off `REVEAL_FALLBACK_NO_INTRO_MS`
+ * on a page whose loader was bypassed or threw, and there nobody else is ever going to honour the URL.
+ *
+ * Short on purpose. It is not waiting for anything slow — it is only allowing for the handoff being a
+ * few frames apart rather than one statement apart, and a visitor left staring at a hero they did not
+ * ask for is the failure it exists to bound.
+ */
+const ARRIVAL_HANDOFF_NET_MS = 1200;
 
 const SUN_LAYER_SELECTOR = ".hero-sun-layer";
 const DECK_SELECTOR = ".services-deck";
@@ -1164,13 +1178,14 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       origin: JumpBeginDetail["origin"],
       targetStop: number,
       durationSeconds: number,
+      alreadyCovered = false,
     ) => {
       coveredJump = { targetStop, durationSeconds };
       coveredJumpGliding = false;
       // The pin does not move yet — that waits on JUMP_COVERED_EVENT.
       window.dispatchEvent(
         new CustomEvent<JumpBeginDetail>(JUMP_BEGIN_EVENT, {
-          detail: { key, origin },
+          detail: { key, origin, alreadyCovered },
         }),
       );
       armCoveredJumpNet(JUMP_COVER_TIMEOUT_MS, startCoveredGlide);
@@ -1498,12 +1513,26 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       if (squareFill) gsap.set(squareFill, { clipPath: EMPTY_CLIP });
     };
 
+    /**
+     * The hero's FINISHED pose, placed rather than played.
+     *
+     * Reduced motion has always wanted this. So does a deep-link arrival: the visitor asked for
+     * another section and the whole handoff happens under a cover, so playing the entrance would
+     * spend it where nobody can see it. But it cannot simply be SKIPPED either — the hero is still
+     * there, one scroll up from wherever they land, and a hero that never had its entrance is a
+     * headline sitting under its masks with an empty square, permanently. (The loop replays the
+     * entrance on its way back; scrolling up by hand does not.)
+     */
+    const settleHeroEntrance = () => {
+      gsap.set(textInners, { yPercent: 0 });
+      if (subline) gsap.set(subline, { autoAlpha: 1, y: 0 });
+      if (squareFill) gsap.set(squareFill, { clipPath: FULL_CLIP });
+      heroEntrancePlaying = false;
+    };
+
     const playHeroEntrance = () => {
       if (prefersReducedMotion()) {
-        gsap.set(textInners, { yPercent: 0 });
-        if (subline) gsap.set(subline, { autoAlpha: 1, y: 0 });
-        if (squareFill) gsap.set(squareFill, { clipPath: FULL_CLIP });
-        heroEntrancePlaying = false;
+        settleHeroEntrance();
         return;
       }
 
@@ -1549,6 +1578,37 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         );
     };
 
+    // ── Arriving from another route with a section in the URL ──
+    // `/about` and `/careers` render the same navbar, and off the homepage its items fall through to
+    // their real `/#work` hrefs. Something has to be listening on this side or those four links are
+    // links that appear to do nothing — which is what they did until the site had a second route to
+    // click them from.
+    //
+    // ⚠ THE PIN NO LONGER DRIVES THIS ITSELF, AND THE REVERSAL IS THE WHOLE FIX. It used to call
+    // `requestSection` right here, at the end of the reveal — which is AFTER the intro has lifted its
+    // veil, flown the star into the square and started the hero's entrance. So a visitor who asked for
+    // Work got: the hero, then a second full-screen cover closing over it, then the journey. Two
+    // curtains with the wrong section shown in the gap between them.
+    //
+    // The loader is the cover now. `IntroSequence` holds its veil, calls `requestSection` itself with
+    // `alreadyCovered`, and unmounts once the transit cover reports it has the screen — so there is one
+    // curtain and the hero is never on it. See `readArrivalSection` and IntroSequence's finale.
+    //
+    // What is left here is the NET. The intro is not guaranteed to exist: `runReveal` also fires off
+    // `REVEAL_FALLBACK_NO_INTRO_MS` on a page whose loader was bypassed or threw, and there the old
+    // behaviour is exactly right — travel, uncovered, because nothing is covering anything.
+    const arrivalSection = readArrivalSection();
+    /** True once anything has taken the visitor somewhere — the net must not fire on top of it. */
+    let hasHonouredArrival = false;
+    let arrivalNet = 0;
+    const armArrivalNet = () => {
+      if (!arrivalSection) return;
+      arrivalNet = window.setTimeout(() => {
+        if (hasHonouredArrival) return;
+        requestSection(arrivalSection);
+      }, ARRIVAL_HANDOFF_NET_MS);
+    };
+
     // 3. Reveal — fired once, when the intro lands the sun in the square. This is also the moment the
     //    pin is allowed to come online (Contract 2).
     let hasRevealed = false;
@@ -1556,30 +1616,12 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       if (hasRevealed) return;
       hasRevealed = true;
       createTransition();
-      playHeroEntrance();
-      consumeArrivalHash();
+      // An arrival is going somewhere else and does it under a cover, so the entrance would be spent
+      // unwatched. Placed rather than played — see `settleHeroEntrance` for why not simply skipped.
+      if (arrivalSection) settleHeroEntrance();
+      else playHeroEntrance();
+      armArrivalNet();
     };
-
-    // ── Arriving from another route with a section in the URL ──
-    // `/about` and `/careers` render the same navbar, and off the homepage its items fall through to
-    // their real `/#work` hrefs. Something has to be listening on this side or those four links are
-    // links that appear to do nothing — which is what they did until the site had a second route to
-    // click them from. (`Navbar.tsx` has claimed in a comment since it was written that "the pin picks
-    // it up on arrival"; this is the first time that has been true.)
-    //
-    // It goes through `requestSection` rather than seeking directly, so an arrival gets the identical
-    // treatment a click gets: the distance-scaled glide, and the cover if it is far enough to be worth
-    // hiding. Called from inside `runReveal` because the pin must EXIST first — `goToStop` no-ops
-    // without it, which would leave a covered jump sitting on a black screen.
-    function consumeArrivalHash() {
-      const key = window.location.hash.slice(1);
-      if (!key || !findNavItem(key)) return;
-      // Drop the hash before travelling. It has been spent, and leaving it in the URL means a reload —
-      // or the loop's teleport back to the hero — silently re-triggering the journey to a section the
-      // visitor has since scrolled away from.
-      window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      requestSection(key);
-    }
 
     // ── The teleport ──
     // Runs with the screen already black, so the order below is about what must be TRUE by the next
@@ -1875,6 +1917,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         (section) => section.key === request.key,
       );
       if (sectionIndex < 0) return;
+      // Whatever asked, the visitor is being taken somewhere — so the arrival net has nothing left to
+      // catch. Set for ANY accepted request, not only one carrying the arrival key: the net's job is
+      // "did anything happen", and a hero left standing is the only outcome it exists to prevent.
+      hasHonouredArrival = true;
       const targetStop = layout.sections[sectionIndex].firstStop;
       const trigger = scrollTimeline?.scrollTrigger;
       const distance = Math.abs(
@@ -1897,16 +1943,33 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const currentSectionIndex = inFill
         ? HERO_SECTION_INDEX
         : layout.sectionIndexOfStop(currentStop);
+      // ⚠ A request that arrives ALREADY COVERED has no plain path available to it. The loader is
+      // holding an opaque screen that only `JUMP_ARRIVED_EVENT` will open, so both of the escape
+      // hatches below — reduced motion, and the distance rule — would strand the visitor on black
+      // with nothing coming. It is not "prefer the covered path" here, it is the only one that ends.
+      //
+      // (Neither would fire in practice: an arrival starts at the hero, and every section is at least
+      // `JUMP_SECTION_DISTANCE` from it. The point is that the guarantee must not rest on that.)
+      //
       // `trigger` is required, not incidental: with no pin yet (a click during the intro, before
       // REVEAL_EVENT built it) `goToStop` no-ops, so no update would ever report arrival and the cover
       // would sit on a black screen until its net lapsed. Fall through to the plain path, which
-      // degrades to setting the index and nothing else.
+      // degrades to setting the index and nothing else. An already-covered request is the exception
+      // even to that — `JUMP_ARRIVE_GRACE_MS` opening on the hero is a worse arrival than the one
+      // asked for, but it is an arrival; the plain path there would simply never uncover.
       if (
-        !reduceMotion &&
-        trigger &&
-        Math.abs(sectionIndex - currentSectionIndex) >= JUMP_SECTION_DISTANCE
+        request.alreadyCovered ||
+        (!reduceMotion &&
+          trigger &&
+          Math.abs(sectionIndex - currentSectionIndex) >= JUMP_SECTION_DISTANCE)
       ) {
-        beginCoveredJump(request.key, request.origin, targetStop, durationSeconds);
+        beginCoveredJump(
+          request.key,
+          request.origin,
+          targetStop,
+          durationSeconds,
+          request.alreadyCovered,
+        );
         return;
       }
 
@@ -2110,6 +2173,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       window.clearTimeout(fallbackTimeout);
       window.clearTimeout(rearmTimer);
       window.clearTimeout(coveredJumpNet);
+      window.clearTimeout(arrivalNet);
       // Hand `body` back to the stylesheet — this hook is the only writer of that inline style, and
       // leaving a cream one behind would outlive the homepage on a client-side route change.
       document.body.style.backgroundColor = "";

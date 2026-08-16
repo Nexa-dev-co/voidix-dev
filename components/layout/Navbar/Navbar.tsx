@@ -5,11 +5,23 @@ import { usePathname } from "next/navigation";
 import { useNavbarAnimation } from "@/lib/hooks/useNavbarAnimation";
 import { useIsNarrowViewport } from "@/lib/hooks/useIsNarrowViewport";
 import { originOfElement, requestSection } from "@/lib/sectionNavigation";
+import {
+  isInPageSectionRoute,
+  scrollToSection,
+} from "@/lib/inPageSectionRoutes";
 import OrbitDial from "./OrbitDial/OrbitDial";
 import { useOrbitDial } from "./OrbitDial/useOrbitDial";
-import { HOME_METER_KEY, NAV_ITEMS } from "./navItems";
+import {
+  HOME_METER_KEY,
+  NAV_ITEMS,
+  hrefForMode,
+  type NavMode,
+} from "./navItems";
 
 const METER_KEYS = [HOME_METER_KEY, ...NAV_ITEMS.map((item) => item.key)];
+
+/** Where "Start Project" goes. The same key the fourth nav item carries — one destination, one name. */
+const CTA_SECTION_KEY = "contact";
 
 function LinkArrow() {
   return (
@@ -76,35 +88,63 @@ export default function Navbar() {
   // On the homepage EVERY item drives the pin, because none of these sections is a place you can jump
   // to: they are overlays inside one pinned ScrollTrigger, so the href would land on the hero whichever
   // one you clicked. On `/about` and `/careers` there is no pin, and the "/#key" href navigates for
-  // real — `useHeroAnimation` reads the hash once it has built the pin on the other side.
+  // real — the loader reads the hash and hands off to the section on the other side, without ever
+  // showing the hero (see lib/arrivalSection.ts).
+  //
+  // ⚠ THERE IS A THIRD ANSWER NOW, AND IT IS NOT A SPECIAL CASE OF EITHER. `/lite` carries these same
+  // sections as ordinary anchors, so its items neither drive a pin nor leave the page — they scroll.
+  // Treating it as "not the homepage" is what made the one page built for a visitor who cannot afford
+  // ten megabytes answer every nav click by fetching ten megabytes.
   //
   // ⚠ `usePathname`, not `window.location.pathname` read inside the handlers. The handlers were only
   // ever called after mount so the old read was safe, but the same answer is now needed during RENDER
-  // (the meters below) and during the entrance effect, and neither of those may touch `window`.
+  // (the meters and the hrefs below) and during the entrance effect, and neither may touch `window`.
   const pathname = usePathname();
   const isHomepage = pathname === "/";
+  const mode: NavMode = isHomepage
+    ? "pin"
+    : isInPageSectionRoute(pathname)
+      ? "in-page"
+      : "navigate";
 
   useNavbarAnimation({ navRef, accentRef, metersRef, isNarrow, isHomepage });
 
-  // The clicked control's centre travels with the request: a jump far enough to be hidden collapses
-  // into the label you pressed and unfolds out of it again, which is what gives the cover a cause
-  // rather than making it a wipe. See lib/sectionJumpEvents.ts.
+  /**
+   * The one place a section request is resolved, for every control on the bar.
+   *
+   * Returns true when the click has been handled here and the browser should not follow the href.
+   * ⚠ In `in-page` mode that is conditional on the anchor actually existing — see `scrollToSection`.
+   * A key renamed on one side only then falls through to `/#key` and the visitor gets the homepage's
+   * version of the section, which is a downgrade rather than a control that does nothing.
+   */
+  const travelTo = (key: string, origin?: HTMLElement | null): boolean => {
+    if (mode === "pin") {
+      // The clicked control's centre travels with the request: a jump far enough to be hidden
+      // collapses into the label you pressed and unfolds out of it again, which is what gives the
+      // cover a cause rather than making it a wipe. See lib/sectionJumpEvents.ts.
+      requestSection(key, originOfElement(origin ?? null));
+      return true;
+    }
+    if (mode === "in-page") return scrollToSection(key);
+    return false; // `navigate` — the href is the whole mechanism.
+  };
+
   const handleNavClick = (event: React.MouseEvent, key: string) => {
-    if (!isHomepage) return;
-    event.preventDefault();
-    requestSection(key, originOfElement(event.currentTarget));
+    if (travelTo(key, event.currentTarget as HTMLElement)) event.preventDefault();
   };
 
   // A facet on the fan. Same journey as a nav link, but the ORIGIN passed to the jump is the TOGGLE —
   // so a covered jump's black grows out of the mark still under the visitor's thumb, rather than out of
   // a facet that is already folding away. See lib/sectionJumpEvents.ts.
+  //
+  // ⚠ THE FAN IS THE ONLY NAVIGATION BELOW 51.25em, so it gets the same three modes as the bar. It
+  // used to hard-code `window.location.href = '/#key'` for everything that was not the homepage — a
+  // full document load, which on `/lite` is the ten megabytes that page exists to avoid, requested by
+  // the one control a phone visitor has.
   const handleStationSelect = (index: number, origin: HTMLElement) => {
     const key = NAV_ITEMS[index].key;
-    if (!isHomepage) {
-      window.location.href = `/#${key}`;
-      return;
-    }
-    requestSection(key, originOfElement(origin));
+    if (travelTo(key, origin)) return;
+    window.location.href = `/#${key}`;
   };
 
   // Tap to open, tap a facet to travel. The fan owns its own open state — see useOrbitDial for why this
@@ -112,12 +152,14 @@ export default function Navbar() {
   const fan = useOrbitDial({ toggleRef, onSelect: handleStationSelect });
 
   // "Start Project" goes where a start-a-project button should: the contact form at the end.
+  //
+  // ⚠ On `/lite` that is the page's own close block, which holds the real *Start a project* button and
+  // its enquiry panel — so this scrolls there rather than opening the panel over the visitor's head.
+  // Deliberately a scroll: reaching into a page's local state from the shared chrome would need an
+  // event and a listener, to save a tap on a control that is by then in the middle of the screen.
   const handleCtaClick = (event: React.MouseEvent) => {
-    if (!isHomepage) {
-      window.location.href = "/#contact";
-      return;
-    }
-    requestSection("contact", originOfElement(event.currentTarget));
+    if (travelTo(CTA_SECTION_KEY, event.currentTarget as HTMLElement)) return;
+    window.location.href = `/#${CTA_SECTION_KEY}`;
   };
 
   return (
@@ -208,7 +250,7 @@ export default function Navbar() {
                   data-enter={navItem.enter}
                 >
                   <a
-                    href={navItem.href}
+                    href={hrefForMode(navItem, mode)}
                     className="nav-link"
                     data-key={navItem.key}
                     onClick={(event) => handleNavClick(event, navItem.key)}

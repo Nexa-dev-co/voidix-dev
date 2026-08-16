@@ -42,6 +42,25 @@ export interface JumpBeginDetail {
    * item may not be on screen at all. The cover falls back to the middle of the frame.
    */
   origin?: { x: number; y: number };
+  /**
+   * Enter at the top of the HOLD — the screen is already black, so there is nothing to close over.
+   *
+   * ── The one caller, and why the collapse has to be skipped rather than merely hidden ────────────
+   * A deep-link arrival (`/#work` from `/about`) hands off directly from the loader, whose veil is
+   * still opaque. It is tempting to let the collapse run anyway and rely on black-over-black hiding
+   * it — but the two blacks are NOT the same: this cover is `#000` (deliberately, so it reads the
+   * same over every section) and the loader's veil is `--bg`, `#060606`. Near-identical is not
+   * identical, and a 92%-feathered disc between them is a soft edge sweeping the frame. Two values
+   * that happen to be close is not a mechanism.
+   *
+   * Skipping it costs nothing, because the two halves already meet by construction: a full-radius
+   * disc and a zero-radius hole are both "entirely black". Starting at a full-radius disc is starting
+   * exactly where the collapse would have ended.
+   *
+   * ⚠ `JUMP_COVERED_EVENT` is still fired, and still by the cover. The handshake is unchanged — only
+   * the length of its first beat is.
+   */
+  alreadyCovered?: boolean;
 }
 
 export function readJumpBegin(event: Event): JumpBeginDetail | null {

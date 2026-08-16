@@ -44,6 +44,16 @@ import {
  *   JUMP_BEGIN    the pin has NOT moved. Close.
  *   JUMP_COVERED  ...fired from here, when the black actually owns the frame. Only then does it glide.
  *   JUMP_ARRIVED  the pin has settled on the destination. Open.
+ *
+ * ── ⚠ THE SECOND WAY IN: A DEEP-LINK ARRIVAL ────────────────────────────────────────────────────
+ * `/#work` opened from `/about` hands off here straight from the loader, whose veil is still opaque.
+ * `JUMP_BEGIN` then carries `alreadyCovered` and this enters at the top of its HOLD — no collapse,
+ * because there is nothing on screen to close over. Everything after that beat is identical, which is
+ * the point: one gesture means "you have been taken somewhere", whether the request came from a
+ * navbar click on this page or from a link on another one.
+ *
+ * ⚠ It is the loader that is being replaced here, not merely covered. The intro holds its veil until
+ * this reports `JUMP_COVERED` and only then unmounts, so at no instant is neither of them opaque.
  */
 
 /** Black grows out of the clicked label until it owns the frame. */
@@ -128,6 +138,8 @@ export default function SectionJumpVeil() {
     if (!root || !fill || !card || !orbit) return;
 
     let timeline: gsap.core.Timeline | null = null;
+    /** The one deferred dispatch on this component — see the arrival branch in `onJumpBegin`. */
+    let coveredAnnounceFrame = 0;
     // Where the current jump is folding into. Held across both halves — the hole must open at the
     // same point the disc grew from, or the gesture stops being one move and becomes two.
     let originX = window.innerWidth / 2;
@@ -195,6 +207,47 @@ export default function SectionJumpVeil() {
       gsap.set(card, { autoAlpha: 1 });
       gsap.set(cardParts(), { autoAlpha: 0, y: CARD_IN_LIFT_PX });
       gsap.set(orbit, { autoAlpha: 0, scale: ORBIT_IN_SCALE });
+
+      // ── Handed the screen already black ──
+      // The loader is still up and opaque, so there is nothing to close over: start where the
+      // collapse would have finished and play only the card. See `alreadyCovered` in
+      // lib/sectionJumpEvents.ts for why this is skipped outright rather than hidden under the loader.
+      if (request.alreadyCovered) {
+        maskRadius.value = radiusToCover(originX, originY);
+        applyMask(false);
+        gsap.set(fill, { autoAlpha: 1 });
+        timeline = gsap.timeline();
+        if (prefersReducedMotion()) {
+          timeline.set(cardParts(), { autoAlpha: 1, y: 0 }, 0);
+          timeline.set(orbit, { autoAlpha: 1, scale: 1 }, 0);
+        } else {
+          timeline.to(
+            orbit,
+            { autoAlpha: 1, scale: 1, duration: ORBIT_IN_SECONDS, ease: 'power2.out' },
+            0,
+          );
+          timeline.to(
+            cardParts(),
+            {
+              autoAlpha: 1,
+              y: 0,
+              duration: CARD_IN_SECONDS,
+              stagger: CARD_LINE_STAGGER,
+              ease: 'power3.out',
+            },
+            ORBIT_LEAD_SECONDS,
+          );
+        }
+        // ⚠ Next frame, not this one. The handoff is synchronous — the intro calls `requestSection`,
+        // which reaches the pin, which dispatches JUMP_BEGIN, which runs this — so announcing inline
+        // would start the glide inside the same tick the cover was first written to the DOM, before
+        // the compositor has shown a single frame of it. One frame costs nothing and makes "the cover
+        // has the screen" true rather than merely scheduled.
+        coveredAnnounceFrame = requestAnimationFrame(() =>
+          window.dispatchEvent(new Event(JUMP_COVERED_EVENT)),
+        );
+        return;
+      }
 
       if (prefersReducedMotion()) {
         maskRadius.value = radiusToCover(originX, originY);
@@ -317,6 +370,7 @@ export default function SectionJumpVeil() {
     return () => {
       window.removeEventListener(JUMP_BEGIN_EVENT, onJumpBegin);
       window.removeEventListener(JUMP_ARRIVED_EVENT, onJumpArrived);
+      cancelAnimationFrame(coveredAnnounceFrame);
       timeline?.kill();
     };
   }, []);
