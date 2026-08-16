@@ -6404,6 +6404,34 @@ body {
   text-wrap: balance;
 }
 
+/* ── What kind of work a project was, above its title ──
+   The document's form of `.works-detail-type`. NOT that pill: the field draws one of these at a time
+   over a black scene and can afford a bordered, glowing capsule; four of them down a page of prose
+   would read as a filter bar. The information is the same and the emphasis is carried by colour and
+   tracking instead of by a box.
+
+   ⚠ Amber is safe for type here — `--accent` is `--heat-600`, comfortably above the `--heat-500` floor
+   this file sets for small text on the page black. Do not swap it for a lower stop. */
+.doc-claim-key {
+  margin-bottom: 0.45rem;
+  color: var(--accent);
+}
+
+/* ── A craft's poetic kicker ──
+   `.deck-detail-eyebrow`'s counterpart. On the deck this line sits over the description as the one
+   place a service is allowed to be lyrical; here it sits under the name for the same job, a step down
+   in size because on this page the NAME is the heading and there it lives in the carousel. */
+.doc-claim-kicker {
+  margin-top: 0.5rem;
+  max-width: 46ch;
+  font-weight: 700;
+  font-size: clamp(0.95rem, 1.4vw, 1.15rem);
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  text-wrap: balance;
+}
+
 .doc-claim-backing {
   margin-top: 0.6rem;
   max-width: 58ch;

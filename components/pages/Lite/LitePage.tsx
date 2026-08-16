@@ -157,6 +157,11 @@ export default function LitePage() {
                 </span>
                 <div className="doc-claim-text">
                   <h3 className="font-display doc-claim-title">{service.name}</h3>
+                  {/* ⚠ The poetic kicker, which this page used to drop on the floor. On the deck it is
+                      the big amber line over the description — the one place each craft is allowed to
+                      be lyrical rather than descriptive — and leaving it out was the page summarising
+                      rather than re-presenting, which `liteContent.ts` opens by forbidding. */}
+                  <p className="font-display doc-claim-kicker">{service.eyebrow}</p>
                   <p className="doc-claim-backing">{service.description}</p>
                   <ul className="doc-chips doc-chips--quiet">
                     {service.capabilities.map((capability) => (
@@ -201,6 +206,14 @@ export default function LitePage() {
                   {project.index}
                 </span>
                 <div className="doc-claim-text">
+                  {/* ⚠ WHAT KIND OF WORK THIS WAS, above the title exactly as the field puts it.
+                      Not a decoration: it is the same vocabulary the four services are sold in, so it
+                      is what says a project IS one of them, already delivered — `worksProjects.ts`
+                      calls that the whole point. It also explains the CTA underneath, which offers a
+                      build of precisely this discipline. */}
+                  <p className="eyebrow doc-claim-key">
+                    {disciplines[project.discipline].label}
+                  </p>
                   <h3 className="font-display doc-claim-title">{project.title}</h3>
                   <p className="doc-note">
                     {project.client}
