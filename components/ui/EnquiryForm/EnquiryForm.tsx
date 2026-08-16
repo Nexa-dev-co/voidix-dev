@@ -533,28 +533,10 @@ export default function EnquiryForm({
         )}
       </div>
 
-      <div className="enquiry-field enquiry-field--half">
-        <label className="enquiry-label" htmlFor={emailId}>
-          {formContent.emailLabel}
-          <span className="enquiry-required" aria-hidden="true">
-            *
-          </span>
-        </label>
-        <input
-          id={emailId}
-          name="email"
-          type="email"
-          className="enquiry-input"
-          autoComplete="email"
-          required
-          {...fieldProps('email')}
-        />
-        {fieldErrors.email && (
-          <p className="enquiry-field-error" id={errorIdFor('email')}>
-            {fieldErrors.email}
-          </p>
-        )}
-      </div>
+      {/* ⚠ DIRECTLY AFTER Name, because those two are the pair — see `.enquiry-form`'s grid. They have a
+          row each until the frame is too short for four of them, and then they are the ones that share:
+          they are the two shortest answers in the form and the two a visitor gives without thinking,
+          whereas Email is the one that has to be right and keeps its own line as long as there is one.
 
           `type="tel"` rather than `text`: it is what puts the numeric keypad up on a phone. It carries
           no `pattern` — the check is in `validatePhone`, which counts digits rather than demanding a
@@ -585,7 +567,7 @@ export default function EnquiryForm({
           a deliberate line. The application has the aside below to fill that cell, so there it pairs. */}
       <div className={`enquiry-field${isApplication ? ' enquiry-field--half' : ''}`}>
         <label className="enquiry-label" htmlFor={emailId}>
-          Email
+          {formContent.emailLabel}
           <span className="enquiry-required" aria-hidden="true">
             *
           </span>
