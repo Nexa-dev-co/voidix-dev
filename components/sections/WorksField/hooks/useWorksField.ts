@@ -45,6 +45,11 @@ import {
 } from '@/components/sections/Contact/singularityScene';
 import { createFrameTimer } from '@/lib/frameTimer';
 import { hideHologram } from '@/lib/hologramPose';
+import {
+  MAX_DEFERRED_STRETCH,
+  isViewportSettled,
+  startViewportReframeWatch,
+} from '@/lib/viewportReframe';
 import { publishSunParallaxPose, clearSunParallaxPose } from '@/lib/sunParallaxPose';
 import { createWorksHud } from '../worksHud';
 import {
@@ -2791,6 +2796,26 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
     // other side, so nothing has to assume the canvas fills the viewport.
     let viewportWidth = 1;
     let viewportHeight = 1;
+    /** The canvas box has moved and the buffers have not followed yet — see the resize block below. */
+    let canvasSizeDirty = false;
+    /**
+     * How far the canvas's CSS box has drifted from the size the buffers were allocated at.
+     *
+     * Symmetric, so shrinking counts as much as growing: 1 means they agree, 1.25 means a quarter out
+     * either way. Measured against `viewportWidth/Height`, which `applyRendererSize` sets to the size
+     * it last allocated — so a slow drag accumulates toward the ceiling instead of creeping under it.
+     */
+    const canvasStretch = () => {
+      const width = canvas.clientWidth || canvas.offsetWidth;
+      const height = canvas.clientHeight || canvas.offsetHeight;
+      if (!width || !height) return 1;
+      return Math.max(
+        width / viewportWidth,
+        viewportWidth / width,
+        height / viewportHeight,
+        viewportHeight / height,
+      );
+    };
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
@@ -3174,6 +3199,23 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
         canvasUncomposited = shouldUncomposite;
         canvas.classList.toggle('is-uncomposited', shouldUncomposite);
       }
+
+      // ── ⚠ THE FAQ PANEL IS HIDDEN ON EVERY FRAME, NOT ONLY ON DRAWN ONES ──
+      // The panel is DOM (see lib/hologramPose.ts) so it goes on being composited whether or not this
+      // canvas draws, and its pose is a stale-until-told store — the room's `update` is the only thing
+      // that publishes one, and nothing infers "gone" from a pose that simply stopped arriving.
+      //
+      // This used to live inside the draw block, in the branch that decides the panel has no room to be
+      // anchored in. Correct for browsing projects; wrong for LEAVING. The moment the pin is somewhere
+      // this field does not render, `isDrawing` goes false and that branch stops being reached at all —
+      // so the last pose stands and the panel hangs there, fully lit, over whatever is on screen. It was
+      // photographed sitting over the CREAM HERO, beside the wordmark, after a window resize threw the
+      // pin back to the top.
+      //
+      // Hoisted here so there is ONE writer and it runs unconditionally. `revealing` is the honest
+      // question ("is a room being drawn"); `isDrawing` is the other half ("is anything being drawn"),
+      // and neither implies the other.
+      if (!revealing || !isDrawing) hideHologram();
       // Hoisted out of the draw block because the resolution controller below has to know whether this
       // frame did the full job before it decides whether the NEXT one's timing means anything.
       let spaceRenderedThisFrame = true;
@@ -3220,10 +3262,9 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
           screenRenderPass.scene = presentScene;
           screenRenderPass.camera = presentCamera;
           // Browsing projects, not standing in a room — so there is no room for the FAQ panel to be
-          // anchored in. Said out loud, because the chamber's `update` (the only thing that publishes a
-          // pose) simply stops running here, and a stale pose would leave the panel hanging over the
-          // meteor field looking perfectly valid.
-          hideHologram();
+          // anchored in. `hideHologram()` for this case is no longer here: it is hoisted above the draw
+          // block, because this branch cannot be reached on a frame that does not draw and "the panel
+          // must go away" is exactly what those frames need to say. One writer, see it there.
         }
         profileMeasure('works · screen', () => screenComposer.render(), true);
 
@@ -3253,6 +3294,50 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
       // the camera skip straight to the far end — the hop reads as a freeze then a jump. So we only
       // ever do it on a genuinely idle frame: the field off screen (services / the fill) or the tab
       // backgrounded. Also frozen entirely through either crossing.
+      // Hoisted out of the ratio branch below only so it reads beside the size block, which asks a
+      // deliberately DIFFERENT question — see there. This one is the RATIO's freeze and is unchanged.
+      //
+      // ⚠ THE HOP. `travelActive` is the real-time GSAP tween that moves the camera between two
+      // projects, and it is the exact hazard the ratio branch's header describes: a stall mid-hop lets
+      // the tween advance behind it, so the camera skips to the far end and the hop reads as a freeze
+      // then a jump. It is NOT covered by `handoffActive` or `revealScrubbing` — those are the two
+      // crossings — so a forced apply would have landed straight in it.
+      const scrubbing =
+        travelActive ||
+        (chamberState.contact > CROSSING_IDLE_EPSILON &&
+          chamberState.contact < 1 - CROSSING_IDLE_EPSILON) ||
+        diveProgress > CROSSING_IDLE_EPSILON;
+
+      // ── ⚠ THE CANVAS'S OWN SIZE: THE DRAG IS THE ONLY THING IT WAITS FOR ─────────────────────
+      //
+      // ⚠ A SIZE CHANGE AND A RATIO CHANGE ARE NOT THE SAME WAITING PROBLEM, and treating them alike
+      // cost two revisions. A queued RATIO makes the frame softer or sharper — waiting is free, and
+      // the ratio still waits below. A queued SIZE leaves `camera.aspect` disagreeing with the box the
+      // final quad is blitted into, so everything on screen is visibly STRETCHED for as long as it
+      // waits. Never worth it for more than a frame.
+      //
+      // The first cut froze this through every crossing, copied from the ratio, and the craft flew a
+      // whole handoff distorted. The second cut kept the freeze only for real-time tweens
+      // (`travelActive`) on the argument that a stall desyncs motion — and a stretch still showed on
+      // the section crossings. The rule is simpler than either: the drag is the only thing worth
+      // waiting for, because it is the only thing that would make us re-allocate again next frame.
+      //
+      // A one-frame stall inside a 0.6 s camera hop nudges the tween by ~30 ms, which is not visible.
+      // A stretched image for the length of that hop is. There is no version of this trade where the
+      // distortion is the better half, so there is no exception list any more.
+      //
+      // Deliberately NOT gated on `RATIO_APPLY_GRACE_SECONDS` either: that grace exists so a
+      // controller that keeps changing its mind cannot thrash the buffers, and a window that has
+      // finished moving is not going to change its mind. Waiting 1.5 s would just be 1.5 s of stretch.
+      if (canvasSizeDirty) {
+        const stretched = canvasStretch() > MAX_DEFERRED_STRETCH;
+        if (!isDrawing || stretched || isViewportSettled()) {
+          applyRendererSize();
+          canvasSizeDirty = false;
+          ratioPendingSeconds = 0;
+        }
+      }
+
       if (!handoffActive && !revealScrubbing) {
         // ── The one optional extra, on a frame nobody is watching ──
         //
@@ -3286,20 +3371,11 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
           // ⚠ The `||` half is what stops this waiting for an idle frame that never comes. This scene
           // draws works, the chamber AND contact without a break, so its only idle frame is the
           // teleport — see RATIO_APPLY_GRACE_SECONDS for the whole failure. The crossings are already
-          // excluded by the enclosing guard, and the two spans it does NOT cover are added here, so
-          // the hitch can only ever land on a stop that is being browsed at rest.
-          const scrubbing =
-            // ⚠ THE HOP. `travelActive` is the real-time GSAP tween that moves the camera between two
-            // projects, and it is the exact hazard the original comment above describes: a stall
-            // mid-hop lets the tween advance behind it, so the camera skips to the far end and the hop
-            // reads as a freeze then a jump. It is NOT covered by `handoffActive` or `revealScrubbing`
-            // — those are the two crossings — so a forced apply would have landed straight in it.
-            travelActive ||
-            (chamberState.contact > CROSSING_IDLE_EPSILON &&
-              chamberState.contact < 1 - CROSSING_IDLE_EPSILON) ||
-            diveProgress > CROSSING_IDLE_EPSILON;
+          // excluded by the enclosing guard, and the two spans it does NOT cover are added by
+          // `scrubbing` (hoisted above), so the hitch can only ever land on a stop being browsed at rest.
           if (!isDrawing || (!scrubbing && ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS)) {
             applyRendererSize();
+            canvasSizeDirty = false;
             ratioPendingSeconds = 0;
           }
         }
@@ -3315,8 +3391,16 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
     renderFrame();
 
     // ── Resize ──
+    // ⚠ THE OBSERVER MARKS, THE LOOP APPLIES. It used to call `applyRendererSize` directly, which
+    // walked straight past every guard the twenty lines above it are made of: a resize mid-crossing
+    // re-allocated both composers inside a scrubbed flight — the exact "visible jump" that
+    // `RATIO_APPLY_GRACE_SECONDS` exists to prevent — and a window drag did it once a frame for the
+    // length of the drag. See MAX_DEFERRED_STRETCH for what the waiting costs and why it is worth it.
     applyRendererSize();
-    const resizeObserver = new ResizeObserver(applyRendererSize);
+    const stopReframeWatch = startViewportReframeWatch();
+    const resizeObserver = new ResizeObserver(() => {
+      canvasSizeDirty = true;
+    });
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
     // No authoring surface: every value this scene runs on is a constant in `worksTuning.ts` and
@@ -3327,6 +3411,7 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
       disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
+      stopReframeWatch();
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);

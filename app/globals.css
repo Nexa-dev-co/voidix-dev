@@ -148,6 +148,16 @@ html {
      top doesn't cost a repaint — it costs the entire loading sequence again. This also stops the
      rubber-band from chaining, which is what used to expose the canvas colour under the hero. */
   overscroll-behavior-y: none;
+  /* ⚠ SCROLL ANCHORING IS OFF, AND ON THIS PAGE THAT IS NOT A MICRO-OPTIMISATION.
+     Chrome silently adjusts the scroll position when content ABOVE the viewport changes size, so the
+     thing you were looking at stays put. That is a good default for a document. This is not a
+     document: the homepage is one pinned ScrollTrigger whose spacer IS the page height, every section
+     is `position: fixed` inside it, and the spacer is re-sized in pixels on every refresh. So there is
+     nothing meaningful for the browser to anchor to, and the one element it can find changes height by
+     thousands of pixels whenever the window does — at which point its "correction" is a scroll jump
+     that lands wherever it likes, applied AFTER our own re-anchor has run and therefore on top of it.
+     See docs/viewport-reframe-plan.md. */
+  overflow-anchor: none;
 }
 
 html::-webkit-scrollbar {
@@ -1270,6 +1280,20 @@ body {
 .hero-section.is-services .hero-sun-fill {
   opacity: 0;
   transition: opacity 0.5s ease;
+}
+/* ⚠ …AND THE SQUARE'S OWN RING, WHICH IS NOT A COSMETIC DETAIL HERE.
+   `.hero-sun-card` carries a 1px amber outline and a soft amber glow as box-shadows. Those belong to
+   the square as an OBJECT — a small lit panel on the cream hero. By the time this class is on, the
+   same element has been scaled ~11× to cover the viewport, and that ring is a full-height amber line
+   sitting on the screen edge: invisible while the transform is exact, and a stray vertical rule down
+   the middle of the fleet the moment it is not. It cannot be RIGHT here, only unnoticed — so it goes.
+   (`FILL_OVERSCAN` stops the transform drifting; this stops the drift being drawable at all. Both,
+   because the ring was the only reason a few pixels of geometry error was ever visible.)
+   ⚠ Instant, and deliberately no transition: `box-shadow` is a PAINT property and this element covers
+   the whole viewport by now, so fading it would repaint the full screen every frame of the fade — for
+   something that is meant to be off the edge in the first place. */
+.hero-section.is-services .hero-sun-card {
+  box-shadow: none;
 }
 .hero-section.is-services .deck-backdrop {
   opacity: 0;

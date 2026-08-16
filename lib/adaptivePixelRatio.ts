@@ -394,6 +394,13 @@ let hardwareCeil = 1;
  */
 let deviceRatioNative = 1;
 let pixelBudgetCeil = Infinity;
+/**
+ * The viewport area the banked calibration samples were taken at, in megapixels.
+ *
+ * Only `notifyViewportResized` reads it, to decide whether a window that has just changed size has
+ * changed enough to make those samples evidence about a different frame. See RECALIBRATE_AREA_RATIO.
+ */
+let calibratedMegapixels = 1;
 let probed = false;
 let probedAffordableRatio: number | null = null;
 
@@ -499,6 +506,7 @@ function ensureInitialised(): void {
       : 0;
   if (viewportMegapixels > 0) {
     pixelBudgetCeil = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / viewportMegapixels);
+    calibratedMegapixels = viewportMegapixels;
   }
 
   ceil = Math.max(floor, Math.min(MAX_PIXEL_RATIO, deviceRatio, pixelBudgetCeil));
@@ -943,6 +951,80 @@ export function getControllerFps(): number {
 export function getPixelRatio(): number {
   ensureInitialised();
   return pixelRatio;
+}
+
+/**
+ * How much the viewport's AREA must change before the calibration's banked samples are thrown away.
+ *
+ * They were taken at a different pixel count, so past some point they are evidence about a machine
+ * drawing a different frame. Below it they are still the best reading available and discarding them
+ * would cost several seconds of re-measurement for nothing.
+ */
+const RECALIBRATE_AREA_RATIO = 1.25;
+
+/**
+ * The window has changed size. Re-solve what the buffer budget allows.
+ *
+ * ── ⚠ WHY THIS HAS TO EXIST ─────────────────────────────────────────────────────────────────────
+ * `pixelBudgetCeil` is solved ONCE — in `ensureInitialised` from the load-time viewport, and again in
+ * `reportProbedFrameCost` from the area the probe actually drew. Neither is ever revisited. So a
+ * visitor who opens the site in a small window and then goes full screen keeps a ceiling computed for
+ * a frame a fraction of the size, and `MAX_DRAWING_BUFFER_MEGAPIXELS` — the one constant standing
+ * between a dense panel and the 5.26 Mpx / 700 MB / 20 fps case its own header records — silently
+ * stops binding. The window manager is a way of reaching that case with no measurement involved.
+ *
+ * ⚠ IT DOES NOT RE-PROBE, and `probed` is deliberately left alone. The machine has not changed; only
+ * the number of pixels it is being asked for has. `probedAffordableRatio` is a property of the GPU and
+ * survives — re-running the probe here would mean measuring a frame mid-resize, which is the least
+ * representative frame of the session.
+ *
+ * ⚠ IT CLAMPS DOWN, NEVER UP. Shrinking the window RAISES the ceiling, and landing on a raised ceiling
+ * is the "guess upward and claw back" mistake this module's header records being rewritten to stop
+ * making. The calibration is what may climb into the new room, on measured frames, as it always was.
+ */
+export function notifyViewportResized(): void {
+  ensureInitialised();
+  if (typeof window === 'undefined') return;
+
+  const viewportMegapixels =
+    (window.innerWidth * window.innerHeight) / 1_000_000;
+  if (!(viewportMegapixels > 0)) return;
+
+  const previousBudgetCeil = pixelBudgetCeil;
+  pixelBudgetCeil = Math.sqrt(
+    MAX_DRAWING_BUFFER_MEGAPIXELS / viewportMegapixels,
+  );
+  if (pixelBudgetCeil === previousBudgetCeil) return;
+
+  // Rebuilt from the same terms `reportProbedFrameCost` uses, so a probed session keeps its measured
+  // ceiling and an unprobed one keeps the hardware's — only the budget's contribution moves.
+  const affordable = probedAffordableRatio ?? Number.POSITIVE_INFINITY;
+  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetCeil, affordable));
+  const previousRatio = pixelRatio;
+  pixelRatio = Math.min(ceil, pixelRatio);
+  if (sunPixelRatio !== null) {
+    sunPixelRatio = Math.min(sunCeiling(), sunPixelRatio);
+  }
+
+  // ⚠ Only past a MATERIAL area change, and never once the controller has locked. Samples taken at a
+  // slightly different pixel count are still the best evidence available; throwing them away for a
+  // nudge of a window edge would cost seconds of re-measurement and buy nothing.
+  const areaRatio = Math.max(
+    viewportMegapixels / calibratedMegapixels,
+    calibratedMegapixels / viewportMegapixels,
+  );
+  if (phase !== 'locked' && areaRatio >= RECALIBRATE_AREA_RATIO) {
+    resetCalibration();
+    calibratedPipelines.clear();
+  }
+  calibratedMegapixels = viewportMegapixels;
+
+  logPixels(
+    'REFRAMED',
+    `viewport ${viewportMegapixels.toFixed(2)} Mpx → budget ceiling ` +
+      `${pixelBudgetCeil.toFixed(2)}, ratio ${previousRatio.toFixed(2)} → ${pixelRatio.toFixed(2)}` +
+      (areaRatio >= RECALIBRATE_AREA_RATIO ? '  (recalibrating)' : ''),
+  );
 }
 
 /**
