@@ -10,6 +10,7 @@ import {
   type FormEvent,
 } from 'react';
 import type { EnquiryPrefill } from '@/lib/enquirySubjects';
+import { useSiteContent } from '@/lib/cms/SiteContentProvider';
 
 /**
  * The site's one contact form, wherever it appears — the contact section's panel, its phone sheet, and
@@ -55,12 +56,25 @@ import type { EnquiryPrefill } from '@/lib/enquirySubjects';
  * an error it re-checks on every change, so the message clears the moment it is fixed rather than
  * waiting for another blur.
  *
- * ── ⚠ FRONT END ONLY, AND IT SAYS SO OUT LOUD ────────────────────────────────────────────────────
- * There is no endpoint until the admin dashboard is connected (see `careersContent.ts`'s header for
- * the payload contract). What this must never do is LOOK like it worked. A silent button is bad; a
- * fake "thank you" on a job application is worse, because the person walks away believing they
- * applied. So submission runs the whole validation path and then reports `not-connected` in plain
- * words. Wiring it is a `fetch` where `SUBMIT_TARGET` is marked, plus deleting one branch.
+ * ── WHERE IT POSTS ───────────────────────────────────────────────────────────────────────────────
+ * To this site's own routes — `/api/enquiry` and `/api/application` — which forward to the admin
+ * panel. Never straight to the panel: its intake is authenticated with a shared secret, and a form
+ * that posts from the browser ships that secret to every visitor.
+ *
+ * ⚠ The two variants have genuinely different endpoints, not one endpoint with a flag. An
+ * application is not a lead — the panel keeps candidates and prospects in separate tables with no
+ * path between them, because a CV is far more sensitive than an enquiry and the two have opposite
+ * relationships to the studio. Do not merge them.
+ *
+ * ⚠ The whole form is sent as `FormData`, including for the enquiry variant which carries no file.
+ * One submit path is easier to reason about than two, and the enquiry route reads form fields just
+ * as happily as the application one.
+ *
+ * ── ⚠ IT MUST NEVER LOOK LIKE IT WORKED WHEN IT DID NOT ─────────────────────────────────────────
+ * The rule this file was written under, back when there was no endpoint at all, and it still holds
+ * now that there is: a fake "thank you" on a job application is worse than a visible failure,
+ * because the person walks away believing they applied. Every failure below says something true and
+ * leaves the form filled in so nothing has to be retyped.
  */
 
 /** The CV's ceiling. 5 MB holds any honest CV; past it is usually a portfolio that belongs in the link. */
@@ -92,18 +106,40 @@ const PHONE_MAX_DIGITS = 15;
 /**
  * Where the form is in its own lifecycle.
  *
- * `not-connected` is the temporary one and the only one that should ever be deleted — see the header.
- * `sending` / `sent` / `error` are already wired to the button and the live region, so connecting the
- * endpoint changes the handler and nothing else.
+ * `rate-limited` is separate from `error` because it is the one failure that is both temporary and
+ * the visitor's own doing — telling them to try again in a moment is true, where "that did not
+ * send" would send them looking for a mistake they have not made.
  */
-type SubmitStatus = 'idle' | 'sending' | 'sent' | 'error' | 'not-connected';
+type SubmitStatus = 'idle' | 'sending' | 'sent' | 'error' | 'rate-limited';
 
-/** ⚠ DELETE WITH THE `not-connected` BRANCH once the dashboard endpoint exists. */
-const NOT_CONNECTED_MESSAGE =
-  'Nothing was sent — this form is not connected yet. Please try again once we are live.';
+/**
+ * ⚠ The ONLY message still written here, and it must stay here. The sent and failed lines are the
+ * panel's now (`enquiryFormContent.ts`); this one answers a specific status from the intake route
+ * rather than being section copy, and an editor softening it into something reassuring would be
+ * rewriting a system message about a limit that is still in force.
+ */
+const RATE_LIMITED_MESSAGE = 'That is a few too many in one go. Try again in a little while.';
 
-const SENT_MESSAGE = 'Sent. You will hear back from a person, either way.';
-const ERROR_MESSAGE = 'That did not send. Try again in a moment.';
+/** Where each variant posts. See the header on why an application does not share the enquiry's route. */
+const ENQUIRY_ENDPOINT = '/api/enquiry';
+const APPLICATION_ENDPOINT = '/api/application';
+
+/**
+ * The hidden field a bot fills in and a person never sees.
+ *
+ * ⚠ Named to look worth filling in, and it must stay spelled exactly as the panel expects — a typo
+ * turns the trap off silently, because the check still runs and simply never finds anything.
+ *
+ * It is `hidden` rather than merely off-screen, and it carries `tabIndex={-1}` and
+ * `autoComplete="off"`, so nothing lands on it by tab and no password manager helpfully fills it.
+ */
+const HONEYPOT_FIELD = 'website';
+
+/** What the routes answer with when the panel named a field. Keys match this form's input names. */
+interface SubmitFailure {
+  reason?: string;
+  fieldErrors?: Record<string, string>;
+}
 
 type ValidatedField = 'name' | 'email' | 'phone';
 type FieldErrors = Partial<Record<ValidatedField, string>>;
@@ -173,6 +209,12 @@ export default function EnquiryForm({
   commitmentOptions,
   commitmentLabel = 'What you are looking for',
 }: EnquiryFormProps) {
+  // ⚠ The FIELD labels and the status lines are the panel's, site-wide — six places render this form
+  // and they must not disagree about what the email box is called. `briefLabel` and `submitLabel`
+  // stay props because they are genuine per-section overrides: contact says "Send it", the FAQ asks
+  // for a question, an application asks for something else again.
+  const { enquiryForm: formContent } = useSiteContent();
+
   const fieldId = useId();
   const nameId = `${fieldId}-name`;
   const emailId = `${fieldId}-email`;
@@ -293,10 +335,11 @@ export default function EnquiryForm({
     setWorkError(null);
   };
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    const formData = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const formData = new FormData(formElement);
     const readField = (name: string) => String(formData.get(name) ?? '');
 
     const nextErrors: FieldErrors = {};
@@ -334,20 +377,74 @@ export default function EnquiryForm({
       return;
     }
 
-    // ── SUBMIT_TARGET ──
-    // The endpoint goes here: `setStatus('sending')`, POST the FormData (multipart — see the form's
-    // encType), then `setStatus('sent')` or `setStatus('error')`. Until then the form refuses to
-    // pretend, for the reason in the header.
-    setStatus('not-connected');
+    setStatus('sending');
+
+    try {
+      const response = await fetch(isApplication ? APPLICATION_ENDPOINT : ENQUIRY_ENDPOINT, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        setStatus('sent');
+        // ⚠ Cleared only on success, and only here. A failed submit must leave every word where it
+        // is — the visitor has to be able to press the button again without retyping a brief they
+        // spent two minutes on, and a job application is worse still to lose.
+        formElement.reset();
+        setCvFile(null);
+        return;
+      }
+
+      if (response.status === 429) {
+        setStatus('rate-limited');
+        return;
+      }
+
+      // 422 means the server disagreed with something this form thought was fine — a link the panel
+      // will not take, a field over a length this form does not police. Showing it beside the input
+      // is the difference between a fixable mistake and a dead button.
+      if (response.status === 422) {
+        const failure = (await response.json().catch(() => null)) as SubmitFailure | null;
+        const serverErrors = failure?.fieldErrors ?? {};
+
+        const nextFieldErrors: FieldErrors = {};
+        for (const field of ['name', 'email', 'phone'] as const) {
+          if (serverErrors[field]) nextFieldErrors[field] = serverErrors[field];
+        }
+        setFieldErrors(nextFieldErrors);
+
+        // The panel reports the "a link or a CV" rule against `workLink`, and `whyYou` is the long
+        // field this form calls the brief — neither name means anything to the visitor, so both
+        // land in the one place on screen that is about the work.
+        const workMessage = serverErrors.workLink ?? serverErrors.cvFile ?? null;
+        setWorkError(workMessage);
+
+        // ⚠ Nothing was stored, so saying nothing would read as success to anyone who did not
+        // notice a small red line further up the panel.
+        if (Object.keys(nextFieldErrors).length === 0 && !workMessage) {
+          setStatus('error');
+          return;
+        }
+
+        setStatus('idle');
+        return;
+      }
+
+      setStatus('error');
+    } catch {
+      // A dropped connection, a navigation mid-flight, an offline phone. Same answer as a 502: it
+      // did not send, and trying again is the right advice.
+      setStatus('error');
+    }
   };
 
   const statusMessage =
     status === 'sent'
-      ? SENT_MESSAGE
+      ? formContent.sentMessage
       : status === 'error'
-        ? ERROR_MESSAGE
-        : status === 'not-connected'
-          ? NOT_CONNECTED_MESSAGE
+        ? formContent.errorMessage
+        : status === 'rate-limited'
+          ? RATE_LIMITED_MESSAGE
           : null;
 
   /** Every validated field is drawn the same way, down to the wiring between input and message. */
@@ -387,12 +484,33 @@ export default function EnquiryForm({
             </p>
           )}
           <input type="hidden" name="subject" value={prefill.subject} readOnly />
+          {/* Careers only. The subject above is the role's TITLE and is what the applicant reads;
+              this is what files the application against the right role, and it survives an editor
+              rewriting that title. */}
+          {prefill.roleSlug && (
+            <input type="hidden" name="roleSlug" value={prefill.roleSlug} readOnly />
+          )}
         </>
       )}
 
+      {/* ⚠ THE HONEYPOT. A person never sees it, a bot that fills every input it finds fills it, and
+          a submission carrying anything here is answered with a success that stores nothing. It is
+          `hidden` rather than merely moved off-screen, so it is out of the tab order and out of the
+          accessibility tree — and `autoComplete="off"` keeps a password manager from filling it in
+          on a real visitor's behalf, which would silently discard their message. */}
+      <input
+        type="text"
+        name={HONEYPOT_FIELD}
+        hidden
+        tabIndex={-1}
+        autoComplete="off"
+        aria-hidden="true"
+        defaultValue=""
+      />
+
       <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={nameId}>
-          Name
+          {formContent.nameLabel}
           {isApplication && (
             <span className="enquiry-required" aria-hidden="true">
               *
@@ -415,17 +533,35 @@ export default function EnquiryForm({
         )}
       </div>
 
-      {/* ⚠ DIRECTLY AFTER Name, because those two are the pair — see `.enquiry-form`'s grid. They have a
-          row each until the frame is too short for four of them, and then they are the ones that share:
-          they are the two shortest answers in the form and the two a visitor gives without thinking,
-          whereas Email is the one that has to be right and keeps its own line as long as there is one.
+      <div className="enquiry-field enquiry-field--half">
+        <label className="enquiry-label" htmlFor={emailId}>
+          {formContent.emailLabel}
+          <span className="enquiry-required" aria-hidden="true">
+            *
+          </span>
+        </label>
+        <input
+          id={emailId}
+          name="email"
+          type="email"
+          className="enquiry-input"
+          autoComplete="email"
+          required
+          {...fieldProps('email')}
+        />
+        {fieldErrors.email && (
+          <p className="enquiry-field-error" id={errorIdFor('email')}>
+            {fieldErrors.email}
+          </p>
+        )}
+      </div>
 
           `type="tel"` rather than `text`: it is what puts the numeric keypad up on a phone. It carries
           no `pattern` — the check is in `validatePhone`, which counts digits rather than demanding a
           shape, for the reason set out beside that constant. */}
       <div className="enquiry-field enquiry-field--half">
         <label className="enquiry-label" htmlFor={phoneId}>
-          Mobile
+          {formContent.phoneLabel}
         </label>
         <input
           id={phoneId}
@@ -626,7 +762,7 @@ export default function EnquiryForm({
           a modal — reachable only by finding a scrollbar nobody looks for. Here it never leaves. */}
       <div className="enquiry-actions">
         <button type="submit" className="enquiry-send" disabled={status === 'sending'}>
-          {status === 'sending' ? 'Sending…' : submitLabel}
+          {status === 'sending' ? formContent.sendingLabel : submitLabel}
         </button>
 
         {/* Polite, not assertive: it follows a press the visitor made, so it is an answer rather than

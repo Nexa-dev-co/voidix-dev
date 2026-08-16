@@ -335,6 +335,73 @@ things get promoted to `lib/`.
 
 ---
 
+## Where the words come from — the admin panel
+
+**Added 2026-08-13.** The copy on this site is edited in a separate application, `voidix-cms`
+(`../voidix-cms`) — a Next 16 + Prisma + Supabase panel that is **read/write to the database**. This
+repo is **read-only** and never touches the database at all: no Prisma, no Supabase client, no
+connection string. It reads one JSON document over HTTP.
+
+```
+  voidix-cms                                    this repo
+  ──────────                                    ─────────
+  draft tables ──publish──► content_releases
+                            (append-only)
+                                 │
+                GET /api/content │  x-voidix-secret
+                                 ▼
+                       lib/cms/fetchPublishedContent.ts
+                                 │  ISR: one tag + a 600 s backstop
+                                 ▼
+                       resolve*Content(published ?? null)
+                                 │
+                                 ▼
+                       the component, which cannot tell which it got
+
+           POST /api/revalidate ◄── the panel's "I have published" ping
+```
+
+⚠ **`fetchPublishedContent` NEVER THROWS, and every consumer resolves `null` against this repo's own
+copy.** A panel that is down, mid-deploy, unconfigured or simply not running on a developer's laptop
+must not take a page with it — the worst outcome is a page serving what it served before the panel
+existed, which is also what keeps `npm run build` working on a fresh clone with no environment.
+
+⚠ **The content files in this repo are FALLBACKS now, not the source of truth.** `aboutContent.ts`
+and `careersContent.ts` say so in their headers. Editing one changes what an *unconfigured* site says
+and nothing about what a connected one says. Keep them in voice anyway — they are what a visitor sees
+if the panel is down.
+
+⚠ **The panel owns words; this repo owns the machine that says them.** A service has no `modelPath`,
+`profile` or `light` in the payload; `ABOUT_SECTIONS` and `CAREERS_SECTIONS` stay here because each
+`key` is simultaneously an anchor id and an orbit-rail station. `DeckService` resolution is therefore
+a **merge**, and ⚠ the join is **array position**, because `deckTuning.ts` keys ship placements
+positionally and buries that position inside `hiddenParts` strings like `"2:14"`. **This is why the
+panel cannot add, reorder or delete a SERVICE.**
+
+⚠ **A PROJECT is no longer in that category, and the difference is worth reading before you assume
+symmetry** (2026-08-14). A project used to carry a repo-owned `markId` naming one of four logos in
+`marks.ts`, and `worksTuning.ts` held four hand-authored camera poses — so the count was pinned at
+both ends and `resolveWorksProjects` discarded the whole payload when the panel disagreed. Both are
+gone: the mark is **uploaded per project** (`markSvgUrl`, dereferenced server-side by
+`lib/cms/markSource.ts`) and the camera path is **generated from the count**
+(`buildProjectViewKeys`). There is nothing structural left for a fifth project to collide with, so
+`WorksProject` is now a straight resolve rather than a merge and **the panel adds, reorders and
+deletes projects freely.** A project with no upload grows its own **initial**. Plan of record:
+`docs/works-marks-cms-plan.md`.
+
+⚠ **`lib/cms/publishedContent.ts` mirrors `voidix-cms/lib/content/contentPayload.ts` and NOTHING
+ENFORCES IT.** Two repos, one JSON document, no shared package. A field renamed on one side and not
+the other compiles on both and arrives `undefined` — and because every consumer falls back rather than
+throwing, the symptom is a section quietly reverting to placeholder copy. **Change one, change the
+other in the same sitting.**
+
+**State: `about` and `careers` read the panel. The other seven keys do not yet** — they are all on the
+homepage, whose content files are imported at module scope by the client components that render them.
+`docs/cms-integration-plan.md` is the plan of record for the rest, and for the search-visibility work
+that has to happen in the same components.
+
+---
+
 ## ► The scroll spine — read this before touching any section
 
 **The entire public site is ONE pinned `ScrollTrigger`, owned by `lib/hooks/useHeroAnimation.ts`.**
@@ -506,13 +573,29 @@ hero's frame on a dpr 2.5 laptop.
   plasma (`sunPlasma.ts`) replaced them for four days and was **deleted 2026-08-12**: it bought the
   blend cost back by painting over the model's own surface, which is the one thing it was not allowed
   to spend. Recoverable from git if the trade is ever wanted again.
-- ⚠ **`SUN_ABLATION_KEEP_SHELLS` is a SHIPPING DIAL now, at 4** — it is what pays for the shells
-  instead. Each is `BLEND` at α 0.815, so transmission after n of them is 0.185ⁿ: **shells five
-  through eleven composite into a pixel already 99.9 % decided.** Four keeps the silhouette and every
-  layer the eye can resolve at 36 % of the fill. Budget ~0.044 ms per shell on the dpr 1.1 desktop and
-  ~0.5 ms on the dpr 2.5 laptop, where these double-sided full-coverage spheres are fill-bound.
+- ⚠ **`SUN_ABLATION_KEEP_SHELLS` IS 0 — ALL ELEVEN SHELLS SHIP.** This file said "a SHIPPING DIAL now,
+  at 4", on the argument that each is `BLEND` at α 0.815 so shells five through eleven composite into a
+  pixel already 99.9 % decided. **That holds only if the shells are CONCENTRIC and they are not**: one
+  is the full central sphere and the other ten are one skin per fracture shard, so a view ray crosses
+  about two, and "the four largest" left **seven shards with no skin at all** — a patchy atmosphere, not
+  a thinner one. The constant's own header has the node tree. All eleven cost ~5.8 ms of `sun · bloom`
+  on the reference laptop and that is the honest price of the model's own surface.
 - **Hiding is not removing** — the geometry still downloads. After the texture cap below it is worth
   ~15 KB, so it is not worth the GLB rebuild that would break `compareModels`' mesh table.
+- ⚠ **The ablation's savings ARE SPENT NOW, and until 2026-08-13 they were not spent anywhere.**
+  Removing `flare` and `blowout` freed ~57 % of `sun · bloom` per call and **could not reach the star's
+  quality by any path**: the allocator's only measurement of the star was taken with those very parts
+  already hidden (see the allocator section), so the freed time was invisible to it, and the star was
+  pinned against `STAR_RAISE_OVER_MODELS` rather than against its budget in any case. Three things now
+  spend it, and all three are visible on a ~250-device-pixel object in a way a ratio point is not:
+  **`antialias: true`** on the star's renderer (it was off on a canvas-size figure that was wrong by
+  14×, and it is the ONLY thing that can antialias the shards' silhouette — `sunBloom`'s `sceneTarget`
+  is the glow's source and is never shown, so samples there would antialias an image about to be
+  blurred); **`MIP_COUNT` 3 → 5**, which extends the corona's falloff two octaves further out; and
+  **`SUN_GLOW_STRIDE` 2 → 1**, so the halo is no longer a frame behind the geometry it belongs to.
+  ⚠ `MIP_WEIGHTS` renormalises to the three-level sums, so `BLOOM_STRENGTH` and the journey-wide
+  +5 % / +17.5 % / +30 % ramp mean exactly what they did — total glow at `BLOOM_RADIUS` 0.92 is 2.0940
+  before and after. **A longer chain without that renormalisation silently re-grades the centrepiece.**
 - ⚠ Omitting `flare` also **skips its recentre-and-spin setup**. `flareSpins` would otherwise keep
   rebuilding quaternions for eight invisible discs every frame — hiding the draw while keeping the
   work is the one way this cull could have cost more than it saved.
@@ -684,16 +767,32 @@ sits near its floor. Solved once, in the loader, behind the veil. Full rationale
   (the star draws from mount, so phase A already contains it), phase A slower than B (the star solves
   negative), and a difference too small to be anything but jitter. Failing any of them logs
   `[pixels] split REFUSED` and falls back to one number for the whole frame.
-- ⚠ **…and none of the three catches the one that is actually wrong: `starMilliseconds` IS A LOWER
-  BOUND.** Both phases run before `SUN_ASSEMBLE_EVENT`, and `positionShards(0, 0)` at model-land has
-  already set `visible = false` on every one of `coronaParts` — the core sphere, the outer glow, the
-  flares and the twenty corona planes. **Phase B times ten tumbling shards.** The corona is not part of
-  the star's cost, it *is* the cost. The checks ask *is this a real difference*; they cannot ask *is
-  this the star we are budgeting for*. `STAR_RAISE_OVER_MODELS` bounds the damage, `sunCeiling()` is
-  capped at native so a 1× panel cannot supersample the star past a field held to 1.0, and
-  `docs/per-section-quality-budget-plan.md` §9 has the arithmetic and the three ways to fix it
-  properly. Severity, honestly: it does not blow the frame — the bias and `SUN_IDLE_STRIDE` nearly
-  cancel — it **eats both conservatisms below**, including the one reserved for the chamber.
+- ⚠ **`starMilliseconds` WAS A LOWER BOUND, and none of the three checks could catch it. FIXED
+  2026-08-13 — `SUN_MEASURE_BEGIN_EVENT`.** Both phases run before `SUN_ASSEMBLE_EVENT`, and
+  `positionShards(0, 0)` at model-land had already set `visible = false` on every one of `coronaParts` —
+  the core sphere, the outer glow and the twenty corona planes — with `sunParticles` collapsed into its
+  launch knot. **Phase B was timing ten tumbling shards.** The corona is not part of the star's cost, it
+  *is* the cost. The checks ask *is this a real difference*; they cannot ask *is this the star we are
+  budgeting for*. The works field now brackets phase B with `SUN_MEASURE_BEGIN/END_EVENT` and the star
+  draws its shipping pose — corona grown, both ring bands out — for exactly that span.
+  ⚠ **Nothing hides it: `IntroSequence` leaves `.hero-sun-layer` at `autoAlpha: 0` until the finale**,
+  so this early the canvas is already `visibility: hidden`. That is what lets it be measured **in its
+  own context, on the default framebuffer, through the same programs and the same MSAA resolve the
+  visitor gets** — an offscreen target would have timed *different shaders*, because three applies tone
+  mapping only when the render target is null.
+- ⚠ **Only the star may say whether it was measured properly**, and it says so through
+  `noteStarMeasuredInShippingPose()` rather than through `SectionCostSplit`. The field dispatches the
+  event but cannot know it was honoured — `SunModelCanvas` refuses the pose under reduced motion, before
+  its model lands, and once the assembly is cued (where the star is on screen and a formed pose would
+  flash). A refused pose allocates exactly as it did before, and the `ALLOCATED` log says which it got.
+- ⚠ **That correction moved two caps, and it can move the star's ratio DOWN.** `STAR_RAISE_OVER_MODELS`
+  was carrying two arguments and is now carrying one: bounding an inflated solve is done, compositing
+  coherence remains, so **1.35 → 1.6**. And `sunCeiling()` no longer treats native as a hard cap when
+  the pose was measured — a strong **1× panel** may supersample the star to `SUPERSAMPLE_CEIL`, which is
+  the one machine class where `ceil` held the field to 1.0 and the star was pinned there with it.
+  ⚠ The probe is still **not** the gate and never will be (eightfold spread across loads); the burn-in
+  is a different instrument. ⚠ And expect the honest number to be *lower* than the biased one on a dense
+  panel — the star had been over-allocated ~4× and the budget is simply being told the truth.
 - **Two conservatisms, both deliberate, both the same direction**: `fieldMilliseconds` carries the
   fixed cost so scaling it over-charges the field; and the star is measured at full rate while through
   services and works it draws at `SUN_IDLE_STRIDE`. The second is also what makes the **hero** safe
@@ -960,13 +1059,22 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 
 | | |
 |---|---|
-| **Contact** | **BUILT** — the star dies here, then the page loops back to the hero. Form + footer are front-end only: `handleSubmit` prevents default and posts nowhere, and every address, social handle and legal route in `contactContent.ts` is an invented placeholder. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
+| **Contact** | **BUILT, AND THE FORM POSTS NOW** (2026-08-13). `handleSubmit` sends to `/api/enquiry`, which forwards to the panel's `POST /api/submissions` holding `VOIDIX_CMS_INTAKE_SECRET` — see `lib/cms/panelIntake.ts` for why the route exists at all rather than the browser posting direct. ⚠ It lands in an **inbox**, not the leads pipeline: a submission becomes a contact only when an admin promotes it, so a bot or a "hi" never reaches the counts. **Still placeholder:** every address, social handle and legal route in `contactContent.ts` is invented. The navbar is fully wired: all four items and the CTA route through `GOTO_SECTION_EVENT`. |
 | **Process content** | **The section is now called FAQ** (renamed 2026-08-05, key and label both — it was `process` everywhere). The chamber's content was always the FAQ hologram, and a key that said `process` was describing an intention rather than the room. The hologram's list now ends in an **Ask us anything** control that opens the shared enquiry panel with no prefill. **Still open:** the decided-but-unbuilt idea that process steps appear on the chamber's walls as the camera tours. |
 | **The collapse finale** | **BUILT** — ported into `components/sections/Contact/singularityScene.ts`, a SECOND star living inside the works renderer (the hero sun's canvas has no compositor and nothing behind it for lensing to bend). Collapse, flash, black hole, accretion and lensing all ship. See `docs/contact-singularity-plan.md`. |
-| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder. The deck ships 4 services; the brief names 6. The four **marks** are placeholders too — three stock SVG logos plus the company initial, and that initial extrudes in **helvetiker, not Syne** (`marks.ts` says why). `careersContent.ts`'s four roles are likewise invented — and there they are the **template for the dashboard**, see below. |
-| **Careers content** | **DASHBOARD-MANAGED, not yet connected** (decided 2026-08-11). The admin panel exists on its own domain; the page will fetch roles through it on **ISR**, with `CareerRole` / `Phase` as the shapes it must serve and `careersContent.ts` as the seed and fallback. Section 02 already renders an honest **empty state** when the list is empty, so a no-openings day needs no code. ⚠ The application form is `EnquiryForm variant="application"` — name\*, email\*, and **the work** (a link and/or one PDF ≤ 5 MB, at least one of the two, checked in JS because `required` cannot express "either"). It validates and then **posts nowhere**, exactly like contact's. Wire both in the same change; this one is multipart. |
+| **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder — and since 2026-08-14 `worksProjects.ts` is a **fallback** rather than the source: real projects and their marks are uploaded in the panel. The deck ships 4 services; the brief names 6. The fallback marks are still three stock SVG logos, plus one project deliberately left with none so the **initial** fallback is visible in the shipped data; a letter mark extrudes in **helvetiker, not Syne** (`markBody.ts` says why — `marks.ts` is gone). `careersContent.ts`'s four roles are likewise invented — and there they are the **template for the dashboard**, see below. |
+| **Careers content** | **DASHBOARD-MANAGED AND CONNECTED** (decided 2026-08-11, wired 2026-08-13). `app/careers/page.tsx` is a Server Component on **ISR** — `fetchPublishedContent()` → `resolveCareersContent()`, with `careersContent.ts` as the fallback when the panel has published nothing or is unreachable. Section 02 renders an honest **empty state** when the list is empty; ⚠ an empty published list must NEVER fall back to this repo's four invented roles, and `PublishedCareers.roles` says why. The application form is `EnquiryForm variant="application"` — name\*, email\*, and **the work** (a link and/or one PDF ≤ 5 MB, at least one of the two, checked in JS because `required` cannot express "either"). It posts multipart to `/api/application`, which uploads the PDF to UploadThing server-side and files the rest with the panel against the role's **`slug`** — never its title, which an editor can rewrite. |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
+| **CMS wiring** | **9 of 9 payload keys read.** ⚠ This row said "2 of 9" long after it stopped being true. `lib/cms/siteContent.ts` resolves every key, split so the document routes never carry the scene sections' copy (`resolveSharedContent`) and `/` and `/lite` get the lot (`resolveFullContent`). `lib/cms/contentReport.ts` prints per-key provenance in dev — read that rather than trusting this table. `docs/cms-integration-plan.md` §③. |
+| **Search visibility** | **NOT BUILT, and measured 2026-08-13.** No `sitemap.ts`, no `robots.ts`, no canonical, no JSON-LD of any type, no OG image. ⚠ `metadataBase` is still a **guess** at the post-rebrand domain and carries a TODO — every relative canonical and OG URL resolves against it. ⚠ And the homepage's markup is the bigger problem: **0 `<h1>` elements** (the hero is a `div` with `role="heading"`, DOM text `"we build W rlds"`), **1 service description in 4**, **1 project in 4**, and **0 FAQ answers** — the render is a ternary, list *or* one answer. `/lite` carries all of it and is deliberately `noindex`. Numbers and the fix order in `docs/cms-integration-plan.md` §④–⑥. |
 
 ⚠ **The `docs/` directory is nearly empty**, and most of this file's `docs/*.md` citations point at
 files that are not in the tree. They are real history — they are in git — but do not send anyone to a
-path without checking it exists first.
+path without checking it exists first. What IS in the tree, as of 2026-08-13:
+`adaptive-asset-tier-plan.md`, `cleanup-plan.md`, `cms-integration-plan.md`, `mobile-polish-plan.md`,
+`next-steps-plan.md`, `per-section-quality-budget-plan.md`, `performance-audit.md`,
+`performance-cost-inventory.md`, `sun-plasma-plan.md`, `unused-inventory.md`.
+
+⚠ **`npm install` before `npm run build` on a fresh checkout of `feat/cms`.** `uploadthing` was added
+to `package.json` in `305b396` without being installed; the build dies on
+`Can't resolve 'uploadthing/server'` and the error names a module, not a missing install.

@@ -10,37 +10,40 @@ import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import type { EnquiryPrefill } from '@/lib/enquirySubjects';
 import RoleRow from './RoleRow';
-import {
-  APPLICATION_BRIEF_LABEL,
-  APPLICATION_SUBMIT_LABEL,
-  CAREERS_ABOUT_INVITE,
-  CAREERS_EYEBROW,
-  CAREERS_LEAD,
-  CAREERS_SECTIONS,
-  CAREERS_TITLE,
-  CAREER_ROLES,
-  HIRING_PHASES,
-  OPEN_APPLICATION_LEAD,
-  OPEN_APPLICATION_COMMITMENTS,
-  OPEN_APPLICATION_COMMITMENT_LABEL,
-  OPEN_APPLICATION_SEED,
-  OPEN_APPLICATION_SUBJECT,
-  OPEN_APPLICATION_TITLE,
-  ROLES_EMPTY_INVITE,
-  ROLES_EMPTY_LINE,
-  WORKING_HERE,
-} from './careersContent';
+import { CAREERS_SECTIONS, type CareerRole, type CareersContent } from './careersContent';
+
+/**
+ * What identifies a role to the open/closed state and to React's reconciler.
+ *
+ * ⚠ The slug when there is one, and the title only as a fallback — the two title-keyed states this
+ * replaced would have merged two roles into one row the day an editor posted "Product Designer"
+ * twice for two teams. The fallback roles in `careersContent.ts` carry no slug because they answer
+ * to no row in the panel; within that hardcoded list the titles are unique by inspection.
+ */
+function roleKey(role: CareerRole): string {
+  return role.slug ?? role.title;
+}
 
 /**
  * `/careers` — the openings, and what it is actually like to take one.
  *
  * Same frame as `/about` (see `PageShell`), same rules: a document on native scroll, no pin, no WebGL,
- * no GSAP. Every word is in `careersContent.ts`, including the ⚠ that all four roles are mock data.
+ * no GSAP.
  *
- * ⚠ Applying opens the site's ONE shared form, which posts nowhere. That is recorded in the content
- * file's header rather than papered over — see it before shipping this page to anyone who might apply.
+ * ⚠ Every word arrives as a prop, resolved in `app/careers/page.tsx` from the admin panel against
+ * `careersContent.ts`'s fallback — including the roles, which may legitimately be an empty list. This
+ * component renders whatever it is handed and never reaches for a default, which is what keeps "we
+ * have nothing open" a decision the panel can actually make.
+ *
+ * ⚠ Applying opens the site's ONE shared form, which posts nowhere yet. That is recorded in the
+ * content file's header rather than papered over — see it before shipping this page to anyone who
+ * might apply.
  */
-export default function CareersPage() {
+interface CareersPageProps {
+  content: CareersContent;
+}
+
+export default function CareersPage({ content }: CareersPageProps) {
   // ── Which roles are open ──
   // A Set rather than an index, because on a wide screen any number may be open at once — comparing two
   // roles is the thing a person actually does here, and closing one to read another would make that
@@ -66,66 +69,68 @@ export default function CareersPage() {
     });
   }, [isNarrow]);
 
-  const toggleRole = (roleTitle: string) => {
+  const toggleRole = (identifier: string) => {
     setOpenRoles((current) => {
-      if (current.has(roleTitle)) {
+      if (current.has(identifier)) {
         const next = new Set(current);
-        next.delete(roleTitle);
+        next.delete(identifier);
         return next;
       }
-      return isNarrow ? new Set([roleTitle]) : new Set(current).add(roleTitle);
+      return isNarrow ? new Set([identifier]) : new Set(current).add(identifier);
     });
   };
 
-  const applyForRole = (roleTitle: string, briefSeed: string) => {
-    setPrefill({ subject: roleTitle, brief: briefSeed });
+  const applyForRole = (role: CareerRole) => {
+    // ⚠ The slug travels with the subject, not instead of it: the title is what the applicant reads
+    // at the head of the form, the slug is what files the application against the right role.
+    setPrefill({ subject: role.title, brief: role.briefSeed, roleSlug: role.slug });
     setIsPanelOpen(true);
   };
 
   const applyOpen = () => {
-    setPrefill({ subject: OPEN_APPLICATION_SUBJECT, brief: OPEN_APPLICATION_SEED });
+    setPrefill({ subject: content.openApplicationSubject, brief: content.openApplicationSeed });
     setIsPanelOpen(true);
   };
 
   return (
     <>
       <PageShell
-        eyebrow={CAREERS_EYEBROW}
-        title={CAREERS_TITLE}
-        lead={CAREERS_LEAD}
+        eyebrow={content.eyebrow}
+        title={content.title}
+        lead={content.lead}
         sections={CAREERS_SECTIONS}
       >
         {/* 01 — what it is like here */}
         <DocSection meta={CAREERS_SECTIONS[0]}>
           <ul className="doc-claims">
-            {WORKING_HERE.map((claim, index) => (
+            {content.workingHere.map((claim, index) => (
               <ClaimRow key={claim.index} claim={claim} order={index} />
             ))}
           </ul>
         </DocSection>
 
         {/* 02 — the roles. An empty list gets an honest sentence pointing at the open application,
-            not a heading floating over nothing — the content file's own header says the mock roles
-            may simply be cut, so this state is one the page must be able to stand in. */}
+            not a heading floating over nothing — the panel can publish no roles at all, so this
+            state is one the page must be able to stand in. */}
         <DocSection meta={CAREERS_SECTIONS[1]} wide>
-          {CAREER_ROLES.length === 0 ? (
+          {content.roles.length === 0 ? (
             <p className="doc-roles-empty">
-              {ROLES_EMPTY_LINE}{' '}
+              {content.rolesEmptyLine}{' '}
               <a className="doc-close-link" href={`#${CAREERS_SECTIONS[3].key}`}>
-                {ROLES_EMPTY_INVITE}
+                {content.rolesEmptyInvite}
                 <span aria-hidden="true"> →</span>
               </a>
             </p>
           ) : (
             <ul className="doc-roles">
-              {CAREER_ROLES.map((role, index) => (
+              {content.roles.map((role, index) => (
                 <RoleRow
-                  key={role.title}
+                  key={roleKey(role)}
                   role={role}
                   order={index}
-                  open={openRoles.has(role.title)}
-                  onToggle={() => toggleRole(role.title)}
-                  onApply={() => applyForRole(role.title, role.briefSeed)}
+                  open={openRoles.has(roleKey(role))}
+                  onToggle={() => toggleRole(roleKey(role))}
+                  onApply={() => applyForRole(role)}
                 />
               ))}
             </ul>
@@ -134,14 +139,14 @@ export default function CareersPage() {
 
         {/* 03 — how hiring runs */}
         <DocSection meta={CAREERS_SECTIONS[2]} wide>
-          <PhaseTrack phases={HIRING_PHASES} />
+          <PhaseTrack phases={content.hiringPhases} />
         </DocSection>
 
         {/* 04 — the open application */}
         <DocSection meta={CAREERS_SECTIONS[3]}>
           <div className="doc-open-application">
-            <h3 className="font-display doc-close-title">{OPEN_APPLICATION_TITLE}</h3>
-            <p className="doc-close-lead">{OPEN_APPLICATION_LEAD}</p>
+            <h3 className="font-display doc-close-title">{content.openApplicationTitle}</h3>
+            <p className="doc-close-lead">{content.openApplicationLead}</p>
             <div
               className="doc-close-actions"
               style={{ '--reveal-index': 1 } as CSSProperties}
@@ -149,7 +154,7 @@ export default function CareersPage() {
               {/* The one press this whole document exists to produce — see EnquiryButton on `hot`. */}
               <EnquiryButton label="Write to us" onClick={applyOpen} tone="hot" />
               <a className="doc-close-link" href="/about">
-                {CAREERS_ABOUT_INVITE}
+                {content.aboutInvite}
                 <span aria-hidden="true"> →</span>
               </a>
             </div>
@@ -161,17 +166,19 @@ export default function CareersPage() {
         open={isPanelOpen}
         onClose={() => setIsPanelOpen(false)}
         eyebrow="Careers — Voidix"
-        title={prefill?.subject ?? OPEN_APPLICATION_SUBJECT}
+        title={prefill?.subject ?? content.openApplicationSubject}
         prefill={prefill ?? undefined}
-        briefLabel={APPLICATION_BRIEF_LABEL}
-        submitLabel={APPLICATION_SUBMIT_LABEL}
+        briefLabel={content.applicationBriefLabel}
+        submitLabel={content.applicationSubmitLabel}
         variant="application"
         // Only the OPEN application is asked what shape of work it wants — every posted role has
         // already stated its own terms in the row it was opened from.
         commitmentOptions={
-          prefill?.subject === OPEN_APPLICATION_SUBJECT ? OPEN_APPLICATION_COMMITMENTS : undefined
+          prefill?.subject === content.openApplicationSubject
+            ? content.commitmentOptions
+            : undefined
         }
-        commitmentLabel={OPEN_APPLICATION_COMMITMENT_LABEL}
+        commitmentLabel={content.commitmentLabel}
       />
     </>
   );

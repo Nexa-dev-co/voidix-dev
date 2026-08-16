@@ -8,12 +8,8 @@ import { useIsShortViewport } from '@/lib/hooks/useIsShortViewport';
 import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
 import Drawer from '@/components/ui/Drawer/Drawer';
 import EnquiryForm from '@/components/ui/EnquiryForm/EnquiryForm';
-import {
-  CONTACT_FOOTER_GROUPS,
-  CONTACT_LEAD,
-  CONTACT_TITLE,
-  MODEL_ATTRIBUTION,
-} from './contactContent';
+import { MODEL_ATTRIBUTION } from './contactContent';
+import { useSiteContent, useSiteSections } from '@/lib/cms/SiteContentProvider';
 
 // Hoisted out of the component: the hook holds this in a dependency array, and an array rebuilt every
 // render would tear its listener down and re-add it on each one.
@@ -42,13 +38,20 @@ const ARRIVAL_GROUPS: readonly ArrivalGroup[] = [
  * rather than a block in the page — there is exactly one pin on this site, and everything lives in it.
  * Nothing here draws a background: the black hole showing through IS the background.
  *
- * ⚠ FRONT END ONLY. The form validates (natively — this project has no validation library and that is
- * deliberate) but submits nowhere. `docs/contact-black-hole-plan.md` §7b has the open question about
- * where it should post; until that is answered submission is deliberately prevented rather than faking
- * a success state the visitor would believe. The form itself now lives in `components/ui/EnquiryForm`,
- * shared with the CTA that every service and every project opens — see its header.
+ * The form posts to the admin panel's inbox, through this site's own `/api/enquiry` — it is the same
+ * shared `components/ui/EnquiryForm` the CTA on every service and every project opens, so there is one
+ * form on this site and one endpoint behind it. See that component's header for what it sends and why
+ * it never posts to the panel directly.
+ *
+ * ⚠ A submission lands in an INBOX, not in the leads pipeline. Somebody at the studio decides what
+ * becomes a contact, which is what keeps bots and test posts out of the counts and the reports.
  */
 export default function ContactSection() {
+  // ⚠ `footer` rather than this section's own list: one link list feeds BOTH footers — this one and
+  // `PageFooter` on the document routes — so a changed handle cannot land in one and not the other.
+  const { footer } = useSiteContent();
+  const { contact } = useSiteSections();
+
   const sectionRef = useRef<HTMLElement>(null);
 
   // What is drawn into place when a covered nav jump lands here.
@@ -127,16 +130,16 @@ export default function ContactSection() {
       <div className="contact-body">
         <div className="contact-intro">
           <p className="eyebrow contact-eyebrow">04 — Start a project</p>
-          <h2 className="font-display contact-title">{CONTACT_TITLE}</h2>
-          <p className="contact-lead">{CONTACT_LEAD}</p>
+          <h2 className="font-display contact-title">{contact.title}</h2>
+          <p className="contact-lead">{contact.lead}</p>
         </div>
 
         {/* Only where there is room for it. Wherever there is not, the form is a sheet and the control
             that opens it belongs down in the action row with the loop button rather than up here on
             its own. */}
         {!isCompact && (
-          <div className="contact-panel" ref={panelRef}>
-            <EnquiryForm />
+          <div className="contact-panel">
+            <EnquiryForm briefLabel={contact.briefLabel} submitLabel={contact.submitLabel} />
           </div>
         )}
       </div>
@@ -171,11 +174,11 @@ export default function ContactSection() {
       <footer className="contact-footer">
         <div className="contact-footer-brand">
           <span className="font-display contact-footer-mark">Voidix</span>
-          <span className="contact-footer-note">Software with its own gravity</span>
+          <span className="contact-footer-note">{footer.tagline}</span>
         </div>
 
         <div className="contact-footer-groups">
-          {CONTACT_FOOTER_GROUPS.map((group) => (
+          {footer.groups.map((group) => (
             <div className="contact-footer-group" key={group.title}>
               <p className="contact-footer-group-title">{group.title}</p>
               <ul className="contact-footer-links">
@@ -220,9 +223,9 @@ export default function ContactSection() {
           open={isFormOpen}
           onClose={() => setIsFormOpen(false)}
           eyebrow="04 — Start a project"
-          title={CONTACT_TITLE}
+          title={contact.title}
         >
-          <EnquiryForm />
+          <EnquiryForm briefLabel={contact.briefLabel} submitLabel={contact.submitLabel} />
         </Drawer>
       )}
     </section>

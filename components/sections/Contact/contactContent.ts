@@ -4,7 +4,14 @@
  *
  * The voice is the one the rest of the site speaks in: a claim, then the thing that backs it up. No
  * agency boilerplate, no "let's build something amazing together".
+ *
+ * ── ⚠ THIS IS THE FALLBACK NOW, NOT THE SOURCE OF TRUTH ──────────────────────────────────────────
+ * Contact and the footer both read the panel, through `resolveContactContent` and
+ * `resolveFooterContent`. Everything below is what ships when the panel has published nothing or is
+ * unreachable. Editing it changes what an unconfigured site says and nothing about a connected one.
  */
+
+import type { PublishedContact, PublishedFooter } from '@/lib/cms/publishedContent';
 
 export const CONTACT_TITLE = 'Tell us what you are building.';
 
@@ -85,6 +92,92 @@ export const CONTACT_FOOTER_GROUPS: ContactFooterGroup[] = [
     ],
   },
 ];
+
+/**
+ * The two lines under the wordmark, in both footers.
+ *
+ * ⚠ These were written out in JSX until 2026-08-13 — `contact-footer-note` in `ContactSection` and
+ * `ESTABLISHED_LINE` in `PageFooter` — which is why the panel could publish them and nothing read
+ * them. A string the panel offers and the site ignores is worse than no field at all, so they live
+ * here now, where a resolver can reach them.
+ *
+ * `tagline` is the short one and appears in BOTH footers; `signOff` is the long base line and appears
+ * only on the document routes, because the contact footer has no room for it. That asymmetry is the
+ * layout's, not the content's — the panel publishes both regardless.
+ */
+export const FOOTER_TAGLINE = 'Software with its own gravity';
+export const FOOTER_SIGN_OFF = 'Voidix — a software studio. Built with its own gravity.';
+
+/** The contact section's words, as one object — the same one-shape rule `AboutContent` follows. */
+export interface ContactContent {
+  title: string;
+  lead: string;
+  /** The brief field's label. ⚠ Contact's own, not the shared form's — see `enquiryFormContent.ts`. */
+  briefLabel: string;
+  submitLabel: string;
+}
+
+export const CONTACT_FALLBACK: ContactContent = {
+  title: CONTACT_TITLE,
+  lead: CONTACT_LEAD,
+  briefLabel: 'What you are building',
+  submitLabel: 'Send it',
+};
+
+export function resolveContactContent(published: PublishedContact | null): ContactContent {
+  if (!published) {
+    return CONTACT_FALLBACK;
+  }
+
+  return {
+    title: published.title,
+    lead: published.lead,
+    briefLabel: published.briefLabel,
+    submitLabel: published.submitLabel,
+  };
+}
+
+/** Both footers' content. One object, because one list feeds two renderings. */
+export interface FooterContent {
+  tagline: string;
+  signOff: string;
+  groups: ContactFooterGroup[];
+}
+
+export const FOOTER_FALLBACK: FooterContent = {
+  tagline: FOOTER_TAGLINE,
+  signOff: FOOTER_SIGN_OFF,
+  groups: CONTACT_FOOTER_GROUPS,
+};
+
+/**
+ * ⚠ An empty published group list falls back rather than rendering a footer with no links in it.
+ * The panel has no reason to publish one — `footer_link_groups` is seeded — so an empty array here
+ * means something went wrong upstream, and an empty footer is the one outcome that looks like a bug
+ * to a visitor rather than like a decision.
+ *
+ * ⚠ `external` is DERIVED by the panel from the href and must not be re-derived here. A stored flag
+ * that disagrees with the URL beside it is exactly what `contentPayload.ts` avoids by computing it at
+ * publish time; computing it again on this side would reintroduce the second opinion.
+ */
+export function resolveFooterContent(published: PublishedFooter | null): FooterContent {
+  if (!published || published.groups.length === 0) {
+    return FOOTER_FALLBACK;
+  }
+
+  return {
+    tagline: published.tagline,
+    signOff: published.signOff,
+    groups: published.groups.map((group) => ({
+      title: group.title,
+      links: group.links.map((link) => ({
+        label: link.label,
+        href: link.href,
+        external: link.external,
+      })),
+    })),
+  };
+}
 
 /**
  * The black hole model's attribution.

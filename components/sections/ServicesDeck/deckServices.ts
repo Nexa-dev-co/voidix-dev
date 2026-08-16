@@ -1,11 +1,20 @@
 // The four vessels that sit on the Services deck. Each ship is dormant until the
 // visitor hovers (lights ignite) or clicks (it powers up and steps forward).
 //
-// This is the single source of truth for the services copy — short display `name`
-// plus the richer eyebrow / description / capability detail surfaced when active —
-// and for each ship's full visual identity (its `profile`).
+// ── ⚠ HALF OF THIS FILE IS A FALLBACK NOW, AND HALF OF IT NEVER WILL BE ────────────────────────
+// The COPY — `index`, `name`, `eyebrow`, `description`, `capabilities`, `discipline` — comes from the
+// admin panel through `resolveDeckServices`. What is below stands in when the panel has published
+// nothing or is unreachable.
+//
+// The STRUCTURE — `modelPath`, `profile`, `light`, `modelRotation` — is this repo's forever. A vessel
+// needs a .glb, Draco compression, a hull palette and placement; none of that is copy, and putting it
+// in a database would mean two tools fighting over the same values.
+//
+// ⚠ So resolution is a MERGE, and the join is ARRAY POSITION. See `resolveDeckServices` for why that
+// is not a shortcut but the only join available.
 
-import type { DisciplineId } from '@/lib/enquirySubjects';
+import { isDisciplineId, type DisciplineId } from '@/lib/enquirySubjects';
+import type { PublishedService } from '@/lib/cms/publishedContent';
 
 // Model → service assignment. Each ship is one line — swap a path to reassign a
 // vessel. The carousel shows one craft at a time, so every bay gets a distinct hull.
@@ -227,3 +236,56 @@ export const DECK_SERVICES: DeckService[] = [
     modelRotation: { x: -180 },
   },
 ];
+
+/**
+ * The panel's service copy laid over this repo's vessels.
+ *
+ * ── ⚠ THE JOIN IS ARRAY POSITION, AND IT HAS TO BE ──────────────────────────────────────────────
+ * There is no shared id between the two sides, and inventing one would not help: `deckTuning.ts`
+ * builds its per-ship list as `DECK_SERVICES.map(restingShip)` and its `hiddenParts` are POSITIONAL
+ * strings like `"2:14"` — mesh index 14 of vessel 2 — because the vessels are third-party glbs whose
+ * mesh names are inconsistent, absent or duplicated. Position is what the tuning is expressed in, so
+ * position is what the merge has to use.
+ *
+ * That is also why the panel refuses to add, reorder or delete a service at all. Making the list
+ * mutable is a site-side refactor first: move placement onto the service record and key `hiddenParts`
+ * by slug.
+ *
+ * ── ⚠ A COUNT MISMATCH FALLS BACK ENTIRELY, RATHER THAN MERGING WHAT LINES UP ────────────────────
+ * A short release would leave the last vessels showing placeholder copy beside published copy, and a
+ * long one would silently drop whatever the editor added. Both are worse than serving this file: the
+ * panel publishes one release WHOLE, and a half-applied one is not a state either side has a
+ * designed answer for. The warning is the point — this cannot happen without somebody hearing about
+ * it.
+ */
+export function resolveDeckServices(published: PublishedService[] | null): DeckService[] {
+  if (!published || published.length === 0) {
+    return DECK_SERVICES;
+  }
+
+  if (published.length !== DECK_SERVICES.length) {
+    console.warn(
+      `[cms] the panel published ${published.length} services and this build has ` +
+        `${DECK_SERVICES.length} vessels — serving the site's own copy instead`,
+    );
+    return DECK_SERVICES;
+  }
+
+  return DECK_SERVICES.map((service, position) => {
+    const publishedService = published[position];
+
+    return {
+      ...service,
+      index: publishedService.index,
+      name: publishedService.name,
+      eyebrow: publishedService.eyebrow,
+      description: publishedService.description,
+      capabilities: publishedService.capabilities,
+      // ⚠ An unknown discipline keeps the vessel's own, rather than binding its CTA to a subject the
+      // enquiry form has no seed for. `DISCIPLINES[undefined]` would throw inside the prefill.
+      discipline: isDisciplineId(publishedService.discipline)
+        ? publishedService.discipline
+        : service.discipline,
+    };
+  });
+}

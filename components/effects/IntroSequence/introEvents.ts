@@ -86,6 +86,60 @@ export const BURN_IN_DONE_EVENT = 'voidix:burn-in-done';
 export const SUN_DRAW_PERMIT_EVENT = 'voidix:sun-draw-permit';
 
 /**
+ * ── The star, in the pose it actually ships, for exactly as long as it is being measured ──────────
+ *
+ * Dispatched around the burn-in's phase B. Between these two the star draws with its corona grown and
+ * its rings formed instead of as ten drifting shards, so that `B − A` is a measurement of the object
+ * the allocator is budgeting for.
+ *
+ * ── ⚠ Why this had to exist: THE ALLOCATOR WAS MEASURING THE WRONG STAR ──────────────────────────
+ * `SUN_DRAW_PERMIT_EVENT` above describes the A/B difference correctly and the architecture is sound.
+ * One input to it was not. Both phases run before `SUN_ASSEMBLE_EVENT`, and `SunModelCanvas` has
+ * already called `positionShards(0, 0)` at model-land — which resolves `coronaGrowth` to 0 and sets
+ * `visible = false` on every one of `coronaParts`: the core sphere, the outer glow, and the twenty
+ * additive corona planes. `sunParticles` sits at `ringForm` 0, collapsed into its launch knot.
+ *
+ *     what phase B was believed to time      what it actually drew
+ *     ─────────────────────────────────      ─────────────────────
+ *     core sphere, outer glow                ○ hidden
+ *     20 additive corona planes  ◄── the     ○ hidden
+ *     sunParticles rings             cost    ○ collapsed to the knot
+ *     10 shards                              ● 10 shards, several off the frame edge
+ *
+ * And the corona is not incidental to the star's cost, it IS the cost — those overlapping additive
+ * planes are the overdraw that makes a 0.209 Mpx canvas reach 9–22 ms. So `starMilliseconds` came out
+ * a LOWER BOUND, `starSolved` came out inflated by its square root, and the star landed pinned against
+ * `STAR_RAISE_OVER_MODELS` on essentially every machine — its measurement discarded, and the whole
+ * frame budget it was supposed to be sized by along with it.
+ * `docs/per-section-quality-budget-plan.md` §9a has the finding; this is §9e option A.
+ *
+ * ⚠ NOTHING REACHES THE SCREEN, AND NOT BECAUSE ANYTHING HIDES IT HERE. `IntroSequence` leaves
+ * `.hero-sun-layer` at `autoAlpha: 0` until the finale timeline, which runs long after the burn-in —
+ * so during phase B the star's canvas is `visibility: hidden` already. That is what makes this
+ * measurable in the star's own context, on the default framebuffer, through the same programs and the
+ * same MSAA resolve the visitor gets. Rendering it to an offscreen target instead — the obvious
+ * alternative — would have measured DIFFERENT SHADERS: three applies tone mapping only when the render
+ * target is null, so a target-bound star compiles a second program set without the tone-mapping chunk
+ * and times a cheaper fragment than the one that ships.
+ *
+ * ⚠ The pose is refused once `SUN_ASSEMBLE_EVENT` has been cued, and that guard is what keeps the
+ * above from being a promise rather than a fact. With no loader on the page the assembly starts
+ * immediately and the layer is visible, so a burn-in running then would flash a fully formed star for
+ * the length of a phase. Refusing costs nothing: a cued assembly is already drawing the real star.
+ */
+export const SUN_MEASURE_BEGIN_EVENT = 'voidix:sun-measure-begin';
+
+/**
+ * The measurement is over — return to whatever the star was doing.
+ *
+ * ⚠ Idempotent, and fired TWICE by design: once the moment phase B closes, and again from the burn-in's
+ * `finally`. The same belt-and-braces `SUN_DRAW_PERMIT_EVENT` gets, for a stronger reason — a throw
+ * between the two would otherwise leave the star holding a formed pose into the loader's finale, and
+ * the assembly would have nothing left to assemble.
+ */
+export const SUN_MEASURE_END_EVENT = 'voidix:sun-measure-end';
+
+/**
  * The gate has opened: the wait is over and the loader's finale is starting.
  *
  * ── ⚠ Why this is an event and not a condition anyone can evaluate ───────────────────────────────

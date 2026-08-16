@@ -15,7 +15,7 @@ import { computeFlightPose, createFlightPose, METEOR_SHARED_POSITION } from '@/l
 import { flightPullbackScale, portraitPullbackScale } from '@/lib/portraitPullback';
 import { createStoneMaterial } from '../meteorMaterial';
 import { getWorksTuning } from '../worksTuning';
-import { WORKS_PROJECTS } from '../worksProjects';
+import type { WorksProject } from '../worksProjects';
 import { MARK_CHANGE_SECONDS } from '../worksTransition';
 import { prepareMarks } from '../prepareMarks';
 import { createAccretionMark } from '../transitions/accretionTransition';
@@ -59,6 +59,7 @@ import {
 import {
   getControllerFps,
   getPixelRatio,
+  getStarFrameCost,
   getSunPixelRatio,
   hasEarnedExtraQuality,
   noteRatioApplied,
@@ -84,6 +85,8 @@ import {
   BURN_IN_EVENT,
   INTRO_MARKER_SELECTOR,
   SUN_DRAW_PERMIT_EVENT,
+  SUN_MEASURE_BEGIN_EVENT,
+  SUN_MEASURE_END_EVENT,
 } from '@/components/effects/IntroSequence/introEvents';
 import { SLATE_200, SLATE_400, SLATE_800 } from '@/lib/coolPalette';
 
@@ -192,6 +195,31 @@ const BURN_IN_MIN_SAMPLES = 5;
  */
 const BURN_IN_SANE_FRAME_MS = 120;
 /**
+ * The same judgement on a device whose ordinary frame is already near the strict cap.
+ *
+ * ── ⚠ MEASURED ON AN iPhone, 2026-08-13, AND IT IS HALF OF WHY THE BURN-IN NEVER RAN THERE ───────
+ * `docs/sun-mobile-quality-plan.md` §3.1 has the capture. Phase B on that device:
+ *
+ *     phase "B · field + star"   1 sample @ ratio 1.00: 84
+ *     burn-in REFUSED  not enough usable frames in 3376 ms (needs 5 per phase)
+ *
+ * The field alone ran ~34 ms/frame; the field WITH the star ran ~150. So at 120 the filter was not
+ * rejecting long tasks in phase B — **it was rejecting the frame the visitor actually gets**, on the
+ * one device where that frame is the whole subject. One sample slipped under the cap, and a phase that
+ * cannot reach `BURN_IN_MIN_SAMPLES` refuses, which refuses the entire burn-in and leaves the quality
+ * allocator inert for the session.
+ *
+ * ⚠ The discriminator "is this frame evidence, or is it a stall" cannot be one number across a 5×
+ * range of device speed. On a machine whose honest frame is 150 ms, 120 does not mean "unusually slow",
+ * it means "typical".
+ *
+ * ⚠ IT DOES NOT LOOSEN THE SETTLE LOOP, which keeps the strict value deliberately — see
+ * `waitForQuietMainThread`. That loop asks a different question ("has the main thread gone quiet"),
+ * and it asks it while only the FIELD is drawing, at ~34 ms on this same phone. Raising its threshold
+ * would make it declare calm on frames that are not.
+ */
+const BURN_IN_SANE_FRAME_LOW_POWER_MS = 260;
+/**
  * How long to wait for the main thread to go quiet before sampling starts.
  *
  * The stage is cued when both SCENES report *warm*, and warm means "compiled", not "the page has
@@ -241,6 +269,43 @@ const BURN_IN_CALM_FRAMES = 3;
  */
 const BURN_IN_PHASE_MAX_MS = 600;
 /**
+ * The same deadline on a slow device — LONGER, which is the opposite of how the settle budget scales.
+ *
+ * ── ⚠ THE OTHER HALF OF THE iPhone REFUSAL ───────────────────────────────────────────────────────
+ * A phase needs `BURN_IN_DISCARD_FRAMES + BURN_IN_MIN_SAMPLES` = 8 frames before it can answer at all.
+ * At 600 ms that is a demand for **≤ 75 ms per frame** — which phase A meets and phase B, by
+ * construction, cannot: phase B is the same phase plus the most expensive object on the page.
+ *
+ *     phase A   field alone     ~34 ms/frame   →  12 frames in ~410 ms  →  9 samples  ✓
+ *     phase B   field + star   ~150 ms/frame   →   4 frames in  600 ms  →  1 sample   ✗
+ *
+ * A deadline one phase can meet and the other structurally cannot is not a deadline, it is a
+ * guaranteed refusal. The settle budget shrinks on a slow device because drawing while it waits is
+ * self-defeating there; this must GROW, because a slow device needs more wall clock to reach the same
+ * sample count. Same reasoning, opposite sign.
+ *
+ * ⚠ THE SERIAL BUDGET STILL FITS, and this is the constraint that sizes the number:
+ *
+ *     settle (low power)  1200        BURN_IN_SETTLE_MAX_LOW_POWER_MS
+ *     phase A             1800        here
+ *     phase B             1800        here
+ *     ───────────────────────────
+ *                         4800   <  5500   BURN_IN_WAIT_MAX_MS   ✓
+ *     SUN_PERMIT_FALLBACK_MS 4800  >=  settle + ONE phase (3000) ✓
+ *
+ * **Move this and you must re-check both of those**, exactly as the strict value's note says.
+ *
+ * ⚠ It buys a device up to ~2.4 s more loader. Deliberate, and the same trade the settle budget
+ * already makes: the loader is holding regardless, and the alternative is a whole session rendered at
+ * an unmeasured resolution.
+ *
+ * ⚠ It does not rescue EVERY device, and the limit is worth naming: 8 frames inside 1800 ms is
+ * ~225 ms/frame. Slower than that and the phase still refuses — correctly, since the runtime
+ * calibration is then the better instrument anyway. `BURN_IN_MIN_SAMPLES` is deliberately NOT lowered
+ * to chase it; five is already thin for a median, and buying time is the honest fix.
+ */
+const BURN_IN_PHASE_MAX_LOW_POWER_MS = 1800;
+/**
  * The smallest star cost worth believing, in ms.
  *
  * Two medians taken a few hundred milliseconds apart differ by a couple of tenths on a quiet machine.
@@ -257,6 +322,18 @@ const MIN_CREDIBLE_STAR_MS = 0.6;
  * nothing. This is a bound on the failure, not a claim about the star.
  */
 const MAX_CREDIBLE_STAR_SHARE = 0.8;
+/**
+ * How long the burn-in will wait for the star to time itself before giving up and using phase B.
+ *
+ * ⚠ A BOUND, NOT A HANDSHAKE. The star answers from its own rAF loop and is entitled to refuse the
+ * pose outright — before its model has landed, under reduced motion, or once the assembly has been
+ * cued. A refusal must cost the fallback below, never a loader wedged behind `BURN_IN_WAIT_MAX_MS`.
+ *
+ * Generous, because on the normal path the wait is short: the star needs one posed frame before it may
+ * measure (see `posedFramesDrawn`) and then three drained draws. Eight frames covers that even on a
+ * device rendering at 150 ms, and any device slower still has a refusal waiting for it anyway.
+ */
+const STAR_SELF_MEASURE_MAX_FRAMES = 8;
 /**
  * ⚠ A HARD CEILING IN TIME, and it is not decoration. This stage is capped by `BURN_IN_WAIT_MAX_MS`
  * (2.5 s) in IntroSequence, and past that the gate stops waiting and moves on regardless. A burn-in
@@ -678,6 +755,16 @@ interface FieldOptions {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   /** The focused project — read live from the render loop / handlers via a ref. */
   activeIndex: number;
+  /**
+   * The resolved projects, marks and all.
+   *
+   * ⚠ READ ONCE, AT SETUP, and deliberately not in the effect's dependencies. It decides the camera
+   * path's shape and cuts one body per entry, so reacting to it would mean tearing down and
+   * rebuilding the whole scene. It cannot change within a session in any case: it is resolved on the
+   * server and arrives as a prop, so the array the effect reads at mount is the array for the life
+   * of the page.
+   */
+  projects: WorksProject[];
   onStatus: (status: FieldStatus) => void;
 }
 
@@ -866,11 +953,17 @@ function createShardGeometry(seed: number, detail: number): THREE.BufferGeometry
   return geometry;
 }
 
-export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions) {
+export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: FieldOptions) {
   // The render loop + handlers read the freshest focus through a ref, so the persistent setup
   // effect never re-runs when the active project changes.
   const activeIndexRef = useRef(activeIndex);
   activeIndexRef.current = activeIndex;
+
+  // Same trick, different reason: the projects cannot change within a session, but reading them
+  // through a ref keeps them out of the effect's closure-freshness question entirely and documents
+  // that the setup below takes a snapshot rather than subscribing.
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
 
   // Set up inside the persistent effect; called from the selection effect below so a focus change
   // re-stages the existing scene instead of rebuilding it.
@@ -1030,7 +1123,12 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     // camera splines on its way. One Catmull-Rom over the whole list, parameterised by `pathU` in
     // [0, keys.length - 1], means a journey and its arrival are the same curve — so the camera never
     // brakes to a halt at an intermediate key the way a chain of per-leg tweens would.
-    const tuning = getWorksTuning();
+    // ⚠ Snapshotted here, at setup, and used for the rest of this effect. The camera path's shape,
+    // the number of bodies cut and the HUD's total all come from this one array, so they cannot
+    // disagree about how many projects there are.
+    const fieldProjects = projectsRef.current;
+    // The path is built for however many projects the panel published — see `buildProjectViewKeys`.
+    const tuning = getWorksTuning(fieldProjects.length);
     const viewKeys = tuning.keys;
     // Where each project's stop sits in the key list, by project index. Rebuilt with the path.
     let stopKeyIndex: number[] = [];
@@ -1469,11 +1567,14 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
     disposableTextures.push(surfaceMap);
 
     // ── Which mark each project shows ──
-    // Resolved by id against whatever `prepareMarks` actually returned, because a mark whose file
-    // failed to load is simply absent — matching by position would quietly shift every later project
-    // onto its neighbour's logo, which looks like a content mistake rather than a load failure.
-    // Filled in by buildMark; until then every project points at mark 0.
-    let markIndexOfProject: number[] = WORKS_PROJECTS.map(() => 0);
+    // ⚠ The identity, and it took a rewrite to be allowed to be. `prepareMarks` used to resolve a
+    // shared REGISTRY and drop any mark whose file failed, so a project had to find its own by id —
+    // matching by position would have shifted every later project onto its neighbour's logo. A
+    // project now carries its own mark and can always produce one (its initial, at worst), so
+    // `prepareMarks` returns exactly one entry per project, in order, and there is nothing left to
+    // look up. Kept as an array rather than inlined because the transition state indexes MARKS, and
+    // conflating the two names is how that stops being true the next time something changes.
+    const markIndexOfProject: number[] = fieldProjects.map((_project, index) => index);
 
     // ── The transition, as ONE piece of state ──
     // `setTransition(from, to, progress)` is a pure function by contract — no timers, no "arrived"
@@ -1537,18 +1638,16 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
      */
     const buildMark = async () => {
       traceBuild('prepareMarks: start');
-      const marks = await prepareMarks();
+      // No network in here for a panel-published mark: `lib/cms/markSource.ts` dereferenced it on
+      // the server, so this is parsing text the page already had. Only the repo's own fallback
+      // projects still fetch, and only from our own origin.
+      const marks = await prepareMarks(fieldProjects);
       traceBuild(`prepareMarks: done (${marks.length} marks)`);
       if (disposed || marks.length === 0) {
         traceBuild(`buildMark: bailing (disposed=${disposed}, marks=${marks.length})`);
         return;
       }
       reportAssetProgress('works', WORKS_OUTLINES_DONE);
-
-      markIndexOfProject = WORKS_PROJECTS.map((project) => {
-        const found = marks.findIndex((mark) => mark.id === project.markId);
-        return found >= 0 ? found : 0;
-      });
 
       traceBuild('createAccretionMark: start (loads 2 textures, then cuts every mark)');
       const strategy = await createAccretionMark(marks, {
@@ -2287,6 +2386,17 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       smaaPass.enabled = false;
       const burnStartedAt = performance.now();
 
+      // ── What this device is measured with ──
+      // Read ONCE, so the two phases cannot be sampled under different rules — a phase A judged by one
+      // ceiling and a phase B by another would make `B − A` a difference of two different instruments.
+      // `getDeviceTier` is latched, so this is a formality today; it stops being one the moment anyone
+      // makes the tier reactive.
+      const slowDevice = isLowPowerDevice();
+      const phaseBudgetMs = slowDevice ? BURN_IN_PHASE_MAX_LOW_POWER_MS : BURN_IN_PHASE_MAX_MS;
+      const sampleCeilingMs = slowDevice
+        ? BURN_IN_SANE_FRAME_LOW_POWER_MS
+        : BURN_IN_SANE_FRAME_MS;
+
       /**
        * Draw works frames until the main thread stops throwing long tasks at us.
        *
@@ -2295,7 +2405,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
        * empty wait would hand phase A its own first-draw costs all over again.
        */
       const waitForQuietMainThread = async () => {
-        const settleBudgetMs = isLowPowerDevice()
+        const settleBudgetMs = slowDevice
           ? BURN_IN_SETTLE_MAX_LOW_POWER_MS
           : BURN_IN_SETTLE_MAX_MS;
         let calmFrames = 0;
@@ -2346,10 +2456,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
             discarded += 1;
             continue;
           }
-          // ⚠ Reject the frame, do not abandon the phase. See BURN_IN_SANE_FRAME_MS.
-          if (interval > 0 && interval <= BURN_IN_SANE_FRAME_MS) samples.push(interval);
+          // ⚠ Reject the frame, do not abandon the phase. See BURN_IN_SANE_FRAME_MS — and
+          // BURN_IN_SANE_FRAME_LOW_POWER_MS for why the ceiling is not one number for every device.
+          if (interval > 0 && interval <= sampleCeilingMs) samples.push(interval);
           if (samples.length >= BURN_IN_TARGET_SAMPLES) break;
-          if (frameAt - phaseStartedAt >= BURN_IN_PHASE_MAX_MS) break;
+          if (frameAt - phaseStartedAt >= phaseBudgetMs) break;
         }
         if (samples.length < BURN_IN_MIN_SAMPLES) return null;
         samples.sort((left, right) => left - right);
@@ -2364,17 +2475,63 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         const fieldOnlyMs = await samplePhase();
         if (disposed) return;
 
-        // ── The star joins, and phase B measures both. B − A is what the star costs. ──
+        // ── The star joins, and TIMES ITSELF ──
         // Dispatched even if phase A refused: the measurement is optional, the star appearing is not.
+        //
+        // ⚠ THE POSE FIRST, THEN THE PERMIT, AND THE ORDER IS THE POINT. Until 2026-08-13 the star was
+        // timed with its corona hidden and its rings collapsed — ten tumbling shards — because this all
+        // runs before `SUN_ASSEMBLE_EVENT` and `positionShards(0, 0)` has already hidden everything
+        // that is not a shard. The corona IS the star's cost. `SUN_MEASURE_BEGIN_EVENT` carries the
+        // whole finding.
+        window.dispatchEvent(new Event(SUN_MEASURE_BEGIN_EVENT));
         window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
-        const fieldAndStarMs = await samplePhase();
+
+        // ⚠ WAIT FOR THE STAR, BUT NEVER ON THE STAR. It answers from its own rAF loop, and it is
+        // entitled to refuse the pose outright — before its model has landed, under reduced motion, or
+        // once the assembly has been cued. So this is a bounded poll and not an event handshake: a
+        // refusal must cost a fallback, never a loader stuck behind `BURN_IN_WAIT_MAX_MS`.
+        //
+        // ⚠ The field draws nothing while it waits, deliberately. The star is about to block the GPU
+        // process on three `gl.finish()` drains, and anything this renderer submitted into that window
+        // would be timed as part of the star.
+        for (
+          let frame = 0;
+          frame < STAR_SELF_MEASURE_MAX_FRAMES && getStarFrameCost() === null;
+          frame += 1
+        ) {
+          await nextWarmupFrame();
+          if (disposed) return;
+        }
+        const starCost = getStarFrameCost();
+
+        // ── Phase B · ONLY as the fallback, and only when the star did not answer ──
+        // On the normal path this does not run at all: it is the subtraction that returned a NEGATIVE
+        // star on a warming phone (see `noteStarFrameCost`), and skipping it also gives back most of
+        // the loader time the low-power phase budget spends. It stays because `reportBurnIn` needs the
+        // cost of a WHOLE frame with the star in it, and without the star's own number there is no
+        // other way to obtain one.
+        const fieldAndStarMs =
+          starCost === null ? await samplePhase() : null;
+        // Closed the moment the samples are in, not in `finally` — everything between here and there
+        // is field work that would otherwise run with the star holding a formed pose it cannot keep.
+        window.dispatchEvent(new Event(SUN_MEASURE_END_EVENT));
         if (disposed) return;
 
-        if (fieldAndStarMs === null) {
+        // What a full frame costs, however we came by it. With the star's own number this is modelled
+        // rather than sampled — ⚠ and it mixes two instruments, a drained star against rAF-sampled
+        // field frames, so it is deliberately used ONLY for `reportBurnIn`'s fallback sizing and never
+        // for the split itself.
+        const wholeFrameMs =
+          starCost !== null && fieldOnlyMs !== null
+            ? fieldOnlyMs + starCost.milliseconds
+            : fieldAndStarMs;
+
+        if (wholeFrameMs === null) {
           if (telemetryEnabled) {
             console.log(
               `%c[pixels] burn-in REFUSED%c not enough usable frames in ` +
-                `${(performance.now() - burnStartedAt).toFixed(0)} ms (needs ${BURN_IN_MIN_SAMPLES} per phase).` +
+                `${(performance.now() - burnStartedAt).toFixed(0)} ms (needs ${BURN_IN_MIN_SAMPLES} per phase),` +
+                ` and the star did not self-measure either.` +
                 `\n  The runtime calibration will decide instead — expect a CALIBRATED line per scene.`,
               'color:#e0b341;font-weight:700',
               'color:#888',
@@ -2383,46 +2540,64 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
           return;
         }
 
-        // ── Hand the allocator the split, if we got one ──
+        // ── Hand the allocator the split ──
         //
-        // ⚠ THREE THINGS HAVE TO HOLD, and each of them is a way the split can be quietly wrong rather
-        // than obviously broken. A split that fails any of them is simply not reported, and the
-        // allocator falls back to sizing everything off one number exactly as it did before.
+        // ⚠ TWO PATHS, AND THE FIRST ONE NEEDS NO CREDIBILITY CHECKS AT ALL. The star's own drained
+        // measurement is not a difference, so none of the ways a difference goes wrong can apply to
+        // it: there is no ordering to bias it, no second phase to come out faster, and no jitter floor
+        // to clear. It is simply what the star cost.
+        //
+        // The `B − A` path below keeps all three checks, because it keeps all three failure modes:
         //
         //   1 · REDUCED MOTION draws the star from mount (`drawingPermitted = reduceMotion` in
         //       SunModelCanvas — that path has no held beat and would otherwise show an empty box
         //       where the star goes). So phase A already contains the star, B − A is noise around
         //       zero, and the allocator would conclude the star is free and hand it the ceiling.
-        //   2 · Phase A must be the FASTER of the two. If it came out slower — a long task landing in
-        //       it, the GPU still settling, thermal drift — the star's cost solves negative.
-        //   3 · The difference must be big enough to be a measurement rather than jitter. Two medians
-        //       taken a few hundred milliseconds apart differ by a few tenths of a millisecond on a
-        //       quiet machine; below that floor we are reading noise and calling it the star.
-        const starMilliseconds = fieldOnlyMs === null ? 0 : fieldAndStarMs - fieldOnlyMs;
-        const splitIsCredible =
+        //   2 · Phase A must be the FASTER of the two. ⚠ THIS IS THE ONE THAT FIRES IN PRACTICE — an
+        //       iPhone returned field 21.0 ms against both 17.0 ms, i.e. a star costing MINUS 4 ms,
+        //       because the machine sped up between the phases. That is the whole reason path one
+        //       exists.
+        //   3 · The difference must be big enough to be a measurement rather than jitter.
+        //
+        // ⚠ A REFUSED SPLIT NO LONGER SKIPS THE ALLOCATION on the star's own path — it cannot, since
+        // there is nothing to disbelieve. Where the subtraction is used and refused, the behaviour is
+        // exactly as it was: `reportBurnIn` sizes everything off one number.
+        const subtractedStarMs =
+          fieldOnlyMs === null || fieldAndStarMs === null ? 0 : fieldAndStarMs - fieldOnlyMs;
+        const subtractionIsCredible =
+          fieldAndStarMs !== null &&
           !prefersReducedMotion() &&
           fieldOnlyMs !== null &&
-          starMilliseconds >= MIN_CREDIBLE_STAR_MS &&
-          starMilliseconds <= fieldAndStarMs * MAX_CREDIBLE_STAR_SHARE;
-        if (splitIsCredible && fieldOnlyMs !== null) {
+          subtractedStarMs >= MIN_CREDIBLE_STAR_MS &&
+          subtractedStarMs <= fieldAndStarMs * MAX_CREDIBLE_STAR_SHARE;
+
+        if (fieldOnlyMs !== null && starCost !== null) {
           reportSectionCosts({
             fieldMilliseconds: fieldOnlyMs,
-            starMilliseconds,
+            starMilliseconds: starCost.milliseconds,
+            fieldRatio: renderer.getPixelRatio(),
+            starRatio: starCost.ratio,
+          });
+        } else if (subtractionIsCredible && fieldOnlyMs !== null) {
+          reportSectionCosts({
+            fieldMilliseconds: fieldOnlyMs,
+            starMilliseconds: subtractedStarMs,
             fieldRatio: renderer.getPixelRatio(),
             starRatio: getSunPixelRatio(),
           });
         } else if (telemetryEnabled) {
           console.log(
             `%c[pixels] split REFUSED%c field ${fieldOnlyMs?.toFixed(1) ?? '—'} ms, ` +
-              `both ${fieldAndStarMs.toFixed(1)} ms → star ${starMilliseconds.toFixed(2)} ms.` +
-              `\n  Not a credible separation${prefersReducedMotion() ? ' (reduced motion — the star draws from mount)' : ''};` +
+              `both ${fieldAndStarMs?.toFixed(1) ?? '—'} ms → star ${subtractedStarMs.toFixed(2)} ms.` +
+              `\n  The star did not self-measure, and the subtraction is not a credible separation` +
+              `${prefersReducedMotion() ? ' (reduced motion — the star draws from mount)' : ''};` +
               ` falling back to one number for the whole frame.`,
             'color:#e0b341;font-weight:700',
             'color:#888',
           );
         }
 
-        reportBurnIn(fieldAndStarMs, renderer.getPixelRatio());
+        reportBurnIn(wholeFrameMs, renderer.getPixelRatio());
         if (getPixelRatio() !== appliedPixelRatio) {
           // Allocate what it decided, here, behind the veil — so this section's first real frame is
           // already at its final resolution and never re-sizes in front of anyone.
@@ -2448,6 +2623,11 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
         // able to leave a dark square where the site's centrepiece goes. `permitDrawing` is idempotent,
         // so re-firing a permit already sent between the phases costs nothing.
         if (!disposed) {
+          // ⚠ The pose is closed here as well as after phase B, and it is the more important of the
+          // two: a throw between them would otherwise strand the star fully formed with its rings out,
+          // and the loader's finale would fly ten shards into a star that had already assembled itself.
+          // Idempotent, so the normal path firing it twice costs nothing.
+          window.dispatchEvent(new Event(SUN_MEASURE_END_EVENT));
           window.dispatchEvent(new Event(SUN_DRAW_PERMIT_EVENT));
           window.dispatchEvent(new Event(BURN_IN_DONE_EVENT));
         }
@@ -2938,7 +3118,7 @@ export function useWorksField({ canvasRef, activeIndex, onStatus }: FieldOptions
       );
       hud.update({
         feedIndex: activeIndexRef.current + 1,
-        feedTotal: WORKS_PROJECTS.length,
+        feedTotal: fieldProjects.length,
         fovDegrees: camera.fov,
         panRadians: viewYaw,
         tiltRadians: viewPitch,

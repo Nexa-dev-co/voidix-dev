@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CHAMBER_HOLOGRAM_EVENT, readHologramOpen } from '@/lib/chamberEvents';
 import { SECTION_ARRIVE_EVENT, readSectionArriveKey } from '@/lib/sectionJumpEvents';
-import { FAQ_ENTRIES } from '@/components/sections/Chamber/faqEntries';
+import { useSiteSections } from '@/lib/cms/SiteContentProvider';
 import { useHologramTracking } from './hooks/useHologramTracking';
 import { useHologramReveal } from './hooks/useHologramReveal';
 import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
@@ -30,6 +30,9 @@ import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
 const CHAMBER_SECTION_KEY = 'faq';
 
 export default function FaqHologram() {
+  // The panel's questions, published or fallback — resolved on the server, handed down as a value.
+  const { faq: faqEntries } = useSiteSections();
+
   const panelRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -84,7 +87,7 @@ export default function FaqHologram() {
     arrivalReplay,
   });
 
-  const entry = openEntry === null ? null : FAQ_ENTRIES[openEntry];
+  const entry = openEntry === null ? null : faqEntries[openEntry];
 
   return (
     <div
@@ -122,7 +125,7 @@ export default function FaqHologram() {
               <div className="holo-list">
                 <p className="holo-eyebrow holo-stagger">Frequencies</p>
                 <ul className="holo-rows">
-                  {FAQ_ENTRIES.map((faq, index) => (
+                  {faqEntries.map((faq, index) => (
                     <li key={faq.index}>
                       <button
                         type="button"

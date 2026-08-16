@@ -1,10 +1,10 @@
-import { CONTACT_FOOTER_GROUPS } from '@/components/sections/Contact/contactContent';
+import { useSiteContent } from '@/lib/cms/SiteContentProvider';
 
 /**
  * The document pages' footer.
  *
  * ── ⚠ IT READS THE HOMEPAGE'S OWN LINK DATA ──────────────────────────────────────────────────────
- * `CONTACT_FOOTER_GROUPS` — the same array the contact section renders. There is one list of links on
+ * `SiteContent.footer` — the same object the contact section renders. There is one list of links on
  * this site and it lives in one file; the alternative is two lists that agree today and drift the
  * first time a social handle changes. Adding the Studio group to that file put About and Careers into
  * both footers at once, which is the test of whether the sharing was worth doing.
@@ -22,19 +22,23 @@ import { CONTACT_FOOTER_GROUPS } from '@/components/sections/Contact/contactCont
  * show something we don't.
  */
 
-const ESTABLISHED_LINE = 'Voidix — a software studio. Built with its own gravity.';
-
+/**
+ * ⚠ No `'use client'` of its own — it inherits one from `PageShell`, which is the only thing that
+ * renders it. If that ever stops being true, this needs the directive: `useSiteContent` is a hook.
+ */
 export default function PageFooter() {
+  const { footer } = useSiteContent();
+
   return (
     <footer className="doc-footer" data-reveal>
       <div className="doc-footer-top">
         <div className="doc-footer-brand">
           <span className="font-display doc-footer-mark">Voidix</span>
-          <span className="doc-footer-note">Software with its own gravity</span>
+          <span className="doc-footer-note">{footer.tagline}</span>
         </div>
 
         <div className="doc-footer-groups">
-          {CONTACT_FOOTER_GROUPS.map((group) => (
+          {footer.groups.map((group) => (
             <div className="doc-footer-group" key={group.title}>
               <p className="doc-footer-group-title">{group.title}</p>
               <ul className="doc-footer-links">
@@ -55,7 +59,7 @@ export default function PageFooter() {
         </div>
       </div>
 
-      <p className="doc-footer-base">{ESTABLISHED_LINE}</p>
+      <p className="doc-footer-base">{footer.signOff}</p>
     </footer>
   );
 }

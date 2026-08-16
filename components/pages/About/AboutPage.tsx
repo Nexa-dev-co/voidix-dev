@@ -7,29 +7,19 @@ import ClaimRow from '@/components/layout/PageShell/ClaimRow';
 import PhaseTrack from '@/components/layout/PageShell/PhaseTrack';
 import EnquiryButton from '@/components/ui/EnquiryButton/EnquiryButton';
 import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
-import {
-  ABOUT_CAREERS_INVITE,
-  ABOUT_CLOSING_LEAD,
-  ABOUT_CLOSING_TITLE,
-  ABOUT_EYEBROW,
-  ABOUT_LEAD,
-  ABOUT_SECTIONS,
-  ABOUT_TITLE,
-  BUILD_PHASES,
-  INSTRUMENTS,
-  INSTRUMENTS_NOTE,
-  PREMISE_PARAGRAPHS,
-  PREMISE_QUOTE,
-  PRINCIPLES,
-  STACK,
-  STACK_NOTE,
-} from './aboutContent';
+import { ABOUT_SECTIONS, type AboutContent } from './aboutContent';
 
 /**
  * `/about` — the studio, told in the site's own language.
  *
  * A document, not a scene: native scroll, no pin, no WebGL, no GSAP. `PageShell` holds the frame and
- * the reasoning for all three; every word is in `aboutContent.ts`.
+ * the reasoning for all three.
+ *
+ * ⚠ Every word arrives as a prop. `app/about/page.tsx` is a Server Component that reads the admin
+ * panel and resolves it against `aboutContent.ts`'s fallback, so this component never imports copy
+ * and never learns which of the two it is rendering — which is what stops the two sources being
+ * mixed one field at a time. `ABOUT_SECTIONS` is the exception and stays an import: it is structure
+ * (anchor ids and orbit-rail stations), not copy, and the panel deliberately cannot reach it.
  *
  * The one piece of state here is the enquiry panel, and it opens the SAME shared form the fleet, the
  * field and the contact section open — dialog on a desktop, bottom sheet on a phone, decided by
@@ -41,21 +31,26 @@ import {
  * the panel's `prefill` is optional for exactly that case (the chamber's "ask us anything" is the
  * other). Inventing one would put a discipline in the subject line the visitor never chose.
  */
-export default function AboutPage() {
+interface AboutPageProps {
+  /** Resolved upstream — published copy if the panel has any, this repo's fallback if not. */
+  content: AboutContent;
+}
+
+export default function AboutPage({ content }: AboutPageProps) {
   const [isEnquiryOpen, setIsEnquiryOpen] = useState(false);
 
   return (
     <>
       <PageShell
-        eyebrow={ABOUT_EYEBROW}
-        title={ABOUT_TITLE}
-        lead={ABOUT_LEAD}
+        eyebrow={content.eyebrow}
+        title={content.title}
+        lead={content.lead}
         sections={ABOUT_SECTIONS}
       >
         {/* 01 — the premise */}
         <DocSection meta={ABOUT_SECTIONS[0]}>
           <div className="doc-prose">
-            {PREMISE_PARAGRAPHS.map((paragraph, index) => (
+            {content.premiseParagraphs.map((paragraph, index) => (
               <p
                 key={paragraph.slice(0, 24)}
                 className="doc-paragraph"
@@ -69,14 +64,14 @@ export default function AboutPage() {
           {/* Breaks the rule between the columns rather than sitting under them — a pull quote that
               follows the prose is just a bigger sentence. */}
           <blockquote className="doc-quote">
-            <p className="font-display doc-quote-text">{PREMISE_QUOTE}</p>
+            <p className="font-display doc-quote-text">{content.premiseQuote}</p>
           </blockquote>
         </DocSection>
 
         {/* 02 — the principles */}
         <DocSection meta={ABOUT_SECTIONS[1]}>
           <ul className="doc-claims">
-            {PRINCIPLES.map((principle, index) => (
+            {content.principles.map((principle, index) => (
               <ClaimRow key={principle.index} claim={principle} order={index} />
             ))}
           </ul>
@@ -84,13 +79,13 @@ export default function AboutPage() {
 
         {/* 03 — how a build runs */}
         <DocSection meta={ABOUT_SECTIONS[2]} wide>
-          <PhaseTrack phases={BUILD_PHASES} />
+          <PhaseTrack phases={content.buildPhases} />
         </DocSection>
 
         {/* 04 — the instruments */}
         <DocSection meta={ABOUT_SECTIONS[3]} wide>
           <ul className="doc-instruments">
-            {INSTRUMENTS.map((instrument, index) => (
+            {content.instruments.map((instrument, index) => (
               <li
                 key={instrument.label}
                 className="doc-instrument"
@@ -101,13 +96,13 @@ export default function AboutPage() {
               </li>
             ))}
           </ul>
-          <p className="doc-note">{INSTRUMENTS_NOTE}</p>
+          <p className="doc-note">{content.instrumentsNote}</p>
         </DocSection>
 
         {/* 05 — the stack */}
         <DocSection meta={ABOUT_SECTIONS[4]}>
           <ul className="doc-chips">
-            {STACK.map((entry, index) => (
+            {content.stack.map((entry, index) => (
               <li
                 key={entry}
                 className="doc-chip"
@@ -117,18 +112,18 @@ export default function AboutPage() {
               </li>
             ))}
           </ul>
-          <p className="doc-note">{STACK_NOTE}</p>
+          <p className="doc-note">{content.stackNote}</p>
         </DocSection>
 
         {/* The close. Not a numbered section — it is the page ending rather than another thing the page
             has to say, so it carries no station on the rail. */}
         <div className="doc-close" data-reveal>
-          <h2 className="font-display doc-close-title">{ABOUT_CLOSING_TITLE}</h2>
-          <p className="doc-close-lead">{ABOUT_CLOSING_LEAD}</p>
+          <h2 className="font-display doc-close-title">{content.closingTitle}</h2>
+          <p className="doc-close-lead">{content.closingLead}</p>
           <div className="doc-close-actions">
             <EnquiryButton label="Start a project" onClick={() => setIsEnquiryOpen(true)} />
             <a className="doc-close-link" href="/careers">
-              {ABOUT_CAREERS_INVITE}
+              {content.careersInvite}
               <span aria-hidden="true"> →</span>
             </a>
           </div>
@@ -139,7 +134,7 @@ export default function AboutPage() {
         open={isEnquiryOpen}
         onClose={() => setIsEnquiryOpen(false)}
         eyebrow="Start a project"
-        title={ABOUT_CLOSING_TITLE}
+        title={content.closingTitle}
       />
     </>
   );

@@ -2,11 +2,12 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
-import { WORKS_PROJECTS } from './worksProjects';
+import { useSiteContent, useSiteSections } from '@/lib/cms/SiteContentProvider';
 import { useWorksTextTransition } from './hooks/useWorksTextTransition';
+import { WORKS_FIELD_PHRASE, worksCountPhrase } from './worksProjects';
 import { useSectionArrival, type ArrivalGroup } from '@/lib/hooks/useSectionArrival';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
-import { DISCIPLINES, buildEnquiryPrefill } from '@/lib/enquirySubjects';
+import { buildEnquiryPrefill } from '@/lib/enquirySubjects';
 import Drawer from '@/components/ui/Drawer/Drawer';
 import EnquiryButton from '@/components/ui/EnquiryButton/EnquiryButton';
 import EnquiryPanel from '@/components/ui/EnquiryPanel/EnquiryPanel';
@@ -30,6 +31,7 @@ const FieldCanvas = dynamic(() => import('./FieldCanvas/FieldCanvas'), { ssr: fa
 
 /** Which panel is up. One at a time — two stacked sheets is not a state. */
 type OpenSheet = 'none' | 'details' | 'enquiry';
+
 
 interface WorksFieldProps {
   /** The focused project — driven by the hero pin's works stops. */
@@ -61,11 +63,18 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
     activeIndex,
   });
 
-  const activeProject = WORKS_PROJECTS[displayedIndex];
+  // ⚠ NOT copy only, and it used to be. `useWorksField` read `WORKS_PROJECTS` directly for its
+  // `markId`, because the body a project grows into was geometry this repo owned. A project now
+  // carries its own mark and its own place on a generated camera path, so this list is the whole
+  // truth about the section and the scene is handed it rather than importing a constant.
+  const { disciplines, enquiryForm } = useSiteContent();
+  const { projects } = useSiteSections();
+
+  const activeProject = projects[displayedIndex];
   // The arrows reflect where the pin has COMMITTED, not what's still on screen — otherwise the "next"
   // arrow stays enabled for half a second after you've already reached the last project.
   const isFirst = activeIndex === 0;
-  const isLast  = activeIndex === WORKS_PROJECTS.length - 1;
+  const isLast  = activeIndex === projects.length - 1;
 
   // ── The narrow layout ──
   // A phone keeps only what names the thing on screen — the project's title and the year — and moves
@@ -84,17 +93,23 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
   useEffect(() => setOpenSheet('none'), [isNarrow]);
 
   // The type key above the title, and the same word the enquiry arrives already knowing.
-  const discipline = DISCIPLINES[activeProject.discipline];
+  const discipline = disciplines[activeProject.discipline];
   // Named, so the brief opens "in the orbit of Aphelion" rather than as a cold start — this CTA is
   // pressed while looking at a specific piece of work, and that is the useful part of it.
-  const enquiryPrefill = buildEnquiryPrefill(activeProject.discipline, activeProject.title);
+  const enquiryPrefill = buildEnquiryPrefill({
+    discipline: activeProject.discipline,
+    disciplines,
+    referenceSubjectSuffix: enquiryForm.referenceSubjectSuffix,
+    referenceBriefPrefix: enquiryForm.referenceBriefPrefix,
+    reference: activeProject.title,
+  });
 
   return (
     <section id="work" className="works-field">
       {/* Solid backdrop so the field reads on its own black — matches the filled square. */}
       <div className="works-backdrop" aria-hidden="true" />
 
-      <FieldCanvas activeIndex={activeIndex} />
+      <FieldCanvas activeIndex={activeIndex} projects={projects} />
 
       <div ref={overlayRef} className="works-overlay">
         <header className="works-head">
@@ -107,9 +122,13 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
                 DESKTOP instruction, and on a 360px screen it compounds with the natural wrap into four
                 ragged lines out of two words each. Each sentence now wraps on its own terms and
                 `text-wrap: balance` evens whatever lines it needs. */}
+            {/* ⚠ The count is spelled from the live list, not written into the markup. It used to
+                read "Four fires." while the panel could publish any number of projects, so the
+                heading was one edit away from contradicting the section under it — and nothing on
+                either side would have said so. */}
             <h2 className="works-title font-display">
-              <span className="works-title-line">Four fires.</span>{' '}
-              <span className="works-title-line">One field.</span>
+              <span className="works-title-line">{worksCountPhrase(projects.length)}</span>{' '}
+              <span className="works-title-line">{WORKS_FIELD_PHRASE}</span>
             </h2>
           </div>
 
@@ -182,7 +201,7 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
             <span className="works-counter">
               <span className="works-counter-current">{activeProject.index}</span>
               <span className="works-counter-sep" aria-hidden="true">/</span>
-              <span className="works-counter-total">{String(WORKS_PROJECTS.length).padStart(2, '0')}</span>
+              <span className="works-counter-total">{String(projects.length).padStart(2, '0')}</span>
             </span>
           </span>
 

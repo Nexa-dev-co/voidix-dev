@@ -235,6 +235,29 @@ body {
   color: var(--muted);
 }
 
+/*
+  Present to a screen reader and to a crawler, absent to the eye.
+
+  ⚠ NOT `display: none` and not `visibility: hidden` — both remove the element from the accessibility
+  tree as well as from the page, which is the opposite of what this is for. The 1px-clip technique is
+  the one that leaves the text readable by assistive technology.
+
+  Its first job is the hero's headline. The visual mark splits "worlds" around the sun — the star IS
+  the "o" — so the rendered DOM text reads "we build W rlds", which is what a crawler gets and what an
+  <h1> would have to contain. This carries the real sentence instead. See Hero.tsx.
+*/
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ─── Navbar ─────────────────────────────────────────────────────── */
 .nav-root {
   position: fixed;

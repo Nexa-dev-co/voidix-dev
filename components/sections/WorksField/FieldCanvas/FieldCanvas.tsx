@@ -2,17 +2,24 @@
 
 import { useRef, useState } from 'react';
 import { useWorksField, type FieldStatus } from '../hooks/useWorksField';
+import type { WorksProject } from '../worksProjects';
 
 interface FieldCanvasProps {
   /** The focused project — drives the camera + which meteor burns. */
   activeIndex: number;
+  /**
+   * The resolved projects. Passed down rather than read from the content context here because this
+   * component is dynamically imported with `ssr: false`, and the scene needs the list at setup —
+   * `WorksField` already holds it and is the one place that can guarantee it has arrived.
+   */
+  projects: WorksProject[];
 }
 
-export default function FieldCanvas({ activeIndex }: FieldCanvasProps) {
+export default function FieldCanvas({ activeIndex, projects }: FieldCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<FieldStatus>({ isLoading: true, percent: -1 });
 
-  useWorksField({ canvasRef, activeIndex, onStatus: setStatus });
+  useWorksField({ canvasRef, activeIndex, projects, onStatus: setStatus });
 
   return (
     <div className="field-canvas-wrap">

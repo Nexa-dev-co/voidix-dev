@@ -1,14 +1,22 @@
 /**
  * The questions the hologram answers.
  *
- * Single source of truth for the FAQ copy, exactly as `deckServices.ts` is for the fleet and
- * `worksProjects.ts` is for the field: the scene and the panel both read straight from here, so
- * swapping the copy touches no other file. The list's LENGTH is free — the hologram measures its own
- * content and the frames move to fit (see FaqHologram), so adding a question costs nothing.
+ * The list's LENGTH is free — the hologram measures its own content and the frames move to fit (see
+ * FaqHologram), so adding a question costs nothing. That is what makes this the one homepage list the
+ * panel can genuinely grow: the fleet and the field are both pinned to a count by their geometry.
  *
- * Placeholder copy for now. The voice is the one the rest of the site speaks in — a claim, then the
- * thing that backs it up — not agency boilerplate.
+ * ── ⚠ THIS IS THE FALLBACK NOW, NOT THE SOURCE OF TRUTH ──────────────────────────────────────────
+ * The hologram reads the panel through `resolveFaqEntries`, the same arrangement `aboutContent.ts`
+ * and `careersContent.ts` use. `FAQ_ENTRIES` below is what ships when the panel has published
+ * nothing, is unreachable, or is not configured — the state of every fresh clone. Editing it changes
+ * what an unconfigured site says and NOTHING about what a connected one says.
+ *
+ * Placeholder copy. The voice is the one the rest of the site speaks in — a claim, then the thing
+ * that backs it up — not agency boilerplate. Keep it that way; it is what a visitor sees if the
+ * panel is down.
  */
+
+import type { PublishedFaqEntry } from '@/lib/cms/publishedContent';
 
 export interface FaqEntry {
   /** Two-digit ordinal, shown down the left of each row. */
@@ -16,6 +24,27 @@ export interface FaqEntry {
   question: string;
   /** One or more paragraphs. Long answers scroll inside the hologram rather than growing it forever. */
   answer: string[];
+}
+
+/**
+ * The panel's questions, or this file's if it has published none.
+ *
+ * ⚠ An EMPTY published list falls back, deliberately — and this is the opposite of the rule
+ * `PublishedCareers.roles` follows. "No openings" is a decision a careers page has a designed state
+ * for; "no questions" is not a state the chamber has, because the hologram would unseal onto an empty
+ * frame with the tour already committed to arriving at it. Emptying the FAQ is therefore not
+ * something the panel can express, and an editor who wants fewer questions deletes them down to one.
+ */
+export function resolveFaqEntries(published: PublishedFaqEntry[] | null): FaqEntry[] {
+  if (!published || published.length === 0) {
+    return FAQ_ENTRIES;
+  }
+
+  return published.map((entry) => ({
+    index: entry.index,
+    question: entry.question,
+    answer: entry.answer,
+  }));
 }
 
 export const FAQ_ENTRIES: FaqEntry[] = [
