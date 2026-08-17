@@ -6743,6 +6743,86 @@ body {
   color: rgb(var(--fg-rgb) / 0.55);
 }
 
+/* ── The legal documents ──
+   `/privacy` and `/terms`. Two additions only, because those pages are otherwise built entirely out
+   of `.doc-prose` / `.doc-paragraph` / `.doc-note` — which is what earns them the reveal, the stagger
+   and the no-script net for free rather than needing their own copy of each. */
+
+/* When the notice was last read by a human. Above the first section rather than in the masthead: the
+   masthead is the page's title block, and a review date is metadata ABOUT the text, not part of it. */
+.doc-stamp {
+  margin-bottom: clamp(2rem, 5vh, 3.25rem);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--doc-ink-label);
+}
+
+.doc-stamp time {
+  color: rgb(var(--accent-rgb) / 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The ledger — "what we collect, and where it goes", and the terms' licence list.
+   ⚠ Rows on a rule, deliberately the same object as `.doc-claims` above: a legal page is the single
+   easiest place to end up with a grid of bordered cards, which is the anti-reference the brief names.
+   It is NOT a <dl>: several of these rows carry no term at all (the plain caveats in "what the site
+   never does"), and a definition list with half its <dt>s missing is worse markup than a list of
+   sentences that happen to start with a lead-in. */
+.doc-ledger {
+  list-style: none;
+  margin-top: clamp(1.5rem, 3.5vh, 2.25rem);
+  max-width: 62ch;
+}
+
+.doc-ledger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: clamp(1rem, 2.2vh, 1.4rem) 0;
+  border-top: 1px solid var(--border);
+  position: relative;
+}
+
+.doc-ledger-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* The same edge-lights-on-hover gesture the claim rows, the works panel and the FAQ rows make. */
+.doc-ledger-row::before {
+  content: '';
+  position: absolute;
+  left: clamp(-0.9rem, -2vw, -0.5rem);
+  top: 0.8rem;
+  bottom: 0.8rem;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.doc-ledger-row:hover::before {
+  opacity: 0.6;
+}
+
+/* ⚠ Amber on type is safe here for the reason `.doc-claim-key` states: `--accent` is `--heat-600`,
+   above the `--heat-500` floor this file sets for small text on the page black. Not a lower stop. */
+.doc-ledger-term {
+  font-weight: 700;
+  font-size: clamp(0.95rem, 1.5vw, 1.1rem);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  text-wrap: balance;
+}
+
+.doc-ledger-detail {
+  font-size: var(--doc-fs-body);
+  line-height: 1.8;
+  color: var(--doc-ink);
+}
+
 /* ── Open roles ── */
 .doc-roles {
   list-style: none;
@@ -7209,6 +7289,8 @@ body {
 .doc-paragraph,
 .doc-quote,
 .doc-claim,
+.doc-stamp,
+.doc-ledger-row,
 .doc-track-phase,
 .doc-instrument,
 .doc-chip,
@@ -7242,6 +7324,8 @@ body {
 .is-revealed .doc-paragraph,
 .is-revealed .doc-quote,
 .is-revealed .doc-claim,
+.is-revealed .doc-stamp,
+.is-revealed .doc-ledger-row,
 .is-revealed .doc-track-phase,
 .is-revealed .doc-instrument,
 .is-revealed .doc-chip,
@@ -7276,6 +7360,8 @@ body {
   .doc-paragraph,
   .doc-quote,
   .doc-claim,
+  .doc-stamp,
+  .doc-ledger-row,
   .doc-track-phase,
   .doc-instrument,
   .doc-chip,
