@@ -371,6 +371,21 @@ type ControllerPhase = 'calibrating' | 'locked';
  */
 type PipelineKey = 'deck' | 'works';
 
+/**
+ * The ratios have been settled for this session — whichever of the three solvers got there.
+ *
+ * ⚠ IT EXISTS BECAUSE A READING TAKEN BEFORE THIS IS NOT A READING OF ANYTHING. `pixelRatio` starts at
+ * 1 and `sunPixelRatio` at `null`, so anything that asks the allocator what this machine was given
+ * before the lock is told "one, and the star matches" — which is the module's honest answer to a
+ * question it cannot yet answer, and is indistinguishable from a real allocation on a slow machine.
+ * The journey layer's `device:profile` asked at layout mount and got exactly that, for every visitor.
+ *
+ * ⚠ It is fired by `lockPhase()` and therefore by all THREE solvers — the burn-in, the section split
+ * and the runtime calibrator. Subscribing to one of them would miss the loads the other two decide,
+ * which is most of them: `reportSectionCosts` returns early the moment `phase` is already locked.
+ */
+export const PIXELS_ALLOCATED_EVENT = 'voidix:pixels-allocated';
+
 let initialised = false;
 /**
  * ⚠ Starts CALIBRATING, not waiting for the probe.
@@ -601,6 +616,18 @@ export function reportProbedFrameCost(
 }
 
 /**
+ * Settle the session's ratios and say so.
+ *
+ * ⚠ CALL THIS INSTEAD OF ASSIGNING `phase` — and call it AFTER the new ratios are written, never
+ * before. A listener reads `getPixelRatio()` / `getSunPixelRatio()` synchronously inside the dispatch,
+ * so announcing the lock first would hand every subscriber the numbers being replaced.
+ */
+function lockPhase(): void {
+  phase = 'locked';
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(PIXELS_ALLOCATED_EVENT));
+}
+
+/**
  * The loader's burn-in: the median cost of real, pipelined frames of the works pipeline, measured
  * during the loader with everything else already running.
  *
@@ -636,13 +663,15 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
   const from = pixelRatio;
 
   pixelRatio = Math.min(ceil, Math.max(floor, solved));
-  phase = 'locked';
   calibratedPipelines.add('works');
   calibratedPipelines.add('deck');
 
   // What the machine proved it could afford, over what the site was able to spend. See the constant.
   const surplus = solved / pixelRatio;
   if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
+  // ⚠ Last, so a subscriber reading the allocation sees every part of it — the licence included.
+  lockPhase();
 
   if (telemetryEnabled) {
     const bound =
@@ -780,7 +809,6 @@ export function reportSectionCosts(split: SectionCostSplit): void {
   const starFrom = getSunPixelRatio();
   pixelRatio = newFieldRatio;
   sunPixelRatio = newStarRatio;
-  phase = 'locked';
   calibratedPipelines.add('works');
   calibratedPipelines.add('deck');
 
@@ -788,6 +816,10 @@ export function reportSectionCosts(split: SectionCostSplit): void {
   // over what the site was able to spend. ⚠ Read off the FIELD, because that is what the samples buy.
   const surplus = fieldSolved / newFieldRatio;
   if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
+  // ⚠ Last, and this is the path `device:profile` is actually waiting for — it is the only one that
+  // solves the star its own ratio, so it is the only one whose announcement carries two numbers.
+  lockPhase();
 
   if (telemetryEnabled) {
     const boundBy = (solved: number, low: number, high: number) =>
@@ -1190,7 +1222,7 @@ function calibrate(dtSeconds: number): void {
   const measured = Math.min(ceil, Math.max(floor, solved));
   pixelRatio = calibratedPipelines.size === 0 ? measured : Math.min(pixelRatio, measured);
   if (activePipeline) calibratedPipelines.add(activePipeline);
-  phase = 'locked';
+  lockPhase();
 
   if (telemetryEnabled) {
     const bound =

@@ -6,8 +6,16 @@
  * promise about the wrong system. Each statement here traces to a file, and the trace is recorded so
  * the next person can re-check it rather than re-derive it:
  *
- *   "no analytics, no cookies"      grep for `document.cookie|gtag|analytics|posthog|plausible`
- *                                   across app/, components/, lib/ returns nothing. 2026-08-17.
+ *   "no THIRD-PARTY analytics"      grep for `gtag|googletagmanager|posthog|plausible|fathom`
+ *                                   across app/, components/, lib/ returns nothing. The measurement
+ *                                   this site does is its own — `lib/journey/*` → `/api/journey` →
+ *                                   the studio's panel — and no other company is in that path.
+ *   what is measured, exactly       `lib/journey/events.ts` is the WHOLE list, by design: there is
+ *                                   no generic `track(name)` escape hatch, so the taxonomy in that
+ *                                   file can be read straight into section 02 without an audit.
+ *   the cursor grid vs the path     `lib/journey/cursor.ts`. The grid is a histogram (tier 1, no
+ *                                   consent); the path is the trail (tier 2, consent only).
+ *   90 days                         `lib/journey/maintenance.ts` in voidix-cms, RETENTION_DAYS.
  *   the one localStorage key        `lib/motionPreference.ts` — `voidix:motion-preference`, holding
  *                                   `{ choice, systemReduced }`. No identifier, never transmitted.
  *   fonts are self-hosted           `next/font/google` in `app/layout.tsx` downloads at BUILD time
@@ -21,8 +29,16 @@
  *   the rate limit sees an address  `PanelIntakeResult`'s `rate-limited` branch: "too many
  *                                   submissions from this address in an hour" is the panel's rule.
  *
- * ⚠ CHANGE THE CODE, CHANGE THIS FILE IN THE SAME SITTING. Adding one analytics script makes section
- * 03 false, and section 03 is the strongest thing this document says.
+ * ⚠ CHANGE THE CODE, CHANGE THIS FILE IN THE SAME SITTING. Adding one event to
+ * `lib/journey/events.ts` makes section 02 incomplete, and adding a third-party script makes section
+ * 04 false — which is the strongest claim this document still makes.
+ *
+ * ── ⚠ THE 90 DAYS IS NOT TRUE UNTIL THE JOB IS SCHEDULED ────────────────────────────────────────
+ * Section 06 states a deletion period. The code that performs it exists — `runJourneyMaintenance` in
+ * the panel, behind `POST /api/journey/maintenance` — but NOTHING CALLS IT ON A SCHEDULE YET. Wiring
+ * that trigger (Vercel Cron or Supabase pg_cron; the route's header has both) is a prerequisite for
+ * this page going to production, not a follow-up. A notice claiming a deletion nothing performs is
+ * worse than one claiming none.
  *
  * ── ⚠ WHAT IS A PLACEHOLDER, AND IT MUST BE FILLED BEFORE THIS GOES LIVE ────────────────────────
  * Everything in square brackets. The studio has no registered legal entity yet, so the controller's
@@ -50,7 +66,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
   eyebrow: 'Privacy',
   title: ['What this site', 'knows about you.'],
   lead:
-    'Almost nothing, and this page is the specific version of that sentence. No analytics, no cookies, no tracking — only what you type into a form, and only when you send it.',
+    'Less than you would expect, and this page is the specific version of that. No third-party analytics, no advertising, nothing sold. We count how far people get, anonymously; one thing needs your permission, and this page is blunt about which.',
   lastReviewed: '2026-08-17',
 
   sections: [
@@ -58,7 +74,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       meta: { key: 'scope', number: '01', title: 'Who this is, and what it covers' },
       paragraphs: [
         `This notice covers voidix.tech and every page on it. The studio operating this site is the party responsible for the information described below — in data-protection language, the controller: ${CONTROLLER}.`,
-        `Write to ${PRIVACY_CONTACT} about anything on this page, including any of the rights in section 06. A request costs you nothing and does not have to be in any particular form.`,
+        `Write to ${PRIVACY_CONTACT} about anything on this page, including any of the rights in section 07. A request costs you nothing and does not have to be in any particular form.`,
       ],
       note:
         'The bracketed details above are unfinished on purpose. The studio is not yet a registered company, and naming one before it exists would be the first thing on this site we could not back.',
@@ -67,7 +83,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
     {
       meta: { key: 'collected', number: '02', title: 'What the site collects' },
       paragraphs: [
-        'Three things, and two of them only happen because you chose to send them. There is no fourth — nothing here is gathered in the background while you browse.',
+        'Six things, and the first two only happen because you chose to send them. The rest are counts about how the site was used rather than about you — no name, no address, and nothing that could pick you out of the people who visited the same day.',
       ],
       points: [
         {
@@ -85,24 +101,50 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
           detail:
             'One entry in your browser’s local storage recording whether you asked the site to reduce its animation. It contains no name, no identifier and nothing that could distinguish you from anyone else with the same setting, and it is never sent anywhere. Clearing your browser data removes it.',
         },
+        {
+          term: 'When you answer the cookie bar',
+          detail:
+            'Your answer is stored in this browser, with the date you gave it — that record is what lets us honour the choice and show when it was made. Saying yes also creates a random id on this device so a later visit is not read as a stranger; saying no, or never answering, creates nothing. You can change it at any time at the bottom of this page, and turning it off deletes the id straight away.',
+        },
+        {
+          term: 'While you are using the site',
+          detail:
+            'We count how far people get: whether the loading screen finished or you left during it, which sections you reached, which project or service you stopped on and for how long, whether you opened a question or a form, and whether the form was sent or abandoned. We also record what your device could handle — its rough performance class, screen size and whether you asked for reduced motion. None of this is attached to a name, an email or an address, and none of it is stored on your device.',
+        },
+        {
+          term: 'Where your cursor goes',
+          detail:
+            'On a computer with a mouse, we record which parts of the screen the pointer rests in — as counts in a coarse grid, not as a trail — plus where you click, and whether a click landed on something that could not respond. It tells us which parts of a page people reach for. There is no grid on a phone or tablet, because there is no cursor.',
+        },
       ],
       note:
         'Two things happen at the network layer that are worth naming even though the site does not choose them: our host records ordinary server logs, and the system receiving form submissions applies a rate limit based on the network address a submission came from, so that one sender cannot flood it.',
     },
 
     {
-      meta: { key: 'never', number: '03', title: 'What the site never does' },
+      meta: { key: 'cursor', number: '03', title: 'The one thing we ask permission for' },
+      paragraphs: [
+        'Everything in the previous section happens for everybody, because none of it can pick a person out of a crowd. This is the exception, and it is the only reason there is a bar at all.',
+        'If you allow it, we record the actual path your cursor takes across the page — not just where it rested, but the route it took to get there, several times a second. That is close to watching a recording of your visit, and we would rather say so in those words than describe it as “cursor data” and let you find out later. It is worth being blunt about why it needs asking: the way a person moves a mouse — the speed, the small corrections, the pauses — is distinctive enough to be a way of recognising them. Nothing else on this page has that property.',
+        'We use it to judge whether the site works: whether people find the controls, whether the long scrolling sequence reads or loses them, whether something is being reached for that does not respond. It is never sold, never shared, and never looked at alongside your name, because the two are not connected to each other anywhere in our systems.',
+      ],
+      note:
+        'Say no, or say nothing, and no path is recorded at all — not stored anonymously, not held briefly, not recorded. Turn it off later and every path we hold for you is deleted from our servers, not merely disconnected.',
+    },
+
+    {
+      meta: { key: 'never', number: '04', title: 'What the site never does' },
       paragraphs: [
         'This section is the short one, and it is the reason the rest of the page is short.',
       ],
       points: [
         {
           detail:
-            'There is no analytics on this site. No Google Analytics, no Tag Manager, no Plausible, no Vercel Analytics, no self-hosted equivalent. Nobody, including us, is counting your visit.',
+            'No third-party analytics touches this site. No Google Analytics, no Tag Manager, no Plausible, no Vercel Analytics, no product-analytics service of any kind. Nothing you do here is sent to another company for them to hold, model or resell.',
         },
         {
           detail:
-            'There are no cookies. Not necessary ones, not preference ones, not any — which is why you have never seen a consent banner here and why there is nothing for one to ask about.',
+            'There are no cookies — nothing is written to a cookie, and nothing about you is sent along with every request. The bar that offers to remember you is asking about one entry in this browser’s local storage: a random id, created only if you agree, deleted the moment you change your mind. “Allow cookies” is what the button says because that is the phrase everyone knows, and the law treats the two the same.',
         },
         {
           detail:
@@ -120,7 +162,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
     },
 
     {
-      meta: { key: 'processors', number: '04', title: 'Who else handles it' },
+      meta: { key: 'processors', number: '05', title: 'Who else handles it' },
       paragraphs: [
         'A form submission touches three systems on its way to a person, and each of them only ever sees what it needs to do its part.',
       ],
@@ -146,17 +188,17 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
     },
 
     {
-      meta: { key: 'retention', number: '05', title: 'How long it is kept' },
+      meta: { key: 'retention', number: '06', title: 'How long it is kept' },
       paragraphs: [
-        'There is no fixed number of months on this page, because the studio does not yet run a deletion schedule it could honestly promise to keep. Stating one we did not follow would be worse than stating none.',
-        'What governs it instead: an enquiry is kept while the conversation it started is live, and for as long afterwards as we may reasonably need to remember it — a returning client picking up an old thread, or a record of what was agreed. An application is kept while the role is open and for a reasonable period after it closes, so that a strong candidate can be reconsidered for the next one. A CV is deleted when the application it belongs to is.',
+        'The measurement described in sections 02 and 03 is deleted after 90 days. Not archived, not anonymised further — the individual records are removed, and what survives is a daily count of how many people did a thing, which no longer relates to any visit in particular. Cursor paths go on the same 90-day clock, and go immediately if you withdraw.',
+        'What you SEND us has no fixed number of months against it, because the studio does not yet run a deletion schedule for correspondence it could honestly promise to keep, and stating one we did not follow would be worse than stating none. What governs it instead: an enquiry is kept while the conversation it started is live, and for as long afterwards as we may reasonably need to remember it — a returning client picking up an old thread, or a record of what was agreed. An application is kept while the role is open and for a reasonable period after it closes, so that a strong candidate can be reconsidered for the next one. A CV is deleted when the application it belongs to is.',
       ],
       note:
-        'You do not have to wait for any of that. Ask us to delete what we hold and we will, on the terms in section 06.',
+        'You do not have to wait for any of that. Ask us to delete what we hold and we will, on the terms in section 07.',
     },
 
     {
-      meta: { key: 'rights', number: '06', title: 'Your rights' },
+      meta: { key: 'rights', number: '07', title: 'Your rights' },
       paragraphs: [
         'These are granted to everyone who writes to us, wherever you are. Drawing a line by country would mean sorting people by passport before answering a one-sentence request, and the request is easier to honour than the sorting.',
       ],
@@ -194,17 +236,17 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
     },
 
     {
-      meta: { key: 'law', number: '07', title: 'Where you stand in law' },
+      meta: { key: 'law', number: '08', title: 'Where you stand in law' },
       paragraphs: [
         'This notice is written to the standard of the EU and UK General Data Protection Regulation, which is the strictest of the regimes that could apply and the one that grants you the most. Where you are covered by it, the lawful bases are straightforward: we handle an enquiry or an application because you asked us to and because the studio has a legitimate interest in answering, and we keep a CV only for the purpose you sent it for.',
-        'Where the studio’s operations are established in Egypt, Law 151 of 2018 on the Protection of Personal Data applies alongside. Its rights — to be informed, to access, to correct, to erase, and to object — are materially the ones set out in section 06, and where the two regimes differ we will apply whichever gives you more.',
+        'Where the studio’s operations are established in Egypt, Law 151 of 2018 on the Protection of Personal Data applies alongside. Its rights — to be informed, to access, to correct, to erase, and to object — are materially the ones set out in section 07, and where the two regimes differ we will apply whichever gives you more.',
       ],
       note:
         '⚠ Egyptian law also requires a controller to register with the Data Protection Centre once trading, and the executive regulations giving effect to Law 151 have not been issued at the time of writing. This page therefore states which law applies and what you are owed under it; it does not claim a registration the studio does not yet hold.',
     },
 
     {
-      meta: { key: 'changes', number: '08', title: 'Changes to this notice' },
+      meta: { key: 'changes', number: '09', title: 'Changes to this notice' },
       paragraphs: [
         'When this document changes, the review date at the top of the page changes with it. That date moves when the words move and at no other time — it is not a build stamp, so a deploy that changes nothing here will not make this page look freshly considered.',
         'If a change ever means we start doing something this page currently says we do not — an analytics script, a cookie, a new recipient for what you send — we will say so plainly here rather than adjusting a sentence and hoping it reads the same.',

@@ -259,3 +259,16 @@ export const SUN_FORMING_EVENT = 'voidix:sun-forming';
  * it, and it matches how the intro already talks to the hero.
  */
 export const IGNITE_EVENT = 'voidix:intro-ignite';
+
+/**
+ * The visitor took the escape hatch — `SkipToLite`'s offer, accepted.
+ *
+ * ⚠ It is a real navigation, not a state change: the control is an `<a href="/lite">`, so this fires
+ * and the page is gone. Nothing may await it. The journey collector's `pagehide` beacon is what
+ * carries it, which is the same mechanism that has to carry the abandonment it sits next to.
+ *
+ * ⚠ Distinct from simply ARRIVING at `/lite`, which a visitor can also do from a link or a bookmark.
+ * This one means the full site was being downloaded and was given up on, which is the only version of
+ * the question worth asking.
+ */
+export const LITE_TAKEN_EVENT = 'voidix:lite-taken';

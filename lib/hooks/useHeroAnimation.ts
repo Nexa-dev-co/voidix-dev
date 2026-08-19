@@ -35,7 +35,9 @@ import {
   JUMP_ARRIVED_EVENT,
   JUMP_BEGIN_EVENT,
   JUMP_COVERED_EVENT,
+  STOP_COMMIT_EVENT,
   type JumpBeginDetail,
+  type StopCommitDetail,
 } from "@/lib/sectionJumpEvents";
 import {
   HANDOFF_PROGRESS_EVENT,
@@ -1274,6 +1276,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       if (lastCommittedIndex[sectionIndex] === localIndex) return;
       lastCommittedIndex[sectionIndex] = localIndex;
       carouselSections[sectionIndex].setActiveStop?.(localIndex);
+      // ⚠ AFTER the scene has been told, so a listener that measures anything measures the stop that
+      // is now on its way in. The guard above means this only ever speaks on a real change.
+      window.dispatchEvent(
+        new CustomEvent<StopCommitDetail>(STOP_COMMIT_EVENT, {
+          detail: { key: carouselSections[sectionIndex].key, index: localIndex },
+        }),
+      );
     };
 
     // Jump to a stop by scrolling to its snap point. The target is committed IMMEDIATELY (so the scene

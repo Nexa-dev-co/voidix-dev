@@ -7605,3 +7605,237 @@ body {
 :root[data-motion='reduced'] .doc-field-bloom {
   transform: none;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+   THE CONSENT BAR
+
+   The one thing this site asks a visitor for. It is deliberately the quietest interruption on the
+   page: a hairline, the page's own black, and no shadow — the site does not have shadows.
+
+   ⚠ z-index 9700 is chosen against the existing stack, not picked for being large:
+       10001  the intro veil and the sun during the intro
+       10000  LoopVeil / SectionJumpVeil — the covers a transition travels behind
+        9998  .nav-accent          9999  .nav-root
+     → 9700   here
+        9500  the sun after the intro
+   Above the sun and the scenes, BELOW the navbar (opposite ends of the screen, so they never meet
+   visually), and crucially below the veils — a cover that hides a transition must hide this too, or
+   a jump would travel behind a black screen with a consent bar sitting on top of it.
+   ───────────────────────────────────────────────────────────────────────────────────────────────── */
+.consent-bar {
+  position: fixed;
+  z-index: 9700;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* ⚠ Its own stacking context, so the two z-indexes below are compared against the page's stack and
+     never against a sibling inside the bar. */
+  isolation: isolate;
+
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(0.75rem, 2vw, 2rem);
+
+  padding: clamp(0.9rem, 2vh, 1.25rem) clamp(1rem, 4vw, 2.5rem);
+  /* ⚠ FIRST USE OF `env()` IN THIS FILE, and it is not optional on a bottom-fixed element: on an
+     iPhone the home indicator sits over the bottom ~34px, so without this the buttons are under it
+     and the whole bar reads as clipped. `max()` rather than a bare add, so a device with no inset
+     keeps the designed padding rather than collapsing to it. */
+  padding-bottom: max(clamp(0.9rem, 2vh, 1.25rem), env(safe-area-inset-bottom, 0px));
+
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  /* The bar is over live WebGL for most of the journey; the blur is what stops the copy sitting on a
+     moving starfield. Backdrop filters are cheap here because the element is small and static. */
+  backdrop-filter: blur(12px);
+
+  animation: consent-bar-rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+/* ⚠ WHILE THE LOADER IS UP IT HAS TO CLEAR THE VEIL, or it is painted behind the intro and is simply
+   not there. The veil is 10000; `.intro-skip` and `.intro-motion-prompt` both took 10001 for exactly
+   this reason, and this joins them.
+
+   ⚠ And it MUST drop back afterwards — that is the half that is easy to miss. `LoopVeil` and
+   `SectionJumpVeil` are also 10000, and they exist to hide a transition completely. A bar left at
+   10001 would float on top of a black cover while a section change travelled behind it, which is
+   worse than either state on its own because it advertises that something is being hidden. */
+.consent-bar[data-intro='true'] {
+  z-index: 10001;
+}
+
+@keyframes consent-bar-rise {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: none; }
+}
+
+.consent-bar-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  /* Holds a readable measure without pushing the buttons off a narrow screen. */
+  max-width: 62ch;
+}
+
+.consent-bar-title {
+  font-weight: 700;
+  font-size: clamp(0.9rem, 1.4vw, 1.05rem);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+
+.consent-bar-detail {
+  font-size: var(--fs-tiny);
+  line-height: 1.65;
+  /* ⚠ 0.62 rather than `--muted`'s 0.38: this is the sentence that carries the actual disclosure, so
+     it is the one piece of secondary copy on the site that may not be atmospheric. */
+  color: rgb(var(--fg-rgb) / 0.62);
+}
+
+/* ⚠ Amber is safe on type here — `--accent` is `--heat-600`, above the `--heat-500` floor this file
+   sets for small text on the page black. Not a lower stop. */
+.consent-bar-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+}
+
+.consent-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.consent-bar-button {
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: rgb(var(--fg-rgb) / 0.75);
+  font-family: inherit;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.25s ease, border-color 0.25s ease, background-color 0.25s ease;
+  /* 44px minimum target — the same floor the orbit dial's facets are held to. */
+  min-height: 44px;
+}
+
+.consent-bar-button:hover,
+.consent-bar-button:focus-visible {
+  color: var(--fg);
+  border-color: rgb(var(--accent-rgb) / 0.5);
+}
+
+.consent-bar-button--accept {
+  border-color: rgb(var(--accent-rgb) / 0.55);
+  color: var(--accent);
+}
+
+.consent-bar-button--accept:hover,
+.consent-bar-button--accept:focus-visible {
+  background: rgb(var(--accent-rgb) / 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.consent-bar-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* On a phone the copy takes the full width and the buttons sit under it, each taking half — a row of
+   two 44px targets is easier to hit than two small ones pushed to one side. */
+@media (max-width: 51.25em) {
+  .consent-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.85rem;
+  }
+
+  .consent-bar-actions {
+    justify-content: stretch;
+  }
+
+  .consent-bar-button {
+    flex: 1;
+  }
+}
+
+/* ⚠ The blanket rule near the top of this file already collapses transitions, but an `animation` is
+   not a transition and is not covered by it. Without this the bar still slides. */
+@media (prefers-reduced-motion: reduce) {
+  .consent-bar {
+    animation: none;
+  }
+}
+
+:root[data-motion='reduced'] .consent-bar {
+  animation: none;
+}
+
+/* ── The consent control, on /privacy ──
+   The permanent half of the bar. Shares the bar's button styles deliberately — it is the same
+   decision being made in a calmer place, and two different-looking controls for one choice would
+   read as two different choices. */
+.consent-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-items: flex-start;
+  max-width: 62ch;
+  margin-top: clamp(2rem, 5vh, 3rem);
+  padding: clamp(1.1rem, 2.5vh, 1.6rem) clamp(1.1rem, 2.5vw, 1.6rem);
+  border: 1px solid var(--border);
+  background: rgb(var(--accent-rgb) / 0.03);
+}
+
+.consent-control-state {
+  font-size: var(--doc-fs-body);
+  line-height: 1.7;
+  color: var(--doc-ink);
+}
+
+.consent-control-value {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* "Not decided" is a real state and must not wear the same colour as "On" — amber reads as active
+   here, and a visitor who has never answered has not activated anything. */
+.consent-control-value[data-state='unset'],
+.consent-control-value[data-state='denied'] {
+  color: rgb(var(--fg-rgb) / 0.62);
+}
+
+.consent-control-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* ⚠ Disabled is the CURRENT state, not an error — it is how the control says "this is already what
+   you chose". So it dims rather than greying out, and keeps its border. */
+.consent-control .consent-bar-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.consent-control .consent-bar-button:disabled:hover {
+  color: rgb(var(--fg-rgb) / 0.75);
+  border-color: var(--border);
+  background: transparent;
+}
+
+.consent-control-note {
+  font-size: var(--fs-tiny);
+  line-height: 1.7;
+  color: var(--doc-ink-label);
+}

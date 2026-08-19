@@ -42,3 +42,23 @@ export function readHologramOpen(event: Event): boolean {
   const detail = (event as CustomEvent<ChamberHologramDetail>).detail;
   return detail?.open === true;
 }
+
+/**
+ * A question in the FAQ hologram was opened.
+ *
+ * ⚠ The panel's list and its answer are the same element — `openQuestion` swaps what the hologram is
+ * showing rather than expanding anything — so "opened" here means the visitor chose to read one, which
+ * is the only engagement signal the room produces. Closing is not announced: going back is not an
+ * expression of interest in anything, and a second event per question would double every count.
+ */
+export const FAQ_ENTRY_OPEN_EVENT = 'voidix:faq-entry-open';
+
+export interface FaqEntryOpenDetail {
+  /** Index into the resolved FAQ entries — the panel's, not this repo's fallback copy. */
+  index: number;
+}
+
+export function readFaqEntryIndex(event: Event): number | null {
+  const detail = (event as CustomEvent<FaqEntryOpenDetail>).detail;
+  return typeof detail?.index === 'number' ? detail.index : null;
+}

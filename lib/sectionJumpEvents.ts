@@ -113,3 +113,31 @@ export function readSectionArriveKey(event: Event): string | null {
   const detail = (event as CustomEvent<SectionArriveDetail>).detail;
   return typeof detail?.key === 'string' ? detail.key : null;
 }
+
+/**
+ * The carousel has committed to a stop — a craft swapped onto the pad, a project meteor focused.
+ *
+ * ⚠ NOT the same question as {@link SECTION_ARRIVE_EVENT}, which fires once per SECTION. This fires
+ * once per stop WITHIN one, so `services` alone speaks four times, and it is the only signal on the
+ * site that says which of the four you are actually looking at.
+ *
+ * ⚠ It carries no dwell, deliberately. `commitStop` knows when a stop was committed and nothing else —
+ * how long the last one held is a subtraction, and subtractions belong to whoever cares about them
+ * rather than to the pin. The journey collector does that arithmetic; the pin stays a narrator.
+ *
+ * ⚠ Dispatched from `commitStop`, which already refuses to re-fire a stop a section is standing on —
+ * so this is de-duplicated at source and a listener may treat every dispatch as a real change.
+ */
+export const STOP_COMMIT_EVENT = 'voidix:stop-commit';
+
+export interface StopCommitDetail {
+  /** The carousel section's key — `services`, `work`, `faq`, `contact`, `loop`. */
+  key: string;
+  /** 0-based index WITHIN that section. */
+  index: number;
+}
+
+export function readStopCommit(event: Event): StopCommitDetail | null {
+  const detail = (event as CustomEvent<StopCommitDetail>).detail;
+  return typeof detail?.key === 'string' && typeof detail.index === 'number' ? detail : null;
+}

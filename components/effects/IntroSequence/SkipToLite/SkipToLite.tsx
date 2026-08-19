@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { areAssetsReady } from '@/lib/assetLoadProgress';
 import { readArrivalSection } from '@/lib/arrivalSection';
+import { LITE_TAKEN_EVENT } from '../introEvents';
 import { createPageEtaEstimator } from '../downloadEta';
 
 /**
@@ -156,7 +157,16 @@ export default function SkipToLite() {
       <span className="intro-skip-copy">Ten megabytes still to come.</span>
       {/* A plain link on purpose. Pressing it is a real navigation that tears this page down — which
           is the whole point: nothing further is downloaded, and the models in flight are abandoned. */}
-      <a className="intro-skip-action" href={liteHref}>
+      {/* ⚠ The dispatch is synchronous and nothing awaits it — this link tears the page down. What
+          carries it is the journey collector's `pagehide` beacon, which is the same mechanism that has
+          to carry the abandonment this control sits next to. A handler that returned a promise, or
+          that called `preventDefault` to "make sure it sent", would be trading the navigation the
+          visitor asked for against a count. */}
+      <a
+        className="intro-skip-action"
+        href={liteHref}
+        onClick={() => window.dispatchEvent(new Event(LITE_TAKEN_EVENT))}
+      >
         Read the site in text
         <span aria-hidden="true"> →</span>
       </a>

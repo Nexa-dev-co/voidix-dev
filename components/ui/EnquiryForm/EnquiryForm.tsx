@@ -11,6 +11,16 @@ import {
   type FormEvent,
 } from 'react';
 import type { EnquiryPrefill } from '@/lib/enquirySubjects';
+import {
+  ENQUIRY_ERROR_EVENT,
+  ENQUIRY_START_EVENT,
+  ENQUIRY_STEP_EVENT,
+  ENQUIRY_SUBMIT_EVENT,
+  type EnquiryErrorDetail,
+  type EnquiryErrorReason,
+  type EnquiryStepDetail,
+  type EnquiryVariantDetail,
+} from './enquiryEvents';
 import { useSiteContent } from '@/lib/cms/SiteContentProvider';
 import { useStepTransition } from './useStepTransition';
 
@@ -285,12 +295,42 @@ export default function EnquiryForm({
   const formRef = useRef<HTMLFormElement>(null);
   const stepsRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * ⚠ A REF, NOT STATE. It gates one dispatch and nothing renders from it, so state here would
+   * re-render the whole form on the first keystroke — in a panel that is mid-animation on a phone.
+   *
+   * ⚠ It lives for as long as this component does, which is the correct life: `EnquiryPanel` keys the
+   * form on the prefill's subject, so moving from one service to another remounts it and the next
+   * form is honestly a new start. Reopening the SAME one keeps what was typed, and keeps this too.
+   */
+  const hasStartedRef = useRef(false);
+
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [workError, setWorkError] = useState<string | null>(null);
   const [cvFile, setCvFile] = useState<{ name: string; size: number } | null>(null);
   const [isDraggingCv, setIsDraggingCv] = useState(false);
   const [status, setStatus] = useState<SubmitStatus>('idle');
   const [stepIndex, setStepIndex] = useState(0);
+
+  const announce = (name: string) =>
+    window.dispatchEvent(
+      new CustomEvent<EnquiryVariantDetail>(name, {
+        detail: { variant: isApplication ? 'application' : 'enquiry' },
+      }),
+    );
+
+  /** ⚠ The route's own reason, never a field value. See `enquiryEvents.ts`. */
+  const announceFailure = (reason: EnquiryErrorReason) =>
+    window.dispatchEvent(
+      new CustomEvent<EnquiryErrorDetail>(ENQUIRY_ERROR_EVENT, { detail: { reason } }),
+    );
+
+  /** The first keystroke anywhere in the form — the difference between opening it and using it. */
+  const handleFirstInput = () => {
+    if (hasStartedRef.current) return;
+    hasStartedRef.current = true;
+    announce(ENQUIRY_START_EVENT);
+  };
 
   /**
    * What to focus once the new step is on screen — a field name when a fault was found behind us,
@@ -334,6 +374,11 @@ export default function EnquiryForm({
 
   const goToStep = (nextIndex: number) => {
     if (nextIndex === stepIndex) return;
+    // The step LANDED ON, in either direction — a funnel that only counted forward moves would read a
+    // visitor going back to fix their email as one who never reached step 02.
+    window.dispatchEvent(
+      new CustomEvent<EnquiryStepDetail>(ENQUIRY_STEP_EVENT, { detail: { index: nextIndex } }),
+    );
     hasSteppedRef.current = true;
     capturePreviousHeight();
     setStepDirection(nextIndex > stepIndex ? 1 : -1);
@@ -539,6 +584,7 @@ export default function EnquiryForm({
 
       if (response.ok) {
         setStatus('sent');
+        announce(ENQUIRY_SUBMIT_EVENT);
         // ⚠ Cleared only on success, and only here. A failed submit must leave every word where it
         // is — the visitor has to be able to press the button again without retyping a brief they
         // spent two minutes on, and a job application is worse still to lose.
@@ -549,6 +595,7 @@ export default function EnquiryForm({
 
       if (response.status === 429) {
         setStatus('rate-limited');
+        announceFailure('rate-limited');
         return;
       }
 
@@ -556,6 +603,11 @@ export default function EnquiryForm({
       // will not take, a field over a length this form does not police. Showing it beside the input
       // is the difference between a fixable mistake and a dead button.
       if (response.status === 422) {
+        // ⚠ Announced HERE, at the top, because this branch has three separate exits below it — a
+        // fault drawn on the current step, one reached back to on step 01, and the "nothing was
+        // stored but nothing is fixable" fallthrough. One dispatch covers all three, and it is the
+        // same failure whichever way the form chooses to say so.
+        announceFailure('invalid');
         const failure = (await response.json().catch(() => null)) as SubmitFailure | null;
         const serverErrors = failure?.fieldErrors ?? {};
 
@@ -589,10 +641,12 @@ export default function EnquiryForm({
       }
 
       setStatus('error');
+      announceFailure('unavailable');
     } catch {
       // A dropped connection, a navigation mid-flight, an offline phone. Same answer as a 502: it
       // did not send, and trying again is the right advice.
       setStatus('error');
+      announceFailure('unavailable');
     }
   };
 
@@ -904,6 +958,9 @@ export default function EnquiryForm({
         .filter(Boolean)
         .join(' ')}
       onSubmit={handleSubmit}
+      // ⚠ On the FORM, not on each field: `input` bubbles, so one listener covers every control
+      // including ones added later, and the guard inside makes it a no-op after the first keystroke.
+      onInput={handleFirstInput}
       // ⚠ Suppresses the browser's submit-time bubbles ONLY — the attributes stay on the inputs. See
       // the header: with both running, one mistake produced two messages in two visual languages.
       noValidate

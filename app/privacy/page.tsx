@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import LegalPage from '@/components/pages/Legal/LegalPage';
+import ConsentControl from '@/components/ui/ConsentBar/ConsentControl';
 import { PRIVACY_DOCUMENT } from '@/components/pages/Legal/privacyContent';
 import { fetchPublishedContent } from '@/lib/cms/fetchPublishedContent';
 import { reportContent } from '@/lib/cms/contentReport';
@@ -49,7 +50,11 @@ export default async function Privacy() {
 
   return (
     <SiteContentProvider content={resolveSharedContent(release.payload)} report={report}>
-      <LegalPage document={PRIVACY_DOCUMENT} />
+      {/* ⚠ The one client island on this route. `LegalPage` is a Server Component so the legal pages
+          ship no component JavaScript; this is scoped to itself rather than pushing `'use client'` up
+          into the page. It is here because a notice describing a choice must be where the choice is
+          changed — see `ConsentControl`. */}
+      <LegalPage document={PRIVACY_DOCUMENT} aside={<ConsentControl />} />
     </SiteContentProvider>
   );
 }

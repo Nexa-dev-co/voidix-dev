@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useDrawerSheet } from './useDrawerSheet';
+import { DRAWER_OPEN_EVENT, type DrawerOpenDetail } from './drawerEvents';
 import { useScrollGuard } from '@/lib/hooks/useScrollGuard';
 
 /**
@@ -34,10 +35,26 @@ interface DrawerProps {
   eyebrow?: string;
   /** Names the dialog for assistive tech, and heads the sheet. */
   title: string;
+  /**
+   * What this sheet is, for {@link DRAWER_OPEN_EVENT}.
+   *
+   * ⚠ NOT the title, and deliberately not defaulted to it. A title is visitor-facing copy the panel
+   * can rewrite at any time, so keying anything off it would silently split one drawer's history in
+   * two the first time an editor changed a word. Omit it and the listener labels the sheet with
+   * whatever section the journey is standing in, which is right for the three that ARE their section.
+   */
+  journeyKey?: string;
   children: ReactNode;
 }
 
-export default function Drawer({ open, onClose, eyebrow, title, children }: DrawerProps) {
+export default function Drawer({
+  open,
+  onClose,
+  eyebrow,
+  title,
+  journeyKey,
+  children,
+}: DrawerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const scrimRef = useRef<HTMLDivElement>(null);
@@ -47,6 +64,16 @@ export default function Drawer({ open, onClose, eyebrow, title, children }: Draw
   // on the first client render keeps the two agreeing, which is what hydration checks.
   const [isMounted, setIsMounted] = useState(false);
   useEffect(() => setIsMounted(true), []);
+
+  // ⚠ Announced on the FALSE→TRUE edge only, which is what an effect keyed on `open` gives for free.
+  // Every caller keeps this component mounted and flips the prop, so a dispatch on each render would
+  // count a re-render of the section behind it as somebody opening the sheet.
+  useEffect(() => {
+    if (!open) return;
+    window.dispatchEvent(
+      new CustomEvent<DrawerOpenDetail>(DRAWER_OPEN_EVENT, { detail: { key: journeyKey } }),
+    );
+  }, [open, journeyKey]);
 
   useDrawerSheet({ rootRef, sheetRef, scrimRef, scrollRef, open, onClose });
   // The same guard the FAQ panel uses: a gesture that has scrolled this content keeps the rest of

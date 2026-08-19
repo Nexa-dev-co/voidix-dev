@@ -3,6 +3,7 @@ import gsap from 'gsap';
 import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { hologramMaxHeightGain, toDesignPx } from '@/lib/hologramPose';
 import { getChamberTuning } from '@/lib/chamberTuning';
+import { FAQ_ENTRY_OPEN_EVENT, type FaqEntryOpenDetail } from '@/lib/chamberEvents';
 
 /**
  * The unseal, and the fall from a question into its answer.
@@ -159,6 +160,13 @@ export function useHologramReveal({
    */
   const openQuestion = useCallback(
     (index: number) => {
+      // ⚠ Announced HERE rather than at the click, and before the reduced-motion branch below returns.
+      // The choice has been made either way; only what it looks like differs, and a signal that fired
+      // for one visitor and not the other would report reduced motion as a lack of curiosity.
+      window.dispatchEvent(
+        new CustomEvent<FaqEntryOpenDetail>(FAQ_ENTRY_OPEN_EVENT, { detail: { index } }),
+      );
+
       const content = contentRef.current;
       if (!content || prefersReducedMotion()) {
         setOpenEntry(index);

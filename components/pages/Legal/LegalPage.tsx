@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import PageShell from '@/components/layout/PageShell/PageShell';
 import DocSection from '@/components/layout/PageShell/DocSection';
 import { railSectionsOf, type LegalDocument } from './legalDocument';
@@ -20,9 +20,19 @@ import { railSectionsOf, type LegalDocument } from './legalDocument';
  */
 interface LegalPageProps {
   document: LegalDocument;
+  /**
+   * An interactive block rendered after the last section, before the close.
+   *
+   * ⚠ It exists for exactly one thing: the consent control on `/privacy`. A privacy notice that
+   * describes a choice has to be the place the choice can be changed, or the sentence promising it is
+   * false — and `/terms` has no such control, so this is optional rather than part of the document
+   * shape. Keeping it a prop rather than a flag on `LegalDocument` is what stops a content file
+   * having an opinion about React.
+   */
+  aside?: ReactNode;
 }
 
-export default function LegalPage({ document }: LegalPageProps) {
+export default function LegalPage({ document, aside }: LegalPageProps) {
   return (
     <PageShell
       eyebrow={document.eyebrow}
@@ -70,6 +80,8 @@ export default function LegalPage({ document }: LegalPageProps) {
           {section.note ? <p className="doc-note">{section.note}</p> : null}
         </DocSection>
       ))}
+
+      {aside ? <div data-reveal>{aside}</div> : null}
 
       {/* The close. Not a numbered section — it is the page ending rather than another thing the page
           has to say, so it carries no station on the rail. Same reasoning as About's. */}
