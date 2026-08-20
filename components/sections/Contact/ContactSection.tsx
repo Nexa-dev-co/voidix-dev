@@ -165,7 +165,12 @@ export default function ContactSection() {
           </button>
         )}
 
-        <button type="button" className="contact-loop-button" onClick={requestLoop}>
+        <button
+          type="button"
+          className="contact-loop-button"
+          onClick={requestLoop}
+          data-journey="Travel in time (the loop)"
+        >
           <span className="contact-loop-ring" aria-hidden />
           <span className="contact-loop-label">Travel in time</span>
         </button>

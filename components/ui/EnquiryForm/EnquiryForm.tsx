@@ -1046,7 +1046,12 @@ export default function EnquiryForm({
           a 200% font setting still overflows, and this is the shell that keeps the button reachable. */}
       <div className="enquiry-actions">
         {isStepped && stepIndex > 0 && (
-          <button type="button" className="enquiry-back" onClick={() => goToStep(stepIndex - 1)}>
+          <button
+            type="button"
+            className="enquiry-back"
+            onClick={() => goToStep(stepIndex - 1)}
+            data-journey="Enquiry form: back a step"
+          >
             {STEP_BACK_LABEL}
           </button>
         )}
@@ -1054,7 +1059,12 @@ export default function EnquiryForm({
         {/* ⚠ `submit` on BOTH steps, and deliberately — see `handleSubmit`. A `type="button"` here would
             advance on a press and SEND on an Enter keystroke, because a text field's Enter fires the
             form's submit regardless of what the visible control says. */}
-        <button type="submit" className="enquiry-send" disabled={status === 'sending'}>
+        <button
+          type="submit"
+          className="enquiry-send"
+          disabled={status === 'sending'}
+          data-journey="Enquiry form: send"
+        >
           {!isOnLastStep
             ? STEP_CONTINUE_LABEL
             : status === 'sending'

@@ -190,6 +190,7 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
             onClick={() => goTo(activeIndex - 1)}
             disabled={isFirst}
             aria-label="Previous project"
+            data-journey="Works: previous project"
           >
             <ArrowGlyph direction="left" />
           </button>
@@ -211,6 +212,7 @@ export default function WorksField({ activeIndex, goTo }: WorksFieldProps) {
             onClick={() => goTo(activeIndex + 1)}
             disabled={isLast}
             aria-label="Next project"
+            data-journey="Works: next project"
           >
             <ArrowGlyph direction="right" />
           </button>

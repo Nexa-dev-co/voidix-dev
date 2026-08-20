@@ -105,7 +105,12 @@ export default function FaqHologram() {
           <div ref={contentRef} className="holo-content">
             {entry ? (
               <div className="holo-answer">
-                <button type="button" className="holo-back holo-stagger" onClick={goBack}>
+                <button
+                  type="button"
+                  className="holo-back holo-stagger"
+                  onClick={goBack}
+                  data-journey="Back to the questions (FAQ)"
+                >
                   <span className="holo-back-arrow" aria-hidden="true">
                     ←
                   </span>
@@ -161,7 +166,12 @@ export default function FaqHologram() {
           hologram as the camera walks. Its own fade is CSS off `data-open` — the GSAP reveal only ever
           walks `.holo-stagger` INSIDE the screen, and the delay is what keeps it from arriving before
           the slab has finished parting. */}
-      <button type="button" className="holo-ask" onClick={() => setIsAskOpen(true)}>
+      <button
+        type="button"
+        className="holo-ask"
+        onClick={() => setIsAskOpen(true)}
+        data-journey="Ask us anything (FAQ)"
+      >
         <span className="holo-ask-text">Ask us anything</span>
         <span className="holo-ask-arrow" aria-hidden="true">
           →

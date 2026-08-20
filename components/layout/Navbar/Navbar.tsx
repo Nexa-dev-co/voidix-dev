@@ -231,7 +231,7 @@ export default function Navbar() {
       {/* Blended bar — mix-blend-mode: difference inverts all of this against whatever
           is underneath (cream hero → dark, black sections → light). */}
       <header ref={navRef} className="nav-root">
-        <a href="/" className="nav-logo">
+        <a href="/" className="nav-logo" data-journey="Wordmark (navbar)">
           {/* Transparent placeholder where the accent mark sits in the accent layer. */}
           <span className="nav-mark-spacer" aria-hidden="true" />
           <span className="nav-wordmark">VOIDIX</span>
@@ -305,7 +305,12 @@ export default function Navbar() {
             <span className="nav-dial-label">Navigate</span>
           </button>
         ) : (
-          <button className="nav-cta" type="button" onClick={handleCtaClick}>
+          <button
+            className="nav-cta"
+            type="button"
+            onClick={handleCtaClick}
+            data-journey="Start a project (navbar)"
+          >
             <span>Start Project</span>
             <svg
               width="11"

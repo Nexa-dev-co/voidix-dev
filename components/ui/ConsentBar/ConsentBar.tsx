@@ -176,7 +176,7 @@ export default function ConsentBar() {
         <p className="consent-bar-detail">
           Anonymous counts happen either way and never identify anyone. Saying yes adds one thing: a
           random id stored on this device, so a second visit is not read as a stranger.{' '}
-          <a className="consent-bar-link" href="/privacy">
+          <a className="consent-bar-link" href="/privacy" data-journey="Privacy notice (consent bar)">
             What we collect
           </a>
         </p>
@@ -189,6 +189,7 @@ export default function ConsentBar() {
           type="button"
           className="consent-bar-button"
           onClick={() => setJourneyConsent('denied')}
+          data-journey="Consent: no thanks"
         >
           No thanks
         </button>
@@ -196,6 +197,7 @@ export default function ConsentBar() {
           type="button"
           className="consent-bar-button consent-bar-button--accept"
           onClick={() => setJourneyConsent('granted')}
+          data-journey="Consent: allow"
         >
           Allow cookies
         </button>

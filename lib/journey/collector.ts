@@ -517,6 +517,15 @@ class JourneyCollector {
   private flush(isFinal: boolean): void {
     if (this.events.length === 0 && this.grids.length === 0 && this.paths.length === 0) return;
 
+    /**
+     * ⚠ THE FLUSH CANNOT PROCEED WITHOUT IT, because the batch envelope carries it and the panel
+     * attributes every cursor payload through it. `getSessionId` only fails where `crypto` is
+     * unavailable — the same condition under which `record` refuses to build an event at all — so
+     * this is the buffer having nothing it could legally be filed under rather than a lost flush.
+     */
+    const sessionId = getSessionId();
+    if (!sessionId) return;
+
     const events = this.events;
     const grids = this.grids;
     const paths = this.paths;
@@ -527,8 +536,18 @@ class JourneyCollector {
     // ⚠ Taken once. Consent can be withdrawn mid-visit, and a path may only be sent while it holds —
     // `cursor.ts` drops what it has collected on withdrawal, but a path already handed over lives here.
     const maySendPaths = isJourneyConsentGranted();
+    // ⚠ Read at flush time, and deliberately not per event — see `JourneyBatch.visitorId`. Gated on
+    // consent for the same reason the paths are: withdrawal mid-buffer must take the attribution
+    // with it, or the panel would file this flush's cursor data against an id just given up.
+    const visitorId = maySendPaths ? getVisitorId() : undefined;
 
-    for (const body of serialiseBatches(events, grids, maySendPaths ? paths : [])) {
+    for (const body of serialiseBatches(
+      events,
+      grids,
+      maySendPaths ? paths : [],
+      sessionId,
+      visitorId,
+    )) {
       this.send(body, isFinal);
     }
   }
@@ -583,12 +602,20 @@ function serialiseBatches(
   events: JourneyEvent[],
   grids: CursorGrid[],
   paths: CursorPath[],
+  sessionId: string,
+  visitorId: string | undefined,
 ): string[] {
   const batches: JourneyBatch[] = [];
 
   const bodyOf = (batch: JourneyBatch): string =>
     JSON.stringify({
       schemaVersion: batch.schemaVersion,
+      // ⚠ On EVERY body, including the ones carrying no events. That is the whole point of the
+      // field — see `JourneyBatch`. A body the panel cannot attribute is a body it discards.
+      sessionId: batch.sessionId,
+      // ⚠ Absent, not spread as undefined: `JSON.stringify` would drop the key either way, but the
+      // tier 1 promise is that the key is never constructed, not that it serialises away.
+      ...(batch.visitorId ? { visitorId: batch.visitorId } : {}),
       events: batch.events,
       // ⚠ Absent, not empty — the panel treats a present `cursorPaths` array as a tier 2 claim.
       ...(batch.cursorGrids?.length ? { cursorGrids: batch.cursorGrids } : {}),
@@ -599,7 +626,12 @@ function serialiseBatches(
     batch.events.length === 0 && !batch.cursorGrids?.length && !batch.cursorPaths?.length;
 
   const openBatch = (): JourneyBatch => {
-    const batch: JourneyBatch = { schemaVersion: JOURNEY_SCHEMA_VERSION, events: [] };
+    const batch: JourneyBatch = {
+      schemaVersion: JOURNEY_SCHEMA_VERSION,
+      sessionId,
+      ...(visitorId ? { visitorId } : {}),
+      events: [],
+    };
     batches.push(batch);
     return batch;
   };

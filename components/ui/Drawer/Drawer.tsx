@@ -104,7 +104,13 @@ export default function Drawer({
       >
         {/* The grab handle. A real button as well as an affordance, so the sheet is dismissible without
             a swipe — on a desktop browser at a narrow width there is no finger to throw it with. */}
-        <button type="button" className="drawer-handle" onClick={onClose} aria-label="Close">
+        <button
+          type="button"
+          className="drawer-handle"
+          onClick={onClose}
+          aria-label="Close"
+          data-journey="Close the bottom sheet"
+        >
           <span className="drawer-handle-bar" aria-hidden="true" />
         </button>
 

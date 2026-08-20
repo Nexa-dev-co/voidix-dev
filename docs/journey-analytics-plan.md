@@ -9,22 +9,33 @@ Spans **two repositories**: `orbix-dev` collects, `voidix-cms` stores and report
 
 ---
 
-## Status — P1–P5 complete, one thing outstanding
+## Status — built, and NOT yet proven
 
-Revised **2026-08-19**: the ten remaining events are wired, five defects found by reading the built
-code are fixed, and the retention sweep has a trigger.
+Revised **2026-08-20**: a seventh defect was found by reading the two repositories against each
+other, and it was the one that mattered — see [defect 7](#the-seven-defects). The batch envelope now
+carries the identity and the schema is at **v2** on both sides.
 
-| | |
-|---|---|
-| P1 · the contract | ✅ types + schema + migrations, **migrations applied** |
-| P2 · consent | ✅ bar, control, GPC, versioned record |
-| P3 · collection | ✅ **19 of 19 events wired** |
-| P4 · retention + legal | ✅ **pg_cron**, `prisma/scripts/journey-maintenance-cron.sql` — ⚠ must be RUN once per database |
-| P5 · dashboard | ✅ `/user-activity`, empty until events arrive |
+⚠ **Read the table below as "written", not as "working".** An earlier revision headed this section
+*P1–P5 complete* over five ✅ rows, with the fact that no event had ever reached the database noted
+underneath — and the honest reading is the other way round. For a feature whose entire value is the
+data arriving, five green phases above "nothing has ever arrived" flatters the work, and defect 7
+was sitting inside one of those ✅ rows the whole time.
 
-⚠ **Nothing has still been seen end to end.** No event has reached the database and nobody has
-watched the consent bar appear. That is the whole of what is left — see
-[What is not built](#what-is-not-built).
+| | | |
+|---|---|---|
+| P1 · the contract | written | types + schema + migrations, **migrations applied**, **v2** |
+| P2 · consent | written | bar, control, GPC, versioned record |
+| P3 · collection | written | 19 of 19 events wired |
+| P4 · retention + legal | written, **never run** | ⚠ `pg_cron` script must be RUN once per database; the secret was missing until 2026-08-20 |
+| P5 · dashboard | written | `/user-activity`, empty until events arrive |
+
+⚠ **NOTHING HAS BEEN SEEN END TO END. No event has ever reached the database.** Until one has, every
+row above is a claim about code that has never been executed against its counterpart. That is the
+whole of what is left — see [What is not built](#what-is-not-built).
+
+⚠ **And the checks in this document could not have told you otherwise**, which defect 7 proved:
+`tsc` clean in two repos, a build green in two repos, and a unit harness over one function are all
+single-repository instruments, and the contract is not a single-repository thing.
 
 `tsc --noEmit` clean in both repos. `voidix-cms` builds. `orbix-dev` builds when its dev server is
 not running — the two share `.next` and fight over it, which shows up as a spurious ENOENT on
@@ -310,7 +321,7 @@ events flushed together share a millisecond). ⚠ **Every report groups by `rece
 
 ---
 
-## ⚠ The six defects — found 2026-08-19, all fixed
+## ⚠ The seven defects — six found 2026-08-19, the seventh 2026-08-20, all fixed
 
 None of these was caught by `tsc`, a build, or a review of the plan. Every one of them was a thing the
 code did that the prose said it did not.
@@ -375,6 +386,38 @@ scroll, a snap, a jump and a loop alike) and `useOrbitRail`'s active-station cha
 routes, which have no pin). Both cost nothing — the branches already existed. ⚠ The collector's
 `maxSection` is now a genuine maximum against `JOURNEY_ORDER` rather than the last section seen, so
 scrolling back up no longer walks the depth figure backwards.
+
+**7 · EVERY BODY WITHOUT AN EVENT HAD ITS CURSOR DATA DROPPED ON ARRIVAL — and it was defect 5's
+fix that created it.** Found 2026-08-20, by reading the two repositories against each other rather
+than either one on its own, which is why neither side's checks could see it.
+
+The panel attributed cursor payloads with `const sessionId = events[0]?.sessionId`, and that held for
+exactly as long as a flush was ONE body. Defect 5's fix made `serialiseBatches` **split on bytes**,
+packing events first — so every body after the first carries only grids and paths, and the panel
+discarded all of it behind a `console.warn` nobody reads.
+
+⚠ **The split is not the only way in, which is what made it easy to miss.** `noteRouteChange` closes
+the open cursor summary and records NO event, so a client-side navigation flushes a lone grid, well
+under the cap, never split — and dropped just the same. Every `/about` and `/careers` heatmap.
+
+Measured on the real packing logic before the fix, a consented visit of 40 events + 4 grids + 4 paths:
+
+```
+  body 1:  23545 bytes | events 40 | grids 4 | paths 2
+  body 2:  10106 bytes | events  0 | grids 0 | paths 2   <- discarded on arrival
+```
+
+Fixed by moving the identity onto the **batch envelope** — `sessionId` always, `visitorId` when
+consent holds — stamped on every body including the ones carrying no events, with
+`JOURNEY_SCHEMA_VERSION` bumped **1 → 2** on both sides so a site deployed ahead of the panel is
+refused rather than half-understood. The panel now also rejects a batch whose events disagree with
+the envelope's `sessionId`, which is the one way this could go wrong silently in the other direction.
+
+⚠ **The lesson is about the SHAPE of the verification, not about this bug.** Both sides were correct
+in isolation and both were checked in isolation — `tsc` clean twice, a build green twice, and a unit
+harness over `serialiseBatches` that asked *does any body exceed the cap* and never *can the panel use
+a body with no events*. A contract spanning two repositories cannot be verified one repository at a
+time, and nothing in this document's Verification section was capable of catching it.
 
 ⚠ **Defect 5's fix had a bug of its own, caught by a unit harness rather than by reading it**: an
 oversized path arriving *after* an event opened a fresh batch and was pushed into it without
@@ -463,8 +506,10 @@ stranger. Erasure is the privacy-preserving direction.
 2. **⚠ The pg_cron script has to be RUN.** `prisma/scripts/journey-maintenance-cron.sql` exists and is
    documented, but it is a manual step by design — it carries a secret and must not schedule a job on
    every database a migration touches. **Until it is run against production, `/privacy`'s ninety days
-   is a claim rather than a behaviour.** `JOURNEY_MAINTENANCE_SECRET` is set locally and needs setting
-   in the panel's deployed environment.
+   is a claim rather than a behaviour.** ⚠ `JOURNEY_MAINTENANCE_SECRET` was **NOT** set locally
+   despite this document saying it was — so the route had been failing closed with a 503 and
+   retention had never run at all. Generated and set in the panel's `.env` on 2026-08-20; it still
+   needs setting in the deployed environment.
 3. **The bar's timing has not been seen by anyone.** 1.5 s into the loader, or 0.9 s after a motion
    choice. Needs a browser.
 4. **No alerting.** A panel that stops accepting batches looks identical to a quiet week. Deliberately
@@ -503,6 +548,23 @@ stranger. Erasure is the privacy-preserving direction.
   where all are unsendable, and 400 events. **No body exceeds `JOURNEY_MAX_BATCH_BYTES` and nothing
   droppable is lost.** The fourth case is the one that failed first; see the defects section.
 
+**2026-08-20:**
+
+- `npx tsc --noEmit` clean in **both** repos; `voidix-cms` **builds**, `/user-activity` in the route
+  table. ⚠ On a fresh checkout the panel reports ~15 errors that are **not** code faults: `/generated`
+  is gitignored, so `npx prisma generate` is a prerequisite, and `.next/types` predates the new route
+  until something builds. Both clear without touching a line.
+- `serialiseBatches` re-exercised against six cases **with the panel's acceptance rules asserted on
+  every body** — not just the cap. No body exceeds `JOURNEY_MAX_BATCH_BYTES`, **every body carries a
+  `sessionId`**, no body carries paths without a `visitorId`, no tier 1 event carries an id, and no
+  event disagrees with its envelope. The two cases that fail on the pre-fix code — the split
+  consented visit and the lone grid from a client-side navigation — are in the set.
+- ⚠ A raw **NUL byte** was committed inside `activityReport.ts` as a map-key delimiter. It typechecked
+  and ran, and it cost two things that are worth knowing about: `grep` and `git diff` both classified
+  the file as **binary**, so 517 lines of report logic were unreviewable, and it defeated
+  `core.autocrlf` — git skips line-ending normalisation for binary content, so that file alone was
+  committed with CRLF baked into the blob while every sibling stored LF. Now written `\u0000`.
+
 ⚠ **Still not verified: everything that needs a browser or a database.** See What is not built.
 
 ---
@@ -511,6 +573,6 @@ stranger. Erasure is the privacy-preserving direction.
 
 - `docs/cms-integration-plan.md` — the panel connection this is built on top of, and the
   search-visibility work that shares its components.
-- `lib/journey/events.ts` — the contract. Read it before changing anything here.
+- `lib/journey/events.ts` — the contract, now at **v2**. Read it before changing anything here, and change `voidix-cms/lib/journey/intakeSchema.ts` in the same sitting: the version is checked at intake, so a one-sided edit drops every batch rather than half-storing one.
 - `CLAUDE.md` — **updated 2026-08-19**: the seven new events are in its event-contract table and
   `lib/journey/` is in its `lib/` table.

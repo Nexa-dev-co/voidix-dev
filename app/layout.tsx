@@ -154,9 +154,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             it portals to `body` regardless of where it is mounted (the hero pin's spacer is
             transformed, which would otherwise stop `position: fixed` being fixed). See ConsentBar.
 
-            ⚠ Nothing collects anything yet. This ships the question and the answer; the collector
-            that acts on it is a later phase, deliberately in that order so there is never a build in
-            which data is gathered before there is a lawful basis on screen for gathering it. */}
+            ⚠ The collector above IS live now — this comment used to say nothing collected anything
+            yet, which was true only for the phase in which the bar shipped alone. The ordering it
+            describes was honoured and is the reason the two can be read together: the question and
+            the answer shipped first, so there was never a build that gathered data before there was
+            a lawful basis on screen for gathering it. */}
         <ConsentBar />
       </body>
     </html>

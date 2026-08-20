@@ -36,7 +36,7 @@
  * The panel rejects a batch it does not recognise rather than storing something it half-understands —
  * a partially-parsed analytics row is worse than a dropped one, because it looks like data.
  */
-export const JOURNEY_SCHEMA_VERSION = 1;
+export const JOURNEY_SCHEMA_VERSION = 2;
 
 /**
  * Which consent tier an event was recorded under.
@@ -268,6 +268,36 @@ export interface CursorPath {
  */
 export interface JourneyBatch {
   schemaVersion: number;
+  /**
+   * ⚠ THE BATCH OWNS THE SESSION ID, AND IT MUST NOT BE INFERRED FROM `events[0]` — v2, and the
+   * reason is a defect that cost every heatmap on two whole paths through the site.
+   *
+   * The cursor payloads carry no identity of their own: they belong to the same visit as whatever
+   * else is in the flush. The panel used to read that identity off the first event, which was true
+   * for as long as a flush was one body — and stopped being true the moment `serialiseBatches`
+   * began SPLITTING on bytes. Events are packed first, so every body after the first carries only
+   * grids and paths and no event at all, and the panel dropped all of it.
+   *
+   * ⚠ It is not only the split, which is what made this easy to miss. `noteRouteChange` closes the
+   * open cursor summary and records NO event, so a client-side navigation flushes a grid alone in a
+   * body of its own — under the cap, never split, and dropped just the same.
+   *
+   * Measured before the fix: a consented visit of 40 events + 4 grids + 4 paths packs into
+   * 23,545 bytes (40 events, 4 grids, 2 paths) and 10,106 bytes (0 events, 2 paths) — the second
+   * body's paths discarded on arrival.
+   */
+  sessionId: string;
+  /**
+   * Who to attribute the cursor payloads to — ⚠ ABSENT AT TIER 1, exactly as on an event, and for
+   * exactly the same reason. `journey_cursor_paths.visitor_id` is NOT NULL so that a path nobody
+   * consented to is unrepresentable; this is where the panel gets the value that keeps it that way.
+   *
+   * ⚠ It is the identity AT FLUSH TIME, not the identity of any particular event, and the two can
+   * legitimately differ. Consent granted mid-buffer leaves earlier events at tier 1 with no id and
+   * later ones at tier 2 with one; consent WITHDRAWN mid-buffer leaves lawfully-collected tier 2
+   * events carrying their id while this field is correctly gone, taking the paths with it.
+   */
+  visitorId?: string;
   events: JourneyEvent[];
   /** One per section left. Tier 1 — sent for everybody. */
   cursorGrids?: CursorGrid[];
