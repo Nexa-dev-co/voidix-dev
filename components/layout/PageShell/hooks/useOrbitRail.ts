@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, type RefObject } from 'react';
+import { publishCurrentSection } from '@/lib/currentSectionEvent';
 import { pointOnRail } from '../railGeometry';
 
 /**
@@ -48,11 +49,18 @@ export function useOrbitRail({ railRef, sectionCount }: OrbitRailRefs) {
     );
 
     // Measured, not per frame — see the header.
-    let sectionOffsets: number[] = [];
+    //
+    // ⚠ The KEY is carried alongside the offset, not just the number. `DocSection` sets the element's
+    // `id` to the section's key, so the DOM already knows which station each offset belongs to and
+    // reading it here costs nothing — see the announcement below for what it is for.
+    let sectionOffsets: { offset: number; key: string }[] = [];
     const measureSections = () => {
       sectionOffsets = Array.from(
         document.querySelectorAll<HTMLElement>('[data-doc-section]'),
-      ).map((section) => section.getBoundingClientRect().top + window.scrollY);
+      ).map((section) => ({
+        offset: section.getBoundingClientRect().top + window.scrollY,
+        key: section.id,
+      }));
     };
 
     let lastActiveIndex = -2; // -1 is a real value here (the masthead), so the initial miss is -2.
@@ -81,12 +89,27 @@ export function useOrbitRail({ railRef, sectionCount }: OrbitRailRefs) {
       // has started" rule `orbitGeometry.currentSectionIndex` uses for the phone's dial.
       const activeLine = window.scrollY + window.innerHeight * ACTIVE_LINE_FRACTION;
       let activeIndex = -1;
-      sectionOffsets.forEach((offset, index) => {
-        if (offset <= activeLine) activeIndex = index;
+      sectionOffsets.forEach((section, index) => {
+        if (section.offset <= activeLine) activeIndex = index;
       });
 
       if (activeIndex !== lastActiveIndex) {
         lastActiveIndex = activeIndex;
+
+        // ⚠ THE DOCUMENT ROUTES' ONLY SIGNAL FOR WHICH SECTION IS ON SCREEN, and it is free — this
+        // branch already existed and already runs only on a real change. There is no pin here and no
+        // `SECTION_ARRIVE_EVENT`, so without it a visit to `/about` reported no section at all and
+        // its cursor heatmap was filed under whatever the collector happened to be holding.
+        //
+        // ⚠ `-1` is the masthead, which is a real state (you are above the first section) and not a
+        // section — so it publishes the ROUTE instead, which is the honest name for "on this page,
+        // not yet in any of its parts".
+        publishCurrentSection(
+          activeIndex >= 0
+            ? sectionOffsets[activeIndex].key
+            : window.location.pathname.replace(/^\//, '') || 'home',
+        );
+
         nodeElements.forEach((node, index) => {
           node.setAttribute('data-active', String(index === activeIndex));
           // Everything behind you stays lit, so the rail reads as a journey travelled rather than as a

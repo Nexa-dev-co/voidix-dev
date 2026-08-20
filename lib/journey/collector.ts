@@ -47,12 +47,8 @@ import {
   readEnquiryStep,
   readEnquiryVariant,
 } from '@/components/ui/EnquiryForm/enquiryEvents';
-import {
-  SECTION_ARRIVE_EVENT,
-  STOP_COMMIT_EVENT,
-  readSectionArriveKey,
-  readStopCommit,
-} from '@/lib/sectionJumpEvents';
+import { STOP_COMMIT_EVENT, readStopCommit } from '@/lib/sectionJumpEvents';
+import { CURRENT_SECTION_EVENT, readCurrentSection } from '@/lib/currentSectionEvent';
 import { FAQ_ENTRY_OPEN_EVENT, readFaqEntryIndex } from '@/lib/chamberEvents';
 import { GOTO_SECTION_EVENT, readGotoSection } from '@/lib/sectionNavigation';
 import { LOOP_ARRIVED_EVENT, LOOP_REVERSE_COVERED_EVENT } from '@/lib/loopEvents';
@@ -82,6 +78,21 @@ const IDLE_FLUSH_MS = 10_000;
 
 /** The section the journey opens on, before anything has been arrived at. */
 const FIRST_SECTION = 'hero';
+
+/**
+ * The homepage's sections IN ORDER, which is what makes `maxSection` a maximum rather than a last.
+ *
+ * ⚠ `loop` is deliberately absent, and it is not an oversight. It is a landing pad the pin passes
+ * through to perform the teleport back to the top — arriving there IS the loop — so counting it as a
+ * section reached would put a place nobody stands at the end of every completed circuit. `loop:taken`
+ * already records that journey.
+ *
+ * ⚠ A section not in this list ranks -1, which is exactly right for a document route: `/about`'s
+ * stations have no position in the homepage's journey, so `maxSection` stops advancing and stays the
+ * route's own name. "This was an /about visit" is the honest answer there, and it falls out of the
+ * comparison rather than needing a branch.
+ */
+const JOURNEY_ORDER: readonly string[] = ['hero', 'services', 'work', 'faq', 'contact'];
 
 /**
  * ⚠ THE ONLY ROUTE WITH A LOADER. `IntroSequence` is mounted in `app/page.tsx` and nowhere else, so on
@@ -154,6 +165,8 @@ class JourneyCollector {
     this.startedAtMs = performance.now();
     this.introStartedAtMs = this.startedAtMs;
     this.hasIntro = this.route() === INTRO_ROUTE;
+    this.section = this.initialSection();
+    this.maxSection = this.section;
 
     this.cursor = new CursorTracker(
       (click) => this.record({ name: 'cursor:click', ...click }),
@@ -182,10 +195,23 @@ class JourneyCollector {
     return window.location.pathname;
   }
 
+  /**
+   * What to call the section before anything has announced one.
+   *
+   * ⚠ NOT ALWAYS `hero`. Only `/` has a hero; on a document route the first thing the visitor sees is
+   * the masthead, and defaulting to `hero` there filed `/about`'s cursor grid — and its whole opening
+   * scroll — into the HOMEPAGE'S heatmap. Two routes' data in one picture, under a section name that
+   * does not exist on either of them.
+   */
+  private initialSection(): string {
+    const route = this.route();
+    return route === INTRO_ROUTE ? FIRST_SECTION : route.replace(/^\//, '') || FIRST_SECTION;
+  }
+
   private subscribe(): void {
     window.addEventListener(REVEAL_EVENT, this.onReveal);
     window.addEventListener(LITE_TAKEN_EVENT, this.onLiteTaken);
-    window.addEventListener(SECTION_ARRIVE_EVENT, this.onSectionArrive);
+    window.addEventListener(CURRENT_SECTION_EVENT, this.onCurrentSection);
     window.addEventListener(STOP_COMMIT_EVENT, this.onStopCommit);
     window.addEventListener(FAQ_ENTRY_OPEN_EVENT, this.onFaqOpen);
     window.addEventListener(DRAWER_OPEN_EVENT, this.onDrawerOpen);
@@ -241,31 +267,41 @@ class JourneyCollector {
     this.record({ name: 'lite:taken' });
   };
 
-  private onSectionArrive = (event: Event): void => {
-    const key = readSectionArriveKey(event);
-    if (!key || key === this.section) return;
+  private onCurrentSection = (event: Event): void => {
+    const key = readCurrentSection(event);
+    if (key) this.enterSection(key);
+  };
 
-    // The cursor summary belongs to the section being LEFT, so it is taken before the switch.
-    //
-    // ⚠ IT MUST NOT CLOSE THE OPEN STOP, and that is not an omission. `commitStop` runs BEFORE the
-    // arrival is announced — crossing into works commits project 01 and only then says "arrived at
-    // work" — so by this point `openStop` is already the NEW section's first stop, with a dwell of
-    // about zero. Closing it here would drop that dwell as too short AND leave nothing open until the
-    // next commit, which is the visitor stepping off it. The first stop of every section would have
-    // been the one stop that never reported. `onStopCommit` owns the whole lifecycle; the previous
-    // section's last stop was already closed by the commit that brought us here.
+  /**
+   * The visitor is now in a different section — on any route, however they got there.
+   *
+   * ⚠ ONE PATH FOR BOTH KINDS OF ROUTE. The pin's stage machine and the document routes' orbit rail
+   * both publish `CURRENT_SECTION_EVENT`, so everything downstream — the arrival event, the depth
+   * figure and which section a cursor summary is filed under — is decided in exactly one place and
+   * cannot disagree between a scroll, a navbar jump and a document page.
+   */
+  private enterSection(key: string): void {
+    if (key === this.section) return;
+
+    // ⚠ The cursor summary belongs to the section being LEFT, so it is taken before the switch. It is
+    // also the reason this must not be driven from a per-frame signal: each call closes a heatmap.
     this.flushCursorSection(key);
-
     this.section = key;
-    this.maxSection = key;
+
+    // ⚠ A MAXIMUM, not the latest. Scrolling back up from contact to the fleet must not walk the
+    // depth figure backwards — how far someone got is the question, and they got to contact.
+    if (JOURNEY_ORDER.indexOf(key) > JOURNEY_ORDER.indexOf(this.maxSection)) this.maxSection = key;
+
     this.record({ name: 'section:arrive', section: key });
 
     // ⚠ SYNTHESISED, and it is honest rather than convenient. `ContactSection` renders `EnquiryForm`
     // directly instead of through `EnquiryPanel`, so its form is never "opened" — it is simply on
     // screen when you arrive. The panel's funnel divides every later step by `enquiry:open`, so
     // without this a contact submission is a step with no denominator and the funnel reads over 100 %.
-    if (key === 'contact') this.record({ name: 'enquiry:open', origin: 'contact', variant: 'enquiry' });
-  };
+    if (key === 'contact') {
+      this.record({ name: 'enquiry:open', origin: 'contact', variant: 'enquiry' });
+    }
+  }
 
   /**
    * A craft or a project was committed.
@@ -405,6 +441,11 @@ class JourneyCollector {
     this.closeStop();
     this.flushCursorSection(null);
     this.cursor.setRoute(pathname);
+
+    // ⚠ Re-based, not carried over. The sections on the route just left do not exist on the one just
+    // entered, so holding the old key would file the new page's first heatmap under the old page's
+    // last section — the same mix-up `initialSection` exists to prevent on a cold load.
+    this.section = this.initialSection();
   }
 
   private flushCursorSection(nextSection: string | null): void {

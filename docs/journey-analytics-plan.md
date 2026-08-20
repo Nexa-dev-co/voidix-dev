@@ -310,7 +310,7 @@ events flushed together share a millisecond). ⚠ **Every report groups by `rece
 
 ---
 
-## ⚠ The five defects — found 2026-08-19 by reading the built code, all fixed
+## ⚠ The six defects — found 2026-08-19, all fixed
 
 None of these was caught by `tsc`, a build, or a review of the plan. Every one of them was a thing the
 code did that the prose said it did not.
@@ -354,6 +354,27 @@ which is UTF-16 code units against a constant named for bytes. `serialiseBatches
 many bodies as it takes, in priority order (events, then grids, then paths), measuring with
 `TextEncoder`. ⚠ An item too large for a batch of its own is dropped **only if it is droppable** — a
 cursor payload is detail, an event may be the `session:end`.
+
+**6 · SECTION DEPTH WAS ONLY EVER MEASURED FOR VISITORS WHO USED THE NAVBAR.** Found from real data
+rather than by reading: an hour-long visit that scrolled to the bottom of the site reported its
+furthest section as `hero`, and `section:arrive` and `nav:jump` had **identical counts** — which is
+the tell. `SECTION_ARRIVE_EVENT` is dispatched from exactly one place, `SectionJumpVeil`, when the
+cover opens on a jump of 2+ sections. **Scrolling through the entire site fires it not once.**
+
+The damage was wider than one figure, because the collector labels a cursor grid with whatever
+section it currently believes it is in:
+
+- `sectionReach` counted only navbar users, so the page read "everybody stops at the hero";
+- `maxSection` was wrong for every scrolling visit;
+- **every heatmap was filed under `hero`** — so services, works and the FAQ had none at all, and
+  `/about` and `/careers` painted their cursors into the HOMEPAGE's hero heatmap.
+
+Fixed with `lib/currentSectionEvent.ts`, published from two places that already knew the answer and
+already de-duplicated it: the pin's `setStage` (every route into a section passes through it — a
+scroll, a snap, a jump and a loop alike) and `useOrbitRail`'s active-station change (the document
+routes, which have no pin). Both cost nothing — the branches already existed. ⚠ The collector's
+`maxSection` is now a genuine maximum against `JOURNEY_ORDER` rather than the last section seen, so
+scrolling back up no longer walks the depth figure backwards.
 
 ⚠ **Defect 5's fix had a bug of its own, caught by a unit harness rather than by reading it**: an
 oversized path arriving *after* an event opened a fresh batch and was pushed into it without

@@ -22,6 +22,7 @@ import {
   requestSection,
 } from "@/lib/sectionNavigation";
 import { readArrivalSection } from "@/lib/arrivalSection";
+import { publishCurrentSection } from "@/lib/currentSectionEvent";
 import {
   BLACK_STAGE_EVENT,
   type BlackStageDetail,
@@ -1025,6 +1026,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // first reports (the hero, which is the one section that is only ever ARRIVED at by starting
     // there) would carry no section at all.
     profileGauge("section", currentStage);
+    // ⚠ And published once here for the same reason the gauge is: `setStage` returns early on a
+    // no-op, so the hero — the one section that is only ever arrived at by STARTING there — would
+    // otherwise never be announced at all.
+    publishCurrentSection("hero");
     const setStage = (stage: Stage) => {
       if (stage === currentStage) return;
       const fromStage = currentStage;
@@ -1035,6 +1040,15 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // exists to answer. Free in production: `profileGauge` folds away with `telemetryEnabled`.
       profileGauge("section", stage);
       enterStage[stage](fromStage);
+
+      // ⚠ THE ONLY SIGNAL ON THIS ROUTE THAT SURVIVES ORDINARY SCROLLING. `SECTION_ARRIVE_EVENT` is
+      // dispatched by the jump veil alone, so anything downstream of it sees a visitor who scrolled
+      // the whole site as one who never left the hero. This runs from the stage boundary, which every
+      // route into a section passes through — a scroll, a snap, a navbar jump and a loop alike.
+      //
+      // ⚠ Published as `hero`, not `fill`. "fill" names the square's own animation; every other part
+      // of the system calls that section the hero, and this is the name that leaves the module.
+      publishCurrentSection(stage === "fill" ? "hero" : stage);
 
       // ⚠ Published from HERE — the boundary — and not from `enterServices`.
       //
