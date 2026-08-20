@@ -36,7 +36,7 @@
  * The panel rejects a batch it does not recognise rather than storing something it half-understands —
  * a partially-parsed analytics row is worse than a dropped one, because it looks like data.
  */
-export const JOURNEY_SCHEMA_VERSION = 2;
+export const JOURNEY_SCHEMA_VERSION = 5;
 
 /**
  * Which consent tier an event was recorded under.
@@ -107,6 +107,36 @@ export type IntroDepth = 25 | 50 | 75;
 /** Which carousel a `stop:dwell` belongs to. Both are four-stop carousels inside the one pin. */
 export type CarouselKey = 'services' | 'work';
 
+/**
+ * WHERE on the journey a cursor event happened — added in v3.
+ *
+ * ── ⚠ WITHOUT THIS, EVERY CURSOR ROW WAS FILED UNDER NOTHING ───────────────────────────────────
+ * `cursor:click` and `cursor:hover` used to carry the base fields and nothing else, so the panel's
+ * `toEventRow` — which promotes `section` out of the event into its own column — stored `NULL` for
+ * every one of them. The dashboard could say *a CTA was clicked forty times* and could not say WHICH
+ * CTA, because on this site the same control appears in four sections and the class name is the same
+ * in all of them.
+ *
+ * ⚠ It costs NOTHING to collect. The collector already tracks both values for other reasons — the
+ * section for the cursor grid's label, the stop for `stop:dwell` — so this is two fields read off
+ * state that was already there, not a new listener and not a new measurement.
+ *
+ * ⚠ `carousel` and `stopIndex` are ABSENT outside the two carousels, rather than null or -1. The
+ * hero, the FAQ room and the contact section have no stops, and a sentinel index would be summed and
+ * grouped by exactly like a real one.
+ */
+export interface CursorContext {
+  /** A `carouselLayout` key — `hero`, `services`, `work`, `faq`, `contact` — or a document station. */
+  section: string;
+  carousel?: CarouselKey;
+  /**
+   * 0-based, and ⚠ resolved against the panel's CURRENT ordering when it is read. A project reordered
+   * after the fact re-points last month's rows at whatever now sits in that slot. Capturing the slug
+   * instead is the robust fix and is deliberately deferred — see `docs/journey-attention-plan.md`.
+   */
+  stopIndex?: number;
+}
+
 export type JourneyEvent =
   | (JourneyEventBase & { name: 'intro:start' })
   | (JourneyEventBase & { name: 'intro:depth'; depth: IntroDepth })
@@ -146,26 +176,28 @@ export type JourneyEvent =
       /** The route's own reason, never the visitor's field values. */
       reason: 'invalid' | 'rate-limited' | 'unavailable';
     })
-  | (JourneyEventBase & {
-      name: 'cursor:click';
-      /** Grid cell, so a click map and the movement heatmap share one coordinate space. */
-      cell: number;
-      /**
-       * What was under it — a stable identifier, never the element's text.
-       * ⚠ Text would put the visitor's own words in here the moment somebody clicks inside a form
-       * field, which is the one thing the journey layer must never carry.
-       */
-      target: string;
-      /** Landed on nothing interactive. The cheapest frustration signal there is. */
-      isDead: boolean;
-      /** Three or more clicks in one small area inside a second. The loudest one. */
-      isRage: boolean;
-    })
-  | (JourneyEventBase & {
-      name: 'cursor:hover';
-      target: string;
-      dwellMs: number;
-    })
+  | (JourneyEventBase &
+      CursorContext & {
+        name: 'cursor:click';
+        /** Grid cell, so a click map and the movement heatmap share one coordinate space. */
+        cell: number;
+        /**
+         * What was under it — a stable identifier, never the element's text.
+         * ⚠ Text would put the visitor's own words in here the moment somebody clicks inside a form
+         * field, which is the one thing the journey layer must never carry.
+         */
+        target: string;
+        /** Landed on nothing interactive. The cheapest frustration signal there is. */
+        isDead: boolean;
+        /** Three or more clicks in one small area inside a second. The loudest one. */
+        isRage: boolean;
+      })
+  | (JourneyEventBase &
+      CursorContext & {
+        name: 'cursor:hover';
+        target: string;
+        dwellMs: number;
+      })
   | (JourneyEventBase & {
       name: 'device:profile';
       /** `deviceTier`'s latched answer. */
@@ -234,8 +266,46 @@ export interface CursorGrid {
   section: string;
   /** Sparse — cell index → sample count. Most of 576 cells are empty in any given section. */
   cells: Record<number, number>;
-  /** How long the cursor was observed here. The denominator; without it a long visit just looks hot. */
+  /**
+   * ⚠ ACTIVE TIME, NOT WALL CLOCK — the meaning changed in v5 and the name did not, which is exactly
+   * why the version had to move.
+   *
+   * Until v5 this was `now - sectionEnteredAt`, so it counted every second the section was open
+   * whether or not a human was there. Measured on real data before the fix: **6,292 s of "cursor
+   * watched" against 341 s of actual cursor movement — 95 % idle**, with the three worst grids at
+   * 98–99 % because they were tabs left open. The loader's entire wait landed in it too, since the
+   * collector starts at layout mount while the section is still `hero`.
+   *
+   * It is now accumulated one clamped sample tick at a time, and a sample only happens when a
+   * pointer has been seen and the tab is visible. Coming back to a tab after an hour adds one tick.
+   */
   observedMs: number;
+
+  /* ── THE SHAPE OF THE SCREEN IT WAS GATHERED ON — added in v4 ────────────────────────────────
+     ⚠ WITHOUT THESE, EVERY DESKTOP SHAPE IS SUMMED INTO ONE PICTURE AND CANNOT BE SEPARATED AGAIN.
+     Cells are normalised to the visitor's own viewport, so cell 288 is "the middle of the frame" on
+     a 21:9 ultrawide, on a 16:10 laptop and on a half-screen 960px window alike — and on this site
+     those are three DIFFERENT LAYOUTS with different things in the middle. The tracker already reads
+     `innerWidth`/`innerHeight` on every sample to compute the cell and then threw them away, so
+     carrying them costs nothing and not carrying them loses the distinction permanently.
+
+     ⚠ Cursor tracking gates on `(pointer: fine)` and NOT on width, so a narrow desktop window is
+     tracked and gets the narrow layout. This is not a phone-versus-desktop split — phones have a
+     coarse pointer and never appear here at all. It is a split among things that all have a mouse. */
+
+  /** Viewport at the moment the section was left, in CSS pixels. */
+  viewportWidth: number;
+  viewportHeight: number;
+  /**
+   * ⚠ THE BROWSER'S OWN ANSWER, not a comparison against 820.
+   *
+   * The site's layout breakpoint is `(max-width: 51.25em)` and `em` resolves against the visitor's
+   * root font size — so a reader with large text crosses it at a different pixel width. Asking
+   * `matchMedia` with the layout's own query records what the visitor ACTUALLY SAW; re-deriving it
+   * from `viewportWidth` in the panel would misclassify precisely those people. The pixels above are
+   * kept anyway, for aspect ratio and for context.
+   */
+  isNarrowLayout: boolean;
 }
 
 /**

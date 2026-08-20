@@ -62,6 +62,7 @@ import {
   JOURNEY_MAX_BATCH_EVENTS,
   JOURNEY_SCHEMA_VERSION,
   type CarouselKey,
+  type CursorContext,
   type CursorGrid,
   type CursorPath,
   type IntroDepth,
@@ -113,6 +114,18 @@ const DWELL_CAROUSELS: readonly string[] = ['services', 'work'];
 
 /** Below this a "dwell" is a stop being scrolled THROUGH, not looked at. */
 const MIN_DWELL_MS = 250;
+
+/**
+ * The section a route opens on, before anything has announced otherwise.
+ *
+ * ⚠ A PURE FUNCTION OF THE ROUTE, so it can be asked about a page the browser has not navigated to
+ * yet. `noteRouteChange` needs exactly that: it must re-base the cursor tracker onto the incoming
+ * route's opening section while the outgoing grid is still being stamped with the old one, and a
+ * version that read `location.pathname` could only ever answer for whichever page had already won.
+ */
+function sectionForRoute(route: string): string {
+  return route === INTRO_ROUTE ? FIRST_SECTION : route.replace(/^\//, '') || FIRST_SECTION;
+}
 
 class JourneyCollector {
   private isRunning = false;
@@ -168,9 +181,11 @@ class JourneyCollector {
     this.section = this.initialSection();
     this.maxSection = this.section;
 
+    // ⚠ The context is read AT THE MOMENT THE EVENT FIRES, not captured when the tracker was built —
+    // a visit crosses four sections and a dozen stops through one CursorTracker instance.
     this.cursor = new CursorTracker(
-      (click) => this.record({ name: 'cursor:click', ...click }),
-      (hover) => this.record({ name: 'cursor:hover', ...hover }),
+      (click) => this.record({ name: 'cursor:click', ...click, ...this.cursorContext() }),
+      (hover) => this.record({ name: 'cursor:hover', ...hover, ...this.cursorContext() }),
     );
     this.cursor.start(this.route(), this.section, isJourneyConsentGranted());
 
@@ -204,8 +219,7 @@ class JourneyCollector {
    * does not exist on either of them.
    */
   private initialSection(): string {
-    const route = this.route();
-    return route === INTRO_ROUTE ? FIRST_SECTION : route.replace(/^\//, '') || FIRST_SECTION;
+    return sectionForRoute(this.route());
   }
 
   private subscribe(): void {
@@ -304,6 +318,73 @@ class JourneyCollector {
   }
 
   /**
+   * Something just happened that could only have happened in `key` — so if we believed otherwise, we
+   * were wrong, and the picture we are drawing belongs to `key`.
+   *
+   * ── ⚠ WHY THE PIN'S OWN STAGE IS NOT ENOUGH ────────────────────────────────────────────────────
+   * `setStage` derives the section from the NEAREST STOP, so the label flips at the arithmetic
+   * midpoint of a crossing — 70vh into the 140vh span between the chamber and contact — while the
+   * chamber is still filling the screen. A visitor scrolling the FAQ list past its end hands the
+   * gesture to the pin (`useScrollGuard` releases a gesture that BEGINS at the end, deliberately),
+   * drifts into that span, and reads on.
+   *
+   * Measured, from a real session: `nav:jump faq` → `section:arrive faq` → 4.9 s later
+   * `section:arrive contact` → **0.2 s later `faq:open`** → 6.1 s later `section:arrive faq`. The
+   * visitor never left the chamber; they opened question 5 while this collector believed they were
+   * looking at the contact form.
+   *
+   * ⚠ THE FIX CANNOT LIVE IN `setStage`. That function mounts and unmounts whole WebGL scenes and
+   * drives the black-stage signal, the nav meters and each section's entrance. Moving its boundary to
+   * satisfy an analytics question would change what the site DOES. So the correction lives here,
+   * where being wrong costs a label rather than a scene.
+   *
+   * ⚠ IT RELABELS, IT DOES NOT FLUSH. The cells gathered since the bad stage change were gathered in
+   * `key`, so they belong to `key`'s picture — closing one and opening another would file them under
+   * the wrong section and start a second wrong picture. See `CursorTracker.relabelSection`.
+   *
+   * ⚠ NO `section:arrive` IS RECORDED. This is a correction, not an arrival: the visitor did not move,
+   * our belief did. Emitting one would inflate `sectionReach` with the very confusion being fixed.
+   *
+   * ⚠ `maxSection` IS DELIBERATELY LEFT ALONE. It is a high-water mark, and this only ever walks the
+   * CURRENT section backwards. Someone who dipped into the crossing did reach further than the FAQ,
+   * and the depth figure should keep saying so.
+   *
+   * ── ⚠ IT TOUCHES THE CURSOR'S LABEL AND **NEVER** `this.section` ───────────────────────────────
+   * The two are deliberately different things, and keeping them apart is what makes this safe:
+   *
+   *   `this.section`            what the PIN last announced. The dedup key for `enterSection`, and
+   *                             the thing `maxSection` and the arrival event are built from.
+   *   `cursor.currentSection()` the best BELIEF about where the visitor is, which this may correct.
+   *
+   * An earlier cut wrote both, and that desyncs the collector from the pin permanently: the pin only
+   * publishes on CHANGE, so once this had walked `this.section` back to `faq` while the pin's stage
+   * was still `contact`, a visitor who then moved forward into contact produced no event at all —
+   * the pin had nothing new to say — and the collector sat on `faq` indefinitely.
+   *
+   * Writing only the cursor's label has no such failure: the next genuine section change flushes the
+   * corrected grid and re-seats everything from the pin.
+   *
+   * ── ⚠ ONLY SOMETHING THE VISITOR DID **AFTER ARRIVING** MAY CALL THIS ──────────────────────────
+   * Calling it from `onStopCommit` — which looks like proof of location and is not — swallowed every
+   * boundary through services and work, produced no `section:arrive` for either, and merged the
+   * hero, services and work cells into one 562-sample grid labelled `work`. `commitStop` fires
+   * BEFORE the arrival by design; see the note there.
+   *
+   * `faq:open` qualifies: a question can only be opened by clicking one, long after the room is on
+   * screen. A stop commit does not.
+   *
+   * ⚠ RESIDUAL, stated rather than hidden: if the visitor is corrected back to `faq` and then moves
+   * FORWARD into contact without the pin's stage ever changing again, the cells gathered at contact
+   * stay labelled `faq` until the next real boundary. Closing that needs the crossing's progress,
+   * which is a per-frame event this collector may not subscribe to — see the header.
+   */
+  private confirmSection(key: string): void {
+    if (!this.cursor || key === this.cursor.currentSection()) return;
+
+    this.cursor.relabelSection(key);
+  }
+
+  /**
    * A craft or a project was committed.
    *
    * ⚠ THE DWELL IS EMITTED FOR THE STOP BEING LEFT, not the one arriving — a dwell is only knowable
@@ -316,6 +397,20 @@ class JourneyCollector {
     this.closeStop();
 
     if (!DWELL_CAROUSELS.includes(detail.key)) return;
+    /**
+     * ⚠ DO NOT `confirmSection` HERE. It was tried, and it swallowed every section boundary through
+     * services and work.
+     *
+     * `commitStop` fires BEFORE `CURRENT_SECTION_EVENT` — the crossing into works commits project 01
+     * and only *then* announces the arrival, which is the documented ordering `closeStop` already
+     * depends on. So confirming from here sets the section early and silently; the real arrival then
+     * hits `enterSection`'s `key === this.section` guard and returns, taking the grid flush and the
+     * `section:arrive` with it. Measured: no `section:arrive` for services or work at all, and the
+     * hero, services and work cells merged into a single 562-sample grid labelled `work`.
+     *
+     * A stop commit proves which CAROUSEL, but it happens too early to prove where the visitor IS.
+     * Only something the visitor did after arriving can do that — see `confirmSection`.
+     */
     this.openStop = { carousel: detail.key as CarouselKey, index: detail.index };
     this.stopSinceMs = performance.now();
   };
@@ -333,6 +428,8 @@ class JourneyCollector {
   private onFaqOpen = (event: Event): void => {
     const index = readFaqEntryIndex(event);
     if (index === null) return;
+    // Opening a question is only possible with the hologram on screen. See `confirmSection`.
+    this.confirmSection('faq');
     this.record({ name: 'faq:open', entryIndex: index });
   };
 
@@ -439,13 +536,53 @@ class JourneyCollector {
     if (pathname === this.cursor.currentRoute()) return;
 
     this.closeStop();
-    this.flushCursorSection(null);
+
+    /**
+     * ⚠ THE ORDER OF THESE FOUR LINES IS THE WHOLE CORRECTNESS OF THIS METHOD.
+     *
+     * The outgoing grid must keep the OLD route and the OLD section, and the tracker must then be
+     * re-based onto the new route's opening section. It used to flush with `null`, which advances
+     * nothing — so the collector re-based while the TRACKER kept the previous page's last section,
+     * and the first grid gathered on `/about` could be filed under `contact`. The comment below
+     * described that fix; only half of it was implemented.
+     *
+     * `sectionForRoute` is computed from the ARGUMENT rather than from `this.route()` so it cannot
+     * depend on whether the browser has finished updating `location` — and the flush happens before
+     * `setRoute`, so the grid being closed is still stamped with the page it was gathered on.
+     */
+    const nextSection = sectionForRoute(pathname);
+    this.flushCursorSection(nextSection);
     this.cursor.setRoute(pathname);
 
     // ⚠ Re-based, not carried over. The sections on the route just left do not exist on the one just
     // entered, so holding the old key would file the new page's first heatmap under the old page's
-    // last section — the same mix-up `initialSection` exists to prevent on a cold load.
-    this.section = this.initialSection();
+    // last section.
+    this.section = nextSection;
+  }
+
+  /**
+   * Where the journey was when a cursor event happened.
+   *
+   * ⚠ READ, NOT MEASURED. Both values are already maintained for other reasons — `section` by
+   * `CURRENT_SECTION_EVENT` so the cursor grid can be labelled, `openStop` by `STOP_COMMIT_EVENT` so
+   * `stop:dwell` can be timed — so this adds no listener, no work per frame and no new source of
+   * truth. It is the one place the two are combined.
+   *
+   * ⚠ A hover that STARTED in the previous section reports the section it ENDED in, because that is
+   * when the event fires. Hovers are short and the boundary is a scrubbed crossing nobody hovers
+   * through, so this is left alone rather than paid for with a second timestamp on every hover.
+   */
+  private cursorContext(): CursorContext {
+    return {
+      // ⚠ The CURSOR's label, not `this.section`. They agree except where `confirmSection` has
+      // corrected the pin — and in exactly that window a click belongs to the section the visitor is
+      // demonstrably in, not to the one the pin's nearest-stop arithmetic named.
+      section: this.cursor?.currentSection() ?? this.section,
+      // Absent outside a carousel — see `CursorContext`. A sentinel would group like a real stop.
+      ...(this.openStop
+        ? { carousel: this.openStop.carousel, stopIndex: this.openStop.index }
+        : {}),
+    };
   }
 
   private flushCursorSection(nextSection: string | null): void {

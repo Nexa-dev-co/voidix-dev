@@ -20,6 +20,7 @@
  * and would quietly pollute the desktop figures it got averaged into.
  */
 
+import { NARROW_QUERY } from '@/lib/hooks/useIsNarrowViewport';
 import {
   CURSOR_GRID_COLUMNS,
   CURSOR_GRID_ROWS,
@@ -46,6 +47,16 @@ const PATH_MAX_POINTS = 5000;
 
 /** Positions are stored per-thousand of the viewport, so a path means the same on any monitor. */
 const POSITION_SCALE = 1000;
+
+/**
+ * The most one sample tick may contribute to a section's observed time.
+ *
+ * ⚠ TWO SAMPLE INTERVALS, so a normal tick counts in full and a RESUMPTION counts once. The gap
+ * between two samples is unbounded — a hidden tab, a pointer that left the window, a machine asleep
+ * — and without this clamp the first sample after an hour away would book the whole hour as time
+ * somebody spent looking at the section.
+ */
+const MAX_OBSERVED_GAP_MS = Math.round((1000 / CURSOR_GRID_SAMPLE_HZ) * 2);
 
 export interface CursorClick {
   cell: number;
@@ -91,6 +102,32 @@ function describeTarget(element: Element | null): string {
   return firstClass ? `${tag}.${firstClass}`.slice(0, 48) : tag;
 }
 
+/**
+ * The shape of the screen a grid was gathered on — v4.
+ *
+ * ⚠ READ AT FLUSH TIME, which is the one imprecision here and it is deliberate. A grid accumulates
+ * across a whole section, so a visitor who drags their window across the layout breakpoint mid-section
+ * produces cells from two layouts filed under whichever one they finished in. Closing the grid on a
+ * resize would be exact, and it is not worth a `matchMedia` listener plus a second flush path for a
+ * gesture nobody performs while a scroll-pinned scene is playing. If it ever matters, the fix is to
+ * flush on the media query changing — not to average the two.
+ *
+ * ⚠ `matchMedia` rather than `innerWidth > 820`. See `NARROW_QUERY` — the layout's breakpoint is in
+ * `em` and moves with the visitor's root font size, so only the browser can answer it correctly.
+ */
+function readViewportShape(): Pick<
+  CursorGrid,
+  'viewportWidth' | 'viewportHeight' | 'isNarrowLayout'
+> {
+  return {
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    // The tracker only ever runs in a browser with a fine pointer, so `matchMedia` exists by the time
+    // anything here is reachable — `isSupported` has already required it.
+    isNarrowLayout: window.matchMedia(NARROW_QUERY).matches,
+  };
+}
+
 /** True when a click landed on nothing that could respond to it. */
 function isDeadTarget(element: Element | null): boolean {
   if (!element) return true;
@@ -107,7 +144,14 @@ export class CursorTracker {
   private route = '/';
 
   private cells = new Map<number, number>();
-  private observedFromMs = 0;
+  /**
+   * ⚠ ACTIVE time in the current section, accumulated per sample — NOT `now - start`.
+   *
+   * See the accumulation in `sample()` for the measurement this replaced and why it was wrong. The
+   * honest sentence for this number is "how long the cursor was actually being watched here", which
+   * is what the panel now labels it.
+   */
+  private observedMs = 0;
 
   private pathPoints: number[] = [];
   /** Rate limiting — when the path was last *considered* for a sample. */
@@ -156,7 +200,10 @@ export class CursorTracker {
     this.route = route;
     this.section = section;
     this.isTrackingPaths = isTrackingPaths;
-    this.observedFromMs = performance.now();
+    // ⚠ Primed, not left at 0 — otherwise the first sample's gap is measured from the epoch and
+    // the clamp is the only thing standing between that and an absurd observed time.
+    this.gridLastSampleMs = performance.now();
+    this.observedMs = 0;
 
     // ⚠ `passive` because this handler never calls preventDefault, and saying so lets the browser
     // stop waiting to find out — which on a scroll-driven site is the difference between a smooth
@@ -239,6 +286,20 @@ export class CursorTracker {
     const now = performance.now();
 
     if (now - this.gridLastSampleMs >= 1000 / CURSOR_GRID_SAMPLE_HZ) {
+      /**
+       * ⚠ OBSERVED TIME IS ACCUMULATED HERE, ONE CLAMPED TICK AT A TIME — it is NOT the wall clock.
+       *
+       * It used to be `now - observedFromMs` at flush, which counted every second the section was
+       * open whether or not anyone was there. Measured on real data: 6,292 s of "cursor watched"
+       * against 341 s of actual cursor movement — 95 % of it idle, and the three worst grids were
+       * 98–99 % idle tabs left open. The loader's whole wait landed in it too, because the collector
+       * starts at layout mount while the section is still `hero`.
+       *
+       * This line runs only when a sample is actually taken, which already requires a pointer to
+       * have been seen and the tab to be visible. The clamp is what makes a resumption cheap: coming
+       * back to a tab after an hour adds one tick, not an hour.
+       */
+      this.observedMs += Math.min(now - this.gridLastSampleMs, MAX_OBSERVED_GAP_MS);
       this.gridLastSampleMs = now;
       const cell = this.cellFor(this.pointerX, this.pointerY);
       this.cells.set(cell, (this.cells.get(cell) ?? 0) + 1);
@@ -298,7 +359,7 @@ export class CursorTracker {
    */
   flushSection(nextSection: string | null, visitorId: string | undefined): CursorSectionSummary {
     const now = performance.now();
-    const observedMs = Math.round(now - this.observedFromMs);
+    const observedMs = Math.round(this.observedMs);
 
     const grid: CursorGrid | null =
       this.cells.size === 0
@@ -308,6 +369,7 @@ export class CursorTracker {
             section: this.section,
             cells: Object.fromEntries(this.cells),
             observedMs,
+            ...readViewportShape(),
           };
 
     // ⚠ The visitor id is checked HERE as well as by the caller. A path without one cannot be
@@ -326,7 +388,9 @@ export class CursorTracker {
     this.cells = new Map();
     this.pathPoints = [];
     this.pathHasFirstPoint = false;
-    this.observedFromMs = now;
+    this.observedMs = 0;
+    // The next section's first sample measures its gap from here, not from the old section's tick.
+    this.gridLastSampleMs = now;
     if (nextSection) this.section = nextSection;
 
     return { grid, path };
@@ -335,6 +399,28 @@ export class CursorTracker {
   /** What the open grid and path will be filed under. See `noteRouteChange` in the collector. */
   currentRoute(): string {
     return this.route;
+  }
+
+  /**
+   * Re-file the OPEN grid under a different section, WITHOUT closing it.
+   *
+   * ── ⚠ THIS IS A CORRECTION, NOT A TRANSITION, AND THE DIFFERENCE IS WHY IT MUST NOT FLUSH ─────
+   * `flushSection` closes the current picture and starts a new one, which is right when the visitor
+   * genuinely moved. This is for when they did not: the pin's stage said `contact` while the visitor
+   * was demonstrably still in the chamber, so the cells gathered since that stage change were
+   * gathered in the FAQ and belong to the FAQ. Flushing here would file them under the wrong section
+   * and then start a second wrong picture; relabelling puts them where they were actually collected.
+   *
+   * ⚠ It follows that this may only be called by something that PROVES the location — see
+   * `confirmSection` in the collector. Calling it on a guess would silently move real cells.
+   */
+  relabelSection(section: string): void {
+    this.section = section;
+  }
+
+  /** What the open grid would currently be filed under. */
+  currentSection(): string {
+    return this.section;
   }
 
   setRoute(route: string): void {
