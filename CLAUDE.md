@@ -308,6 +308,22 @@ the code below was written on that assumption. It no longer holds.
 | libraries | gsap + ScrollTrigger + three | none used (⚠ gsap still *ships* — see below) |
 | copy | in a content file per section | same convention: `aboutContent.ts`, `careersContent.ts` |
 | CSS | `globals.css` | `globals.css`, the `.doc-*` block at the end |
+| width | full bleed, the shared padding expression | **the same, since 2026-08-21** — see below |
+
+⚠ **The document routes had drifted into a SECOND responsiveness system and were pulled back onto the
+homepage's on 2026-08-21.** `.doc-inner` carried `max-width: 76rem` + `margin: 0 auto`, which is the
+exact defect `.contact-panel`'s header records being rewritten out of — a hard cap reads nothing about
+the frame, so 1920 and 2560 both rendered an identical 1216px island while `/` ran edge to edge, and the
+footers stopped looking like each other. There is now **no centred container on any route**: every
+surface is the viewport minus `clamp(1.5rem, 5vw, 5rem)`, and copy is held by MEASURE (`62ch`, `58ch`,
+`46ch`, `18ch`) exactly as `.works-detail`'s `34ch` holds the works head. Three components in
+`data-wide` sections that the container had been silently sizing now carry their own caps
+(`.doc-track-detail`, `.doc-instruments`, `.doc-role-columns`) — **a new block of prose in `.doc-flow`
+with no cap will set a 2400px line.** The `.doc-footer` block and `PageFooter`'s header carry the rest.
+
+⚠ **These routes DO have a third width breakpoint, `64em`, and it is the one legitimate divergence.**
+It hides the orbit rail's arc when there is no room to stand an instrument beside the prose — an object
+`/` has no equivalent of. `51.25em` and `30em` mean what they mean everywhere else.
 
 **The rules in this file about the pin, the crossings and the scene budget apply to `/` only.** The
 right way to honour "one pin" for a page that is genuinely prose is to keep it out of the pin
