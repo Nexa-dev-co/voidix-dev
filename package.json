@@ -10,7 +10,8 @@
     "optimize:models": "node scripts/optimizeModels.mjs",
     "optimize:textures": "node scripts/optimizeTextures.mjs",
     "build:models": "node scripts/buildModels.mjs",
-    "build:shapes": "node scripts/buildLoaderShapes.mjs"
+    "build:shapes": "node scripts/buildLoaderShapes.mjs",
+    "stats:authors": "node scripts/authorStats.mjs"
   },
   "dependencies": {
     "@types/three": "^0.184.1",

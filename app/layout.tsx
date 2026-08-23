@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from 'next';
 import { Syne, DM_Sans } from 'next/font/google';
 import Navbar from '@/components/layout/Navbar/Navbar';
 import TelemetryConsole from '@/components/effects/TelemetryConsole/TelemetryConsole';
+import ConsentBar from '@/components/ui/ConsentBar/ConsentBar';
+import JourneyCollector from '@/components/effects/JourneyCollector/JourneyCollector';
 import { SITE_URL } from '@/lib/siteMetadata';
 import './globals.css';
 
@@ -141,8 +143,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Renders nothing. First in the body so the console capture installs before any scene can
             log — see TelemetryConsole. Inert in production. */}
         <TelemetryConsole />
+        {/* ⚠ Renders nothing, and is NOT the component above despite the resemblance.
+            `TelemetryConsole` is a development diagnostic that is compiled out of production; this is
+            for production and is useless anywhere else. See JourneyCollector's header. */}
+        <JourneyCollector />
         <Navbar />
         {children}
+        {/* ⚠ Site-wide, because consent is about the visitor rather than about a page — a decision
+            made on `/about` has to hold on `/`. It renders nothing until it is both owed and due, and
+            it portals to `body` regardless of where it is mounted (the hero pin's spacer is
+            transformed, which would otherwise stop `position: fixed` being fixed). See ConsentBar.
+
+            ⚠ The collector above IS live now — this comment used to say nothing collected anything
+            yet, which was true only for the phase in which the bar shipped alone. The ordering it
+            describes was honoured and is the reason the two can be read together: the question and
+            the answer shipped first, so there was never a build that gathered data before there was
+            a lawful basis on screen for gathering it. */}
+        <ConsentBar />
       </body>
     </html>
   );

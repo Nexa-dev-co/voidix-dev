@@ -1,3 +1,5 @@
+import { readArrivalSection } from '@/lib/arrivalSection';
+
 /**
  * Fired by the IntroSequence orchestrator at the exact moment the blue sun lands
  * in the hero square slot. The hero listens for it and runs its reveal (text
@@ -176,8 +178,43 @@ export const FINALE_EVENT = 'voidix:intro-finale';
  * `IntroSequence` enforces it, and `GatherCanvas` needs it to pace the drawings (on a warm cache this
  * IS the wait, so a sequence paced on the download estimate alone would race to the end of a loader
  * that is being held open). A second copy would drift the moment either was retuned.
+ *
+ * ⚠ READ IT THROUGH `minimumLoaderMs()`, NEVER DIRECTLY. There are two floors now — see below.
  */
 export const MINIMUM_LOADER_MS = 6500;
+
+/**
+ * ...and the floor for a visitor who arrived with a destination in the URL.
+ *
+ * ── Why an arrival gets a different one ──────────────────────────────────────────────────────────
+ * The floor above is an introduction: it buys a first-time visitor the whole of one drawing, because
+ * the field IS the loader and flashing past it would mean nobody ever sees the thing. Someone who
+ * clicked `Work` in the navbar on `/about` is not being introduced. They have already met the site,
+ * they have named where they want to be, and everything after the wordmark is still ahead of them —
+ * the shard assembly, then the travel itself. Holding them for a full introduction on top of that is
+ * the loader charging twice for the same welcome.
+ *
+ * Not zero, and that matters: the finale is only allowed to start once the gate is satisfied, so this
+ * is still long enough for the dust to gather into something rather than being a flicker of grain.
+ * What it gives up is the tail of a drawing, on the one path where the visitor has an errand.
+ *
+ * ⚠ It affects NO ordinary load. `/` with no hash reads the number above, unchanged.
+ */
+export const MINIMUM_LOADER_ARRIVAL_MS = 3500;
+
+/**
+ * Which floor applies to this load.
+ *
+ * ⚠ BOTH READERS MUST GO THROUGH THIS. `IntroSequence` enforces the floor and `GatherCanvas` paces
+ * its drawings against it, and the pacing is not decoration — a field that has budgeted for 6.5 s in
+ * a loader that ends at 3.5 s gets cut off mid-drawing, which is a worse picture than the one the
+ * floor exists to protect. Two callers, one answer.
+ */
+export function minimumLoaderMs(): number {
+  return readArrivalSection()
+    ? MINIMUM_LOADER_ARRIVAL_MS
+    : MINIMUM_LOADER_MS;
+}
 
 /**
  * Fired when the load reaches 100%, cueing the sun's fracture shards to sweep in from off-frame.
@@ -222,3 +259,16 @@ export const SUN_FORMING_EVENT = 'voidix:sun-forming';
  * it, and it matches how the intro already talks to the hero.
  */
 export const IGNITE_EVENT = 'voidix:intro-ignite';
+
+/**
+ * The visitor took the escape hatch — `SkipToLite`'s offer, accepted.
+ *
+ * ⚠ It is a real navigation, not a state change: the control is an `<a href="/lite">`, so this fires
+ * and the page is gone. Nothing may await it. The journey collector's `pagehide` beacon is what
+ * carries it, which is the same mechanism that has to carry the abandonment it sits next to.
+ *
+ * ⚠ Distinct from simply ARRIVING at `/lite`, which a visitor can also do from a link or a bookmark.
+ * This one means the full site was being downloaded and was given up on, which is the only version of
+ * the question worth asking.
+ */
+export const LITE_TAKEN_EVENT = 'voidix:lite-taken';

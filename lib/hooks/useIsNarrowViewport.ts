@@ -15,7 +15,16 @@ import { useEffect, useState } from 'react';
  * layout changes — which shows up as a stepper rendered into a grid meant for four columns. Keep them
  * in step by hand; there is one of each.
  */
-const NARROW_QUERY = '(max-width: 51.25em)';
+/**
+ * ⚠ EXPORTED, because the journey layer has to answer the SAME question this hook does.
+ *
+ * `cursor.ts` records which layout a heatmap was gathered on, and it must not re-derive that from a
+ * pixel width: this query is in `em`, so it resolves against the visitor's own root font size — a
+ * reader with large text switches layout at a different pixel width than 820. Comparing
+ * `innerWidth > 820` in the panel would quietly misclassify exactly those visitors. Asking
+ * `matchMedia` with this string asks the browser the same question the layout asked.
+ */
+export const NARROW_QUERY = '(max-width: 51.25em)';
 
 export function useIsNarrowViewport(): boolean {
   // Starts false so the server render and the first client render agree — `window` doesn't exist during

@@ -9,11 +9,19 @@ import { useSiteContent } from '@/lib/cms/SiteContentProvider';
  * first time a social handle changes. Adding the Studio group to that file put About and Careers into
  * both footers at once, which is the test of whether the sharing was worth doing.
  *
- * What is NOT shared is the presentation, because the two have completely different budgets. The
- * contact footer is squeezed into a single pinned viewport it shares with a form and a black hole, and
- * every rule in it is fighting for vertical space (there is a whole `@media (max-width: 30em)` block in
- * `globals.css` about the ~150px it once overran by). This one has a document's worth of room and can
- * simply be a footer.
+ * ── ⚠ THE WIDE PRESENTATION IS SHARED TOO, SINCE 2026-08-21 ────────────────────────────────
+ * This header used to say the opposite: that the two footers differ in presentation because they have
+ * completely different budgets. That is true of the NARROW treatment — the contact footer's gutter grid
+ * under `51.25em` is a height budget (there is a whole `@media (max-width: 30em)` block in `globals.css`
+ * about the ~150px it once overran by) and this one keeps its own simple stack. It was never true of the
+ * wide one, where having a document's worth of room bought nothing but a footer that did not look like
+ * the site's: the brand stacked instead of sitting on one baseline, the links ran down instead of
+ * across, and the wordmark rendered half again the size because it had a `clamp` outside `--fs-*`.
+ *
+ * So above `51.25em` the row geometry, the gaps and the wordmark size are `.contact-footer`'s and must
+ * track it. What still diverges is the INK — links and labels stay on the document routes' higher
+ * contrast tokens, because these are the pages that exist to be read. `.doc-footer`'s block in
+ * `globals.css` carries the ratios.
  *
  * ── ⚠ NO CC-BY CREDIT HERE, AND THAT IS CORRECT ──────────────────────────────────────────────────
  * `black_hole.glb`'s licence obliges attribution wherever the work appears. It does not appear on

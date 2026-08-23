@@ -15,6 +15,11 @@ import { prefersReducedMotion } from '@/lib/prefersReducedMotion';
 import { HANDOFF_PROGRESS_EVENT, readHandoffProgress } from '@/lib/handoffEvents';
 import { computeFlightPose, createFlightPose } from '@/lib/handoffFlightPath';
 import { flightPullbackScale, flightRamp, portraitPullbackScale } from '@/lib/portraitPullback';
+import {
+  MAX_DEFERRED_STRETCH,
+  isViewportSettled,
+  startViewportReframeWatch,
+} from '@/lib/viewportReframe';
 import { DECK_SERVICES } from '../deckServices';
 import { DECK_REVEAL_EVENT, DECK_HIDE_EVENT } from '../deckEvents';
 import { applyHullMaterials, rimColorOf, type HullShaderUniforms } from '../hullMaterial';
@@ -87,6 +92,14 @@ const PORTRAIT_SHIP_DROP = -0.35;
 const FLOAT_AMPLITUDE = 0.1;   // vertical hover bob (up + down) on the centred craft
 const FLOAT_SPEED     = 1.1;
 const AUTO_ROTATE_SPEED = 0.35; // radians/sec — slow showroom turntable spin on the centred craft
+/**
+ * Cap on the per-frame delta this loop integrates, in seconds.
+ *
+ * The same 0.05 s (20 fps) the works field and the sun use, and here for the same reason: a
+ * tab-restore or a minimised window hands the first frame back a delta of however long it was away,
+ * and `AUTO_ROTATE_SPEED` would spin the craft through all of it in one step.
+ */
+const MAX_FRAME_SECONDS = 0.05;
 
 // ── Third-person flight idle (the parked/flying chase ship) ──
 // A gentle weave layered on the ship while the flight is engaged, so the third-person chase reads as
@@ -1265,10 +1278,35 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     // The craft's portrait drop, in world units — 0 on any landscape frame, so nothing below it costs
     // a desktop anything. See PORTRAIT_SHIP_DROP.
     let portraitShipDrop = 0;
+    /** The canvas box has moved and the buffers have not followed yet — see the resize block below. */
+    let canvasSizeDirty = false;
+    /** The CSS size the buffers were last allocated at, for `canvasStretch`. */
+    let allocatedWidth = 1;
+    let allocatedHeight = 1;
+    /**
+     * How far the canvas's CSS box has drifted from the size the buffers were allocated at.
+     *
+     * Symmetric, so shrinking counts as much as growing. Measured against the last ALLOCATION rather
+     * than the previous frame, so a slow drag accumulates toward MAX_DEFERRED_STRETCH instead of
+     * creeping under it forever.
+     */
+    const canvasStretch = () => {
+      const width = canvas.clientWidth || canvas.offsetWidth;
+      const height = canvas.clientHeight || canvas.offsetHeight;
+      if (!width || !height) return 1;
+      return Math.max(
+        width / allocatedWidth,
+        allocatedWidth / width,
+        height / allocatedHeight,
+        allocatedHeight / height,
+      );
+    };
     const applyRendererSize = () => {
       const width  = canvas.clientWidth  || canvas.offsetWidth;
       const height = canvas.clientHeight || canvas.offsetHeight;
       if (!width || !height) return;
+      allocatedWidth = width;
+      allocatedHeight = height;
       const ratio = getPixelRatio();
       if (ratio !== appliedPixelRatio) noteRatioApplied();
       appliedPixelRatio = ratio;
@@ -1283,10 +1321,17 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     };
 
     // ── Render loop ──
-    // Unclamped, which is what this loop has always had. ⚠ It is the only one of the three without a
-    // max delta, so a tab-restore integrates the whole gap in a single step here. Left as-is rather
-    // than quietly changed — see lib/frameTimer.ts.
-    const frameTimer = createFrameTimer();
+    // ⚠ CLAMPED NOW, AND THE COMMENT THIS REPLACES WAS WAITING FOR THIS CHANGE. It read "unclamped,
+    // which is what this loop has always had… left as-is rather than quietly changed" — so here is the
+    // change, not quietly: minimise the window on the fleet, come back a minute later, and the first
+    // delta is the whole minute. The only thing that integrates it raw is `AUTO_ROTATE_SPEED * delta`,
+    // so the craft on the pad snapped to a new heading the instant you returned.
+    //
+    // Matches the works field and the sun at 0.05 s. Nothing else in this loop is at risk from it: the
+    // heading ease is `1 - exp(-delta · rate)`, which saturates rather than overshooting, and
+    // `HEADING_MAX_RAD_PER_SEC · delta` is a ceiling. So the clamp costs nothing on any frame this
+    // machine can actually draw, and only bites on gaps no animation should be integrating anyway.
+    const frameTimer = createFrameTimer(MAX_FRAME_SECONDS);
     let frameId = 0;
     // 0..1 inside a departure window, clamped flat outside it — keeps each beat in sequence.
     const departWindow = (curveWindow: [number, number], value: number) =>
@@ -1539,7 +1584,30 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
         // looks like from the outside: the tweens advance in real time through it and the craft
         // lands somewhere else. Restart the countdown on the far side instead.
         ratioPendingSeconds = 0;
-      } else {
+      }
+
+      // ── ⚠ THE CANVAS'S OWN SIZE: THE DRAG IS THE ONLY THING IT WAITS FOR ─────────────────────
+      //
+      // OUTSIDE the `handoffActive || swapActive` freeze above, deliberately — it was inside it for one
+      // revision and the craft flew a whole handoff visibly STRETCHED. See the works field's twin of
+      // this block for the full reasoning; the short version is that a queued RATIO only makes the
+      // frame softer while a queued SIZE leaves `camera.aspect` disagreeing with the box it is blitted
+      // into, so the picture is distorted for exactly as long as it waits.
+      //
+      // No exception for `swapActive` either. A one-frame stall inside the ~2.8 s portal swap advances
+      // the timeline by ~30 ms, which is not visible; a stretched craft for 2.8 s is. The drag is the
+      // only thing worth waiting for, because it is the only thing that would make us re-allocate
+      // again on the next frame.
+      if (canvasSizeDirty) {
+        const stretched = canvasStretch() > MAX_DEFERRED_STRETCH;
+        if (!isDrawing || stretched || isViewportSettled()) {
+          applyRendererSize();
+          canvasSizeDirty = false;
+          ratioPendingSeconds = 0;
+        }
+      }
+
+      if (!(handoffActive || swapActive)) {
         const targetRatio = getPixelRatio();
         if (targetRatio === appliedPixelRatio) {
           ratioPendingSeconds = 0;
@@ -1558,6 +1626,7 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
           // change. Same rule as the works field; see RATIO_APPLY_GRACE_SECONDS.
           if (!isDrawing || ratioPendingSeconds >= RATIO_APPLY_GRACE_SECONDS) {
             applyRendererSize();
+            canvasSizeDirty = false;
             ratioPendingSeconds = 0;
           }
         }
@@ -1568,14 +1637,22 @@ export function useServicesDeck({ canvasRef, activeIndex, onFlick, onStatus }: D
     renderFrame();
 
     // ── Resize ──
+    // ⚠ THE OBSERVER MARKS, THE LOOP APPLIES — see the block above, and the works field's twin of it.
+    // Calling `applyRendererSize` from here walked past the freeze that the whole ratio section is
+    // built out of: a resize during the handoff or a portal swap re-allocated the composer inside
+    // ~2.8 s of tweened motion the visitor was watching.
     applyRendererSize();
-    const resizeObserver = new ResizeObserver(applyRendererSize);
+    const stopReframeWatch = startViewportReframeWatch();
+    const resizeObserver = new ResizeObserver(() => {
+      canvasSizeDirty = true;
+    });
     resizeObserver.observe(canvas.parentElement ?? canvas);
 
     return () => {
       disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
+      stopReframeWatch();
       canvas.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);

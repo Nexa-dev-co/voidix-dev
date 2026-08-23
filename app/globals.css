@@ -148,6 +148,16 @@ html {
      top doesn't cost a repaint — it costs the entire loading sequence again. This also stops the
      rubber-band from chaining, which is what used to expose the canvas colour under the hero. */
   overscroll-behavior-y: none;
+  /* ⚠ SCROLL ANCHORING IS OFF, AND ON THIS PAGE THAT IS NOT A MICRO-OPTIMISATION.
+     Chrome silently adjusts the scroll position when content ABOVE the viewport changes size, so the
+     thing you were looking at stays put. That is a good default for a document. This is not a
+     document: the homepage is one pinned ScrollTrigger whose spacer IS the page height, every section
+     is `position: fixed` inside it, and the spacer is re-sized in pixels on every refresh. So there is
+     nothing meaningful for the browser to anchor to, and the one element it can find changes height by
+     thousands of pixels whenever the window does — at which point its "correction" is a scroll jump
+     that lands wherever it likes, applied AFTER our own re-anchor has run and therefore on top of it.
+     See docs/viewport-reframe-plan.md. */
+  overflow-anchor: none;
 }
 
 html::-webkit-scrollbar {
@@ -1270,6 +1280,20 @@ body {
 .hero-section.is-services .hero-sun-fill {
   opacity: 0;
   transition: opacity 0.5s ease;
+}
+/* ⚠ …AND THE SQUARE'S OWN RING, WHICH IS NOT A COSMETIC DETAIL HERE.
+   `.hero-sun-card` carries a 1px amber outline and a soft amber glow as box-shadows. Those belong to
+   the square as an OBJECT — a small lit panel on the cream hero. By the time this class is on, the
+   same element has been scaled ~11× to cover the viewport, and that ring is a full-height amber line
+   sitting on the screen edge: invisible while the transform is exact, and a stray vertical rule down
+   the middle of the fleet the moment it is not. It cannot be RIGHT here, only unnoticed — so it goes.
+   (`FILL_OVERSCAN` stops the transform drifting; this stops the drift being drawable at all. Both,
+   because the ring was the only reason a few pixels of geometry error was ever visible.)
+   ⚠ Instant, and deliberately no transition: `box-shadow` is a PAINT property and this element covers
+   the whole viewport by now, so fading it would repaint the full screen every frame of the fade — for
+   something that is meant to be off the edge in the first place. */
+.hero-section.is-services .hero-sun-card {
+  box-shadow: none;
 }
 .hero-section.is-services .deck-backdrop {
   opacity: 0;
@@ -5943,17 +5967,34 @@ body {
   --doc-ink: rgb(var(--fg-rgb) / 0.72); /* body sentences — 8.6:1 */
   --doc-ink-soft: rgb(var(--fg-rgb) / 0.58); /* meta, footer links — 5.9:1 */
   --doc-ink-label: rgb(var(--fg-rgb) / 0.5); /* the micro uppercase labels — 4.6:1 */
-  /* The same top expression `.deck-overlay` and `.contact-section` use, so the first line of type on
-     all three surfaces starts on the same rule. */
-  padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.25rem, 5vw, 5rem) clamp(3rem, 6vh, 5rem);
+  /* ⚠ The same top AND horizontal expression `.deck-overlay` and `.contact-section` use, so the first
+     line of type on all three surfaces starts on the same rule and every surface holds the same gutter.
+     The horizontal floor was 1.25rem here against their 1.5rem — invisible above ~400px, and one of the
+     three ways these routes had drifted into a second responsiveness system. Only the BOTTOM differs
+     now, and it differs because it must: those two are one pinned viewport with a carousel strip hanging
+     off the bottom edge, this is a document that ends. */
+  padding: clamp(5.75rem, 12vh, 8.75rem) clamp(1.5rem, 5vw, 5rem) clamp(3rem, 6vh, 5rem);
 }
 
 /* Lifted above the field — see the note on `.doc-field`. */
+/* ── ⚠ NO MAX-WIDTH AND NO `margin: 0 auto` — THIS IS FULL BLEED, THE WAY `/` IS ──
+   It was `max-width: 76rem`, and that is the same defect `.contact-panel`'s header records being
+   rewritten out of: a hard cap does not read the frame at all, so 1920 and 2560 both rendered an
+   identical 1216px island while the homepage ran edge to edge. There is no centred container anywhere
+   on `/` — every overlay is the viewport minus the one shared padding expression, and content is held
+   by MEASURE instead of by a wrapper.
+
+   ⚠ Which makes those measures load-bearing now, in a way they were not while the container was doing
+   half the job: `.doc-section-body` 62ch, `.doc-claim-backing` 58ch, `.doc-masthead-lead` 46ch,
+   `.doc-masthead-title` 18ch, `.doc-claim-kicker` 46ch. A new block of prose in here with no cap will
+   set a 2400px line on a large monitor. `[data-wide='true']` is the deliberate opt-out and belongs to
+   tracks and grids, never to sentences.
+
+   ⚠ The gutter this opens between the flow and the rail is the COMPOSITION, not a hole. It is the same
+   edge-to-edge diagonal `.deck-head` and `.works-head` set with `justify-content: space-between`. */
 .doc-inner {
   position: relative;
   z-index: 1;
-  max-width: 76rem;
-  margin: 0 auto;
 }
 
 /* ── The masthead ── */
@@ -6404,12 +6445,112 @@ body {
   text-wrap: balance;
 }
 
+/* ── What kind of work a project was, above its title ──
+   The document's form of `.works-detail-type`. NOT that pill: the field draws one of these at a time
+   over a black scene and can afford a bordered, glowing capsule; four of them down a page of prose
+   would read as a filter bar. The information is the same and the emphasis is carried by colour and
+   tracking instead of by a box.
+
+   ⚠ Amber is safe for type here — `--accent` is `--heat-600`, comfortably above the `--heat-500` floor
+   this file sets for small text on the page black. Do not swap it for a lower stop. */
+.doc-claim-key {
+  margin-bottom: 0.45rem;
+  color: var(--accent);
+}
+
+/* ── A craft's poetic kicker ──
+   `.deck-detail-eyebrow`'s counterpart. On the deck this line sits over the description as the one
+   place a service is allowed to be lyrical; here it sits under the name for the same job, a step down
+   in size because on this page the NAME is the heading and there it lives in the carousel. */
+.doc-claim-kicker {
+  margin-top: 0.5rem;
+  max-width: 46ch;
+  font-weight: 700;
+  font-size: clamp(0.95rem, 1.4vw, 1.15rem);
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  text-wrap: balance;
+}
+
 .doc-claim-backing {
   margin-top: 0.6rem;
   max-width: 58ch;
   font-size: var(--doc-fs-body);
   line-height: 1.75;
   color: var(--doc-ink);
+}
+
+/* ── A row's own call to action ──
+   ⚠ DELIBERATELY NOT `.enquiry-cta`. The homepage shows one craft at a time, so its amber pill is one
+   pill on screen; `/lite` shows all four at once and then four projects, and eight stacked pills down a
+   column of prose is both louder than the homepage ever is and exactly the "feature grid with buttons"
+   the brief names as an anti-reference. The OFFER is identical — same words, same prefill — and only
+   the register changes to the document's. `LitePage`'s `ClaimAction` carries the full reasoning.
+
+   The page keeps one pill, at the close, which the CSS below already calls the one control the
+   document exists to produce. */
+.doc-claim-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* Vertical padding is the TAP TARGET, not rhythm: the text alone is ~14px tall and this has to be
+     pressable on a phone. The negative inline margin keeps the glyph's box from indenting the label
+     out of line with the copy above it. */
+  margin: 0.9rem 0 -0.35rem;
+  padding: 0.45rem 0;
+  font-size: var(--fs-small);
+  letter-spacing: 0.06em;
+  color: var(--doc-ink-soft);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.doc-claim-action > span:first-child {
+  border-bottom: 1px solid transparent;
+  padding-bottom: 0.15rem;
+  transition: border-color 0.25s ease;
+}
+
+/* Lights WITH the row, exactly as `.doc-claim-index` does — the offer is part of the row rather than an
+   ornament sitting on it. Brighter, not amber: the index is already the row's amber and two of them
+   would make the row argue with itself about where to look. */
+.doc-claim:hover .doc-claim-action {
+  color: var(--fg);
+}
+
+/* ...and amber only when the pointer is actually on the control, which is the one moment it is a
+   destination rather than a label. */
+.doc-claim-action:hover,
+.doc-claim-action:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
+.doc-claim-action:hover > span:first-child,
+.doc-claim-action:focus-visible > span:first-child {
+  border-bottom-color: rgb(var(--accent-rgb) / 0.4);
+}
+
+.doc-claim-action-glyph {
+  display: inline-flex;
+  transition: transform 0.25s ease;
+}
+
+.doc-claim-action:hover .doc-claim-action-glyph,
+.doc-claim-action:focus-visible .doc-claim-action-glyph {
+  transform: translateX(3px);
+}
+
+/* The one action that belongs to a whole list rather than to a row — the questions' "ask us anything",
+   which is how the chamber's hologram ends too. Sits at the section body's own left edge, outside the
+   claims' index gutter, because it is not answering any one of them. */
+.doc-claims-action {
+  margin-top: clamp(1.1rem, 2.5vh, 1.6rem);
+  padding-top: clamp(1.1rem, 2.5vh, 1.6rem);
+  border-top: 1px solid var(--border);
 }
 
 /* ── The phase track ──
@@ -6544,7 +6685,13 @@ body {
   }
 }
 
+/* ⚠ A MEASURE, because the track above it deliberately has none. `.doc-track` is a `data-wide` grid and
+   the curve reads better the more run it gets, so the phase columns take whatever the frame offers —
+   which since `.doc-inner` went full bleed is ~560px each on a 2560px monitor, or about 90 characters of
+   line. The trajectory keeps the width; the sentences do not. Same split `.works-overlay` makes, where
+   the scene is the frame and `.works-detail` is 34ch inside it. */
 .doc-track-detail {
+  max-width: 42ch;
   font-size: var(--doc-fs-body);
   line-height: 1.7;
   color: var(--doc-ink);
@@ -6552,10 +6699,16 @@ body {
 
 /* ── The instruments ──
    Telemetry, in the language of the hero's HUD: tiny uppercase kickers over large figures. */
+/* ⚠ The cap is on the STRIP, and it is the one thing here that is not prose. Four readouts have a
+   natural width — at 72rem each cell is ~17rem, which is the shape a HUD row wants; given the whole of a
+   2560px frame they stretch to ~600px apiece and the strip reads as an empty table rather than as an
+   instrument. 72rem is also just above what the old 76rem container left after the rail, so nothing
+   between a laptop and a 1920px screen moves — this only ever binds above. */
 .doc-instruments {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
   gap: 1px;
+  max-width: 72rem;
   list-style: none;
   background: var(--border);
   border: 1px solid var(--border);
@@ -6617,6 +6770,86 @@ body {
 .doc-chips--quiet .doc-chip {
   border-color: rgb(var(--fg-rgb) / 0.14);
   color: rgb(var(--fg-rgb) / 0.55);
+}
+
+/* ── The legal documents ──
+   `/privacy` and `/terms`. Two additions only, because those pages are otherwise built entirely out
+   of `.doc-prose` / `.doc-paragraph` / `.doc-note` — which is what earns them the reveal, the stagger
+   and the no-script net for free rather than needing their own copy of each. */
+
+/* When the notice was last read by a human. Above the first section rather than in the masthead: the
+   masthead is the page's title block, and a review date is metadata ABOUT the text, not part of it. */
+.doc-stamp {
+  margin-bottom: clamp(2rem, 5vh, 3.25rem);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--doc-ink-label);
+}
+
+.doc-stamp time {
+  color: rgb(var(--accent-rgb) / 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The ledger — "what we collect, and where it goes", and the terms' licence list.
+   ⚠ Rows on a rule, deliberately the same object as `.doc-claims` above: a legal page is the single
+   easiest place to end up with a grid of bordered cards, which is the anti-reference the brief names.
+   It is NOT a <dl>: several of these rows carry no term at all (the plain caveats in "what the site
+   never does"), and a definition list with half its <dt>s missing is worse markup than a list of
+   sentences that happen to start with a lead-in. */
+.doc-ledger {
+  list-style: none;
+  margin-top: clamp(1.5rem, 3.5vh, 2.25rem);
+  max-width: 62ch;
+}
+
+.doc-ledger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: clamp(1rem, 2.2vh, 1.4rem) 0;
+  border-top: 1px solid var(--border);
+  position: relative;
+}
+
+.doc-ledger-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* The same edge-lights-on-hover gesture the claim rows, the works panel and the FAQ rows make. */
+.doc-ledger-row::before {
+  content: '';
+  position: absolute;
+  left: clamp(-0.9rem, -2vw, -0.5rem);
+  top: 0.8rem;
+  bottom: 0.8rem;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.doc-ledger-row:hover::before {
+  opacity: 0.6;
+}
+
+/* ⚠ Amber on type is safe here for the reason `.doc-claim-key` states: `--accent` is `--heat-600`,
+   above the `--heat-500` floor this file sets for small text on the page black. Not a lower stop. */
+.doc-ledger-term {
+  font-weight: 700;
+  font-size: clamp(0.95rem, 1.5vw, 1.1rem);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  text-wrap: balance;
+}
+
+.doc-ledger-detail {
+  font-size: var(--doc-fs-body);
+  line-height: 1.8;
+  color: var(--doc-ink);
 }
 
 /* ── Open roles ── */
@@ -6852,10 +7085,15 @@ body {
   transition: clip-path 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) 0.12s;
 }
 
+/* ⚠ `RoleRow` renders exactly TWO columns, so `auto-fit` never adds a third — which means every pixel
+   the grid is given goes straight into line length. Uncapped inside a full-bleed `.doc-inner` that is
+   two ~1180px columns of bullet points on a 2560px monitor. 92ch holds each at roughly 44 characters,
+   which is the measure the rest of this block is set to. */
 .doc-role-columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
   gap: clamp(1.25rem, 3vw, 2.5rem);
+  max-width: 92ch;
   padding-top: 0.35rem;
 }
 
@@ -6930,6 +7168,11 @@ body {
 .doc-close {
   border-top: 1px solid var(--border);
   margin-top: clamp(2rem, 5vh, 3.5rem);
+  /* ⚠ Same 4.5rem fixed navbar `.doc-section` allows for, and for the same reason — on `/lite` the
+     close is an anchor: it is where the bar's `04 Contact` and its CTA land, since that page has no
+     contact section. Without this the sign-off parks underneath the bar. Inert on `/about` and
+     `/careers`, where nothing scrolls to it. */
+  scroll-margin-top: 5.5rem;
 }
 
 .doc-close-title {
@@ -6976,30 +7219,51 @@ body {
 }
 
 /* ── The document footer ──
-   Same link data as the contact section's (see PageFooter), different budget entirely: that one is
-   squeezed into a shared pinned viewport, this one has a document's worth of room. */
+   Same link data as the contact section's (see PageFooter), and — since 2026-08-21 — the same GEOMETRY.
+
+   ⚠ THE TWO FOOTERS ARE ONE OBJECT NOW, AND THE PRESENTATION IS NO LONGER THE PLACE THEY DIVERGE.
+   This block used to state the opposite, on the argument that the contact footer is squeezed into a
+   pinned viewport and this one has a document's worth of room. That is true of the NARROW treatment —
+   the `51.25em` gutter grid down there is a height budget and stays where it is — and it was never true
+   of the wide one, where the only thing the extra room bought was a footer that did not look like the
+   site's. Side by side on a 1920px screen the brand stacked instead of sitting on one baseline, the
+   links ran down instead of across, and the wordmark rendered at 24px against the contact footer's 16
+   because it had been given a `clamp` of its own outside the `--fs-*` scale entirely.
+
+   So: row geometry, gaps and wordmark size are copied from `.contact-footer` and must track it.
+
+   ⚠ WHAT DOES NOT TRACK IT IS THE INK, and that is deliberate. The links stay on `--doc-ink-soft`
+   (5.9:1) rather than `--muted` (3.0:1) and the titles on `--doc-ink-label` (4.6:1) rather than the
+   contact footer's 0.28 alpha. Matching those would be a contrast regression on the pages that exist to
+   be READ — see the note on `.doc-page`, which makes the same call for body copy. The contact footer is
+   the one below AA here, not this one. */
 .doc-footer {
   margin-top: clamp(3.5rem, 9vh, 6rem);
   padding-top: clamp(1.5rem, 3.5vh, 2.25rem);
   border-top: 1px solid var(--border);
 }
 
+/* `.contact-footer`'s row. No `justify-content` — the brand's own `margin-right: auto` does the pushing,
+   which is what keeps the two footers agreeing when a group is added to `SiteContent.footer` and lands
+   in both at once. */
 .doc-footer-top {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
-  gap: clamp(1.5rem, 4vw, 3.5rem);
+  align-items: baseline;
+  gap: 0.5rem clamp(1rem, 3vw, 2.5rem);
 }
 
 .doc-footer-brand {
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-right: auto;
 }
 
 .doc-footer-mark {
   font-weight: 700;
-  font-size: clamp(1.1rem, 2vw, 1.5rem);
+  /* ⚠ The site's wordmark size, not a local clamp. See the block header. */
+  font-size: var(--fs-mark);
   letter-spacing: -0.02em;
   color: var(--fg);
 }
@@ -7012,21 +7276,22 @@ body {
 .doc-footer-groups {
   display: flex;
   flex-wrap: wrap;
-  gap: clamp(1.5rem, 4vw, 3.5rem);
+  gap: 0.75rem clamp(1.25rem, 3vw, 2.75rem);
 }
 
 .doc-footer-group-title {
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.4rem;
   font-size: var(--fs-micro);
   letter-spacing: 0.1875em;
   text-transform: uppercase;
   color: var(--doc-ink-label);
 }
 
+/* Across, not down — `.contact-footer-links`' row. */
 .doc-footer-links {
   display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
+  flex-wrap: wrap;
+  gap: 0.3rem clamp(0.7rem, 1.6vw, 1.1rem);
   list-style: none;
 }
 
@@ -7080,10 +7345,13 @@ body {
 .doc-paragraph,
 .doc-quote,
 .doc-claim,
+.doc-stamp,
+.doc-ledger-row,
 .doc-track-phase,
 .doc-instrument,
 .doc-chip,
 .doc-note,
+.doc-claims-action,
 .doc-role,
 .doc-close-title,
 .doc-close-lead,
@@ -7112,10 +7380,13 @@ body {
 .is-revealed .doc-paragraph,
 .is-revealed .doc-quote,
 .is-revealed .doc-claim,
+.is-revealed .doc-stamp,
+.is-revealed .doc-ledger-row,
 .is-revealed .doc-track-phase,
 .is-revealed .doc-instrument,
 .is-revealed .doc-chip,
 .is-revealed .doc-note,
+.is-revealed .doc-claims-action,
 .is-revealed .doc-role,
 .is-revealed .doc-close-title,
 .is-revealed .doc-close-lead,
@@ -7145,6 +7416,8 @@ body {
   .doc-paragraph,
   .doc-quote,
   .doc-claim,
+  .doc-stamp,
+  .doc-ledger-row,
   .doc-track-phase,
   .doc-instrument,
   .doc-chip,
@@ -7277,8 +7550,13 @@ body {
     margin-bottom: 0.45rem;
   }
 
+  /* ⚠ `align-items` has to be restated, not just the direction. The wide row sets `baseline`, which in
+     a COLUMN aligns the cross axis — the brand and the groups would be pulled to each other's first-line
+     baseline horizontally instead of both starting at the left edge. Same shape as the `align-items:
+     stretch` in `.contact-footer`'s own narrow block. */
   .doc-footer-top {
     flex-direction: column;
+    align-items: stretch;
   }
 }
 
@@ -7387,4 +7665,238 @@ body {
 
 :root[data-motion='reduced'] .doc-field-bloom {
   transform: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+   THE CONSENT BAR
+
+   The one thing this site asks a visitor for. It is deliberately the quietest interruption on the
+   page: a hairline, the page's own black, and no shadow — the site does not have shadows.
+
+   ⚠ z-index 9700 is chosen against the existing stack, not picked for being large:
+       10001  the intro veil and the sun during the intro
+       10000  LoopVeil / SectionJumpVeil — the covers a transition travels behind
+        9998  .nav-accent          9999  .nav-root
+     → 9700   here
+        9500  the sun after the intro
+   Above the sun and the scenes, BELOW the navbar (opposite ends of the screen, so they never meet
+   visually), and crucially below the veils — a cover that hides a transition must hide this too, or
+   a jump would travel behind a black screen with a consent bar sitting on top of it.
+   ───────────────────────────────────────────────────────────────────────────────────────────────── */
+.consent-bar {
+  position: fixed;
+  z-index: 9700;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* ⚠ Its own stacking context, so the two z-indexes below are compared against the page's stack and
+     never against a sibling inside the bar. */
+  isolation: isolate;
+
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(0.75rem, 2vw, 2rem);
+
+  padding: clamp(0.9rem, 2vh, 1.25rem) clamp(1rem, 4vw, 2.5rem);
+  /* ⚠ FIRST USE OF `env()` IN THIS FILE, and it is not optional on a bottom-fixed element: on an
+     iPhone the home indicator sits over the bottom ~34px, so without this the buttons are under it
+     and the whole bar reads as clipped. `max()` rather than a bare add, so a device with no inset
+     keeps the designed padding rather than collapsing to it. */
+  padding-bottom: max(clamp(0.9rem, 2vh, 1.25rem), env(safe-area-inset-bottom, 0px));
+
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  /* The bar is over live WebGL for most of the journey; the blur is what stops the copy sitting on a
+     moving starfield. Backdrop filters are cheap here because the element is small and static. */
+  backdrop-filter: blur(12px);
+
+  animation: consent-bar-rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+/* ⚠ WHILE THE LOADER IS UP IT HAS TO CLEAR THE VEIL, or it is painted behind the intro and is simply
+   not there. The veil is 10000; `.intro-skip` and `.intro-motion-prompt` both took 10001 for exactly
+   this reason, and this joins them.
+
+   ⚠ And it MUST drop back afterwards — that is the half that is easy to miss. `LoopVeil` and
+   `SectionJumpVeil` are also 10000, and they exist to hide a transition completely. A bar left at
+   10001 would float on top of a black cover while a section change travelled behind it, which is
+   worse than either state on its own because it advertises that something is being hidden. */
+.consent-bar[data-intro='true'] {
+  z-index: 10001;
+}
+
+@keyframes consent-bar-rise {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: none; }
+}
+
+.consent-bar-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  /* Holds a readable measure without pushing the buttons off a narrow screen. */
+  max-width: 62ch;
+}
+
+.consent-bar-title {
+  font-weight: 700;
+  font-size: clamp(0.9rem, 1.4vw, 1.05rem);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+
+.consent-bar-detail {
+  font-size: var(--fs-tiny);
+  line-height: 1.65;
+  /* ⚠ 0.62 rather than `--muted`'s 0.38: this is the sentence that carries the actual disclosure, so
+     it is the one piece of secondary copy on the site that may not be atmospheric. */
+  color: rgb(var(--fg-rgb) / 0.62);
+}
+
+/* ⚠ Amber is safe on type here — `--accent` is `--heat-600`, above the `--heat-500` floor this file
+   sets for small text on the page black. Not a lower stop. */
+.consent-bar-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+}
+
+.consent-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.consent-bar-button {
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: rgb(var(--fg-rgb) / 0.75);
+  font-family: inherit;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.25s ease, border-color 0.25s ease, background-color 0.25s ease;
+  /* 44px minimum target — the same floor the orbit dial's facets are held to. */
+  min-height: 44px;
+}
+
+.consent-bar-button:hover,
+.consent-bar-button:focus-visible {
+  color: var(--fg);
+  border-color: rgb(var(--accent-rgb) / 0.5);
+}
+
+.consent-bar-button--accept {
+  border-color: rgb(var(--accent-rgb) / 0.55);
+  color: var(--accent);
+}
+
+.consent-bar-button--accept:hover,
+.consent-bar-button--accept:focus-visible {
+  background: rgb(var(--accent-rgb) / 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.consent-bar-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* On a phone the copy takes the full width and the buttons sit under it, each taking half — a row of
+   two 44px targets is easier to hit than two small ones pushed to one side. */
+@media (max-width: 51.25em) {
+  .consent-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.85rem;
+  }
+
+  .consent-bar-actions {
+    justify-content: stretch;
+  }
+
+  .consent-bar-button {
+    flex: 1;
+  }
+}
+
+/* ⚠ The blanket rule near the top of this file already collapses transitions, but an `animation` is
+   not a transition and is not covered by it. Without this the bar still slides. */
+@media (prefers-reduced-motion: reduce) {
+  .consent-bar {
+    animation: none;
+  }
+}
+
+:root[data-motion='reduced'] .consent-bar {
+  animation: none;
+}
+
+/* ── The consent control, on /privacy ──
+   The permanent half of the bar. Shares the bar's button styles deliberately — it is the same
+   decision being made in a calmer place, and two different-looking controls for one choice would
+   read as two different choices. */
+.consent-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-items: flex-start;
+  max-width: 62ch;
+  margin-top: clamp(2rem, 5vh, 3rem);
+  padding: clamp(1.1rem, 2.5vh, 1.6rem) clamp(1.1rem, 2.5vw, 1.6rem);
+  border: 1px solid var(--border);
+  background: rgb(var(--accent-rgb) / 0.03);
+}
+
+.consent-control-state {
+  font-size: var(--doc-fs-body);
+  line-height: 1.7;
+  color: var(--doc-ink);
+}
+
+.consent-control-value {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* "Not decided" is a real state and must not wear the same colour as "On" — amber reads as active
+   here, and a visitor who has never answered has not activated anything. */
+.consent-control-value[data-state='unset'],
+.consent-control-value[data-state='denied'] {
+  color: rgb(var(--fg-rgb) / 0.62);
+}
+
+.consent-control-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* ⚠ Disabled is the CURRENT state, not an error — it is how the control says "this is already what
+   you chose". So it dims rather than greying out, and keeps its border. */
+.consent-control .consent-bar-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.consent-control .consent-bar-button:disabled:hover {
+  color: rgb(var(--fg-rgb) / 0.75);
+  border-color: var(--border);
+  background: transparent;
+}
+
+.consent-control-note {
+  font-size: var(--fs-tiny);
+  line-height: 1.7;
+  color: var(--doc-ink-label);
 }

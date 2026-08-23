@@ -1,14 +1,16 @@
-# Arriving from another route — plan
+# Arriving from another route
 
-> **Status: PROPOSED.** Two defects, one shared cause: *the navbar's four sections only exist on `/`,
-> and every other route reaches them by leaving.* Part A fixes what `/about` and `/careers` do about
-> that. Part B stops `/lite` needing to do it at all.
+> **BUILT, 2026-08-16 — both parts.**
+>
+> Two defects, one shared cause: *the navbar's four sections only exist on `/`, and every other route
+> reaches them by leaving.* Part A fixes what `/about` and `/careers` do about that. Part B stops
+> `/lite` needing to do it at all.
 
 ---
 
-## 0 · What is wrong, precisely
+## 0 · What was wrong
 
-### A · `/about`, `/careers` → the homepage shows you the hero first
+### A · `/about`, `/careers` → the homepage showed you the hero first
 
 Click **Work** on `/about`. The `<a href="/#work">` is a real navigation, so:
 
@@ -27,252 +29,224 @@ Click **Work** on `/about`. The `<a href="/#work">` is a real navigation, so:
                           └─ cover opens on Works
 ```
 
-Nothing here is broken — every piece is doing its job. The defect is **ordering**: the loader's
-handoff and the jump's cover are two separate curtains, and the hero is shown in the gap between
+Nothing there was broken — every piece was doing its job. The defect was **ordering**: the loader's
+handoff and the jump's cover are two separate curtains, and the hero was shown in the gap between
 them. Roughly **2.5–3 seconds of a section the visitor did not ask for**, followed by a second
 full-screen cover.
 
-`JUMP_SECTION_DISTANCE` is `1` (`useHeroAnimation.ts:431`), so this is true of **all four**
+`JUMP_SECTION_DISTANCE` is `1` (`useHeroAnimation.ts`), so this was true of **all four**
 destinations, Services included.
 
-### B · `/lite` sends you away for sections it already has
+### B · `/lite` sent you away for sections it already has
 
-`/lite` renders the same three registries the homepage does — `DECK_SERVICES`, `WORKS_PROJECTS`,
-`FAQ_ENTRIES` — as `LITE_SECTIONS`:
-
-| navbar item | `/lite` already has | today's click |
-|---|---|---|
-| `01 Services` | §01 *What we build* (`#build`) | full load of `/`, then §A above |
-| `02 Work` | §02 *Selected work* (`#work`) | ditto |
-| `03 FAQ` | §03 *Questions* (`#questions`) | ditto |
-| `04 Contact` | the close block + `EnquiryPanel` | ditto |
-| `Start Project` CTA | the close's own *Start a project* button | ditto |
-
-So the one page that exists **because the visitor cannot afford the ten megabytes** answers every
-nav click by fetching the ten megabytes. That is the whole bug.
+`/lite` renders the same three registries the homepage does, yet answered every nav click by fetching
+the ten megabytes it exists to avoid — **including the phone's orbit fan, which is the only
+navigation below 51.25em.** Not a small leak: the whole purpose of the page, undone by the chrome
+around it. See §4.
 
 ---
 
-## 1 · Why it is like this (so the fix doesn't undo the reasons)
+## 1 · The constraints (which the fix does not get to break)
 
-Four constraints are load-bearing and the fix must not break any of them:
+1. **Contract 2** — the pin is created *only* in the `REVEAL_EVENT` handler.
+2. **`goToStop` needs the pin.** Before it exists the call degrades to setting an index.
+3. **`html.scroll-locked` is `overflow: hidden`.** `window.scrollTo` and `trigger.scroll()` both
+   no-op under it. **The travel cannot happen while the intro's lock is on.**
+4. **The journey must be travelled, never teleported.** The chamber room and the contact star are
+   built lazily off crossing progress; a teleport arrives in a room that was never created.
+   `lib/sectionJumpEvents.ts` records this at length.
 
-1. **Contract 2** — the pin is created *only* in the `REVEAL_EVENT` handler. Nothing scroll-driven
-   may exist during the intro.
-2. **`goToStop` needs the pin.** Before it exists the call degrades to setting an index. So the
-   travel cannot start before `REVEAL_EVENT`.
-3. **`html.scroll-locked` is `overflow: hidden`** (`globals.css:160`). `window.scrollTo` and
-   `trigger.scroll()` both no-op under it. **The travel cannot happen while the intro's lock is on.**
-4. **The journey must actually be travelled, never teleported.** The chamber room and the contact
-   star are built lazily off crossing progress; a teleport arrives in a room that was never created.
-   `lib/sectionJumpEvents.ts` records this at length — it is why a covered jump glides underneath
-   rather than jumping.
-
-Constraint 3 is the interesting one, and it is why the loader currently has to get out of the way
-before the travel can begin. It is also why the current order is what it is rather than an oversight.
+Constraint 3 is why the loader used to have to get out of the way before the travel could begin. It
+is also why the old order was what it was rather than an oversight.
 
 ---
 
-## 2 · Options considered
-
-| # | Idea | Verdict |
-|---|---|---|
-| 1 | Teleport the pin to the destination at `REVEAL_EVENT` | **Rejected.** Skips the lazy builds and leaves `currentStop`, `wasInFill`, `lastCommittedIndex`, `lastCrossingProgress` un-derived. This is the design already rejected in `sectionJumpEvents.ts`, for the same reasons. |
-| 2 | Fire `requestSection` earlier, so the jump cover closes *before* the loader veil lifts | **Rejected.** `.section-jump-veil` and the intro overlay are **both `z-index: 10000`** (`globals.css:2459`, `IntroSequence.tsx:1061`) and the veil is later in `page.tsx`, so it paints **over** the loader — the black disc would grow across the wordmark. Two covers chasing each other is also exactly the multi-clock coupling this codebase keeps having to undo. |
-| 3 | Point `/about` + `/careers` nav at `/lite#work` instead | **Rejected.** The visitor asked for the site, not the text version. |
-| 4 | **The loader stays up and becomes the cover for the whole arrival** | **Recommended.** One curtain, not two. The wait the visitor already accepted absorbs the travel. |
-
-Option 4 also makes the arrival **shorter than it is today**: it removes the veil fade (0.7s), the
-sun flight (1.1s), the hero entrance (~1.4s), the jump cover's close (0.55s) and its open (0.7s), and
-replaces all of it with the glide the site was going to run anyway.
-
----
-
-## 3 · Part A — the loader lands you where you asked
-
-### 3.1 The beat sheet
+## 2 · What was built: the loader IS the cover
 
 ```
-  ┌─ THE LOADER (unchanged) ─────────────────────────────────────────────────┐
+  ┌─ THE LOADER (byte-identical to an ordinary load) ────────────────────────┐
   │  dust field · counter · telemetry · the gate                             │
-  │  corner chrome now reads:   BOUND FOR 02 · WORK        ← the one new line │
+  │  corner chrome reads:   BOUND FOR 02 · WORK           ← the one new line  │
   │  finale: wordmark resolves · the ten shards assemble the star in the "o"  │
   └──────────────────────────────────────────────────────────────────────────┘
                                    │
                     ╔══════════════╧═══════════════╗
-                    ║   THE ARRIVAL  (new branch)  ║   the veil NEVER lifts here
+                    ║   6b · THE ARRIVAL           ║   the veil NEVER lifts here
                     ╚══════════════╤═══════════════╝
                                    │
-   1. REVEAL_EVENT                 │   pin built · star's z → 9500, i.e. BEHIND the veil
-   2. star parked                  │   gsap.set(.hero-sun-flight, {x:0,y:0,scale:1})  — NOT a tween
-   3. loader chrome fades          │   wordmark, counter, frame, telemetry · veil stays opaque
-   4. scroll unlocked              │   ⚠ must precede the travel — see §1.3
-   5. ARRIVAL_TRAVEL_EVENT ───────►│   the pin glides, unwatched, exactly as a covered jump does
-                                   │      · every crossing scrubbed
-                                   │      · chamber room / contact star built on the way past
-                                   │      · gestures swallowed the whole time
-   6. ◄─────── ARRIVAL_SETTLED_EVENT    the pin has landed (epsilon on progress, not the tween)
-   7. SECTION_ARRIVE_EVENT         │   the destination plays its own entrance…
-   8. veil fades out ──────────────┘   …THROUGH the reveal, not behind it
+   chrome + star fade out          │  0.4s — the loader's whole picture leaves as one thing
+                                   │
+   ▼ handOffToArrival(), inside the pause's own callback
+   1. revealHero()                 │  pin built · star z 10001 → 9500, i.e. BEHIND the veil
+   2. gsap.set(flight, home)       │  ⚠ a set, never a tween — see the trap below
+   3. unlockScroll()               │  ⚠ must precede the travel
+   4. requestSection(key, _, true) │  `alreadyCovered`
+                                   │
+        ┌──────────────────────────┴────────────────────────────┐
+        │  the EXISTING covered-jump path, unchanged            │
+        │  JUMP_BEGIN {alreadyCovered} → SectionJumpVeil enters │
+        │  at the top of its HOLD: no collapse, card comes up   │
+        │  JUMP_COVERED (next frame) ───────────────────────────┼──► loader veil fades, unmounts
+        │  the glide runs, unwatched, every crossing scrubbed   │
+        │  JUMP_ARRIVED → card out, hole opens, SECTION_ARRIVE  │
+        └───────────────────────────────────────────────────────┘
                                    ▼
                               02 · WORK, arriving
 ```
 
-Total after the wordmark: **the glide (1.5–3.2s) + a 0.7s fade.** Today the same span costs ~4.5s
-*and* shows a hero.
+**The transit card is the same one a navbar jump gets** — `02 / Work`, the section's own headline,
+two derived readouts. One gesture means "you have been taken somewhere", whether the request came
+from a click on this page or from a link on another one.
 
-### 3.2 The handshake
+### Why the collapse is skipped rather than hidden
 
-Three signals, no shared durations — the same contract as `JUMP_*` and `LOOP_REVERSE_*`. Nothing in
-the intro knows how long the pin takes; nothing in the pin knows how long the veil takes.
+`.section-jump-veil` is `z-index: 10000` and sits *after* `IntroSequence` in `page.tsx`, so it
+already paints above the loader. It was tempting to let the collapse run and rely on black-over-black
+hiding it — but the two blacks are **not** the same: the cover is `#000` (deliberately, so it reads
+the same over every section) and the loader's veil is `--bg`, `#060606`. Near-identical is not
+identical, and a 92%-feathered disc between them is a soft edge sweeping the frame. **Two values that
+happen to be close is not a mechanism.**
 
-| event | fired by | means |
-|---|---|---|
-| `voidix:arrival-travel` | `IntroSequence` | *I own the screen and the lock is off — go.* Carries `{ key }`. |
-| `voidix:arrival-settled` | `useHeroAnimation` | *The pin's progress is at the destination stop.* |
-| `voidix:section-arrive` | `IntroSequence` | Reused as-is. Fired as the veil starts fading, so the section assembles through the reveal. |
+Skipping costs nothing, because the two halves already meet by construction: a full-radius disc and a
+zero-radius hole are both "entirely black".
 
-New file `lib/arrivalEvents.ts`, mirroring `lib/sectionJumpEvents.ts` in shape and in commentary.
+### What this deleted from the first draft of the plan
 
-### 3.3 `lib/arrivalSection.ts` — one reader of the hash
+Reusing `SectionJumpVeil` removed an `ARRIVAL_TRAVEL_EVENT`, an `ARRIVAL_SETTLED_EVENT`, a
+`mode: 'jump' | 'arrival'` on `coveredJump`, and a second arrival-detection path. The intro calls
+`requestSection` itself and waits on `JUMP_COVERED_EVENT`, which already existed.
 
-```ts
-/** The section named in the URL on arrival, read and CONSUMED exactly once. */
-export function readArrivalSection(): string | null
-```
+---
 
-- Memoised at module scope, resolved on the first call, guarded for SSR. Both `IntroSequence` and
-  `useHeroAnimation` ask, in whichever order React mounts them, and get the same answer.
-- Consuming means `history.replaceState` — lifted verbatim from today's `consumeArrivalHash`
-  (`useHeroAnimation.ts:1574`), including its reason: a leftover hash re-triggers the journey on a
-  reload **and on the loop's teleport back to the hero**.
-- Validated through `findNavItem`, so `/#anything-else` is ignored rather than travelled to.
+## 3 · The files, and the traps in each
 
-### 3.4 `useHeroAnimation.ts`
+| file | change |
+|---|---|
+| `lib/arrivalSection.ts` **(new)** | reads and **consumes** the hash once, memoised. Three modules ask in an order React decides; whoever asks first spends it. |
+| `introEvents.ts` | `MINIMUM_LOADER_ARRIVAL_MS` + `minimumLoaderMs()`. |
+| `GatherCanvas.tsx` | paces its drawings off `minimumLoaderMs()`. |
+| `sectionNavigation.ts` | `alreadyCovered` on `GotoSectionDetail`; third arg to `requestSection`. |
+| `sectionJumpEvents.ts` | `alreadyCovered` on `JumpBeginDetail`. |
+| `SectionJumpVeil.tsx` | the already-covered entry. |
+| `useHeroAnimation.ts` | `settleHeroEntrance`, forced covered path, the net. |
+| `IntroSequence.tsx` | `handOffToArrival`, branch 6b, the destination line, the quiet path. |
 
-**One code path, one flag.** The covered-jump machinery already does everything an arrival needs —
-gesture swallowing, the glide, the epsilon arrival detection, the two safety nets. The change is to
-give `coveredJump` a `mode` and branch only where the *finishing dispatch* differs.
+### The traps
 
-```ts
-let coveredJump: {
-  targetStop: number;
-  durationSeconds: number;
-  mode: 'jump' | 'arrival';        // ← the whole of the addition
-} | null = null;
-```
-
-- `finishCoveredJump()` dispatches `JUMP_ARRIVED_EVENT` for `'jump'` and `ARRIVAL_SETTLED_EVENT` for
-  `'arrival'`. Everything above it — `lockStepping(JUMP_ARRIVE_HOLD_MS)`, the net-clearing, the flag
-  reset — is shared and untouched.
-- `runReveal()` gains an arrival branch:
-  ```ts
-  createTransition();
-  if (arrivalKey) settleHeroEntrance();   // instant final pose — see the trap in §3.6.3
-  else            playHeroEntrance();
-  ```
-  and **no longer calls `requestSection`** — that call is what produced the second cover.
-- New listener on `ARRIVAL_TRAVEL_EVENT`: resolves the key to a stop the same way `onGotoSection`
-  does, then `beginCoveredJump(..., mode: 'arrival')` *skipping the cover request* — the loader is
-  already the cover, so it goes straight to `startCoveredGlide()`.
-- **Net:** if `runReveal` fires with an arrival pending and no `ARRIVAL_TRAVEL_EVENT` follows within
-  `ARRIVAL_TRAVEL_FALLBACK_MS` (~2s), fall back to today's `requestSection(key)`. That covers a
-  bypassed or crashed intro — the reveal fallback timers can fire with no `IntroSequence` alive at
-  all. The old behaviour is the degraded mode, which is the right shape for a net.
-
-### 3.5 `IntroSequence.tsx`
-
-- Reads `readArrivalSection()` on mount, into a `const` the effect closes over.
-- **Corner chrome.** `Entering the void` becomes `Bound for 02 · Work` when arriving. Static markup
-  carrying `.intro-chrome`, so the existing fade-in and fade-out already cover it; the number and
-  label come from `findNavItem`, never typed.
-- **The finale's branch.** Everything up to and including `waitForAssembly` is byte-identical. From
-  the `handoff` label:
-
-  | today | arriving |
-  |---|---|
-  | `IGNITE_EVENT` | `IGNITE_EVENT` (kept — the dust's last rush still resolves, under the veil) |
-  | chrome + wordmark + counter → `autoAlpha: 0` | same |
-  | **veil → `autoAlpha: 0`** | **veil untouched** |
-  | `parkSunInO` then flight tween `→ x:0, y:0, scale:1` | `gsap.set` to the same values (see §3.6.1) |
-  | `revealHero()` at `>-0.1` | `revealHero()`, then `unlockScroll()`, then `ARRIVAL_TRAVEL_EVENT` |
-  | `SETTLE_AFTER_REVEAL` hold | `addPause` on `ARRIVAL_SETTLED_EVENT`, capped |
-  | — | `SECTION_ARRIVE_EVENT`, veil → `autoAlpha: 0`, `setDone(true)` |
-
-- `ARRIVAL_WAIT_MAX_MS` — the cap. Must clear `NAV_JUMP_MAX_DURATION` (3.2s) + the scrub's settle
-  (`SCROLL_SCRUB` 1.8) + `JUMP_ARRIVE_GRACE_MS` (2.5s). **8000** with margin. Like every other cap in
-  this file it exists so a page whose pin failed cannot strand the visitor behind a black veil.
-- **Reduced motion** has its own early-return path (`IntroSequence.tsx:459`) and needs the same
-  branch: after `revealHero()` + `unlockScroll()`, dispatch `ARRIVAL_TRAVEL_EVENT` and hold
-  `setDone(true)` until settled or capped. It is not optional — that path is common on iOS.
-
-### 3.6 The traps
-
-**1 · `BLACK_STAGE_EVENT` will kill the sun's flight tween.** `HeroSun.tsx:200` runs
+**1 · `BLACK_STAGE_EVENT` will kill the sun's flight tween.** `HeroSun` runs
 `gsap.to(flight, { scale, overwrite: true })` whenever the fill boundary is crossed — which the
-arrival's glide crosses *by definition*. A flight tween still running would be overwritten mid-air
-and the star would be stranded at its "o" offset for the rest of the session. **The arrival must
-`gsap.set` the flight home, never tween it.** Safe to do invisibly, because…
+glide crosses *by definition*. A flight tween still running would be overwritten mid-air and the star
+would keep its "o" offset, hanging off-centre beside its square, for the rest of the session. **The
+arrival fades the star out and `gsap.set`s it home. Never a tween.**
 
-**2 · …`REVEAL_EVENT` puts the star behind the veil.** `onReveal` moves it `Z_DURING_INTRO` 10001 →
-`Z_AFTER_INTRO` 9500, and the veil is 10000. So the star vanishes behind the veil on the frame the
-pin is built. Two consequences: the `gsap.set` in trap 1 is free, and **the star needs a short
-`autoAlpha` fade before that frame** or it blinks out. Fade it out over ~0.25s, `set` the transform,
-fade it back to 1 while it is safely behind the veil — so it is present and correctly placed when the
-veil finally lifts on the destination.
+**2 · `REVEAL_EVENT` puts the star behind the veil.** `onReveal` moves it `Z_DURING_INTRO` 10001 →
+`Z_AFTER_INTRO` 9500, and the veil is 10000. That is what makes trap 1's `set` free — and it is why
+the star is faded out *first*, over `ARRIVAL_SUN_FADE`, so it leaves with the wordmark rather than
+blinking out on the frame the pin is built.
 
-**3 · The hero must not be left staged.** `playHeroEntrance` is what leaves the headline out of its
-masks and the square filled. Skipping it entirely leaves the hero permanently half-built for anyone
-who later scrolls back up (the loop replays it; a manual scroll up does not). Extract the existing
-reduced-motion branch of `playHeroEntrance` as `settleHeroEntrance()` — three `gsap.set`s that
-already exist in that function — and call it on the arrival path. **No new values.**
+**3 · The hero must not be left staged.** `settleHeroEntrance` is the old reduced-motion branch of
+`playHeroEntrance`, extracted — no new values. Skipping the entrance entirely would leave the
+headline under its masks and the square empty, permanently, for anyone who later scrolls back up.
+(The loop replays it; a manual scroll up does not.)
 
-**4 · Unlocking scroll before the travel opens a one-tick window.** `unlockScroll` removes the
-non-passive `wheel`/`touchmove` blockers. Mitigation: `unlockScroll()` and the
-`ARRIVAL_TRAVEL_EVENT` dispatch happen **in the same synchronous callback**, and the pin sets
-`coveredJump` synchronously in its listener — so `swallowDuringGlide` (`useHeroAnimation.ts:2001`)
-owns every gesture from the next event onward, and `lockStepping(JUMP_ARRIVE_HOLD_MS)` covers the
-tail. No frame passes unguarded.
+**4 · Unlocking scroll before the travel opens a one-tick window.** `unlockScroll()` and
+`requestSection` are in the same synchronous block, and the pin sets `coveredJump` synchronously in
+its listener — so `swallowDuringGlide` owns every gesture from the next event onward, and
+`lockStepping(JUMP_ARRIVE_HOLD_MS)` covers the tail. No frame passes unguarded.
 
 **5 · Contract 1 says the lock is released exactly once, in `onComplete`.** It still is — just
-earlier on this one path. `unlockScroll` is idempotent (a `classList.remove` and three
-`removeEventListener`s), so the `onComplete` call remains harmless. **The contract's comment in
-`IntroSequence` must be amended to say so**, or the next person reads a rule the code no longer keeps.
+earlier on this one path. `unlockScroll` is idempotent, so the `onComplete` call stays a no-op rather
+than becoming a second release. **The comment in `IntroSequence` says so**; do not read the contract
+without it.
 
-**6 · Nothing in the journey is skipped.** The glide is the ordinary `goToStop`. Every crossing is
-scrubbed, `setStage` fires its `DECK_REVEAL_EVENT` / `DECK_HIDE_EVENT` as usual, the chamber room and
-the contact star are built on the way past, and `adaptivePixelRatio` freezes across the crossings
-exactly as it does for a covered jump. **The arrival is not a new journey — it is the existing one
-with a different curtain.**
+**6 · `alreadyCovered` FORCES the covered path.** Both escape hatches in `onGotoSection` — reduced
+motion, and the distance rule — would leave the visitor on a black screen that only
+`JUMP_ARRIVED_EVENT` can open. Neither would fire in practice (an arrival starts at the hero, and
+every section is at least `JUMP_SECTION_DISTANCE` away), but the guarantee must not rest on that.
 
-**7 · `--nav-progress-*` is published by the glide**, so the meters arrive correct with no extra work.
+**7 · The handoff runs inside the pause's own callback.** Two zero-duration items at one timeline
+position resolve by insertion order, which is a fact about GSAP rather than a statement of intent. If
+the pause won, the loader would hold for the full cap and only then ask to travel.
 
-**8 · `SkipToLite` should carry the destination**: `/lite` → `/lite#work`, once Part B gives `/lite`
-those anchors. One line, and it makes the escape hatch honour the intent instead of dropping the
-visitor at the top of a document.
+**8 · The loader must be unmounted before the hole opens.** The shortest glide (hero → Services) is a
+little over a second; `VEIL_FADE_OUT` at 0.7s plus React's unmount is uncomfortably close to it, and
+what it would cost is the destination revealed through a hole with the loader's veil still behind it.
+Hence `ARRIVAL_VEIL_FADE` at 0.35 — which also stops `GatherCanvas` rendering onto a GPU that is at
+that moment scrubbing several crossings.
 
-### 3.7 Optional, Phase 2 — name the destination on the hold
+**9 · The destination line is written by the effect, not rendered.** `readArrivalSection` reads
+`location`, which does not exist on the server, so a branch during render is a hydration mismatch.
+Same rule `GatherCanvas` follows.
 
-The jump veil holds a real transit card (`02 / Work`, the section's own headline, two derived
-readouts — `jumpDestinations.ts`). The arrival hold is currently a fading wordmark. Extracting that
-card into `components/effects/SectionJumpVeil/JumpDestinationCard.tsx` and rendering it inside the
-loader too would give both holds one voice.
+**10 · Reduced motion has its own path and needed the same branch.** It is a common everyday setting
+on iOS; without it, an arrival there would reveal the hero and have the pin's net drag the visitor
+away a beat later — the exact two-curtain sequence this removes, on the platform least able to
+absorb it.
 
-**Deliberately split out.** It is a refactor of a working component for presentation only, and
-Part A is worth shipping without it. The corner-chrome line in §3.5 already answers "where am I
-going" for a fraction of the risk.
+**11 · Nothing in the journey is skipped.** The glide is the ordinary `goToStop`. Every crossing is
+scrubbed, `setStage` fires its deck events, the chamber room and the contact star are built on the
+way past, `--nav-progress-*` arrives correct, and `adaptivePixelRatio` freezes across the crossings
+exactly as it does for any covered jump.
+
+### The two nets
+
+| net | where | catches |
+|---|---|---|
+| `ARRIVAL_HANDOFF_NET_MS` (1200) | `useHeroAnimation` | **no intro at all** — `runReveal` also fires off `REVEAL_FALLBACK_NO_INTRO_MS`. Falls back to the old behaviour: travel, uncovered, because nothing is covering anything. |
+| `TRANSIT_COVER_WAIT_MAX_MS` (2500) | `IntroSequence` | **no transit cover** — `SectionJumpVeil` failed to mount. The loader fades out and the journey is watched. Sized just past the pin's own `JUMP_COVER_TIMEOUT_MS` (2000) so the pin moves *before* the veil lifts, and what is seen is travel rather than a stationary hero. |
+
+---
+
+## 3b · The loader floor
+
+`MINIMUM_LOADER_MS` (6500) is a floor on the **show**, never on the work — everything downloads,
+compiles and measures at full speed regardless. It exists because on a warm cache the gate is
+satisfied in ~1.5s and the field would be released before finishing its first drawing.
+
+An arrival gets `MINIMUM_LOADER_ARRIVAL_MS` (3500) instead. Someone who clicked *Work* on `/about` is
+not being introduced: they have met the site, named where they want to be, and still have the shard
+assembly and the travel itself ahead of them.
+
+⚠ **Both readers go through `minimumLoaderMs()`.** `GatherCanvas` paces its drawings off the same
+number, and a field budgeted for 6.5s in a loader that ends at 3.5s is cut off mid-drawing — which is
+a worse picture than the one the floor protects.
+
+⚠ **It only bites on a warm cache.** On a cold arrival the download is longer than either floor.
+
+Time from clicking *Work* on `/about` to standing in Works, warm cache:
+
+| | before | after |
+|---|---|---|
+| gate | 6.5s | **3.5s** |
+| finale — wordmark + shards | 4.5s | 4.5s |
+| veil lifts, sun flies to square | 1.2s | — |
+| **hero entrance nobody asked for** | ~1.0s | — |
+| jump cover closes over it | 0.55s | — |
+| chrome + star fade, card up | — | 0.4s |
+| the glide, card held | ~2.5s | ~2.5s |
+| hole opens onto Works | 0.7s | 0.7s |
+| **total** | **~17s** | **~11.6s** |
+
+⚠ **No ordinary load changes.** `/` with no hash never enters any of this — same loader, same floor,
+same hero, same star flight into the square.
 
 ---
 
 ## 4 · Part B — `/lite` keeps you on `/lite`
 
-### 4.1 The mapping, and how to not have one
+| navbar item | before | now |
+|---|---|---|
+| `01 Services` | load `/`, then §2 | scrolls to §01 *What we build* (`#services`) |
+| `02 Work` | load `/`, then §2 | scrolls to §02 *Selected work* (`#work`) |
+| `03 FAQ` | load `/`, then §2 | scrolls to §03 *Questions* (`#faq`) |
+| `04 Contact` | load `/`, then §2 | scrolls to the close (`#contact`) |
+| `Start Project` CTA | load `/#contact` | the same close, where the real button is |
+| the phone's orbit fan | `window.location.href` | all four, as above |
 
-`LITE_SECTIONS`' keys are `build` / `work` / `questions`; the navbar's are `services` / `work` /
-`faq` / `contact`. A translation table between them is a second place that names a section, which is
-the thing `navItems.ts` and `docSections.ts` both open by arguing against.
+### 4.1 Rename lite's keys instead of writing a map
 
-**So: rename lite's keys to the navbar's, and the map disappears.**
+A translation table between `build`/`work`/`questions` and `services`/`work`/`faq` is a second place
+that names a section — the thing `navItems.ts` and `docSections.ts` both open by arguing against.
 
 ```ts
 export const LITE_SECTIONS: readonly DocSectionMeta[] = [
@@ -282,148 +256,63 @@ export const LITE_SECTIONS: readonly DocSectionMeta[] = [
 ];
 ```
 
-`key` is only the anchor `id`, the React key and the rail node's href (`DocSection.tsx`,
-`OrbitRail.tsx`). **Nothing the visitor reads changes** — the titles are untouched. `aria-labelledby`
-follows automatically because it is derived from the same key.
-
-`contact` has no numbered section, and should not get one — the close is the page *ending*, not a
-fourth thing the page says, which is why it carries no rail station (`LitePage.tsx:139`). It gets a
-plain anchor instead: `<div className="doc-close" id="contact">`.
-
-```
-   /lite
-   ┌────────────────────────────────────────┐        navbar
-   │  masthead                              │        ┌──────────────────────┐
-   │                                        │        │ 01 Services  ────────┼──┐
-   │  ● 01  WHAT WE BUILD      #services ◄──┼────────┤ 02 Work      ────────┼┐ │
-   │  │ 02  SELECTED WORK      #work     ◄──┼────────┤ 03 FAQ       ───────┐││ │
-   │  ● 03  QUESTIONS          #faq      ◄──┼────────┤ 04 Contact  ──────┐ │││ │
-   │                                        │        │ [Start Project] ──┤ │││ │
-   │  the close             #contact     ◄──┼────────┴───────────────────┘ │││ │
-   │   └ Start a project ─► EnquiryPanel    │                              │││ │
-   │  footer                                │                              │││ │
-   └────────────────────────────────────────┘                              │││ │
-                                    smooth scrollIntoView, scroll-margin-top ─┘
-```
+`key` is only the anchor `id`, the React key and the rail node's href. **No visible copy changes.**
+`contact` gets a plain `id` on the close block — not a numbered section, because the close is the
+page *ending* and carries no rail station by design.
 
 ### 4.2 `lib/inPageSectionRoutes.ts`
 
-```ts
-/** Routes that carry the navbar's sections as real in-page anchors, so a nav click stays put. */
-export const IN_PAGE_SECTION_ROUTES = new Set(['/lite']);
-
-/** Travel to a section on such a route. Returns false if it isn't there — let the href do its job. */
-export function scrollToSection(key: string): boolean
-```
-
-`scrollToSection` is `OrbitRail.travelToSection`'s body, lifted and shared — including both of its
-reasons, which apply here unchanged:
-- **`scrollIntoView`, not a hand-built `scrollTo`**, because only it honours `scroll-margin-top`,
-  without which a travelled-to heading parks under the fixed navbar.
-- **Not a bare `#anchor` href**, because making one glide means `html { scroll-behavior: smooth }`
-  globally, and that is precisely what fights ScrollTrigger on the homepage — which shares this
-  stylesheet.
-
-`OrbitRail` then calls the shared function rather than keeping its own copy.
+`IN_PAGE_SECTION_ROUTES = new Set(['/lite'])`, plus `scrollToSection(key)` lifted from
+`OrbitRail.travelToSection` and shared with it. Both of its reasons carry over: `scrollIntoView`
+because only it honours `scroll-margin-top`, and not a bare `#anchor` because global
+`scroll-behavior: smooth` is what fights ScrollTrigger on the homepage, which shares this stylesheet.
 
 ### 4.3 `Navbar.tsx` — a third route mode
 
-Today the bar has two modes. It gets a third, resolved once from `usePathname`:
-
-| mode | routes | a nav click does |
+| mode | routes | a click does |
 |---|---|---|
-| `pin` | `/` | `requestSection(key, origin)` — the pin drives itself |
+| `pin` | `/` | `requestSection(key, origin)` |
 | `in-page` | `/lite` | `scrollToSection(key)`, `preventDefault` **only on success** |
-| `navigate` | `/about`, `/careers`, anything else | falls through to the `href` → §A's arrival |
+| `navigate` | `/about`, `/careers` | falls through to the `href` → §2's arrival |
 
-- **`href` follows the mode**: `#services` in `in-page`, `/#services` otherwise. A resolver
-  `hrefForMode(item, mode)` beside `NAV_ITEMS`. This matters for middle-click, for copy-link, and for
-  the no-JS case.
-- **The CTA** (`Start Project`) in `in-page` mode scrolls to `#contact` — the close, where the page's
-  own *Start a project* button and its `EnquiryPanel` already are. Deliberately a scroll and not a
-  cross-component "open the panel" event: the button is 40px from where you land, and a new event to
-  reach into a page's local `useState` is machinery this doesn't need.
-- **`handleStationSelect`** (the phone's orbit fan) currently does `window.location.href = '/#key'`
-  — a full page load. It routes through the same resolver, so the fan behaves like the bar on every
-  route. ⚠ This is the item most easily forgotten: the fan is the *only* navigation below 51.25em.
+- `href` follows the mode (`#services` vs `/#services`) — for middle-click, copy-link and no-JS.
+- The CTA in `in-page` mode scrolls to `#contact`, where the page's own *Start a project* button is.
+- ⚠ **`handleStationSelect`** (the phone's orbit fan) hard-codes `window.location.href = '/#key'` and
+  is the *only* navigation below 51.25em. It is the item most easily forgotten.
 
-### 4.4 The traps
+### 4.4 Traps
 
-**1 · The meters stay homepage-only.** `--nav-progress-*` has exactly one writer, the hero pin.
-`/lite` must not start feeding them — `isHomepage` remains the gate for that block, and it is a
-*different question* from the new mode. Three routes, two booleans, and they are not the same
-boolean.
+1. **The meters stay homepage-only.** `--nav-progress-*` has one writer, the hero pin. `isHomepage`
+   remains the gate for that block, and it is a *different question* from the new mode.
+2. **`.doc-close` needs `scroll-margin-top`**, as `.doc-section` has, or Contact lands under the bar.
+3. **Fall through, never swallow.** A missing id returns false and the `href` navigates — §2 catches
+   it. A silently dead nav item is the failure mode to design out.
+4. **`/about` and `/careers` are NOT in-page routes.** They have none of these sections.
+5. `SkipToLite` carries the destination now — `/lite#work` when the loader was bound for Work. ⚠ It
+   reads `readArrivalSection` **past its `if (!isOffered) return null`**, not at the top of the
+   component: everything above that line runs on the server too, and only past it is the component
+   client-only by construction (it has already been through an effect and a state change).
 
-**2 · `.doc-close` needs `scroll-margin-top`.** `.doc-section` has it (`globals.css:6231`) with a
-comment explaining the fixed 4.5rem navbar. The close has never been scrolled to before. Add it there
-too; it is inert on `/about` and `/careers` until something scrolls to them.
+### 4.5 Verification
 
-**3 · Fall through, never swallow.** If `getElementById` misses — a key renamed on one side only —
-`scrollToSection` returns false and the click is left alone, so the `href` navigates to `/#key` and
-Part A catches it. A silently dead nav item is the failure mode to design out; `OrbitRail` already
-makes exactly this choice and says so.
-
-**4 · `/lite` is `robots: { index: false }`.** Anchors on it are internal navigation only; nothing
-here creates an indexable duplicate of the homepage's sections.
-
-**5 · `/about` and `/careers` are NOT in-page routes** and must not be added. They have none of these
-sections — they have their own, on their own rail. They keep the `navigate` mode and get Part A's
-arrival, which is what the ask actually was for them.
-
----
-
-## 5 · Reduced motion
-
-- **Part A:** `IntroSequence`'s quiet path gets the same branch (§3.5). The pin's `reduceMotion`
-  already sets the glide duration to 0; the scrub still eases, and the epsilon arrival detection
-  handles that unchanged.
-- **Part B:** `scrollToSection` passes `behavior: prefersReducedMotion() ? 'auto' : 'smooth'` — the
-  same call `OrbitRail` makes today.
-
----
-
-## 6 · What this deliberately does not touch
-
-- The scroll spine, the crossings, the carousel layout, `carouselLayout.ts`.
-- `SectionJumpVeil` and the `JUMP_*` handshake — a navbar click *on the homepage* behaves exactly as
-  it does today. The arrival is a parallel path, not a rewrite of that one.
-- The loader's gate, its serial waits, the burn-in, the quality allocator. The arrival branch begins
-  strictly after `SUN_ASSEMBLED_EVENT`.
-- `/about` and `/careers` markup and copy.
-- Any visible copy on `/lite` (§4.1 renames keys, not titles).
-
----
-
-## 7 · Order of work
-
-| # | Change | Independently shippable |
-|---|---|---|
-| 1 | `lib/arrivalSection.ts`, `lib/arrivalEvents.ts` | — |
-| 2 | `useHeroAnimation`: `mode` on `coveredJump`, `settleHeroEntrance`, the travel listener, the net | — |
-| 3 | `IntroSequence`: the arrival branch + the destination chrome (both paths) | ✅ Part A done |
-| 4 | `liteContent.ts` keys + `id="contact"` on the close + `.doc-close` scroll margin | — |
-| 5 | `lib/inPageSectionRoutes.ts`; `OrbitRail` reads it | — |
-| 6 | `Navbar`: the three modes, the href resolver, the CTA, `handleStationSelect` | ✅ Part B done |
-| 7 | *(optional)* `SkipToLite` carries the section; the shared transit card (§3.7) | — |
-
----
-
-## 8 · Verification
-
-`npx tsc --noEmit` and `npm run build`, then **the user runs it** — these are all timing and
-compositing behaviours that only show up in a browser.
-
-What to look at:
-
-1. `/about` → **Work**. The hero must never appear. One curtain, not two. The star must be in the
-   right place and the right size when the veil lifts, and must not be stranded off-centre.
-2. Same, to **Services**, **FAQ**, **Contact** — Contact is the long one (it crosses the chamber
-   reveal and builds the singularity on the way).
-3. `/about` → **Work** with reduced motion on.
-4. Land at **FAQ**, then scroll **up** all the way to the hero: the headline must be out of its
-   masks and the square filled (trap §3.6.3).
-5. Land at **Contact**, then take the loop forward, and the reverse loop back.
-6. A homepage nav click, from the homepage — must be unchanged.
 7. `/lite`: all four items and the CTA, on desktop and through the phone's orbit fan. Each must land
-   with its heading clear of the navbar, and none may navigate away.
+   with its heading clear of the fixed navbar, and **none may navigate away**.
 8. `/lite` with JavaScript off: the four hrefs must still be real anchors that work.
+9. `/about` and `/careers`: their nav items must still leave for the homepage, and land via §2.
+
+---
+
+## 5 · Verification
+
+`npx tsc --noEmit` ✓ and `npm run build` ✓. The rest is timing and compositing and needs a browser:
+
+1. `/about` → **Work**. The hero must never appear. One curtain. The star must be in the right place
+   and the right size when the hole opens, and must not be stranded off-centre.
+2. Same to **Services** (the shortest glide — check the loader is gone before the hole opens),
+   **FAQ**, and **Contact** (the longest — it crosses the chamber reveal and builds the singularity).
+3. `/about` → **Work** with reduced motion on.
+4. Land at **FAQ**, then scroll **up** to the hero: the headline must be out of its masks and the
+   square filled (trap 3).
+5. Land at **Contact**, then take the loop forward, and the reverse loop back.
+6. **A plain visit to `/`** — must be unchanged, including the 6.5s floor.
+7. A navbar click from the homepage — must be unchanged.

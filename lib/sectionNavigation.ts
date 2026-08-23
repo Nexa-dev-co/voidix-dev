@@ -31,16 +31,29 @@ export interface GotoSectionDetail {
    * programmatic call has no control to measure, and the cover falls back to the middle of the frame.
    */
   origin?: { x: number; y: number };
+  /**
+   * The screen is ALREADY black — cover the journey, but do not close over anything.
+   *
+   * Set by exactly one caller: `IntroSequence`, handing a deep-link arrival (`/#work`) straight from
+   * the loader to its destination. The loader's veil is already opaque, so the cover's collapse has
+   * nothing to collapse over; it enters at the top of its hold instead. See lib/sectionJumpEvents.ts.
+   *
+   * ⚠ It also FORCES the covered path. A request carrying this has a cover on screen that only
+   * `JUMP_ARRIVED_EVENT` can open, so falling through to a plain glide — which the distance rule or
+   * reduced motion would otherwise do — would leave the visitor on a black screen with nothing coming.
+   */
+  alreadyCovered?: boolean;
 }
 
 /** Ask the hero pin to scroll to a section. No-op off the homepage, where the pin does not exist. */
 export function requestSection(
   key: string,
   origin?: GotoSectionDetail['origin'],
+  alreadyCovered = false,
 ): void {
   window.dispatchEvent(
     new CustomEvent<GotoSectionDetail>(GOTO_SECTION_EVENT, {
-      detail: { key, origin },
+      detail: { key, origin, alreadyCovered },
     }),
   );
 }

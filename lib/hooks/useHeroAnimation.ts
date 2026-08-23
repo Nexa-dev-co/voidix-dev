@@ -21,17 +21,24 @@ import {
   readGotoSection,
   requestSection,
 } from "@/lib/sectionNavigation";
-import { findNavItem } from "@/components/layout/Navbar/navItems";
+import { readArrivalSection } from "@/lib/arrivalSection";
+import { publishCurrentSection } from "@/lib/currentSectionEvent";
 import {
   BLACK_STAGE_EVENT,
   type BlackStageDetail,
 } from "@/lib/blackStageEvent";
 import { profileGauge } from "@/lib/frameProfiler";
 import {
+  REFRAME_SETTLE_EVENT,
+  startViewportReframeWatch,
+} from "@/lib/viewportReframe";
+import {
   JUMP_ARRIVED_EVENT,
   JUMP_BEGIN_EVENT,
   JUMP_COVERED_EVENT,
+  STOP_COMMIT_EVENT,
   type JumpBeginDetail,
+  type StopCommitDetail,
 } from "@/lib/sectionJumpEvents";
 import {
   HANDOFF_PROGRESS_EVENT,
@@ -95,6 +102,20 @@ const SCROLL_SCRUB = 1.8;
 const FILL_SCROLL_VH = 120;
 const FILL_SCROLL_VH_TOUCH = 80;
 const STAGE_SCROLL_VH = 100; // ...and per carousel stop after it (a craft, or a project meteor)
+/**
+ * How far past the viewport the square is scaled at the end of the fill.
+ *
+ * ⚠ THE FILL IS A COVER, NOT A FIT. `.hero-sun-card` carries a 1px amber ring as a box-shadow, so a
+ * square that lands even half a pixel short does not simply fail to cover — it DRAWS that shortfall,
+ * as a lit hairline down the edge of the screen. The reference machine runs at `dpr 1.1`, where a
+ * CSS pixel does not land on a device pixel and an exact ratio rounds whichever way it likes.
+ *
+ * Two percent on a growth of roughly 11× is invisible at every frame of the fill, and the end of the
+ * span — where the square is a black backdrop the size of the window — cannot tell the difference at
+ * all. ⚠ Scale only: the sun is anchored to the same `geometry` through its TRANSLATE, so this cannot
+ * move the star off the square.
+ */
+const FILL_OVERSCAN = 1.02;
 const SUN_SCROLL_SCALE = 1.1; // the sun grows to 1.1× as the square fills
 const SUN_SCROLL_RISE = 200; // px the sun lifts above the square's centre and holds
 /** One curve for the square AND the sun — they are anchored together. See the phase-1 tween. */
@@ -134,6 +155,41 @@ const NAV_JUMP_DURATION_PER_PROGRESS = 3.4;
 // tidies up after a native scroll, so these are short, distance-scaled settles.
 const SNAP_DURATION = 0.5; // how quickly the carousel settles onto the nearest stop
 const SNAP_DURATION_MAX = 2.2; // a longer settle glides rather than lurches
+/**
+ * How long `snapProgress` keeps answering with the reframe's own landing, after a resize.
+ *
+ * ── ⚠ THE PAGE USED TO SCROLL UP ON ITS OWN, AND THIS IS HALF OF WHY ────────────────────────────
+ * A refresh does not merely re-measure — it RE-ARMS SNAPPING (`ScrollTrigger.js:1016`: it clears
+ * `lastSnap` so the "already snapped here" guard cannot block, then restarts the delayed call). When
+ * that call fires it derives its progress from the RESTORED SCROLL PIXELS against the pin's NEW
+ * `start`/`change` — precisely the number the reframe exists to correct — and tweens the scrollbar
+ * to whatever this function calls nearest. Idle pages sail through its `getVelocity() < 10` guard,
+ * and with velocity 0 its duration expression divides by zero and clamps to SNAP_DURATION_MAX. So:
+ * ~0.9 s after the window settles, a 2.2 s glide backwards that nobody asked for.
+ *
+ * ⚠ DERIVED FROM `SCROLL_SCRUB`, because GSAP's timing is too: the delay is
+ * `snap.delay || scrubSmooth / 2`, and `scrubSmooth` IS the `scrub` value. Retune SCROLL_SCRUB and
+ * that shot moves; this moves with it. The margin covers the frame the timer lands on.
+ *
+ * The hold is also dropped by the first real wheel or touch (see `releaseSnapHold`), so it can never
+ * answer for a snap the visitor actually asked for.
+ */
+const REFRAME_SNAP_HOLD_MS = (SCROLL_SCRUB / 2) * 1000 + 300;
+/**
+ * How far off its target a re-anchored scroll may land before it is written a second time.
+ *
+ * Two pixels, because the only honest miss is a sub-pixel rounding one — anything larger means the
+ * write was CLAMPED by a document that had not yet grown to its new spacer height, and the retry is
+ * what fixes that. See the read-back in `reanchorToJourney`.
+ */
+const REFRAME_LANDING_EPSILON_PX = 2;
+/**
+ * Floor on a glide resumed after a reframe.
+ *
+ * The honest remainder can be a few milliseconds — a resize that lands as the crossing is already
+ * arriving — and a tween that short is a jump. This is the shortest move that still reads as a move.
+ */
+const REFRAME_RESUME_MIN_SECONDS = 0.25;
 // The carousel stops start a touch *past* the fill, so stop 0 lands on the fully revealed fleet
 // instead of the fill/transition edge (which read as the section scrolling away).
 const CAROUSEL_SETTLE_FRACTION = 0.06;
@@ -451,6 +507,20 @@ const JUMP_ARRIVE_GRACE_MS = 2500;
  */
 const JUMP_ARRIVE_HOLD_MS = 1600;
 
+/**
+ * How long the reveal waits for the LOADER to drive a deep-link arrival before driving it itself.
+ *
+ * On a healthy load this is mooted in the same tick it is armed — `IntroSequence` fires REVEAL_EVENT
+ * and then immediately calls `requestSection`, both inside one timeline callback. What it is really
+ * sized for is the load with no intro at all: `runReveal` also fires off `REVEAL_FALLBACK_NO_INTRO_MS`
+ * on a page whose loader was bypassed or threw, and there nobody else is ever going to honour the URL.
+ *
+ * Short on purpose. It is not waiting for anything slow — it is only allowing for the handoff being a
+ * few frames apart rather than one statement apart, and a visitor left staring at a hero they did not
+ * ask for is the failure it exists to bound.
+ */
+const ARRIVAL_HANDOFF_NET_MS = 1200;
+
 const SUN_LAYER_SELECTOR = ".hero-sun-layer";
 const DECK_SELECTOR = ".services-deck";
 const DECK_OVERLAY_SELECTOR = ".deck-overlay";
@@ -459,6 +529,40 @@ const WORKS_OVERLAY_SELECTOR = ".works-overlay";
 
 /** The full-black scene currently on screen — "fill" plus one name per carousel section. */
 type Stage = "fill" | "services" | "work" | "faq" | "contact" | "loop";
+
+/**
+ * Where the visitor was in the JOURNEY, captured the instant before a ScrollTrigger refresh.
+ *
+ * The pin's length is `totalScrollVh` × viewport height and GSAP restores the SCROLL POSITION across
+ * a refresh, not the progress — so a window that changes height moves the visitor through the site by
+ * the ratio of the change. This is what is put back afterwards. See `reanchorToJourney`.
+ */
+interface ReframeAnchor {
+  /** The stop the carousel was committed to. */
+  stop: number;
+  /** The pin's own progress, which is only meaningful in the fill (see `inFill`). */
+  progress: number;
+  /** In the free-scrub span before the carousel, where there is no stop to land on. */
+  inFill: boolean;
+  /**
+   * A committed glide was in flight — the visitor is mid-journey, not standing anywhere.
+   *
+   * ⚠ It changes which number is the truth. At rest the committed STOP is (the scrollbar can be moved
+   * by things that are not the visitor); mid-glide the raw PROGRESS is, because that is the frame of
+   * the cinematic they are watching and `stop` is only where it is heading.
+   */
+  gliding: boolean;
+  /**
+   * `end - start` in pixels, as it was BEFORE the refresh.
+   *
+   * ⚠ This is the whole test for "did anything actually move". A width-only resize, a late font, an
+   * accordion opening on another route — all of these refresh the pin without changing the mapping
+   * from pixels to progress, and re-anchoring on those would be a jump where there was no problem.
+   * It is also `NaN` before the pin's own construction refresh (`start`/`end` do not exist yet),
+   * which is exactly the refresh that must be skipped.
+   */
+  span: number;
+}
 
 /** What a crossing owns, beyond the scroll length the layout needs. */
 interface CrossingSpec {
@@ -736,6 +840,14 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // the site apart from the intro, so it must never fire because a value drifted to 0.9997.
       // CROSSING_SNAP_EPSILON guarantees the boundary is exact.
       if (progress >= 1 && !teleported) {
+        // ⚠ AND NOT WHILE A RESIZE IS BEING ABSORBED. Reaching 1 is supposed to mean "a real scroll
+        // arrived at the far edge of the dive"; a re-anchored or clamped scrollbar can produce the
+        // same number without anyone having asked for anything. `reframeHoldProgress` covers the
+        // ~1.2 s after a reframe and is dropped by the first genuine wheel or touch, so a visitor who
+        // actually scrolls into the hole in that window still gets the loop on their own gesture.
+        //
+        // This is the site's one irreversible action. It gets a second lock.
+        if (reframing || reframeHoldProgress !== null) return;
         teleported = true;
         commitTeleport();
       } else if (progress < 1) {
@@ -914,6 +1026,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // first reports (the hero, which is the one section that is only ever ARRIVED at by starting
     // there) would carry no section at all.
     profileGauge("section", currentStage);
+    // ⚠ And published once here for the same reason the gauge is: `setStage` returns early on a
+    // no-op, so the hero — the one section that is only ever arrived at by STARTING there — would
+    // otherwise never be announced at all.
+    publishCurrentSection("hero");
     const setStage = (stage: Stage) => {
       if (stage === currentStage) return;
       const fromStage = currentStage;
@@ -924,6 +1040,15 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // exists to answer. Free in production: `profileGauge` folds away with `telemetryEnabled`.
       profileGauge("section", stage);
       enterStage[stage](fromStage);
+
+      // ⚠ THE ONLY SIGNAL ON THIS ROUTE THAT SURVIVES ORDINARY SCROLLING. `SECTION_ARRIVE_EVENT` is
+      // dispatched by the jump veil alone, so anything downstream of it sees a visitor who scrolled
+      // the whole site as one who never left the hero. This runs from the stage boundary, which every
+      // route into a section passes through — a scroll, a snap, a navbar jump and a loop alike.
+      //
+      // ⚠ Published as `hero`, not `fill`. "fill" names the square's own animation; every other part
+      // of the system calls that section the hero, and this is the name that leaves the module.
+      publishCurrentSection(stage === "fill" ? "hero" : stage);
 
       // ⚠ Published from HERE — the boundary — and not from `enterServices`.
       //
@@ -1047,9 +1172,68 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // to picking the nearest stop from the raw scroll position.
     let currentStop = 0;
     let committedGlide = false;
+    /**
+     * The glide currently animating the scrollbar, if any — its destination, the duration it was given
+     * and when it started.
+     *
+     * Only `reanchorToJourney` reads it, to resume a crossing a resize interrupted with the time that
+     * was actually left on it. Cleared wherever `committedGlide` is cleared outside the tween's own
+     * `onComplete`, so a teleport can never leave a dead glide here for a later reframe to revive.
+     */
+    let activeGlide: {
+      stop: number;
+      durationSeconds: number;
+      startedAt: number;
+    } | null = null;
     let wasInFill = true;
     /** Set by the loop's teleport, cleared by the next genuine update — see the arrival branch below. */
     let justTeleported = false;
+
+    // ── ⚠ SURVIVING A RESIZED WINDOW ───────────────────────────────────────────────────────────
+    // The pin ends at `+=${totalScrollVh}%`, and GSAP parses that percentage against the VIEWPORT
+    // HEIGHT — so the pin's length in pixels is a linear function of the window's height. A refresh
+    // then records and restores the scroll position in PIXELS (`_recordScrollPositions` →
+    // `obj(obj.rec)`), which means the scrollbar is kept and the journey is not: maximise a 720px
+    // window to 960 and every progress value drops by a quarter. Standing on project 01, that lands
+    // you four percent into the services→works crossing, with nothing to snap you out of it.
+    //
+    // Worse in the other direction. The pin's spacer IS the document height (everything after
+    // `<Hero/>` in page.tsx is `position: fixed` and contributes none), so shortening the window
+    // shortens the document and the browser clamps any scroll past the new maximum — and the maximum
+    // is progress 1, which is `applyContactToHeroLoop(1)`, which is the teleport. Un-maximising past
+    // roughly three quarters of the site fired the loop.
+    //
+    // See docs/viewport-reframe-plan.md.
+    /**
+     * A refresh is in flight, so the pin's numbers describe neither the old layout nor the new one.
+     *
+     * ⚠ It exists because `_refreshAll` runs a FORCED `_updateAll(2)` before any refresh handler can
+     * intervene — one update, at the restored pixels against the new geometry, i.e. at exactly the
+     * wrong progress. That single update is what could reach `commitTeleport()` off a clamp, and what
+     * hijacked the fill-exit arrival branch. Everything it skips is re-driven by hand, on the correct
+     * progress, on the same frame.
+     */
+    let reframing = false;
+    let reframeAnchor: ReframeAnchor | null = null;
+    /**
+     * A net, armed when the anchor is captured. ⚠ It is not belt-and-braces, it closes a real hole.
+     *
+     * A capture is paired with the global "refresh" dispatch only for a refresh that went through
+     * `_refreshAll`. An INDIVIDUAL `trigger.refresh()` also fires `onRefreshInit` (ScrollTrigger.js:830)
+     * and dispatches nothing globally, so nothing would ever lower the flag — and a raised flag is a
+     * pin whose `onUpdate` has stopped doing anything, i.e. a page that has silently stopped working.
+     * Nothing in this file takes that path today; `setPositions` does, and so does anyone who adds a
+     * second trigger tomorrow.
+     *
+     * A frame is the right length because the whole of `_refreshAll` is synchronous: on the normal
+     * path this has already been cancelled before a rAF could run.
+     */
+    let reframeNet = 0;
+    /** See REFRAME_SNAP_HOLD_MS. `null` when no reframe is being protected. */
+    let reframeHoldProgress: number | null = null;
+    let reframeHoldTimer = 0;
+    /** The one-frame-later check that the landing actually stuck — see the tail of `reanchorToJourney`. */
+    let reframeVerifyFrame = 0;
     /** A loop has been completed at least once, so the way back is armed. Latched for the session. */
     let hasLooped = false;
     /**
@@ -1106,6 +1290,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       if (lastCommittedIndex[sectionIndex] === localIndex) return;
       lastCommittedIndex[sectionIndex] = localIndex;
       carouselSections[sectionIndex].setActiveStop?.(localIndex);
+      // ⚠ AFTER the scene has been told, so a listener that measures anything measures the stop that
+      // is now on its way in. The guard above means this only ever speaks on a real change.
+      window.dispatchEvent(
+        new CustomEvent<StopCommitDetail>(STOP_COMMIT_EVENT, {
+          detail: { key: carouselSections[sectionIndex].key, index: localIndex },
+        }),
+      );
     };
 
     // Jump to a stop by scrolling to its snap point. The target is committed IMMEDIATELY (so the scene
@@ -1117,6 +1308,13 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const trigger = scrollTimeline?.scrollTrigger;
       if (!trigger) return;
       committedGlide = true;
+      // ⚠ RECORDED SO A REFRAME CAN RESUME IT AT ITS OWN PACE. Every caller picks a duration that
+      // means something — a crossing's authored `stepDurationSeconds`, a distance-scaled nav jump, the
+      // carousel's arrival — and none of that is recoverable from the layout afterwards. The first
+      // attempt at resuming re-derived a duration from progress across the WHOLE pin, which for a
+      // crossing spanning ~0.12 of it came out around a third of the authored length: the flight
+      // resumed at triple speed. Carry the real number instead of estimating it.
+      activeGlide = { stop, durationSeconds, startedAt: performance.now() };
       const targetProgress = stopProgressValues[stop];
       const targetScroll =
         trigger.start + targetProgress * (trigger.end - trigger.start);
@@ -1127,6 +1325,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         overwrite: true,
         onComplete: () => {
           committedGlide = false;
+          activeGlide = null;
         },
       });
     };
@@ -1164,13 +1363,14 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       origin: JumpBeginDetail["origin"],
       targetStop: number,
       durationSeconds: number,
+      alreadyCovered = false,
     ) => {
       coveredJump = { targetStop, durationSeconds };
       coveredJumpGliding = false;
       // The pin does not move yet — that waits on JUMP_COVERED_EVENT.
       window.dispatchEvent(
         new CustomEvent<JumpBeginDetail>(JUMP_BEGIN_EVENT, {
-          detail: { key, origin },
+          detail: { key, origin, alreadyCovered },
         }),
       );
       armCoveredJumpNet(JUMP_COVER_TIMEOUT_MS, startCoveredGlide);
@@ -1209,6 +1409,12 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     // scroll; and while a glide is committed it can only agree with that target, never yank us back to
     // a stop we happen to be passing through.
     const snapProgress = (value: number) => {
+      // ⚠ A REFRESH RE-ARMS SNAPPING AND IT FIRES ~0.9 s LATER, off a progress it derived from the
+      // restored scroll PIXELS. We have already re-anchored by then, so the honest answer is the
+      // reframe's landing — not "whatever is nearest to the number that survived the resize". Without
+      // this the page glides backwards on its own for up to SNAP_DURATION_MAX, with no input at all.
+      // See REFRAME_SNAP_HOLD_MS for the whole mechanism.
+      if (reframeHoldProgress !== null) return reframeHoldProgress;
       if (committedGlide) return stopProgressValues[currentStop];
       if (value <= carouselStart) return value; // free scrub through the fill + settle zone
       let nearest = stopProgressValues[0];
@@ -1257,18 +1463,176 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       });
     };
 
+    /**
+     * The pin's update, as a function of a progress value rather than of the scrollbar.
+     *
+     * ── ⚠ WHY THIS IS A FUNCTION AND NOT JUST THE BODY OF `onUpdate` ────────────────────────────
+     * Because the reframe has to be able to drive it at the progress it CHOSE, and GSAP's scroll
+     * getter cannot be trusted for one frame after a re-anchor. The setter caches the value you
+     * ASK for and never reads back what the browser did:
+     *
+     *     value = cachingFunc.v = Math.round(value);   // cached
+     *     f(value);                                    // ...then written  (Observer.js:41-44)
+     *
+     * So a scroll write the browser CLAMPS — a document that is momentarily shorter than the
+     * position being asked for — is invisible to GSAP until the next real `scroll` event bumps
+     * `_scrollers.cache`. At that point the pin abruptly reports the clamped progress, and at the
+     * document maximum that value is exactly 1, which is `applyContactToHeroLoop(1)`, which is the
+     * teleport. That is how a devtools window being closed landed a visitor on the hero with the FAQ
+     * panel still hanging on screen. Driving this by hand means the frame never depends on the answer.
+     *
+     * @param progress               what to drive the crossings with.
+     * @param progressAfterCrossings re-read AFTER them, and never captured before them, because
+     *   `applyCrossings` can TELEPORT. The dive's far edge throws the scrollbar to the top from inside
+     *   the loop crossing's `apply` (see commitTeleport), so by the time it returns the pin is at the
+     *   TOP of the page while a value captured above would still say the bottom. Running the rest of
+     *   this against that stale 1 re-applies the whole ending at the hero, three ways at once:
+     *   `applyHeroServicesProgress` publishes `fill = 1` and the star is told to be fully cracked — you
+     *   loop back onto the SERVICES sun; every section's navbar meter fills; and the carousel commits
+     *   itself to the loop stop it just left. Everything below is idempotent, so re-reading is also all
+     *   this needs — it is correct whether or not the teleport's own nested update has already run.
+     */
+    const applyPinProgress = (
+      progressBeforeCrossings: number,
+      progressAfterCrossings: () => number,
+    ) => {
+      // Scrub every crossing in every stage, so even a jump from the top of the page to the
+      // last project passes through (and lands in) the right state.
+      applyCrossings(progressBeforeCrossings);
+      const progress = progressAfterCrossings();
+      // The "home" meter tracks the fill phase only.
+      setNavMeter("home", Math.min(progress / fillFraction, 1));
+      // The WHOLE circuit as one number, for the orbit dial (see Navbar/OrbitDial). Every other
+      // meter answers "how far through THIS section"; the dial's travelling node needs "how far
+      // around the whole journey", which is the pin's own progress and nothing else — there is
+      // exactly one pin, so this is not an approximation of the journey, it IS the journey.
+      setNavMeter("total", progress);
+      // Deliberately ABOVE the fill's early return — this span's whole job is inside the fill, and
+      // a jump past it still has to land the sun fully open.
+      applyHeroServicesProgress(progress);
+
+      // ⚠ A covered jump opens on THIS, not on its scrollTo tween completing. The pin is scrubbed,
+      // so its progress trails the scrollbar by up to SCROLL_SCRUB seconds — opening when the tween
+      // ends would uncover onto a pin still sliding the last stretch of the journey, which is the
+      // very thing the cover is there to hide. Also above the fill's return, so the check cannot be
+      // missed by a destination the branch below would have skipped past.
+      if (
+        coveredJumpGliding &&
+        coveredJump &&
+        Math.abs(progress - stopProgressValues[coveredJump.targetStop]) <
+          JUMP_ARRIVE_EPSILON
+      ) {
+        finishCoveredJump();
+      }
+
+      if (progress < fillFraction) {
+        wasInFill = true;
+        setStage("fill");
+        // No carousel section has been entered yet.
+        carouselSections.forEach((section) => setNavMeter(section.key, 0));
+        // ⚠ CLEARED HERE TOO, AND ITS ABSENCE WAS A BUG. `justTeleported` is meant to suppress the
+        // arrival glide for ONE update after the loop's teleport; it was only ever cleared below
+        // this early return, and after a teleport every update is a fill update. So the flag
+        // stayed raised for as long as the visitor stood on the hero, and the first scroll past
+        // the fill spent it instead of gliding onto craft 01 — which is the glide that absorbs the
+        // flick's momentum, so the second lap of the site landed on craft 02.
+        //
+        // The guard's real job survives: a STALE update carries the pre-teleport progress (≈1),
+        // which is past the fill, so it cannot reach this branch and is still caught below.
+        justTeleported = false;
+        return;
+      }
+
+      // First update past the fill. The fill is free native scroll, so the flick that carried us
+      // here is still delivering momentum — absorb it: lock the stepper (the wheel/touch handlers
+      // then preventDefault the rest of that gesture, killing the momentum) and glide onto craft
+      // 01. Without this, one hard scroll from the hero overshoots and dumps you on craft 02.
+      // ⚠ Suppressed for one update after a teleport. Belt-and-braces: the scrub tween is flushed
+      // in `commitTeleport` and the progress above is re-read, so this should be unreachable — but
+      // if a stale update ever did land here at the old progress it would glide the visitor onto
+      // craft 01 and the loop would end in SERVICES instead of the hero. The failure is silent and
+      // confusing enough to be worth one boolean. Costs nothing when it does fire: `wasInFill` is
+      // only cleared INSIDE the branch, so the arrival is deferred by one update, never lost.
+      if (wasInFill && !justTeleported) {
+        wasInFill = false;
+        // ⚠ Only when nothing else already owns the scroll. There is no momentum to absorb during
+        // a committed glide — starting one kills the native scroll — and `goToStop` overwrites, so
+        // firing here HIJACKS whatever was under way. That is what made every navbar item clicked
+        // from the hero land on Services and need a second click: the jump to Work crossed this
+        // line on its way past the fill, and got overwritten with a glide to craft 01.
+        if (!committedGlide) {
+          lockStepping(CAROUSEL_ARRIVAL_DURATION * 1000);
+          goToStop(0, CAROUSEL_ARRIVAL_DURATION);
+        }
+      }
+      justTeleported = false;
+
+      // A committed glide's target is authoritative. Only without one (native scroll, a resize)
+      // do we resolve the nearest stop across the non-uniform layout and commit that.
+      if (!committedGlide) {
+        let nearest = 0;
+        for (
+          let stopIndex = 1;
+          stopIndex < stopProgressValues.length;
+          stopIndex += 1
+        ) {
+          if (
+            Math.abs(progress - stopProgressValues[stopIndex]) <
+            Math.abs(progress - stopProgressValues[nearest])
+          ) {
+            nearest = stopIndex;
+          }
+        }
+        commitStop(nearest);
+      }
+
+      const sectionIndex = layout.sectionIndexOfStop(currentStop);
+      setStage(carouselSections[sectionIndex].key);
+      setSectionNavMeters(progress, sectionIndex);
+    };
+
     // Where the square + sun must travel/scale to fill the viewport. Measured from the square's
     // *untransformed* layout and recomputed on every ScrollTrigger refresh — see invalidateOnRefresh
     // / onRefreshInit below. This keeps the sun locked to the square on resize.
     const computeGeometry = () => {
       const rect = measureUntransformedRect(heroCardElement);
-      const cardCenterX = rect.left + rect.width / 2;
-      const cardCenterY = rect.top + rect.height / 2;
+      const sectionRect = heroSection.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = window.innerHeight;
+
+      // ── ⚠ A FRACTION OF THE SECTION, RESOLVED AGAINST THE LIVE VIEWPORT ────────────────────────
+      //
+      // This used to be `viewportWidth / 2 - cardCentreInViewportPixels`, and mixing those two terms
+      // is what put a stray vertical line down the middle of the fleet after every resize.
+      //
+      // The two halves come from DIFFERENT MOMENTS. This runs from `onRefreshInit`, which
+      // `_refreshAll` dispatches BEFORE it reverts and re-applies the pin — and a pinned element
+      // carries an explicit PIXEL width, still sized to the window as it was. So `viewportWidth` is
+      // already the new number while the measured centre is still the old one, and the difference goes
+      // straight into the translate: a 1919 px window whose hero was still laid out at 1483 solved a
+      // 218 px offset for a square that should not move at all. It is flex-centred; the answer is zero.
+      //
+      // Measured as a FRACTION of the section and resolved against the live viewport, the stale width
+      // cancels out of both terms: a centred card is 0.5 whatever box it was measured in, and 0.5 maps
+      // to 0. The card only has to keep its fractional position across the refresh, which flex
+      // centring guarantees and pixel arithmetic never did.
+      const cardFractionX =
+        sectionRect.width > 0
+          ? (rect.left + rect.width / 2 - sectionRect.left) / sectionRect.width
+          : 0.5;
+      const cardFractionY =
+        sectionRect.height > 0
+          ? (rect.top + rect.height / 2 - sectionRect.top) / sectionRect.height
+          : 0.5;
+
       return {
-        translateX: document.documentElement.clientWidth / 2 - cardCenterX,
-        translateY: window.innerHeight / 2 - cardCenterY,
-        scaleX: document.documentElement.clientWidth / rect.width,
-        scaleY: window.innerHeight / rect.height,
+        translateX: viewportWidth * (0.5 - cardFractionX),
+        translateY: viewportHeight * (0.5 - cardFractionY),
+        // ⚠ COVER, NOT FIT — see FILL_OVERSCAN. An exact ratio has no tolerance for the sub-pixel
+        // rounding a fractional device pixel ratio produces, and this element's own box-shadow ring
+        // draws any shortfall as a hairline down the edge of the screen.
+        scaleX: (viewportWidth * FILL_OVERSCAN) / rect.width,
+        scaleY: (viewportHeight * FILL_OVERSCAN) / rect.height,
       };
     };
     let geometry = computeGeometry();
@@ -1285,6 +1649,16 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
           invalidateOnRefresh: true,
           onRefreshInit: () => {
             geometry = computeGeometry();
+            // ⚠ THE ONLY MOMENT THE OLD JOURNEY POSITION STILL EXISTS.
+            //
+            // A per-trigger `onRefreshInit` is also registered as a GLOBAL "refreshInit" listener
+            // (ScrollTrigger.js:1191) — that is the path a window resize takes, and it is why this
+            // runs at all on one. `_refreshAll` dispatches it AFTER recording the scroll positions
+            // and BEFORE reverting anything, so `progress` here is still the pre-resize truth.
+            //
+            // ⚠ It must keep returning `undefined`: `_refreshAll` calls `.render(-1)` on whatever an
+            // onRefreshInit hands back, so returning the anchor object would be a silent trap.
+            captureReframeAnchor();
           },
           snap:
             totalStops > 1
@@ -1310,111 +1684,16 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
                 }
               : undefined,
           onUpdate: (self) => {
-            // Scrub every crossing in every stage, so even a jump from the top of the page to the
-            // last project passes through (and lands in) the right state.
-            applyCrossings(self.progress);
-            // ⚠ Read AFTER the crossings, never captured before them.
+            // ⚠ THE REFRESH'S OWN UPDATE IS A LIE AND MUST NOT BE ACTED ON.
             //
-            // `applyCrossings` can TELEPORT. The dive's far edge throws the scrollbar to the top from
-            // inside the loop crossing's `apply` (see commitTeleport), so by the time it returns the pin
-            // is at the TOP of the page while a value captured above would still say the bottom. Running
-            // the rest of this against that stale 1 re-applies the whole ending at the hero, three ways
-            // at once: `applyHeroServicesProgress` publishes `fill = 1` and the star is told to be fully
-            // cracked — you loop back onto the SERVICES sun; every section's navbar meter fills; and the
-            // carousel commits itself to the loop stop it just left.
-            //
-            // Everything below is idempotent, so re-reading is also all this needs — it is correct
-            // whether or not the teleport's own nested update has already run this pass.
-            const progress = self.progress;
-            // The "home" meter tracks the fill phase only.
-            setNavMeter("home", Math.min(progress / fillFraction, 1));
-            // The WHOLE circuit as one number, for the orbit dial (see Navbar/OrbitDial). Every other
-            // meter answers "how far through THIS section"; the dial's travelling node needs "how far
-            // around the whole journey", which is the pin's own progress and nothing else — there is
-            // exactly one pin, so this is not an approximation of the journey, it IS the journey.
-            setNavMeter("total", progress);
-            // Deliberately ABOVE the fill's early return — this span's whole job is inside the fill, and
-            // a jump past it still has to land the sun fully open.
-            applyHeroServicesProgress(progress);
-
-            // ⚠ A covered jump opens on THIS, not on its scrollTo tween completing. The pin is scrubbed,
-            // so its progress trails the scrollbar by up to SCROLL_SCRUB seconds — opening when the tween
-            // ends would uncover onto a pin still sliding the last stretch of the journey, which is the
-            // very thing the cover is there to hide. Also above the fill's return, so the check cannot be
-            // missed by a destination the branch below would have skipped past.
-            if (
-              coveredJumpGliding &&
-              coveredJump &&
-              Math.abs(progress - stopProgressValues[coveredJump.targetStop]) <
-                JUMP_ARRIVE_EPSILON
-            ) {
-              finishCoveredJump();
-            }
-
-            if (progress < fillFraction) {
-              wasInFill = true;
-              setStage("fill");
-              // No carousel section has been entered yet.
-              carouselSections.forEach((section) => setNavMeter(section.key, 0));
-              // ⚠ CLEARED HERE TOO, AND ITS ABSENCE WAS A BUG. `justTeleported` is meant to suppress the
-              // arrival glide for ONE update after the loop's teleport; it was only ever cleared below
-              // this early return, and after a teleport every update is a fill update. So the flag
-              // stayed raised for as long as the visitor stood on the hero, and the first scroll past
-              // the fill spent it instead of gliding onto craft 01 — which is the glide that absorbs the
-              // flick's momentum, so the second lap of the site landed on craft 02.
-              //
-              // The guard's real job survives: a STALE update carries the pre-teleport progress (≈1),
-              // which is past the fill, so it cannot reach this branch and is still caught below.
-              justTeleported = false;
-              return;
-            }
-
-            // First update past the fill. The fill is free native scroll, so the flick that carried us
-            // here is still delivering momentum — absorb it: lock the stepper (the wheel/touch handlers
-            // then preventDefault the rest of that gesture, killing the momentum) and glide onto craft
-            // 01. Without this, one hard scroll from the hero overshoots and dumps you on craft 02.
-            // ⚠ Suppressed for one update after a teleport. Belt-and-braces: the scrub tween is flushed
-            // in `commitTeleport` and the progress above is re-read, so this should be unreachable — but
-            // if a stale update ever did land here at the old progress it would glide the visitor onto
-            // craft 01 and the loop would end in SERVICES instead of the hero. The failure is silent and
-            // confusing enough to be worth one boolean. Costs nothing when it does fire: `wasInFill` is
-            // only cleared INSIDE the branch, so the arrival is deferred by one update, never lost.
-            if (wasInFill && !justTeleported) {
-              wasInFill = false;
-              // ⚠ Only when nothing else already owns the scroll. There is no momentum to absorb during
-              // a committed glide — starting one kills the native scroll — and `goToStop` overwrites, so
-              // firing here HIJACKS whatever was under way. That is what made every navbar item clicked
-              // from the hero land on Services and need a second click: the jump to Work crossed this
-              // line on its way past the fill, and got overwritten with a glide to craft 01.
-              if (!committedGlide) {
-                lockStepping(CAROUSEL_ARRIVAL_DURATION * 1000);
-                goToStop(0, CAROUSEL_ARRIVAL_DURATION);
-              }
-            }
-            justTeleported = false;
-
-            // A committed glide's target is authoritative. Only without one (native scroll, a resize)
-            // do we resolve the nearest stop across the non-uniform layout and commit that.
-            if (!committedGlide) {
-              let nearest = 0;
-              for (
-                let stopIndex = 1;
-                stopIndex < stopProgressValues.length;
-                stopIndex += 1
-              ) {
-                if (
-                  Math.abs(progress - stopProgressValues[stopIndex]) <
-                  Math.abs(progress - stopProgressValues[nearest])
-                ) {
-                  nearest = stopIndex;
-                }
-              }
-              commitStop(nearest);
-            }
-
-            const sectionIndex = layout.sectionIndexOfStop(currentStop);
-            setStage(carouselSections[sectionIndex].key);
-            setSectionNavMeters(progress, sectionIndex);
+            // `_refreshAll` forces one update (`_updateAll(2)`) before any refresh handler runs, at
+            // the restored scroll pixels against the newly-measured geometry. Acting on it commits
+            // the wrong stop, publishes the wrong fill, and — when a shortened window has clamped the
+            // scroll to the document's new maximum — reaches `applyContactToHeroLoop(1)` and fires the
+            // teleport. `reanchorToJourney` drives the whole update itself, on the progress it chose,
+            // before this frame ends. See the reframe block above.
+            if (reframing) return;
+            applyPinProgress(self.progress, () => self.progress);
           },
         },
       });
@@ -1498,12 +1777,26 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       if (squareFill) gsap.set(squareFill, { clipPath: EMPTY_CLIP });
     };
 
+    /**
+     * The hero's FINISHED pose, placed rather than played.
+     *
+     * Reduced motion has always wanted this. So does a deep-link arrival: the visitor asked for
+     * another section and the whole handoff happens under a cover, so playing the entrance would
+     * spend it where nobody can see it. But it cannot simply be SKIPPED either — the hero is still
+     * there, one scroll up from wherever they land, and a hero that never had its entrance is a
+     * headline sitting under its masks with an empty square, permanently. (The loop replays the
+     * entrance on its way back; scrolling up by hand does not.)
+     */
+    const settleHeroEntrance = () => {
+      gsap.set(textInners, { yPercent: 0 });
+      if (subline) gsap.set(subline, { autoAlpha: 1, y: 0 });
+      if (squareFill) gsap.set(squareFill, { clipPath: FULL_CLIP });
+      heroEntrancePlaying = false;
+    };
+
     const playHeroEntrance = () => {
       if (prefersReducedMotion()) {
-        gsap.set(textInners, { yPercent: 0 });
-        if (subline) gsap.set(subline, { autoAlpha: 1, y: 0 });
-        if (squareFill) gsap.set(squareFill, { clipPath: FULL_CLIP });
-        heroEntrancePlaying = false;
+        settleHeroEntrance();
         return;
       }
 
@@ -1549,6 +1842,37 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         );
     };
 
+    // ── Arriving from another route with a section in the URL ──
+    // `/about` and `/careers` render the same navbar, and off the homepage its items fall through to
+    // their real `/#work` hrefs. Something has to be listening on this side or those four links are
+    // links that appear to do nothing — which is what they did until the site had a second route to
+    // click them from.
+    //
+    // ⚠ THE PIN NO LONGER DRIVES THIS ITSELF, AND THE REVERSAL IS THE WHOLE FIX. It used to call
+    // `requestSection` right here, at the end of the reveal — which is AFTER the intro has lifted its
+    // veil, flown the star into the square and started the hero's entrance. So a visitor who asked for
+    // Work got: the hero, then a second full-screen cover closing over it, then the journey. Two
+    // curtains with the wrong section shown in the gap between them.
+    //
+    // The loader is the cover now. `IntroSequence` holds its veil, calls `requestSection` itself with
+    // `alreadyCovered`, and unmounts once the transit cover reports it has the screen — so there is one
+    // curtain and the hero is never on it. See `readArrivalSection` and IntroSequence's finale.
+    //
+    // What is left here is the NET. The intro is not guaranteed to exist: `runReveal` also fires off
+    // `REVEAL_FALLBACK_NO_INTRO_MS` on a page whose loader was bypassed or threw, and there the old
+    // behaviour is exactly right — travel, uncovered, because nothing is covering anything.
+    const arrivalSection = readArrivalSection();
+    /** True once anything has taken the visitor somewhere — the net must not fire on top of it. */
+    let hasHonouredArrival = false;
+    let arrivalNet = 0;
+    const armArrivalNet = () => {
+      if (!arrivalSection) return;
+      arrivalNet = window.setTimeout(() => {
+        if (hasHonouredArrival) return;
+        requestSection(arrivalSection);
+      }, ARRIVAL_HANDOFF_NET_MS);
+    };
+
     // 3. Reveal — fired once, when the intro lands the sun in the square. This is also the moment the
     //    pin is allowed to come online (Contract 2).
     let hasRevealed = false;
@@ -1556,30 +1880,12 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       if (hasRevealed) return;
       hasRevealed = true;
       createTransition();
-      playHeroEntrance();
-      consumeArrivalHash();
+      // An arrival is going somewhere else and does it under a cover, so the entrance would be spent
+      // unwatched. Placed rather than played — see `settleHeroEntrance` for why not simply skipped.
+      if (arrivalSection) settleHeroEntrance();
+      else playHeroEntrance();
+      armArrivalNet();
     };
-
-    // ── Arriving from another route with a section in the URL ──
-    // `/about` and `/careers` render the same navbar, and off the homepage its items fall through to
-    // their real `/#work` hrefs. Something has to be listening on this side or those four links are
-    // links that appear to do nothing — which is what they did until the site had a second route to
-    // click them from. (`Navbar.tsx` has claimed in a comment since it was written that "the pin picks
-    // it up on arrival"; this is the first time that has been true.)
-    //
-    // It goes through `requestSection` rather than seeking directly, so an arrival gets the identical
-    // treatment a click gets: the distance-scaled glide, and the cover if it is far enough to be worth
-    // hiding. Called from inside `runReveal` because the pin must EXIST first — `goToStop` no-ops
-    // without it, which would leave a covered jump sitting on a black screen.
-    function consumeArrivalHash() {
-      const key = window.location.hash.slice(1);
-      if (!key || !findNavItem(key)) return;
-      // Drop the hash before travelling. It has been spent, and leaving it in the URL means a reload —
-      // or the loop's teleport back to the hero — silently re-triggering the journey to a section the
-      // visitor has since scrolled away from.
-      window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      requestSection(key);
-    }
 
     // ── The teleport ──
     // Runs with the screen already black, so the order below is about what must be TRUE by the next
@@ -1597,6 +1903,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // would fight the jump. Kill both before moving.
       gsap.killTweensOf(window);
       committedGlide = false;
+      activeGlide = null;
       // Straight to the top. No duration: there is nothing to watch, and a tween here would scrub the
       // whole site backwards through every crossing it passes.
       window.scrollTo(0, 0);
@@ -1686,6 +1993,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       // `justTeleported` is belt to the reordering's braces: it exists to suppress exactly this branch
       // for one update after a teleport, and a reverse is a teleport.
       committedGlide = false;
+      activeGlide = null;
       currentStop = contactStop;
       wasInFill = false;
       justTeleported = true;
@@ -1708,6 +2016,340 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       applyHeroServicesProgress(targetProgress);
       window.dispatchEvent(new Event(LOOP_SNAP_EVENT));
     };
+
+    // ── The teleport nobody asked for: a resized window ──
+    //
+    // Third member of the family above, and it reads as one because it IS one — the pin is moved
+    // outright to a stop and every scene is told to be there. The difference is only in who asked:
+    // the loop is a cinematic the visitor committed to, this is the window manager, and the whole job
+    // is to make it look like nothing happened at all.
+    //
+    // See the reframe block near `justTeleported` for what goes wrong without it.
+    /**
+     * Where the page is scrolled to, read the way GSAP reads it.
+     *
+     * ⚠ NOT `window.scrollY`, AND THE DIFFERENCE IS NOT THEORETICAL. Under Chrome's device emulation
+     * `pageYOffset` reports 0 while `documentElement.scrollTop` carries the real position — caught in a
+     * console trace showing `scrollY = 0` on the same frame the pin resolved its progress to 0.7615.
+     * The fallback chain below is exactly the one ScrollTrigger's own scroller function uses
+     * (`Observer.js:56`), which is the strongest available evidence that the first term cannot be
+     * trusted on its own. The same shape shows up with the visual viewport on mobile.
+     *
+     * Every read-back in the reframe goes through this. A re-anchor that verifies itself against a
+     * number the platform is lying about is worse than one that does not verify at all.
+     */
+    const readScrollTop = () =>
+      window.pageYOffset ||
+      document.documentElement.scrollTop ||
+      document.body.scrollTop ||
+      0;
+
+    const releaseReframe = () => {
+      reframing = false;
+      reframeAnchor = null;
+    };
+
+    const captureReframeAnchor = () => {
+      const trigger = scrollTimeline?.scrollTrigger;
+      if (!trigger) return;
+      // ── ⚠ INSIDE THE REFRAME WINDOW, WE OUTRANK THE SCROLLBAR ────────────────────────────────
+      //
+      // A resize is a BURST, and closing a docked devtools panel is several of them seconds apart —
+      // so more than one refresh can arrive, each capturing a fresh anchor. Between any two of them
+      // the browser may have moved the scroll on its own (a re-clamp, scroll anchoring, a window
+      // manager still settling). Read the pin then and the capture faithfully records the page's
+      // mistake as the visitor's position — and the next re-anchor obediently lands there. That is a
+      // resize burst laundering a stray scroll into the site's own idea of where you are, and it ends
+      // on the hero because 0 is where a confused scrollbar goes.
+      //
+      // `reframeHoldProgress` is the last place WE put the visitor, and it is only up for ~1.2 s and
+      // is dropped by the first genuine wheel or touch. While it stands, it is the better answer.
+      const held = reframeHoldProgress;
+      const progress = held ?? trigger.progress;
+      // ── ⚠ WHEN THE PROGRESS AND THE COMMITTED STOP DISAGREE, THE STOP WINS ───────────────────
+      //
+      // They are not two readings of one thing. `currentStop` only ever changes through a deliberate
+      // commitment — a step, a jump, a resolved landing — whereas the progress is whatever the
+      // scrollbar happens to say, and the scrollbar is a shared resource that browsers, extensions and
+      // devtools all write to. Observed: entering Chrome's device emulation resets the page to the top,
+      // so the anchor read `progress=0, stop=8` — a visitor standing in the FAQ, described as standing
+      // on the hero — and the re-anchor faithfully preserved the reset instead of the visitor.
+      //
+      // The fill is the only span with no stop of its own, and leaving it downward walks `currentStop`
+      // back to 0 on the way (see `commitStop` in `applyPinProgress`), so `stop === 0` is a true
+      // statement about being there rather than a leftover.
+      const inFill = currentStop === 0 && progress < fillFraction;
+      reframeAnchor = {
+        stop: currentStop,
+        progress,
+        inFill,
+        gliding: committedGlide,
+        span: trigger.end - trigger.start,
+      };
+      reframing = true;
+      cancelAnimationFrame(reframeNet);
+      reframeNet = requestAnimationFrame(releaseReframe);
+    };
+
+    const releaseSnapHold = () => {
+      if (reframeHoldProgress === null) return;
+      reframeHoldProgress = null;
+      window.clearTimeout(reframeHoldTimer);
+      reframeHoldTimer = 0;
+    };
+
+    const reanchorToJourney = (anchor: ReframeAnchor) => {
+      const trigger = scrollTimeline?.scrollTrigger;
+      if (!trigger) return;
+
+      // ⚠ NEVER THE LOOP STOP, AND THIS IS THE MOST IMPORTANT LINE IN THE BLOCK. That stop is a
+      // landing pad whose arrival teleports (see `applyContactToHeroLoop`), so re-anchoring onto it
+      // would commit the site's one irreversible action off a window resize. A visitor caught inside
+      // the dive comes back to contact, which is where the reverse loop puts them too.
+      const targetStop = Math.min(anchor.stop, contactStop);
+      // ── ⚠ WHERE THE VISITOR WAS, WHICH IS NOT ALWAYS A STOP ──────────────────────────────────
+      //
+      // Three cases, and the middle one was wrong for a while:
+      //
+      //  · MID-JOURNEY (a glide is committed). The raw progress, so the visitor keeps their place
+      //    inside the crossing and it plays on. Landing them on `currentStop` instead completed the
+      //    cinematic instantly — the resize SKIPPED the animation, which is a worse failure than the
+      //    one this whole system exists to fix. A resize should be invisible, not a fast-forward.
+      //  · AT REST past the fill. The committed stop, NOT the raw progress — see the note in
+      //    `captureReframeAnchor` about a scrollbar that something else has moved under us.
+      //  · IN THE FILL. The fraction, because that is what the square's coverage is a function of and
+      //    there is no stop there to land on.
+      const targetProgress =
+        anchor.gliding || anchor.inFill
+          ? anchor.progress
+          : stopProgressValues[targetStop];
+      // ⚠ Rounded the way ScrollTrigger rounds its own snap destination
+      // (`Math.round(start + endValue * change)`), so the re-armed snap computes the pixel we are
+      // already standing on and its `endScroll !== scroll` guard is false outright. Braces to
+      // REFRAME_SNAP_HOLD_MS's belt: either alone stops the self-scroll, and float drift is exactly
+      // the kind of thing that makes "either alone" stop being true.
+      //
+      // ⚠ AND CLAMPED TO WHAT THE DOCUMENT CAN ACTUALLY HOLD. Asking for a position past the end of
+      // the page does not fail, it LANDS ON THE END — which on this page is progress 1, which is the
+      // teleport. See `applyPinProgress` for why that clamp is invisible until a frame later.
+      const maxScroll = ScrollTrigger.maxScroll(window);
+      const targetScroll = Math.min(
+        maxScroll,
+        Math.round(trigger.start + targetProgress * (trigger.end - trigger.start)),
+      );
+
+      // Whatever was moving the scrollbar, its target is in stale pixels. A committed glide's
+      // DESTINATION is `currentStop`, which is what we are landing on — so killing the tween finishes
+      // the journey rather than abandoning it.
+      gsap.killTweensOf(window);
+
+      // ⚠ Set BEFORE the scrollbar moves, for the reason `commitReverseTeleport` spells out at
+      // length: the pin's update runs against these, and a landing past the fill with `wasInFill`
+      // still true fires `goToStop(0)` and glides the visitor onto craft 01.
+      // ⚠ HELD TRUE ACROSS A MID-JOURNEY REFRAME. `applyPinProgress` resolves the nearest stop and
+      // commits it whenever nothing owns the scroll — and the nearest stop to a progress halfway
+      // through a crossing is not where the visitor is going. Leaving the glide committed keeps
+      // `currentStop` as the DESTINATION, which is what the scene is already staged for.
+      committedGlide = anchor.gliding;
+      currentStop = anchor.inFill ? 0 : targetStop;
+      wasInFill = anchor.inFill;
+      justTeleported = true;
+      // ⚠ `lastCommittedIndex` and `lastCrossingProgress` are deliberately NOT reset, which is the one
+      // place this parts company with the two teleports. They clear those because they are changing
+      // section and want a fresh commit; we are landing on the stop the scenes are ALREADY showing, so
+      // clearing them would re-fire `setActiveStop` and replay a craft swap that has no reason to play.
+
+      window.scrollTo(0, targetScroll);
+      // ⚠ WRITE, READ BACK, WRITE AGAIN IF IT MISSED — and the read is what makes the retry work.
+      // A scroll write is clamped to the document's CURRENT height, and at this instant the pin's
+      // spacer has just been given a new pixel height whose layout may not have flushed. Reading
+      // `scrollY` forces that flush, so a second write lands where the first could not. One retry,
+      // not a loop: if it still misses, the page genuinely cannot hold the position and the hand-driven
+      // update below is what keeps the site correct anyway.
+      if (Math.abs(readScrollTop() - targetScroll) > REFRAME_LANDING_EPSILON_PX) {
+        window.scrollTo(0, targetScroll);
+      }
+      // ⚠ THE SCROLLBAR IS READ BACK, NOT ASSUMED. `trigger.scroll(v)` writes `v` straight into GSAP's
+      // cache and never checks what the browser did with it, so handing it our REQUEST would plant a
+      // number that disagrees with the page — and the disagreement surfaces a frame later, when a
+      // `scroll` event clears the cache and the pin abruptly reports the truth. Feed it the truth now.
+      trigger.scroll(readScrollTop());
+      trigger.update();
+      // Same pair as the two teleports: moving a SCRUBBED pin only moves its target, so without the
+      // flush it spends ~1.8 s easing there, playing every crossing on the way.
+      trigger.getTween()?.progress(1);
+
+      // ⚠ DRIVEN BY HAND, AT THE PROGRESS WE CHOSE — and `reframing` is still raised, so the
+      // `trigger.update()` above changed nothing. That is the whole point of `applyPinProgress` taking
+      // a number: this frame does not depend on the scroll cache being honest, on layout having
+      // flushed, or on the document already being tall enough. Whatever the scrollbar ended up saying,
+      // the site is put into the state the anchor asked for — and no crossing can reach 1 on the way.
+      // ⚠ ARMED BEFORE ANYTHING IS DRIVEN, not after. It is the second lock on the teleport as well as
+      // the answer the re-armed snap gets (see REFRAME_SNAP_HOLD_MS), and `reframing` comes down a few
+      // lines below — so raising it afterwards would leave a gap between the two with neither in force.
+      reframeHoldProgress = targetProgress;
+      window.clearTimeout(reframeHoldTimer);
+      reframeHoldTimer = window.setTimeout(releaseSnapHold, REFRAME_SNAP_HOLD_MS);
+
+      applyPinProgress(targetProgress, () => targetProgress);
+      reframing = false;
+      window.dispatchEvent(new Event(LOOP_SNAP_EVENT));
+
+      // ── ⚠ AND THE JOURNEY IS RESUMED, NOT ABANDONED ─────────────────────────────────────────
+      //
+      // `gsap.killTweensOf(window)` above stopped the glide, and it had to: its target is a PIXEL
+      // figure solved against the old pin length, so letting it run would land the visitor at a
+      // progress nobody asked for. But killing it is only half — without this the crossing simply
+      // stops wherever the resize caught it and waits for a gesture.
+      //
+      // ⚠ WITH THE TIME THAT WAS ACTUALLY LEFT ON IT, taken from `activeGlide` rather than re-derived.
+      // The first cut solved a duration from progress across the whole pin — and a crossing spans
+      // about a tenth of that, so the flight resumed at roughly triple speed. Every caller of
+      // `goToStop` already picked a duration that means something; the only honest answer is that
+      // number minus however much of it has been spent.
+      const resume = activeGlide;
+      if (anchor.gliding && resume) {
+        const spentSeconds = (performance.now() - resume.startedAt) / 1000;
+        goToStop(
+          resume.stop,
+          Math.max(
+            REFRAME_RESUME_MIN_SECONDS,
+            resume.durationSeconds - spentSeconds,
+          ),
+        );
+      }
+
+      // ⚠ A cover that never lifts is worse than any transition. If the glide was NOT resumed above,
+      // its arrival check may never run, so the jump is landed by hand — `finishCoveredJump`
+      // early-returns when there is no jump, so this costs nothing the rest of the time. When it WAS
+      // resumed the cover must stay down: the journey is still travelling under it, and the ordinary
+      // arrival check in `applyPinProgress` will open it on landing, with `coveredJumpNet` behind that.
+      if (coveredJumpGliding && !anchor.gliding) finishCoveredJump();
+
+      // ── ⚠ AND CHECK, ONE FRAME LATER, THAT WE ARE STILL THERE ────────────────────────────────
+      //
+      // Everything above runs SYNCHRONOUSLY inside a resize handler, and several things that move a
+      // scrollbar do not: the browser re-clamps after it finishes reflowing, scroll anchoring runs
+      // after layout, and a window manager animating a panel closed can report its size in stages.
+      // Any of them lands after the last line of this function and silently undoes it — which is
+      // exactly what "I closed devtools and ended up on the hero" was, with the site's own state
+      // correctly at the FAQ and the scrollbar somewhere else entirely until the next scroll event
+      // resolved the disagreement in the scrollbar's favour.
+      //
+      // A frame later all of that has happened. So: look, and if the page moved, put it back and
+      // re-drive. Once, not in a loop — a second miss means something owns the scroll that we should
+      // not be fighting, and the site is still in the state the anchor asked for.
+      cancelAnimationFrame(reframeVerifyFrame);
+      reframeVerifyFrame = requestAnimationFrame(() => {
+        const settled = scrollTimeline?.scrollTrigger;
+        if (!settled) return;
+        const settledSpan = settled.end - settled.start;
+        if (!(settledSpan > 0)) return;
+        const expected = Math.min(
+          ScrollTrigger.maxScroll(window),
+          Math.round(settled.start + targetProgress * settledSpan),
+        );
+        if (Math.abs(readScrollTop() - expected) <= REFRAME_LANDING_EPSILON_PX) return;
+        reframing = true;
+        window.scrollTo(0, expected);
+        settled.scroll(readScrollTop());
+        settled.update();
+        settled.getTween()?.progress(1);
+        applyPinProgress(targetProgress, () => targetProgress);
+        reframing = false;
+      });
+    };
+
+    // ⚠ THE GLOBAL "refresh" EVENT, NOT THE TRIGGER'S OWN `onRefresh`.
+    //
+    // Two reasons. The trigger's own callback runs while `_refreshingAll === 2`, i.e. while GSAP is
+    // still in the middle of restoring the scroll-position cache it is about to hand back — moving the
+    // scrollbar there fights it. The global dispatch is the first line after `_refreshingAll = false`.
+    // And this way the re-anchor is tied to the thing that actually breaks the pin — a REFRESH,
+    // whatever caused it — rather than to a resize heuristic that a late font would slip past.
+    const onScrollTriggerRefresh = () => {
+      const anchor = reframeAnchor;
+      reframeAnchor = null;
+      cancelAnimationFrame(reframeNet);
+      // ⚠ `reframing` is lowered HERE on every path that does not re-anchor, and by
+      // `reanchorToJourney` itself on the one that does — it has to stay raised across the whole of
+      // that function, because the pin's own `update()` in the middle of it must not be acted on.
+      if (!anchor) {
+        reframing = false;
+        return;
+      }
+      const trigger = scrollTimeline?.scrollTrigger;
+      if (!trigger) {
+        reframing = false;
+        return;
+      }
+      // `NaN` on the pin's own construction refresh, and equal on any refresh that did not change the
+      // pixels-to-progress mapping — a width-only resize, a font landing, an observer firing. Both are
+      // refreshes with nothing to correct, and re-anchoring on them would be a jump where there was no
+      // problem. See ReframeAnchor.span.
+      // ── ⚠ A SKIPPED RE-ANCHOR STILL OWES THE PIN AN UPDATE ──────────────────────────────────
+      //
+      // `reframing` suppressed the forced `_updateAll(2)` that `_refreshAll` runs, on the promise that
+      // the update would be re-driven on a better number. Returning here breaks that promise, and the
+      // frame is simply LOST — so if the refresh moved the scroll for any reason of its own, the pin's
+      // published state stays where it was and the site shows one section while the pin is at another.
+      //
+      // Measured, not theorised: Chrome's device emulation resets the page scroll when you enter it.
+      // The pin went to progress 0 with `currentStop` still 8, this branch swallowed the update that
+      // would have said so, and the site sat there rendering the FAQ over a hero it had already
+      // returned to — until an unrelated resize ran an update and the truth arrived all at once.
+      //
+      // So: skip the RE-ANCHOR, never the update.
+      const resumeWithoutReanchor = () => {
+        reframing = false;
+        applyPinProgress(trigger.progress, () => trigger.progress);
+      };
+
+      // The pin's own construction refresh — there is no previous mapping to preserve.
+      if (!(anchor.span > 0)) {
+        resumeWithoutReanchor();
+        return;
+      }
+      // Nothing about the pixels-to-progress mapping moved, so there is nothing to correct.
+      if (anchor.span === trigger.end - trigger.start) {
+        resumeWithoutReanchor();
+        return;
+      }
+      reanchorToJourney(anchor);
+    };
+    ScrollTrigger.addEventListener("refresh", onScrollTriggerRefresh);
+
+    // ── ⚠ AND THE REFRESH ITSELF HAS TO BE FORCED, BECAUSE GSAP'S OWN ONE GETS DEFERRED FOREVER ──
+    //
+    // `_resizeDelay` calls `_refreshAll` with no `force`, and the first thing `_refreshAll` does with
+    // that is put itself off:
+    //
+    //     if (_lastScrollTime && !force && !_isReverted) {
+    //         _addListener(ScrollTrigger, "scrollEnd", _softRefresh);
+    //         return;
+    //     }
+    //
+    // It waits for `scrollEnd`, which `_updateAll` only dispatches after 200 ms with no scrolling at
+    // all. That is a sound default for a document and close to unreachable HERE: this pin is scrubbed,
+    // the carousel moves the scrollbar with `scrollTo` tweens, and the re-anchor above writes it too —
+    // so something is nearly always setting `_lastScrollTime` and the resize refresh keeps being
+    // postponed.
+    //
+    // ⚠ WHAT THAT COSTS IS NOT SUBTLE, AND IT IS NOT THE PIN'S POSITION. ScrollTrigger writes the
+    // pin-spacer's width in PIXELS, and only inside `_swapPinIn`, behind `if (!pin._gsap.swappedIn)`
+    // (ScrollTrigger.js:373) — so that width is only ever as fresh as the last refresh. Miss the
+    // refresh and the spacer keeps the old number; `.hero-section` is `width: 100%` of it, every
+    // overlay inside is `inset: 0`, and the whole site renders into a box short by exactly the amount
+    // the window grew, with the page's black background filling the rest. Measured in a console trace:
+    // `window 1745 · spacer 1211 · section 1211 · box 1211`, unchanged for four seconds.
+    //
+    // So the settle asks for a FORCED refresh — `ScrollTrigger.refresh()` is `_refreshAll(true)`, which
+    // skips the deferral. It is the pin's owner asking for the pin to re-measure, which is why it lives
+    // here rather than in the reframe module (which reports and does not act) or in `HeroSun` (which
+    // used to own a private copy of this on its own timer, racing GSAP's — see its header).
+    const onReframeSettle = () => ScrollTrigger.refresh();
+    const stopReframeWatch = startViewportReframeWatch();
+    window.addEventListener(REFRAME_SETTLE_EVENT, onReframeSettle);
 
     // ── The cream has the screen; build the hero underneath it ──
     // The entrance and the star's re-gather both start here, so they play THROUGH the cream clearing
@@ -1875,6 +2517,10 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
         (section) => section.key === request.key,
       );
       if (sectionIndex < 0) return;
+      // Whatever asked, the visitor is being taken somewhere — so the arrival net has nothing left to
+      // catch. Set for ANY accepted request, not only one carrying the arrival key: the net's job is
+      // "did anything happen", and a hero left standing is the only outcome it exists to prevent.
+      hasHonouredArrival = true;
       const targetStop = layout.sections[sectionIndex].firstStop;
       const trigger = scrollTimeline?.scrollTrigger;
       const distance = Math.abs(
@@ -1897,16 +2543,33 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       const currentSectionIndex = inFill
         ? HERO_SECTION_INDEX
         : layout.sectionIndexOfStop(currentStop);
+      // ⚠ A request that arrives ALREADY COVERED has no plain path available to it. The loader is
+      // holding an opaque screen that only `JUMP_ARRIVED_EVENT` will open, so both of the escape
+      // hatches below — reduced motion, and the distance rule — would strand the visitor on black
+      // with nothing coming. It is not "prefer the covered path" here, it is the only one that ends.
+      //
+      // (Neither would fire in practice: an arrival starts at the hero, and every section is at least
+      // `JUMP_SECTION_DISTANCE` from it. The point is that the guarantee must not rest on that.)
+      //
       // `trigger` is required, not incidental: with no pin yet (a click during the intro, before
       // REVEAL_EVENT built it) `goToStop` no-ops, so no update would ever report arrival and the cover
       // would sit on a black screen until its net lapsed. Fall through to the plain path, which
-      // degrades to setting the index and nothing else.
+      // degrades to setting the index and nothing else. An already-covered request is the exception
+      // even to that — `JUMP_ARRIVE_GRACE_MS` opening on the hero is a worse arrival than the one
+      // asked for, but it is an arrival; the plain path there would simply never uncover.
       if (
-        !reduceMotion &&
-        trigger &&
-        Math.abs(sectionIndex - currentSectionIndex) >= JUMP_SECTION_DISTANCE
+        request.alreadyCovered ||
+        (!reduceMotion &&
+          trigger &&
+          Math.abs(sectionIndex - currentSectionIndex) >= JUMP_SECTION_DISTANCE)
       ) {
-        beginCoveredJump(request.key, request.origin, targetStop, durationSeconds);
+        beginCoveredJump(
+          request.key,
+          request.origin,
+          targetStop,
+          durationSeconds,
+          request.alreadyCovered,
+        );
         return;
       }
 
@@ -2034,6 +2697,9 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
 
     const handleWheel = (event: WheelEvent) => {
+      // The visitor is driving again, so the reframe's protected answer retires — from here on the
+      // only snap that can fire is one they asked for, and it must get the honest nearest stop.
+      releaseSnapHold();
       // ⚠ This handler is bound `{ passive: false }` and `preventDefault`s every gesture in the
       // carousel region, so it cancels the scrolling of ANYTHING layered over the page as readily as
       // the page's own. Nothing on the site scrolls independently today; if something ever does, it
@@ -2062,6 +2728,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     };
 
     const handleTouchStart = (event: TouchEvent) => {
+      releaseSnapHold(); // see handleWheel
       if (event.touches.length !== 1) return;
       touchStartY = event.touches[0].clientY;
       touchActive = true;
@@ -2107,9 +2774,16 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
       window.removeEventListener("touchstart", handleTouchStart);
       window.removeEventListener("touchmove", handleTouchMove);
       window.removeEventListener("touchend", handleTouchEnd);
+      ScrollTrigger.removeEventListener("refresh", onScrollTriggerRefresh);
+      window.removeEventListener(REFRAME_SETTLE_EVENT, onReframeSettle);
+      stopReframeWatch();
+      cancelAnimationFrame(reframeNet);
+      cancelAnimationFrame(reframeVerifyFrame);
+      window.clearTimeout(reframeHoldTimer);
       window.clearTimeout(fallbackTimeout);
       window.clearTimeout(rearmTimer);
       window.clearTimeout(coveredJumpNet);
+      window.clearTimeout(arrivalNet);
       // Hand `body` back to the stylesheet — this hook is the only writer of that inline style, and
       // leaving a cream one behind would outlive the homepage on a client-side route change.
       document.body.style.backgroundColor = "";

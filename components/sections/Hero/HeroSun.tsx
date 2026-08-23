@@ -8,6 +8,12 @@ import { measureUntransformedRect } from '@/lib/measureUntransformedRect';
 import { REVEAL_EVENT } from '@/components/effects/IntroSequence/introEvents';
 import { SUN_CANVAS_HEADROOM } from '@/components/effects/IntroSequence/gatherShader';
 import { BLACK_STAGE_EVENT, readBlackStageActive } from '@/lib/blackStageEvent';
+import {
+  REFRAME_BEGIN_EVENT,
+  REFRAME_SETTLE_EVENT,
+  startViewportReframeWatch,
+} from '@/lib/viewportReframe';
+import { notifyViewportResized } from '@/lib/adaptivePixelRatio';
 import { useSunParallax } from './hooks/useSunParallax';
 
 // The single sun for the whole page. It lives here (not in the hero card and not in the loader) so
@@ -31,8 +37,8 @@ const SERVICES_SUN_SCALE = 1;
 const SERVICES_SUN_RAMP_SECONDS = 1.1;
 
 // Resize handling: hide the sun while the window is being resized, then re-place + fade it back
-// in once it settles. RESIZE_SETTLE_MS is the debounce that defines "done resizing".
-const RESIZE_SETTLE_MS = 180;
+// in once it settles. The debounce that defines "done resizing" now lives in `lib/viewportReframe.ts`
+// — this file had its own copy of it, on its own timer, alongside its own `ScrollTrigger.refresh()`.
 const RESIZE_FADE_SECONDS = 0.35;
 
 export default function HeroSun() {
@@ -113,12 +119,15 @@ export default function HeroSun() {
     // Keeping the sun perfectly locked to the square *during* a live resize is a losing battle —
     // the square's base box (here) and the pin's scroll transform (ScrollTrigger) update on
     // different cadences, so the sun visibly skids. Instead: hide it the instant a resize starts,
-    // wait for it to settle (debounce), refresh the pin + re-place the base box, then fade it back
-    // in at the correct spot. On touch devices we ignore height-only resizes (the address bar
-    // showing/hiding) so the sun doesn't blink on every scroll.
-    const prefersCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
-    let lastWidth = window.innerWidth;
-    let settleTimer = 0;
+    // wait for it to settle, re-place the base box, then fade it back in at the correct spot.
+    //
+    // ⚠ THE DEBOUNCE AND THE REFRESH ARE BOTH GONE FROM HERE, and both for the same reason: this file
+    // was a second owner of them. `lib/viewportReframe.ts` now decides when a resize has finished (the
+    // touch height-only rule went with it, and it picked up the minimised-window case on the way), and
+    // ScrollTrigger owns its own refresh — this used to call `ScrollTrigger.refresh()` on a 180 ms
+    // timer while GSAP's `_resizeDelay` fired one at 200 ms, so every resize refreshed the pin twice,
+    // 20 ms apart. That is not merely wasteful now that a refresh re-anchors the whole journey and
+    // re-arms snapping: see `useHeroAnimation`'s reframe block.
     let hidden = false;
 
     const hideSun = () => {
@@ -132,25 +141,47 @@ export default function HeroSun() {
       hidden = false;
     };
 
-    const handleResize = () => {
-      const widthChanged = window.innerWidth !== lastWidth;
-      lastWidth = window.innerWidth;
-      // Mirror ScrollTrigger's ignoreMobileResize: a phone address bar fires height-only resizes
-      // on almost every scroll — don't blink the sun for those.
-      if (prefersCoarsePointer && !widthChanged) return;
-
+    const onReframeBegin = () => {
       if (introDone && !hidden) hideSun();
-
-      window.clearTimeout(settleTimer);
-      settleTimer = window.setTimeout(() => {
-        // Recompute the pin's fill transform for the new size, re-place the base box, THEN show —
-        // so the sun only ever reappears once everything is consistent again.
-        ScrollTrigger.refresh();
-        syncToSquare();
-        if (introDone) requestAnimationFrame(showSun);
-      }, RESIZE_SETTLE_MS);
     };
-    window.addEventListener('resize', handleResize);
+
+    // ⚠ ONE FUNCTION FOR TWO SIGNALS, BECAUSE THEIR ORDER IS NOT DEFINED. The reframe settle is a
+    // `setTimeout` and GSAP's refresh is a ticker-driven `delayedCall`, both at 200 ms, so either can
+    // land first — and the sun needs whichever arrives last to have re-placed it. Idempotent: a second
+    // `syncToSquare` writes the same numbers and `showSun` on an already-shown layer is a no-op.
+    //
+    // Hanging it on the refresh as well as the settle is also the belt for the case the settle cannot
+    // cover: a touch device whose height changed more than a quarter of the viewport refreshes the pin
+    // (GSAP's `ignoreMobileResize` threshold) without the reframe watch calling it a resize at all.
+    //
+    // ⚠ `hidden`, not `introDone`, gates the show — and it is not a tidy-up. `showSun` puts a
+    // `transition: opacity` on the layer, and this now runs on refreshes that had nothing to do with a
+    // resize (the pin's own creation, `load`, a late font). Writing that transition onto a layer whose
+    // opacity `IntroSequence` is tweening would leave a CSS transition smearing every GSAP frame of it.
+    // Only ever put back what this file took away.
+    const settleSun = () => {
+      syncToSquare();
+      if (hidden) requestAnimationFrame(showSun);
+    };
+
+    // ── ⚠ AND THE PIXEL BUDGET, WHICH IS NOT THIS COMPONENT'S BUSINESS BUT HAS NOWHERE BETTER ──
+    //
+    // `MAX_DRAWING_BUFFER_MEGAPIXELS` is solved from the viewport ONCE, at load. Open the site in a
+    // small window, go full screen, and the ceiling that stands between a dense panel and a 700 MB
+    // render target was computed for a frame a fraction of the size. It has to be re-solved when the
+    // window changes, and the settle is the moment to do it.
+    //
+    // It lives here because this component already owns the reframe watch on this page and the call is
+    // one line to a module with no opinion about who makes it — a scene hook would be a worse home,
+    // since there are three of them and the budget is shared. If a fourth consumer ever appears, move
+    // this to whoever mounts unconditionally.
+    const onReframeSettleBudget = () => notifyViewportResized();
+    window.addEventListener(REFRAME_SETTLE_EVENT, onReframeSettleBudget);
+
+    const stopReframeWatch = startViewportReframeWatch();
+    window.addEventListener(REFRAME_BEGIN_EVENT, onReframeBegin);
+    window.addEventListener(REFRAME_SETTLE_EVENT, settleSun);
+    ScrollTrigger.addEventListener('refresh', settleSun);
 
     // ── ⚠ AND ANYTHING ELSE THAT MOVES THE SQUARE ──
     //
@@ -208,10 +239,13 @@ export default function HeroSun() {
 
     return () => {
       window.removeEventListener(REVEAL_EVENT, onReveal);
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener(REFRAME_BEGIN_EVENT, onReframeBegin);
+      window.removeEventListener(REFRAME_SETTLE_EVENT, settleSun);
+      window.removeEventListener(REFRAME_SETTLE_EVENT, onReframeSettleBudget);
+      ScrollTrigger.removeEventListener('refresh', settleSun);
+      stopReframeWatch();
       squareWatcher?.disconnect();
       window.removeEventListener(BLACK_STAGE_EVENT, onBlackStage);
-      window.clearTimeout(settleTimer);
     };
   }, []);
 

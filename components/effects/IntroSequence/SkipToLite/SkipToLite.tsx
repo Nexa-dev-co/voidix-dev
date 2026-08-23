@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { areAssetsReady } from '@/lib/assetLoadProgress';
+import { readArrivalSection } from '@/lib/arrivalSection';
+import { LITE_TAKEN_EVENT } from '../introEvents';
 import { createPageEtaEstimator } from '../downloadEta';
 
 /**
@@ -138,12 +140,33 @@ export default function SkipToLite() {
 
   if (!isOffered) return null;
 
+  // ── The way out keeps the errand ──
+  // Someone who clicked `Work` on `/about` and is now being told there are ten megabytes to come
+  // should land on `/lite`'s work, not at the top of it. `/lite` carries the navbar's own section keys
+  // as anchors, so the destination is the key — see lib/inPageSectionRoutes.ts.
+  //
+  // ⚠ Read HERE and not at the top of the component: everything above this line runs on the server
+  // too, and `readArrivalSection` touches `location`. Past the guard the component has already been
+  // through an effect and a state change, so this is client-only by construction. (The hash has been
+  // spent by the loader long before now; the answer is memoised.)
+  const arrivalSection = readArrivalSection();
+  const liteHref = arrivalSection ? `/lite#${arrivalSection}` : '/lite';
+
   return (
     <div className="intro-skip">
       <span className="intro-skip-copy">Ten megabytes still to come.</span>
       {/* A plain link on purpose. Pressing it is a real navigation that tears this page down — which
           is the whole point: nothing further is downloaded, and the models in flight are abandoned. */}
-      <a className="intro-skip-action" href="/lite">
+      {/* ⚠ The dispatch is synchronous and nothing awaits it — this link tears the page down. What
+          carries it is the journey collector's `pagehide` beacon, which is the same mechanism that has
+          to carry the abandonment this control sits next to. A handler that returned a promise, or
+          that called `preventDefault` to "make sure it sent", would be trading the navigation the
+          visitor asked for against a count. */}
+      <a
+        className="intro-skip-action"
+        href={liteHref}
+        onClick={() => window.dispatchEvent(new Event(LITE_TAKEN_EVENT))}
+      >
         Read the site in text
         <span aria-hidden="true"> →</span>
       </a>

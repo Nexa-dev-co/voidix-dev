@@ -104,6 +104,10 @@ export default function PageShell({
         <span className="doc-field-bloom" />
       </div>
 
+      {/* ⚠ NOT a centred container — it is a stacking lift and nothing else. It held
+          `max-width: 76rem` until 2026-08-21, which made every one of these routes a 1216px island on
+          any screen wider than that while `/` ran edge to edge. The homepage has no such wrapper
+          anywhere; see the block on `.doc-inner` in globals.css for what holds the copy instead. */}
       <div className="doc-inner">
         <PageMasthead eyebrow={eyebrow} title={title} lead={lead} />
 

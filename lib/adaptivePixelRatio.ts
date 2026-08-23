@@ -371,6 +371,21 @@ type ControllerPhase = 'calibrating' | 'locked';
  */
 type PipelineKey = 'deck' | 'works';
 
+/**
+ * The ratios have been settled for this session — whichever of the three solvers got there.
+ *
+ * ⚠ IT EXISTS BECAUSE A READING TAKEN BEFORE THIS IS NOT A READING OF ANYTHING. `pixelRatio` starts at
+ * 1 and `sunPixelRatio` at `null`, so anything that asks the allocator what this machine was given
+ * before the lock is told "one, and the star matches" — which is the module's honest answer to a
+ * question it cannot yet answer, and is indistinguishable from a real allocation on a slow machine.
+ * The journey layer's `device:profile` asked at layout mount and got exactly that, for every visitor.
+ *
+ * ⚠ It is fired by `lockPhase()` and therefore by all THREE solvers — the burn-in, the section split
+ * and the runtime calibrator. Subscribing to one of them would miss the loads the other two decide,
+ * which is most of them: `reportSectionCosts` returns early the moment `phase` is already locked.
+ */
+export const PIXELS_ALLOCATED_EVENT = 'voidix:pixels-allocated';
+
 let initialised = false;
 /**
  * ⚠ Starts CALIBRATING, not waiting for the probe.
@@ -394,6 +409,13 @@ let hardwareCeil = 1;
  */
 let deviceRatioNative = 1;
 let pixelBudgetCeil = Infinity;
+/**
+ * The viewport area the banked calibration samples were taken at, in megapixels.
+ *
+ * Only `notifyViewportResized` reads it, to decide whether a window that has just changed size has
+ * changed enough to make those samples evidence about a different frame. See RECALIBRATE_AREA_RATIO.
+ */
+let calibratedMegapixels = 1;
 let probed = false;
 let probedAffordableRatio: number | null = null;
 
@@ -499,6 +521,7 @@ function ensureInitialised(): void {
       : 0;
   if (viewportMegapixels > 0) {
     pixelBudgetCeil = Math.sqrt(MAX_DRAWING_BUFFER_MEGAPIXELS / viewportMegapixels);
+    calibratedMegapixels = viewportMegapixels;
   }
 
   ceil = Math.max(floor, Math.min(MAX_PIXEL_RATIO, deviceRatio, pixelBudgetCeil));
@@ -593,6 +616,18 @@ export function reportProbedFrameCost(
 }
 
 /**
+ * Settle the session's ratios and say so.
+ *
+ * ⚠ CALL THIS INSTEAD OF ASSIGNING `phase` — and call it AFTER the new ratios are written, never
+ * before. A listener reads `getPixelRatio()` / `getSunPixelRatio()` synchronously inside the dispatch,
+ * so announcing the lock first would hand every subscriber the numbers being replaced.
+ */
+function lockPhase(): void {
+  phase = 'locked';
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(PIXELS_ALLOCATED_EVENT));
+}
+
+/**
  * The loader's burn-in: the median cost of real, pipelined frames of the works pipeline, measured
  * during the loader with everything else already running.
  *
@@ -628,13 +663,15 @@ export function reportBurnIn(medianFrameMilliseconds: number, ratio: number): vo
   const from = pixelRatio;
 
   pixelRatio = Math.min(ceil, Math.max(floor, solved));
-  phase = 'locked';
   calibratedPipelines.add('works');
   calibratedPipelines.add('deck');
 
   // What the machine proved it could afford, over what the site was able to spend. See the constant.
   const surplus = solved / pixelRatio;
   if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
+  // ⚠ Last, so a subscriber reading the allocation sees every part of it — the licence included.
+  lockPhase();
 
   if (telemetryEnabled) {
     const bound =
@@ -772,7 +809,6 @@ export function reportSectionCosts(split: SectionCostSplit): void {
   const starFrom = getSunPixelRatio();
   pixelRatio = newFieldRatio;
   sunPixelRatio = newStarRatio;
-  phase = 'locked';
   calibratedPipelines.add('works');
   calibratedPipelines.add('deck');
 
@@ -780,6 +816,10 @@ export function reportSectionCosts(split: SectionCostSplit): void {
   // over what the site was able to spend. ⚠ Read off the FIELD, because that is what the samples buy.
   const surplus = fieldSolved / newFieldRatio;
   if (surplus >= EXTRA_QUALITY_BURN_IN_SURPLUS) extraQualityEarned = true;
+
+  // ⚠ Last, and this is the path `device:profile` is actually waiting for — it is the only one that
+  // solves the star its own ratio, so it is the only one whose announcement carries two numbers.
+  lockPhase();
 
   if (telemetryEnabled) {
     const boundBy = (solved: number, low: number, high: number) =>
@@ -946,6 +986,80 @@ export function getPixelRatio(): number {
 }
 
 /**
+ * How much the viewport's AREA must change before the calibration's banked samples are thrown away.
+ *
+ * They were taken at a different pixel count, so past some point they are evidence about a machine
+ * drawing a different frame. Below it they are still the best reading available and discarding them
+ * would cost several seconds of re-measurement for nothing.
+ */
+const RECALIBRATE_AREA_RATIO = 1.25;
+
+/**
+ * The window has changed size. Re-solve what the buffer budget allows.
+ *
+ * ── ⚠ WHY THIS HAS TO EXIST ─────────────────────────────────────────────────────────────────────
+ * `pixelBudgetCeil` is solved ONCE — in `ensureInitialised` from the load-time viewport, and again in
+ * `reportProbedFrameCost` from the area the probe actually drew. Neither is ever revisited. So a
+ * visitor who opens the site in a small window and then goes full screen keeps a ceiling computed for
+ * a frame a fraction of the size, and `MAX_DRAWING_BUFFER_MEGAPIXELS` — the one constant standing
+ * between a dense panel and the 5.26 Mpx / 700 MB / 20 fps case its own header records — silently
+ * stops binding. The window manager is a way of reaching that case with no measurement involved.
+ *
+ * ⚠ IT DOES NOT RE-PROBE, and `probed` is deliberately left alone. The machine has not changed; only
+ * the number of pixels it is being asked for has. `probedAffordableRatio` is a property of the GPU and
+ * survives — re-running the probe here would mean measuring a frame mid-resize, which is the least
+ * representative frame of the session.
+ *
+ * ⚠ IT CLAMPS DOWN, NEVER UP. Shrinking the window RAISES the ceiling, and landing on a raised ceiling
+ * is the "guess upward and claw back" mistake this module's header records being rewritten to stop
+ * making. The calibration is what may climb into the new room, on measured frames, as it always was.
+ */
+export function notifyViewportResized(): void {
+  ensureInitialised();
+  if (typeof window === 'undefined') return;
+
+  const viewportMegapixels =
+    (window.innerWidth * window.innerHeight) / 1_000_000;
+  if (!(viewportMegapixels > 0)) return;
+
+  const previousBudgetCeil = pixelBudgetCeil;
+  pixelBudgetCeil = Math.sqrt(
+    MAX_DRAWING_BUFFER_MEGAPIXELS / viewportMegapixels,
+  );
+  if (pixelBudgetCeil === previousBudgetCeil) return;
+
+  // Rebuilt from the same terms `reportProbedFrameCost` uses, so a probed session keeps its measured
+  // ceiling and an unprobed one keeps the hardware's — only the budget's contribution moves.
+  const affordable = probedAffordableRatio ?? Number.POSITIVE_INFINITY;
+  ceil = Math.max(floor, Math.min(hardwareCeil, pixelBudgetCeil, affordable));
+  const previousRatio = pixelRatio;
+  pixelRatio = Math.min(ceil, pixelRatio);
+  if (sunPixelRatio !== null) {
+    sunPixelRatio = Math.min(sunCeiling(), sunPixelRatio);
+  }
+
+  // ⚠ Only past a MATERIAL area change, and never once the controller has locked. Samples taken at a
+  // slightly different pixel count are still the best evidence available; throwing them away for a
+  // nudge of a window edge would cost seconds of re-measurement and buy nothing.
+  const areaRatio = Math.max(
+    viewportMegapixels / calibratedMegapixels,
+    calibratedMegapixels / viewportMegapixels,
+  );
+  if (phase !== 'locked' && areaRatio >= RECALIBRATE_AREA_RATIO) {
+    resetCalibration();
+    calibratedPipelines.clear();
+  }
+  calibratedMegapixels = viewportMegapixels;
+
+  logPixels(
+    'REFRAMED',
+    `viewport ${viewportMegapixels.toFixed(2)} Mpx → budget ceiling ` +
+      `${pixelBudgetCeil.toFixed(2)}, ratio ${previousRatio.toFixed(2)} → ${pixelRatio.toFixed(2)}` +
+      (areaRatio >= RECALIBRATE_AREA_RATIO ? '  (recalibrating)' : ''),
+  );
+}
+
+/**
  * Tell the controller that a scene has just re-allocated at a new ratio, so the frame carrying that
  * stall is not counted as evidence about the new ratio.
  *
@@ -1108,7 +1222,7 @@ function calibrate(dtSeconds: number): void {
   const measured = Math.min(ceil, Math.max(floor, solved));
   pixelRatio = calibratedPipelines.size === 0 ? measured : Math.min(pixelRatio, measured);
   if (activePipeline) calibratedPipelines.add(activePipeline);
-  phase = 'locked';
+  lockPhase();
 
   if (telemetryEnabled) {
     const bound =

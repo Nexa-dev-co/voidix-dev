@@ -132,6 +132,7 @@ export default function OrbitDial({
               key={navItem.key}
               type="button"
               className="orbit-station"
+              data-journey={`Orbit dial: ${navItem.label}`}
               // Both states are separate on purpose: `current` is where you ARE and glows constantly;
               // `armed` is where you are POINTING and lights only while a pointer is on it. The section
               // you are already in can be both at once, and it should look like it.

@@ -30,6 +30,9 @@ export default function EnquiryButton({ label, onClick, tone = 'default' }: Enqu
     <button
       type="button"
       className={tone === 'hot' ? 'enquiry-cta enquiry-cta--hot' : 'enquiry-cta'}
+      // ⚠ The BUTTON's label, not the enquiry's. `label` is whatever the caller passed and can be
+      // section copy, which would put four different names on one control in the panel's table.
+      data-journey="Open the enquiry form"
       onClick={onClick}
     >
       <span className="enquiry-cta-label">{label}</span>

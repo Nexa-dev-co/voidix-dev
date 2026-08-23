@@ -1,8 +1,13 @@
 'use client';
 
+import { useEffect } from 'react';
 import Dialog from '@/components/ui/Dialog/Dialog';
 import Drawer from '@/components/ui/Drawer/Drawer';
 import EnquiryForm from '@/components/ui/EnquiryForm/EnquiryForm';
+import {
+  ENQUIRY_OPEN_EVENT,
+  type EnquiryVariantDetail,
+} from '@/components/ui/EnquiryForm/enquiryEvents';
 import { useIsNarrowViewport } from '@/lib/hooks/useIsNarrowViewport';
 import type { EnquiryPrefill } from '@/lib/enquirySubjects';
 
@@ -52,6 +57,22 @@ export default function EnquiryPanel({
   const isNarrow = useIsNarrowViewport();
   const isApplication = variant === 'application';
 
+  // ⚠ Announced HERE and not in `EnquiryForm`, because opening is a property of the SHELL. The contact
+  // section renders the form directly, where it is never opened — it is simply there — so a dispatch
+  // inside the form would report the whole of contact as an intent to write to us.
+  //
+  // ⚠ It carries the variant and nothing else. Where the visitor was standing is the journey's
+  // question, not this component's: it is rendered from seven places across four routes, and the pin
+  // already publishes the answer. See `enquiryEvents.ts`.
+  useEffect(() => {
+    if (!open) return;
+    window.dispatchEvent(
+      new CustomEvent<EnquiryVariantDetail>(ENQUIRY_OPEN_EVENT, {
+        detail: { variant: isApplication ? 'application' : 'enquiry' },
+      }),
+    );
+  }, [open, isApplication]);
+
   const form = (
     <EnquiryForm
       key={prefill?.subject ?? 'blank'}
@@ -72,7 +93,7 @@ export default function EnquiryPanel({
 
   if (isNarrow) {
     return (
-      <Drawer open={open} onClose={onClose} eyebrow={eyebrow} title={title}>
+      <Drawer open={open} onClose={onClose} eyebrow={eyebrow} title={title} journeyKey="enquiry">
         {form}
       </Drawer>
     );

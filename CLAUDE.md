@@ -308,6 +308,22 @@ the code below was written on that assumption. It no longer holds.
 | libraries | gsap + ScrollTrigger + three | none used (⚠ gsap still *ships* — see below) |
 | copy | in a content file per section | same convention: `aboutContent.ts`, `careersContent.ts` |
 | CSS | `globals.css` | `globals.css`, the `.doc-*` block at the end |
+| width | full bleed, the shared padding expression | **the same, since 2026-08-21** — see below |
+
+⚠ **The document routes had drifted into a SECOND responsiveness system and were pulled back onto the
+homepage's on 2026-08-21.** `.doc-inner` carried `max-width: 76rem` + `margin: 0 auto`, which is the
+exact defect `.contact-panel`'s header records being rewritten out of — a hard cap reads nothing about
+the frame, so 1920 and 2560 both rendered an identical 1216px island while `/` ran edge to edge, and the
+footers stopped looking like each other. There is now **no centred container on any route**: every
+surface is the viewport minus `clamp(1.5rem, 5vw, 5rem)`, and copy is held by MEASURE (`62ch`, `58ch`,
+`46ch`, `18ch`) exactly as `.works-detail`'s `34ch` holds the works head. Three components in
+`data-wide` sections that the container had been silently sizing now carry their own caps
+(`.doc-track-detail`, `.doc-instruments`, `.doc-role-columns`) — **a new block of prose in `.doc-flow`
+with no cap will set a 2400px line.** The `.doc-footer` block and `PageFooter`'s header carry the rest.
+
+⚠ **These routes DO have a third width breakpoint, `64em`, and it is the one legitimate divergence.**
+It hides the orbit rail's arc when there is no room to stand an instrument beside the prose — an object
+`/` has no equivalent of. `51.25em` and `30em` mean what they mean everywhere else.
 
 **The rules in this file about the pin, the crossings and the scene budget apply to `/` only.** The
 right way to honour "one pin" for a page that is genuinely prose is to keep it out of the pin
@@ -719,6 +735,12 @@ copied — the HUD displays that exact rate, so one source of truth stops the te
 | `voidix:loop-reverse-request` / `-begin` / `-covered` | `LOOP_REVERSE_*_EVENT` | HeroReturnCue → useHeroAnimation ↔ LoopVeil | **The loop run backwards: hero → contact.** Request (the control, or the wheel pushed up at the top) → the pin says yes and asks for the cover → the cover says it has the screen, and the pin teleports **synchronously inside that dispatch**. |
 | `voidix:loop-arrived` | `LOOP_ARRIVED_EVENT` | useHeroAnimation | A loop has completed. **Arms the way back** — the hero's return control does not render before this and the wheel gesture does nothing, so a first visit is untouched. |
 | `voidix:sun-regather` | `SUN_REGATHER_EVENT` | useHeroAnimation | Replay the shard assembly at the top. **Not** `SUN_ASSEMBLE_EVENT` — the intro is still mounted and still listening to that one. |
+| `voidix:current-section` | `CURRENT_SECTION_EVENT` | useHeroAnimation (`setStage`) **and** useOrbitRail | **Which named section is on screen, on ANY route.** ⚠ It exists because `SECTION_ARRIVE_EVENT` fires ONLY on a navbar jump — scrolling the whole site fires it not once — so anything treating that as "where is the visitor" measured only the people who used the bar. Published from the two places that already computed the answer and already de-duplicated it. The pin's own first stage is `"fill"`; it leaves as `hero`. |
+| `voidix:stop-commit` | `STOP_COMMIT_EVENT` | useHeroAnimation (`commitStop`) | Which craft is on the pad / which project is focused. ⚠ Per STOP, where `SECTION_ARRIVE_EVENT` is per SECTION — and it carries **no dwell**: the pin knows when a stop was committed and nothing else, so the subtraction belongs to whoever wants it. De-duplicated at source. |
+| `voidix:faq-entry-open` | `FAQ_ENTRY_OPEN_EVENT` | useHologramReveal | A question was chosen. ⚠ Fired before the reduced-motion branch, so the signal does not depend on which animation the visitor gets. |
+| `voidix:drawer-open` | `DRAWER_OPEN_EVENT` | Drawer | The bottom sheet opened. One dispatch inside the component covers all four callers. ⚠ Its optional `journeyKey` is **not** the title — a title is CMS copy an editor can rewrite, which would split one drawer's history in two. |
+| `voidix:enquiry-*` | `ENQUIRY_OPEN/START/STEP/SUBMIT/ERROR_EVENT` | EnquiryPanel (open), EnquiryForm (the rest) | The contact funnel. ⚠ They carry only what the form knows — never where the visitor was standing, which the pin already publishes, and never a field value. |
+| `voidix:pixels-allocated` | `PIXELS_ALLOCATED_EVENT` | adaptivePixelRatio (`lockPhase`) | **The ratios are settled.** Fired by all THREE solvers — burn-in, section split, runtime calibrator — because any of them can be the one that decides a given load. ⚠ Anything asking the allocator what this machine got BEFORE this is told "1, and the star matches", which is indistinguishable from a real allocation on a weak machine. |
 
 One per-frame **store** sits alongside these, for values too hot for an event: `lib/hologramPose.ts`
 (where the FAQ panel is on screen). It is written every frame by `chamberScene` and read in the
@@ -853,6 +875,7 @@ These exist and are load-bearing — don't reinvent them:
 | `assetLoadProgress.ts` | Weighted, monotonic combined progress from the `deck` and `works` sources, plus the shader-warmup gate. The intro's counter is honest because of this. **Re-weigh `SOURCE_WEIGHTS` if either side's assets change size — shrinking one invalidates them exactly as much as growing one.** |
 | `useIsLowPowerViewport.ts` | Unmounts the hero's optional effects on phones, and **reacts to resize** — unmounting an effect is cheap and reversible. It is no longer the source of `lowPower`. |
 | `deviceTier.ts` | **The one quality authority: `potato \| low \| mid \| high`, decided once at first ask and LATCHED.** Everything downstream of it allocates, so it must not change when a window is dragged. `isLowPowerDevice()` is the old `lowPower` boolean expressed in terms of it — the two scene hooks no longer compute their own. ⚠ It does not measure: `gpuProbe` runs during the works warm-up, long after every composer is allocated, so it cannot answer a question asked at construction. |
+| `journey/` | **Visitor analytics — and ⚠ it is NOT telemetry.** `lib/telemetryEnabled`, `TelemetryConsole`, `LoaderTelemetry` and `cacheTelemetry` are diagnostics that print to a console and are compiled OUT of production. This is the opposite: it runs in production, for visitors, and posts to the studio's own panel. Two tiers — anonymous for everybody, a persistent id only on consent. ⚠ It **subscribes** to the site's existing CustomEvents; no scene, section or component imports anything from it. `docs/journey-analytics-plan.md` is the record for this repo AND the panel. |
 | `modelLoading.ts` | The page's ONE Draco decoder and ONE KTX2 transcoder. Both are shared because each instance fetches its own ~250/585 KB decoder and spins its own worker pool, and **neither is ever disposed** — `dispose()` terminates those workers, so whichever scene unmounted first would break decoding for every scene still alive. ⚠ `detectKtx2Support(renderer)` is separate and mandatory: `KTX2Loader.load()` throws if it has never seen a renderer, and two of the four model loaders (`chamberScene`, `singularityScene`) deliberately never get one. ⚠ `THREE.Cache` must stay OFF — the header says what it breaks. |
 
 **Every texture in every model is KTX2 (ETC1S)** as of 2026-08-04 — GPU-compressed, so it stays
@@ -954,6 +977,11 @@ the numbers — is in `docs/lag-and-freeze-diagnosis.md`.
 the route count: no route on this site exposes a tuning surface, and neither of the new ones has a
 single knob, query parameter or editor in it. They are content pages. Do not read them as a
 precedent for bringing an authoring route back.
+
+⚠ **One thing added since does write to `localStorage`, and it is not a tuning knob**: the journey
+layer's consent record and its tier 2 visitor id (`lib/journey/consent.ts`, which owns both key names).
+That is a visitor exercising a legal right, not anybody configuring the site — nothing it stores changes
+how a single pixel renders. Do not read it as a precedent for persisting preferences.
 
 What went: `/sun-lab` (the fractured-sun + black-hole editor), `/letters` and
 `/letters/transition/[strategy]` (the glyph testbed and the mark→mark comparison rig),
@@ -1087,14 +1115,18 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | **Careers content** | **DASHBOARD-MANAGED AND CONNECTED** (decided 2026-08-11, wired 2026-08-13). `app/careers/page.tsx` is a Server Component on **ISR** — `fetchPublishedContent()` → `resolveCareersContent()`, with `careersContent.ts` as the fallback when the panel has published nothing or is unreachable. Section 02 renders an honest **empty state** when the list is empty; ⚠ an empty published list must NEVER fall back to this repo's four invented roles, and `PublishedCareers.roles` says why. The application form is `EnquiryForm variant="application"` — name\*, email\*, and **the work** (a link and/or one PDF ≤ 5 MB, at least one of the two, checked in JS because `required` cannot express "either"), split across **two steps** since 2026-08-16 so it fits every frame without scrolling. It posts multipart to `/api/application`, which uploads the PDF to UploadThing server-side and files the rest with the panel against the role's **`slug`** — never its title, which an editor can rewrite. ⚠ **The steps are a layout, not two requests**: one `<form>`, one `FormData`, one submit from step 02 carrying every field. |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
 | **CMS wiring** | **9 of 9 payload keys read.** ⚠ This row said "2 of 9" long after it stopped being true. `lib/cms/siteContent.ts` resolves every key, split so the document routes never carry the scene sections' copy (`resolveSharedContent`) and `/` and `/lite` get the lot (`resolveFullContent`). `lib/cms/contentReport.ts` prints per-key provenance in dev — read that rather than trusting this table. `docs/cms-integration-plan.md` §③. |
+| **Journey analytics** | **BUILT, 2026-08-17; completed 2026-08-19.** Visitor analytics into the studio's own panel — no third party. `lib/journey/` collects by subscribing to the site's own events, `/api/journey` holds the secret, the panel stores and reports at `/user-activity`. Two consent tiers: tier 1 needs no permission and stores nothing on the device, tier 2 adds one id. GPC is honoured as a denial. **Outstanding: nothing has been seen end to end**, and ⚠ `voidix-cms/prisma/scripts/journey-maintenance-cron.sql` must be RUN once per database or `/privacy`'s ninety-day retention is a claim nothing performs. `docs/journey-analytics-plan.md`. |
 | **Search visibility** | **NOT BUILT, and measured 2026-08-13.** No `sitemap.ts`, no `robots.ts`, no canonical, no JSON-LD of any type, no OG image. ⚠ `metadataBase` is still a **guess** at the post-rebrand domain and carries a TODO — every relative canonical and OG URL resolves against it. ⚠ And the homepage's markup is the bigger problem: **0 `<h1>` elements** (the hero is a `div` with `role="heading"`, DOM text `"we build W rlds"`), **1 service description in 4**, **1 project in 4**, and **0 FAQ answers** — the render is a ternary, list *or* one answer. `/lite` carries all of it and is deliberately `noindex`. Numbers and the fix order in `docs/cms-integration-plan.md` §④–⑥. |
 
-⚠ **The `docs/` directory is nearly empty**, and most of this file's `docs/*.md` citations point at
-files that are not in the tree. They are real history — they are in git — but do not send anyone to a
-path without checking it exists first. What IS in the tree, as of 2026-08-13:
-`adaptive-asset-tier-plan.md`, `cleanup-plan.md`, `cms-integration-plan.md`, `mobile-polish-plan.md`,
+⚠ **Many of this file's `docs/*.md` citations point at files that are not in the tree.** They are real
+history — they are in git — but do not send anyone to a path without checking it exists first. What IS
+in the tree, as of **2026-08-19**:
+`adaptive-asset-tier-plan.md`, `cleanup-plan.md`, `cms-integration-plan.md`,
+`fluid-cursor-leak-plan.md`, `journey-analytics-plan.md`, `mobile-polish-plan.md`,
 `next-steps-plan.md`, `per-section-quality-budget-plan.md`, `performance-audit.md`,
-`performance-cost-inventory.md`, `sun-plasma-plan.md`, `unused-inventory.md`.
+`performance-cost-inventory.md`, `reverse-loop-plan.md`, `route-arrival-plan.md`,
+`sun-mobile-quality-plan.md`, `sun-plasma-plan.md`, `unused-inventory.md`,
+`works-marks-cms-plan.md`.
 
 ⚠ **`npm install` before `npm run build` on a fresh checkout of `feat/cms`.** `uploadthing` was added
 to `package.json` in `305b396` without being installed; the build dies on

@@ -84,7 +84,13 @@ export default function Dialog({
         aria-label={title}
         tabIndex={-1}
       >
-        <button type="button" className="dialog-close" onClick={onClose} aria-label="Close">
+        <button
+          type="button"
+          className="dialog-close"
+          onClick={onClose}
+          aria-label="Close"
+          data-journey="Close the dialog"
+        >
           <CloseGlyph />
         </button>
 

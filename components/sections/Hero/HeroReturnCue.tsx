@@ -46,6 +46,7 @@ export default function HeroReturnCue() {
     <button
       type="button"
       className="hero-return"
+      data-journey="Back to the horizon"
       // Routed through the pin, never scrolling by itself — the same rule the contact section's
       // "Travel in time" follows, so the button and the wheel gesture commit ONE cinematic. The pin is
       // also the only thing that can refuse (mid-entrance, mid-jump, not at the top).

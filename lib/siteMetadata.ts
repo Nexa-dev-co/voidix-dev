@@ -39,4 +39,14 @@ export const SITEMAP_ROUTES = [
   { path: '/', changeFrequency: 'monthly', priority: 1 },
   { path: '/about', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/careers', changeFrequency: 'weekly', priority: 0.8 },
+  /**
+   * ⚠ The legal routes ARE listed, and they are not `noindex`. Both are linked from every page's
+   * footer, so a crawler reaches them either way — the choice is only whether it reaches them as
+   * pages the site acknowledges or as two URLs it declined to mention. `priority` is the lowest on
+   * the site because that is honest about their place in it, not because they are unwanted: a
+   * privacy notice is a page a real visitor genuinely goes looking for, and a site that hides its
+   * own terms reads exactly as badly as it sounds.
+   */
+  { path: '/privacy', changeFrequency: 'yearly', priority: 0.3 },
+  { path: '/terms', changeFrequency: 'yearly', priority: 0.3 },
 ] as const;
