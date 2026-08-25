@@ -459,6 +459,14 @@ export interface SingularityScene {
    * it. There is deliberately no play() and no trigger: scroll is the only thing that starts this.
    */
   setArmed(armed: boolean): void;
+  /**
+   * Show every part of the finale for ONE warm-up draw, and return the undo.
+   *
+   * The whole scene is hidden until its beat, so nothing in it has ever entered a render list — and a
+   * hidden object's geometry does not reach the GPU however thoroughly its programs and maps have been
+   * warmed. The caller renders the space stage once with this held open. See the implementation.
+   */
+  prewarm(): () => void;
   /** Advance the clock, the spin and the rings' orbits. Called every frame the field draws. */
   update(deltaSeconds: number, elapsedSeconds: number, camera: THREE.Camera): void;
   /**
@@ -700,6 +708,15 @@ export function createSingularityScene({
   accretionPoints.visible = false;
   spinner.add(accretionPoints);
   let accretionSeeded = false;
+
+  /**
+   * The parts of both models that are hidden FOREVER, not merely until their beat.
+   *
+   * `prewarm()` turns everything else on for one warm-up draw, and without this it would turn these on
+   * too — uploading the omitted sun's flare and blowout maps, and the stray planet's, onto a GPU that is
+   * never asked to draw a single pixel of any of them.
+   */
+  const neverDrawn = new Set<THREE.Object3D>();
 
   const lensingState: SingularityLensing = {
     strength: 0,
@@ -1101,7 +1118,10 @@ export function createSingularityScene({
     modelRoot.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
       const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
-      if (meshMaterials.some((material) => isOmittedSunPart(material.name))) object.visible = false;
+      if (meshMaterials.some((material) => isOmittedSunPart(material.name))) {
+        object.visible = false;
+        neverDrawn.add(object);
+      }
     });
 
     // The shells' own materials, for the redshift. Walked AFTER the omission pass above so a hidden
@@ -1266,6 +1286,7 @@ export function createSingularityScene({
         if (!phase) {
           // The stray planet. Not part of the black hole and not part of this story.
           object.visible = false;
+          neverDrawn.add(object);
           return;
         }
         blackHoleForms.push({ mesh: object, baseScale: object.scale.clone(), phase });
@@ -1318,6 +1339,41 @@ export function createSingularityScene({
     console.error(`Failed to load ${MODEL_PATH}`, error);
     onSettled?.();
   });
+
+  /**
+   * ── Make the whole finale drawable for ONE warm-up frame ─────────────────────────────────────────
+   *
+   * Everything in here is hidden from the moment it loads until the moment it is the shot: the star
+   * until `presence` rises, the burst until the flash, the accretion disc with it, and the black hole
+   * until the horizon opens. `warmSceneMaterials` reaches their PROGRAMS and their MAPS — but a hidden
+   * object never enters a render list, so its VERTEX BUFFERS do not reach the GPU until the frame it
+   * first turns visible, and on this scene that frame is the flash. Two glTF models' geometry, the
+   * accretion buffer and the rings all landed on it at once, alongside the lensing pass compiling for
+   * the first time. That is the hitch this exists to move into the loader.
+   *
+   * Exactly the shape of `useWorksField`'s `showMarksForWarmupDraw`, down to `frustumCulled`: a culled
+   * object never reaches the render list either, so whether this uploaded anything would otherwise
+   * depend on where the camera happened to be pointing.
+   */
+  const prewarm = (): (() => void) => {
+    const shown: THREE.Object3D[] = [];
+    const unculled: THREE.Object3D[] = [];
+    group.traverse((child) => {
+      if (neverDrawn.has(child)) return;
+      if (!child.visible) {
+        child.visible = true;
+        shown.push(child);
+      }
+      if (child.frustumCulled) {
+        child.frustumCulled = false;
+        unculled.push(child);
+      }
+    });
+    return () => {
+      shown.forEach((child) => { child.visible = false; });
+      unculled.forEach((child) => { child.frustumCulled = true; });
+    };
+  };
 
   const setArmed = (next: boolean) => {
     // ⚠ Same guard, same reason: disarming un-does the settle over FINALE_REWIND_SECONDS.
@@ -1420,6 +1476,7 @@ export function createSingularityScene({
     isReady: () => ready,
     setPresence,
     setArmed,
+    prewarm,
     update,
     /**
      * Three things move this, and they compose in this order: the star's arrival lifts the field's

@@ -29,6 +29,25 @@ import * as THREE from 'three';
  *
  * ⚠ Call this on an IDLE frame, never inline with other GPU work. It is a deliberate stall; the whole
  * point is choosing where it lands.
+ *
+ * ── ⚠ AND IT IS WORTHLESS WITHOUT `drawnInto`, WHICH IS WHY THAT ARGUMENT EXISTS ────────────────
+ * three keys a program on `toneMapping` AND `outputColorSpace`, and BOTH of those are read off
+ * `renderer.getRenderTarget()` at compile time (WebGLPrograms `getParameters`): with nothing bound
+ * they take the renderer's own values, and with a target bound they collapse to `NoToneMapping` and
+ * the working colour space. So a compile run on a bare rAF — where the last thing anyone bound was
+ * the default framebuffer — produces programs under a cache key that a scene rendered through an
+ * EffectComposer will NEVER ask for, and every one of them is compiled again, synchronously, on the
+ * frame it is first drawn. Exactly the stall this file exists to prevent, silently doing nothing.
+ *
+ * Pass the target the scene is really drawn into. Only its null-ness is read, so any of the
+ * composer's targets is the right answer for a scene that lives in a composer, and `null` is the right
+ * answer for one drawn straight to the canvas. It has NO default deliberately — a wrong answer here is
+ * silent, so every caller states one.
+ *
+ * ⚠ A scene drawn BOTH ways needs both, and the hero sun is one: `sunBloom` renders it into
+ * `sceneTarget` for the glow and again to the canvas for the image. It warms the canvas key only, so
+ * its corona still pays one compile on the frame the glow first sees it. Left as it stands rather than
+ * widened blind — the sun's warm-up sits inside a loader budget that is accounted for elsewhere.
  */
 
 /** Anything on a material that is actually a texture, without reaching for `any` to find it. */
@@ -40,12 +59,23 @@ export function warmSceneMaterials(
   renderer: THREE.WebGLRenderer,
   scene: THREE.Object3D,
   camera: THREE.Camera,
+  drawnInto: THREE.WebGLRenderTarget | null,
 ): void {
   // 1 · Programs. `compile` walks with `traverse`, NOT `traverseVisible` (three r184 — only its light
   //     gathering is visibility-filtered), so objects hidden until their moment are compiled here too.
   //     ⚠ It also runs SYNCHRONOUSLY: `compileAsync` calls `this.compile()` before it awaits anything,
-  //     and only the wait for the driver to report linking done is offloaded.
-  renderer.compileAsync(scene, camera).catch(() => {});
+  //     and only the wait for the driver to report linking done is offloaded. That is what lets the
+  //     target be put back on the line after the call: the compile has already happened by then, and
+  //     only the driver's linking report is still outstanding.
+  const previousTarget = renderer.getRenderTarget();
+  const previousCubeFace = renderer.getActiveCubeFace();
+  const previousMipmapLevel = renderer.getActiveMipmapLevel();
+  renderer.setRenderTarget(drawnInto);
+  try {
+    renderer.compileAsync(scene, camera).catch(() => {});
+  } finally {
+    renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
+  }
 
   // 2 · Maps. See the header: `compile` does not upload them.
   const uploaded = new Set<THREE.Texture>();

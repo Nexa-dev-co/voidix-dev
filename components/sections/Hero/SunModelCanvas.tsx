@@ -1179,7 +1179,9 @@ export default function SunModelCanvas() {
      * paying exactly the same stall. Read its header for why the maps have to be uploaded separately
      * from the compile, and for the GPU-process reasoning that found this in the first place.
      */
-    const warmStarMaterials = () => warmSceneMaterials(renderer, scene, camera);
+    // `null` — the key for step 4 of `sunBloom.render`, the scene drawn straight to the canvas, which
+    // is the image the visitor actually sees. See `warmSceneMaterials`' header for what that leaves.
+    const warmStarMaterials = () => warmSceneMaterials(renderer, scene, camera, null);
 
     // ── Load ──
     const gltfLoader = new GLTFLoader();

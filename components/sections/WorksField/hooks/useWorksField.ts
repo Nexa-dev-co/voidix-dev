@@ -1992,15 +1992,22 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
     // ⚠ `onWarm` is not decoration. Both callers are gated sources now, and the loader holds its
     // finale until every arrived source reports warm — so the report has to happen on the far side of
     // the deferred frame, not beside the call that schedules it.
+    //
+    // ⚠ `drawnInto` is not optional in practice and passing the wrong one is a silent no-op. three keys
+    // a program on the tone mapping and colour space implied by whatever render target is bound WHEN IT
+    // COMPILES, and a bare rAF has the default framebuffer bound — so a compile run here without it
+    // built programs under a key that a scene drawn through a composer never asks for, and every one of
+    // them was compiled again on the frame it was first shown. See lib/warmScene.ts's header.
     let lazyWarmupFrame = 0;
     const warmWhenIdle = (
       target: THREE.Object3D,
       targetCamera: THREE.Camera,
+      drawnInto: THREE.WebGLRenderTarget,
       onWarm?: () => void,
     ) => {
       lazyWarmupFrame = requestAnimationFrame(() => {
         if (disposed) return;
-        warmSceneMaterials(renderer, target, targetCamera);
+        warmSceneMaterials(renderer, target, targetCamera, drawnInto);
         onWarm?.();
       });
     };
@@ -2032,8 +2039,14 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
           // run, not beside the call that schedules it. `warmWhenIdle` defers a frame, and saying
           // "warm" before that frame has drawn is how the gate would open on a room whose programs are
           // still uncompiled.
-          if (chamber) warmWhenIdle(chamber.scene, chamber.camera, () => reportWarmupDone('chamber'));
-          else reportWarmupDone('chamber');
+          // `screenTarget`, not `spaceBuffer`: the room is what `screenRenderPass` draws, and only the
+          // stage it lands in decides the cache key its programs are built under.
+          if (chamber) {
+            warmWhenIdle(chamber.scene, chamber.camera, screenTarget, () =>
+              reportWarmupDone('chamber'));
+          } else {
+            reportWarmupDone('chamber');
+          }
         },
         // ⚠ Separate from `onReady` because it also fires when the load FAILED — at which point there
         // is no room to warm and nothing will ever report one, so the source has to retire itself or
@@ -2052,6 +2065,60 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
     // No onReady callback: this field renders continuously while it is on screen (unlike the hero sun's
     // demand-rendered canvas), and the scene re-applies its own presence when the model lands.
     let singularity: SingularityScene | null = null;
+
+    /**
+     * ── The finale is warmed by DRAWING it, not by compiling it ──────────────────────────────────
+     *
+     * Every mesh in the contact scene is hidden from the moment it loads until the moment it is the
+     * shot, and the moments are all the same moment: at the flash the star is dissolving, the burst
+     * turns on, the accretion disc turns on, `black_hole.glb` turns on — and the lensing pass compiles
+     * for the very first time (that half is warmed in `warmUpField`, where the pass lives). Two glTF
+     * models' vertex buffers and a particle buffer, all landing inside the one frame the whole section
+     * is built to deliver. Reported as a hitch as the lensing appears, and that is exactly what it was.
+     *
+     * So this does what `warmUpField` does for the field and `showMarksForWarmupDraw` does for the
+     * marks: a REAL render of stage 1, with every hidden part of the finale held visible.
+     *
+     * ── ⚠ AND THE BIGGEST ITEM ON THAT FRAME WAS NEVER THE FINALE'S OWN MATERIALS ────────────────
+     * The dying star carries a POINT LIGHT (`coreLight`, the white-hot compression light inside the
+     * shell), and it hangs off the same group. three keys every non-raw material's program on
+     * `numPointLights`, so the frame that group turns visible does not recompile the star — it
+     * recompiles THE WHOLE SPACE SCENE, starfield and debris included, because all of it is suddenly
+     * being lit by one more light than the programs it is holding were built for.
+     *
+     * ⚠ Which is why `prewarm()` runs BEFORE `warmSceneMaterials` and not after. `compile` gathers
+     * lights with `traverseVisible` — the one part of it that IS visibility-filtered — so a compile run
+     * with the group still hidden rebuilds every program under exactly the key that is about to be
+     * thrown away. Both keys are wanted and both get built here; a program is cached until its material
+     * is disposed, so the section can cross back and forth for free afterwards.
+     *
+     * ⚠ Stage 1 ONLY, and that is what makes it safe to draw a dead star at any moment in the load:
+     * `spaceComposer.renderToScreen` is false, so this touches nothing but its own off-screen buffers.
+     * Pixels reach the canvas from `screenComposer`, which is deliberately not called here. The read
+     * buffer it leaves behind cannot leak either — the loop re-renders stage 1 before sampling it on
+     * every frame it draws at all, and the one path that reuses the previous buffer (the chamber's
+     * space stride) cannot be reached before the reveal.
+     */
+    const warmSingularityWhenIdle = (onWarm?: () => void) => {
+      lazyWarmupFrame = requestAnimationFrame(() => {
+        if (disposed) return;
+        // ⚠ FIRST. See the note above on `coreLight` — the compile below is only worth running with
+        // the finale's light already in the scene's light list.
+        const restoreHidden = singularity?.prewarm();
+        try {
+          // Programs and maps, then the uploads the draw is the only thing that can do. Both halves are
+          // now keyed against the stage this scene is really rendered in, and against its real lighting.
+          warmSceneMaterials(renderer, scene, camera, spaceBuffer);
+          spaceComposer.render();
+        } finally {
+          // In `finally` for the reason `warmUpField` gives about SMAA: a throw mid-warm must not leave
+          // the whole finale standing on screen at contact 0.
+          restoreHidden?.();
+        }
+        onWarm?.();
+      });
+    };
+
     const ensureSingularity = () => {
       if (singularity) return;
       reportSourceActivity('singularity');
@@ -2069,7 +2136,7 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
           reportSourceActivity('singularity');
           reportAssetProgress('singularity', fraction);
         },
-        onReady: () => warmWhenIdle(scene, camera, () => reportWarmupDone('singularity')),
+        onReady: () => warmSingularityWhenIdle(() => reportWarmupDone('singularity')),
         // ⚠ THE GATE OPENS ON THIS, NOT ON `onReady`, and the difference is the whole point of putting
         // this source on the gate at all: `onReady` fires when the STAR lands and the black hole is
         // only requested from inside that callback. Reporting there would have declared 2.37 MB
@@ -2079,7 +2146,7 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
           // A second warm pass costs nothing — every program compiled by the first is cached — and it
           // is what puts the black hole's own materials on the GPU rather than leaving them for the
           // frame the finale first shows them.
-          warmWhenIdle(scene, camera, () => reportWarmupDone('singularity'));
+          warmSingularityWhenIdle(() => reportWarmupDone('singularity'));
         },
       });
       scene.add(singularity.group);
@@ -2304,6 +2371,14 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
       // Restored in `finally`, not inline, so an early return on teardown or a throw mid-probe cannot
       // leave the works section running a pass it is supposed to have off.
       const smaaWasEnabled = smaaPass.enabled;
+      // ⚠ THE LENS IS WARMED THE SAME WAY AND FOR A STRONGER REASON THAN SMAA.
+      // `compileAsync` cannot reach a post-processing pass at all — a pass's material lives on its own
+      // FullScreenQuad, not in any scene — so the only thing that ever builds this program is a render
+      // with the pass enabled. Left to itself that render is the FLASH at the contact finale: the
+      // program linked on the exact frame the lensing was supposed to appear, and the link is GPU-process
+      // work, so it took the whole page with it for a beat. Enabled for the allocation draw below and
+      // put straight back, so it never reaches the probe.
+      const lensWasEnabled = lensingPass.enabled;
       try {
         // Out of the caller's tick first. Both entry points land inside asset work — `buildField` has
         // just finished cutting four marks and notifying the loader's listeners, and the backstop
@@ -2319,6 +2394,7 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
         if (disposed) return;
 
         smaaPass.enabled = true;
+        lensingPass.enabled = true;
         // The marks ride on THIS draw and are put back before the next one — see
         // `showMarksForWarmupDraw`. This is already the draw that carries the allocations, and keeping
         // them off the probe below means the measurement that sizes the whole session still sees
@@ -2326,6 +2402,10 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
         const restoreMarks = showMarksForWarmupDraw();
         drawWarmupFrame();
         restoreMarks();
+        // Off before the measurement: works never runs this pass, so billing the session's resolution
+        // for a full-screen blit it only pays for one second at the bottom of the page would size every
+        // machine against a frame it never draws.
+        lensingPass.enabled = false;
 
         await nextWarmupFrame();
         if (disposed) return;
@@ -2357,6 +2437,7 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
         // whatever failed on first draw, exactly as it did before any of this existed.
       } finally {
         smaaPass.enabled = smaaWasEnabled;
+        lensingPass.enabled = lensWasEnabled;
         if (!disposed) reportWarmupDone('works'); // the intro holds the reveal until this fires
       }
     };
