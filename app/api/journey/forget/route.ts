@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+import { isPanelAddressedToSelf } from '@/lib/cms/panelOrigin';
+
 /**
  * A visitor withdrawing consent, forwarded to the panel.
  *
@@ -23,6 +25,11 @@ export async function POST(request: Request) {
 
   if (!baseUrl || !secret) {
     console.warn('[journey] withdrawal cannot be forwarded — the panel is not configured');
+    return new NextResponse(null, { status: 204 });
+  }
+
+  // ⚠ `/api/journey/forget` is this route's path AND the panel's. See `panelOrigin.ts`.
+  if (isPanelAddressedToSelf(baseUrl, request)) {
     return new NextResponse(null, { status: 204 });
   }
 

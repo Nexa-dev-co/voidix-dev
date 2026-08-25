@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+import { isPanelAddressedToSelf } from '@/lib/cms/panelOrigin';
+
 /**
  * The journey batch, on its way to the panel.
  *
@@ -39,6 +41,12 @@ export async function POST(request: Request) {
 
   if (!baseUrl || !secret) {
     console.warn('[journey] intake is not configured — VOIDIX_CMS_URL or VOIDIX_CMS_INTAKE_SECRET is unset');
+    return new NextResponse(null, { status: 204 });
+  }
+
+  // ⚠ The panel's journey intake is spelled `/api/journey` exactly as this route is, so a panel URL
+  // resolving to our own origin makes this handler call ITSELF. See `panelOrigin.ts`.
+  if (isPanelAddressedToSelf(baseUrl, request)) {
     return new NextResponse(null, { status: 204 });
   }
 
