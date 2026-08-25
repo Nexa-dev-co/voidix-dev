@@ -367,6 +367,16 @@ export interface SunBloom {
    * Cheap to call every frame: three uniform writes, no reallocation.
    */
   setGrade(strength: number, radius: number, threshold: number): void;
+  /**
+   * The target step 1 renders the scene into — the glow's source, never shown.
+   *
+   * Exposed for ONE purpose: this module draws the star's scene into two different surfaces (here, and
+   * the canvas in step 4), and three builds a separate program for each. Anything warming this scene's
+   * materials has to name both or half the work lands on the frame the glow first sees an object that
+   * was hidden until then. Read `lib/warmScene.ts`'s header before touching it, and do not render into
+   * it from outside — the mip chain below assumes it is written exactly once per glow refresh.
+   */
+  readonly glowSourceTarget: THREE.WebGLRenderTarget;
   dispose(): void;
 }
 
@@ -556,5 +566,5 @@ export function createSunBloom(renderer: THREE.WebGLRenderer): SunBloom {
     brightMaterial.uniforms.uThreshold.value = threshold;
   };
 
-  return { render, setSize, setGrade, dispose };
+  return { render, setSize, setGrade, glowSourceTarget: sceneTarget, dispose };
 }

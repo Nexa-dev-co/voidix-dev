@@ -2007,7 +2007,7 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
     ) => {
       lazyWarmupFrame = requestAnimationFrame(() => {
         if (disposed) return;
-        warmSceneMaterials(renderer, target, targetCamera, drawnInto);
+        warmSceneMaterials(renderer, target, targetCamera, [drawnInto]);
         onWarm?.();
       });
     };
@@ -2108,7 +2108,7 @@ export function useWorksField({ canvasRef, activeIndex, projects, onStatus }: Fi
         try {
           // Programs and maps, then the uploads the draw is the only thing that can do. Both halves are
           // now keyed against the stage this scene is really rendered in, and against its real lighting.
-          warmSceneMaterials(renderer, scene, camera, spaceBuffer);
+          warmSceneMaterials(renderer, scene, camera, [spaceBuffer]);
           spaceComposer.render();
         } finally {
           // In `finally` for the reason `warmUpField` gives about SMAA: a throw mid-warm must not leave

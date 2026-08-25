@@ -1178,10 +1178,18 @@ export default function SunModelCanvas() {
      * and the contact star have exactly the same shape (built lazily, drawn much later) and were
      * paying exactly the same stall. Read its header for why the maps have to be uploaded separately
      * from the compile, and for the GPU-process reasoning that found this in the first place.
+     *
+     * ⚠ TWO SURFACES, AND FOR A LONG TIME THIS NAMED ONLY ONE — so it was fixing half the freeze it
+     * was written for. `sunBloom.render` draws this scene TWICE: into `glowSourceTarget` to derive the
+     * halo (step 1) and again straight to the canvas for the image (step 4). three keys a program on
+     * the tone mapping and colour space that whatever target is bound implies, so those are two
+     * different programs for every material here — and warming the canvas one alone left the corona to
+     * compile its glow program on the very frame it lights inside the closing shell.
+     *
+     * The order is the shipping order: the glow's source is what step 1 draws first.
      */
-    // `null` — the key for step 4 of `sunBloom.render`, the scene drawn straight to the canvas, which
-    // is the image the visitor actually sees. See `warmSceneMaterials`' header for what that leaves.
-    const warmStarMaterials = () => warmSceneMaterials(renderer, scene, camera, null);
+    const warmStarMaterials = () =>
+      warmSceneMaterials(renderer, scene, camera, [bloom.glowSourceTarget, null]);
 
     // ── Load ──
     const gltfLoader = new GLTFLoader();
