@@ -118,12 +118,12 @@ export interface DeckService {
 export const DECK_SERVICES: DeckService[] = [
   {
     index: '01',
-    name: 'Web Experiences',
+    name: 'Websites & Web Apps',
     discipline: 'web',
-    eyebrow: 'Interfaces with escape velocity',
+    eyebrow: 'Digital products built for performance and conversion',
     description:
-      'Bespoke platforms engineered from the metal up — no templates, no compromise. Every interaction is hand-tuned until the product moves like it has its own momentum.',
-    capabilities: ['Next.js', 'WebGL / GLSL', 'Realtime', 'Design Systems'],
+      'We design and build high-performance business websites, landing pages, web applications, customer portals, and SaaS products around your brand, users, workflows, and goals.',
+    capabilities: ['Business Websites', 'Web Applications', 'SaaS Products', 'Customer Portals'],
     modelPath: WEB_VESSEL,
     // Ember Noir — a full-black hull lit almost neutrally; only a faint rim catch remains as a nod to
     // the heat. Predominantly black. Matte, low-reflectance.
@@ -153,12 +153,12 @@ export const DECK_SERVICES: DeckService[] = [
   },
   {
     index: '02',
-    name: 'Mobile Systems',
+    name: 'Mobile Apps',
     discipline: 'mobile',
-    eyebrow: 'Native, in every dimension',
+    eyebrow: 'iOS and Android experiences connected to your business',
     description:
-      'Apps that feel like an extension of the device, not a website in a frame. Sixty frames a second, offline-first, and tactile in the hand.',
-    capabilities: ['iOS / Android', 'Offline-first', 'Motion', 'Haptics'],
+      'We design and develop mobile applications for customers, employees, and digital products, connecting each app to the APIs, databases, and business systems behind it.',
+    capabilities: ['iOS & Android', 'Customer Apps', 'Business Apps', 'Connected Systems'],
     modelPath: MOBILE_VESSEL,
     // Deep Navy — a dark blue hull (navy → steel-blue) raked by a reddish key light for a cinematic
     // warm/cool contrast. The ship itself stays cool/blue; the red mood comes from the light.
@@ -185,12 +185,12 @@ export const DECK_SERVICES: DeckService[] = [
   },
   {
     index: '03',
-    name: 'Enterprise Platforms',
-    discipline: 'enterprise',
-    eyebrow: 'Gravity for your pipeline',
+    name: 'AI & Automation',
+    discipline: 'ai',
+    eyebrow: 'Intelligent systems that remove repetitive work',
     description:
-      'Operational cores that pull every signal into one orbit. We model the way your business actually works, then make the software disappear into the workflow.',
-    capabilities: ['Workflow Engines', 'Integrations', 'Roles & Access', 'Reporting'],
+      'We build AI-powered applications, assistants, document and knowledge tools, and workflow automation that helps teams work faster and make better use of their data.',
+    capabilities: ['AI Assistants', 'Workflow Automation', 'Document Processing', 'Knowledge Systems'],
     modelPath: ENTERPRISE_VESSEL,
     // Gunmetal hull with a WARM amber accent — the one ship that breaks the cool palette, and
     // brushed rather than lacquered, so the fleet reads as four distinct machines.
@@ -214,12 +214,12 @@ export const DECK_SERVICES: DeckService[] = [
   },
   {
     index: '04',
-    name: 'Artificial Intelligence',
-    discipline: 'ai',
-    eyebrow: 'Intelligence in orbit',
+    name: 'Custom Software',
+    discipline: 'enterprise',
+    eyebrow: 'Software shaped around the way your business works',
     description:
-      'Models wired into real products, not demos. Retrieval, agents, and inference pipelines designed around your data — useful on day one, smarter every week.',
-    capabilities: ['LLM Pipelines', 'RAG', 'Agents', 'Evaluation'],
+      'We build custom CRM platforms, internal tools, integrations, dashboards, desktop software, and other tailored systems that connect data and support the way your business operates.',
+    capabilities: ['Custom CRM', 'Internal Tools', 'Software Integrations', 'Tailored Systems'],
     modelPath: AI_VESSEL,
     // Pre-overhaul original look (restored on request): a flat two-tone tint — purple body fading
     // to cyan at the edges. Keeps the model's native metalness/roughness; no graded palette.

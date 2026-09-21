@@ -29,11 +29,11 @@ export const metadata: Metadata = {
   title: 'About — Voidix',
   alternates: { canonical: '/about' },
   description:
-    'A small engineering studio that builds the surface which has to be fast, legible and alive at the same time. How we work, what we hold ourselves to, and what we build it in.',
+    'How Voidix turns business requirements into custom websites, applications, CRM platforms, mobile apps, SaaS products, AI tools, and connected automation.',
   openGraph: {
     title: 'About — Voidix',
     description:
-      'Most software is weightless. We build the other kind — how a Voidix build actually runs.',
+      'One technology partner for connected websites, applications, CRM, mobile, SaaS, AI, automation, and integrations.',
     type: 'website',
   },
 };

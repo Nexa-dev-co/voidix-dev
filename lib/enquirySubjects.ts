@@ -27,26 +27,25 @@ export interface Discipline {
 
 export const DISCIPLINES: Record<DisciplineId, Discipline> = {
   web: {
-    label: 'Web Development',
+    label: 'Websites & Web Applications',
     briefSeed:
-      "We need a web platform that doesn't move like anyone else's. Here's where we are so far: ",
+      'We need a website or web application for our business. Here is what it should help us accomplish: ',
   },
   mobile: {
-    label: 'Mobile Development',
+    label: 'Mobile App Development',
     briefSeed:
-      "We need an app that feels native in the hand rather than a website in a frame. Here's where we are so far: ",
+      'We need a mobile application for our customers, team, or digital product. Here is what it should do: ',
   },
   enterprise: {
-    // Singular, unlike the fleet's "Enterprise Platforms" — this label also has to sit above ONE
-    // project as its type key, where a plural reads as a category heading rather than a description.
-    label: 'Enterprise Platform',
+    // Singular because this label also sits above one project as its type key.
+    label: 'Custom Software',
     briefSeed:
-      "We need an operational core that pulls our tools into one orbit. Here's where we are so far: ",
+      'We need a custom CRM, internal tool, integration, desktop application, or another tailored system. Here is how the business works today: ',
   },
   ai: {
-    label: 'Artificial Intelligence',
+    label: 'AI & Automation',
     briefSeed:
-      "We want intelligence wired into the product itself, not bolted on as a demo. Here's where we are so far: ",
+      'We want to add practical AI or automate a business workflow. Here is the problem it should solve: ',
   },
 };
 

@@ -974,7 +974,7 @@ export function useHeroAnimation(heroAnimationRefs: HeroAnimationRefs) {
     const enterServices = (fromStage: Stage) => {
       heroSection.classList.add(SERVICES_CLASS);
       fade(deck, 1, DECK_REVEAL_DURATION);
-      // Hide the hero tagline ("software with its own gravity") — it's hero-only and would otherwise
+      // Hide the hero tagline ("custom software built around your business") — it is hero-only and would otherwise
       // bleed through the now-transparent works/deck backdrop.
       fade(subline, 0, DECK_REVEAL_DURATION);
       // Coming back down out of works the handoff scrub owns everything — it flies the craft back

@@ -13,7 +13,7 @@
 
 import type { PublishedContact, PublishedFooter } from '@/lib/cms/publishedContent';
 
-export const CONTACT_TITLE = 'Tell us what you are building.';
+export const CONTACT_TITLE = "Tell us what you're building.";
 
 /**
  * ⚠ Placeholder-adjacent: the words are on-voice but the PROMISE in them is real. Do not ship "you
@@ -22,7 +22,7 @@ export const CONTACT_TITLE = 'Tell us what you are building.';
  * hold us to.
  */
 export const CONTACT_LEAD =
-  'A paragraph is enough — what it is, who it is for, and what has to be true on the day it ships. You will get an answer from the people who would build it, not a sales desk.';
+  "You don't need a perfect technical specification. Tell us what you are building, who will use it, what problem it solves, and what needs to happen when it launches. We can help turn the idea into a practical product and development roadmap.";
 
 export interface ContactFooterLink {
   label: string;
@@ -38,17 +38,16 @@ export interface ContactFooterGroup {
 }
 
 /**
- * ⚠ EVERY DESTINATION BELOW IS INVENTED — EXCEPT THE TWO IN `Studio`, WHICH ARE REAL ROUTES.
+ * ⚠ EMAIL AND SOCIAL DESTINATIONS BELOW ARE PLACEHOLDERS.
  *
  * `hello@voidix.studio` is not a verified address, the social handles are not claimed accounts, and
- * `/privacy` and `/terms` do not exist. They are here so the footer has its real shape and spacing.
+ * the route links are real. The placeholders are here so the footer has its real shape and spacing.
  *
- * Do not ship any of them. A dead social link on a studio site reads worse than no social link, and a
+ * Do not ship the placeholder destinations. A dead social link on a studio site reads worse than no social link, and a
  * mailto that bounces is worse than a form. Replacing these is the same job as wiring the form's
  * endpoint (docs/contact-black-hole-plan.md §7b).
  *
- * `/about` and `/careers` are the exception: they are pages, they exist, and they are the only links
- * in here you can currently click without being lied to.
+ * `/about`, `/careers`, `/privacy`, and `/terms` are real pages.
  *
  * ── ⚠ THIS ARRAY NOW FEEDS TWO FOOTERS ───────────────────────────────────────────────────────────
  * The contact section's, and `components/layout/PageShell/PageFooter` on the document routes. That is
@@ -63,8 +62,8 @@ export interface ContactFooterGroup {
  */
 export const CONTACT_FOOTER_GROUPS: ContactFooterGroup[] = [
   {
-    // First, because these are the only two entries that go anywhere real, and because a visitor
-    // looking for "who are you" in a footer looks left before they look anywhere else.
+    // First because a visitor looking for "who are you" in a footer looks left before they look
+    // anywhere else.
     title: 'Studio',
     links: [
       { label: 'About', href: '/about' },
@@ -105,8 +104,8 @@ export const CONTACT_FOOTER_GROUPS: ContactFooterGroup[] = [
  * only on the document routes, because the contact footer has no room for it. That asymmetry is the
  * layout's, not the content's — the panel publishes both regardless.
  */
-export const FOOTER_TAGLINE = 'Software with its own gravity';
-export const FOOTER_SIGN_OFF = 'Voidix — a software studio. Built with its own gravity.';
+export const FOOTER_TAGLINE = 'Custom Software Development for Modern Businesses';
+export const FOOTER_SIGN_OFF = 'Voidix — software with its own gravity.';
 
 /** The contact section's words, as one object — the same one-shape rule `AboutContent` follows. */
 export interface ContactContent {
@@ -120,8 +119,8 @@ export interface ContactContent {
 export const CONTACT_FALLBACK: ContactContent = {
   title: CONTACT_TITLE,
   lead: CONTACT_LEAD,
-  briefLabel: 'What you are building',
-  submitLabel: 'Send it',
+  briefLabel: 'What are you building?',
+  submitLabel: 'Start your project',
 };
 
 export function resolveContactContent(published: PublishedContact | null): ContactContent {

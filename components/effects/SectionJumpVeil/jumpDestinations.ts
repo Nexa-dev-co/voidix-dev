@@ -10,7 +10,8 @@ import { WORKS_FIELD_PHRASE, worksCountPhrase } from '@/components/sections/Work
  * going, in that place's own words, plus two readouts about what is there.
  *
  * ── The headline is the destination's REAL copy ──
- * Not a caption written for the card. Services really does open with "One craft at a time"; works
+ * Not a caption written for the card. Services really does open with "Software built around your
+ * business"; works
  * really does say what it says. So the card previews the section rather than describing it, and
  * arriving confirms what you were just shown. The chamber is the one exception — it has no headline
  * of its own, so it has been given one.
@@ -44,7 +45,7 @@ export function buildJumpDestinations(
 ): Record<string, JumpDestination> {
   return {
     services: {
-      headline: 'One craft at a time.',
+      headline: 'Software built around your business.',
       rows: [
         { label: 'Fleet', value: `${padded(sections.services.length)} craft` },
         { label: 'Status', value: 'Online' },
@@ -66,7 +67,7 @@ export function buildJumpDestinations(
       ],
     },
     contact: {
-      headline: 'Tell us what you are building.',
+      headline: "Tell us what you're building.",
       rows: [
         { label: 'Horizon', value: 'Singularity' },
         { label: 'Channel', value: 'Open' },

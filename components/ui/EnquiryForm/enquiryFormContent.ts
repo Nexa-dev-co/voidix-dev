@@ -52,12 +52,12 @@ export const ENQUIRY_FORM_FALLBACK: EnquiryFormContent = {
   // "Mobile", not "Phone" — the field asks for the number a person actually answers.
   phoneLabel: 'Mobile',
   sendingLabel: 'Sending…',
-  sentMessage: 'Sent. You will hear back from a person, either way.',
-  errorMessage: 'That did not send. Try again in a moment.',
-  referenceSubjectSuffix: `— like ${REFERENCE_TOKEN}`,
+  sentMessage: 'Your project details have been sent. We will review them and follow up.',
+  errorMessage: 'Your project details could not be sent. Please try again in a moment.',
+  referenceSubjectSuffix: `— similar to ${REFERENCE_TOKEN}`,
   // ⚠ Trailing space. It runs straight into the discipline's own seed, which is itself left
   // mid-sentence for the visitor to finish.
-  referenceBriefPrefix: `In the orbit of ${REFERENCE_TOKEN}. `,
+  referenceBriefPrefix: `We are interested in work similar to ${REFERENCE_TOKEN}. `,
 };
 
 export function resolveEnquiryFormContent(

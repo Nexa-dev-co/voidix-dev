@@ -5,7 +5,7 @@ import type { CSSProperties } from 'react';
  *
  * ── ⚠ THE TITLE IS AN ARRAY OF SENTENCES, NOT A STRING WITH A <br/> IN IT ────────────────────────
  * `CLAUDE.md` records what a hard break in a headline does to a 360px screen: the fleet's title came
- * out as "One craft at / a time. / Bring it / online." — because a `<br/>` is a DESKTOP instruction
+ * out as four short fragments — because a `<br/>` is a DESKTOP instruction
  * that compounds with the natural wrap instead of replacing it. Each sentence gets its own span and
  * `text-wrap: balance` evens whatever lines it actually needs at that width.
  *

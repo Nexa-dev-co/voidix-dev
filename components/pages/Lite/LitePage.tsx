@@ -79,7 +79,7 @@ const WHOLE_STUDIO_ENQUIRY: LiteEnquiry = {
 // homepage and then falls back to this one should meet the same offers, phrased the same way — and a
 // second set of verbs invented for the text version would be the page quietly becoming a different
 // site rather than the same one without the download.
-const SERVICE_ACTION_LABEL = 'Start this build';
+const SERVICE_ACTION_LABEL = 'Discuss this service';
 const PROJECT_ACTION_LABEL = 'Start one like this';
 const ASK_ACTION_LABEL = 'Ask us anything';
 

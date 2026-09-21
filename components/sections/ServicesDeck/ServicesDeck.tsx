@@ -109,8 +109,8 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
                 own inline block that wraps on its own terms, and `text-wrap: balance` in the CSS
                 evens out whatever lines it does end up needing. */}
             <h2 className="deck-title font-display">
-              <span className="deck-title-line">One craft at a time.</span>{' '}
-              <span className="deck-title-line">Bring it online.</span>
+              <span className="deck-title-line">Software built around</span>{' '}
+              <span className="deck-title-line">your business.</span>
             </h2>
           </div>
 
@@ -146,7 +146,7 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
 
               <EnquiryButton
                 // Shorter on a phone, where this shares a ~310px row with the Details button.
-                label={isNarrow ? 'Start a build' : 'Start this build'}
+                label={isNarrow ? 'Start a project' : 'Discuss this service'}
                 onClick={() => setOpenSheet('enquiry')}
               />
             </div>
@@ -242,7 +242,7 @@ export default function ServicesDeck({ activeIndex, goTo }: ServicesDeckProps) {
         open={openSheet === 'enquiry'}
         onClose={() => setOpenSheet('none')}
         eyebrow={`${activeService.index} — ${activeService.name}`}
-        title="Start this build"
+        title="Discuss this service"
         prefill={enquiryPrefill}
       />
     </section>

@@ -122,7 +122,7 @@ export default function Hero() {
 
       {/* Dark on the cream hero, and sits below the trail (z-index 1) so the ink
           inverts it to light — the tagline glows through the ink as the trail crosses it. */}
-      <p className="hero-sub">software with its own gravity</p>
+      <p className="hero-sub">custom software built around your business</p>
 
       {/* The scroll cue, below the tagline and only under 51.25em — above that the HUD's left column
           carries its own and this is display:none. Not gated in JS: it is static markup with one

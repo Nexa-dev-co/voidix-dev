@@ -90,65 +90,86 @@ export const ABOUT_SECTIONS: readonly DocSectionMeta[] = [
 export const ABOUT_FALLBACK: AboutContent = {
   eyebrow: 'About',
 
-  title: ['Most software is weightless.', 'We build the other kind.'],
+  title: ['One technology partner.', 'Multiple connected systems.'],
 
-  lead: 'Voidix is a small engineering studio. We take the surface that has to be fast, legible and alive at the same time — the trading floor, the clinical record, the storefront that behaves like film — and we build it properly, with the people who will maintain it in the room.',
+  lead: 'Voidix is a custom software development company building digital products and business systems for companies across the United States. We turn new ideas, outdated tools, manual processes, and disconnected systems into working software.',
 
   premiseParagraphs: [
-    'Weightless is the default, and mostly that is fine. Software loads, it works, it is forgotten between openings. Nobody was ever meant to feel anything about the expenses tool.',
-    'Gravity is the opposite property, and it is not decoration. A product has it when leaving costs something: when the number lands where the eye already was, when the motion is carrying information rather than apologising for a wait, when the thing is quick enough that nobody has to think about the thing. That is an engineering result before it is a design one, which is why the two are not separate jobs here.',
+    'Off-the-shelf software asks your business to adapt to the product. Custom software works the other way around: it is designed around your processes, customers, data, and goals.',
+    'Your website should communicate with your CRM. Your CRM should communicate with your applications. Your applications should communicate with your internal systems. Automation should connect the work between them. We build that technology layer as one system.',
   ],
 
-  premiseQuote:
-    'A product earns its gravity in the first four hundred milliseconds, and keeps it over the next four hundred days.',
+  premiseQuote: 'Your business → Your workflow → Your software.',
 
   principles: [
     {
       index: '01',
-      claim: 'The hard part first.',
+      claim: 'Replace manual processes.',
       backing:
-        'The first fortnight goes on whatever the project is most likely to die of — the render path, the data volume, the thing nobody has built before. An estimate given before that is a guess in a suit.',
+        'Move repetitive work out of spreadsheets, emails, and disconnected tools and into systems that can carry it reliably.',
     },
     {
       index: '02',
-      claim: 'One team, all the way down.',
+      claim: 'Replace outdated software.',
       backing:
-        'The people who design the interaction write the shader that draws it. Nothing is thrown over a wall, because there is no wall to throw it over.',
+        'Modernize legacy systems and replace software that no longer fits the way your business operates.',
     },
     {
       index: '03',
-      claim: 'Performance is a design decision.',
+      claim: 'Launch a new product.',
       backing:
-        'Sixty frames on hardware people actually own is a constraint we design inside, not a pass we run at the end. It has killed features here, and it should have.',
+        'Turn an idea into an MVP, SaaS platform, web application, mobile product, or connected customer experience.',
     },
     {
       index: '04',
-      claim: 'Handover is a deliverable.',
+      claim: 'Connect your systems.',
       backing:
-        'Documented, commented, and walked through until someone on your side can defend every decision in it. If you never need to call us again, that is the better outcome and we will take it.',
+        'Integrate your CRM, website, applications, APIs, databases, payment systems, and business tools.',
+    },
+    {
+      index: '05',
+      claim: 'Add AI where it helps.',
+      backing:
+        'Identify practical uses for AI in customer service, operations, sales, internal knowledge, documents, and data-heavy workflows.',
+    },
+    {
+      index: '06',
+      claim: 'Build a competitive product.',
+      backing:
+        'Create technology around your customers and operating model instead of relying on generic software to define both.',
     },
   ],
 
   buildPhases: [
     {
-      span: 'Week 1–2',
-      name: 'Prove',
-      detail: 'We build the riskiest part first and find out whether it survives contact with real data.',
+      span: '01',
+      name: 'Discover',
+      detail: 'We learn your business, users, current technology, workflows, and objectives before deciding what to build.',
     },
     {
-      span: 'Week 2–3',
-      name: 'Shape',
-      detail: 'You get a shape: what we would build, what we would refuse to build, and what it takes.',
+      span: '02',
+      name: 'Architect',
+      detail: 'We turn the requirements into a roadmap covering product structure, data, integrations, automation, and priorities.',
     },
     {
-      span: '6–24 weeks',
+      span: '03',
+      name: 'Design',
+      detail: 'We design the interfaces and workflows around the people who will use the product and the decisions they need to make.',
+    },
+    {
+      span: '04',
       name: 'Build',
-      detail: 'Something working every week, on the real stack. Not a demo that becomes a rewrite.',
+      detail: 'We turn the approved architecture and designs into working software, with progress visible throughout development.',
     },
     {
-      span: 'Then the door stays open',
-      name: 'Hand over',
-      detail: 'Keys, docs and a stabilisation window while live traffic finds what staging never did.',
+      span: '05',
+      name: 'Launch',
+      detail: 'We test, deploy, integrate, and prepare the product for real users and real business operations.',
+    },
+    {
+      span: '06',
+      name: 'Evolve',
+      detail: 'We can continue improving the product, adding features, connecting systems, and introducing automation or AI as the business grows.',
     },
   ],
 
@@ -163,23 +184,23 @@ export const ABOUT_FALLBACK: AboutContent = {
     'These are commitments, not a scoreboard. They are the four numbers we will be held to before a line of code exists.',
 
   stack: [
-    'TypeScript',
-    'React & Next.js',
-    'WebGL / GLSL',
-    'Three.js',
-    'Realtime streams',
-    'iOS & Android',
-    'Design systems',
-    'Performance budgets',
+    'Websites',
+    'Web applications',
+    'CRM platforms',
+    'Mobile apps',
+    'SaaS products',
+    'AI software',
+    'Business automation',
+    'Software integrations',
   ],
 
   stackNote:
-    'The list is short on purpose. We would rather be the studio that knows eight things completely than the one that lists forty.',
+    'A project can begin with one system and grow into a connected digital ecosystem without rebuilding the foundation each time.',
 
-  closingTitle: 'Tell us what you are building.',
+  closingTitle: "Tell us what you're building.",
 
   closingLead:
-    'A paragraph is enough — what it is, who it is for, and what has to be true on the day it ships.',
+    "You don't need a perfect technical specification. Tell us what it should do, who will use it, and what needs to be true when it launches.",
 
   careersInvite: 'Or come and build it with us',
 };
