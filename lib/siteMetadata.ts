@@ -10,7 +10,9 @@
 /**
  * ⚠ THE PRODUCTION ORIGIN. No trailing slash — `new URL()` and the sitemap both append their own.
  *
- * Confirmed 2026-08-13 (it was a guess at `voidix.studio` before, carrying a TODO). Overridable by
+ * Confirmed 2026-08-13 (it was a guess at `voidix.studio` before, carrying a TODO). Moved to the
+ * `www.` host 2026-09-22 — it must match the host the deployment actually serves, or every sitemap
+ * `<loc>` and canonical names a redirect rather than a page. Overridable by
  * environment so a preview deployment can declare its own origin rather than claiming to be
  * production — a Vercel preview that canonicalises to the live domain is asking the crawler to index
  * the live page's URL with the preview's content.
@@ -18,7 +20,7 @@
  * ⚠ `NEXT_PUBLIC_` because `metadataBase` is evaluated where the metadata is built and the value has
  * to survive into the client bundle for any client-side consumer. It is a hostname, not a secret.
  */
-export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://voidix.tech';
+export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.voidix.tech';
 
 /** How the studio is named in structured data. Lowercase in the wordmark, capitalised in prose. */
 export const SITE_NAME = 'Voidix';
