@@ -8405,3 +8405,305 @@ body {
   line-height: 1.7;
   color: var(--doc-ink-label);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+   THE 404
+
+   One viewport, built on the document routes' own pieces — `.doc-page` for the padding and the ink,
+   `.doc-field` for the backdrop — so a visitor who took a wrong turn is visibly still inside the site.
+   Only the figure and the one-screen composition are its own.
+
+   ⚠ The figure is sized in EM off one font-size, and everything in the orbit is placed in em too. That
+   is what lets one declaration scale the whole drawing from a phone to a 2560 monitor with no
+   breakpoint: change `.lost-figure`'s font-size and the ring, the marker and the escape line follow.
+   ───────────────────────────────────────────────────────────────────────────────────────────────── */
+.lost-page {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.lost-inner {
+  display: grid;
+  gap: clamp(1.75rem, 6vh, 4rem);
+}
+
+/* ⚠ The `min()` against the HEIGHT is the landscape phone again: 26vw of a 932px-wide frame is display
+   type taller than half of its 430px. Width sets the size; height only ever caps it. */
+.lost-figure {
+  --lost-orbit-radius: 0.37em;
+  display: flex;
+  align-items: center;
+  /* Room above the digits for the escape line, which leaves the ring up and to the right. */
+  padding-top: 0.22em;
+  font-weight: 800;
+  font-size: min(clamp(6.5rem, 26vw, 19rem), 36vh);
+  font-size: min(clamp(6.5rem, 26vw, 19rem), 36svh);
+  line-height: 0.8;
+  letter-spacing: -0.04em;
+  color: var(--fg);
+}
+
+/* ── The orbit that stands in for the zero ── */
+.lost-orbit {
+  position: relative;
+  flex: none;
+  width: calc(var(--lost-orbit-radius) * 2);
+  aspect-ratio: 1;
+  margin-inline: 0.05em;
+}
+
+.lost-orbit-ring,
+.lost-orbit-trace {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+
+.lost-orbit-ring {
+  border: 1px solid rgb(var(--fg-rgb) / 0.16);
+}
+
+/* The path the body was on, brightening toward where it was last seen. A conic gradient masked to the
+   ring's own width — the masthead star's corona construction, for the same reason: a border cannot be
+   unevenly bright around its circumference. It runs from 225° to 45°, which is exactly where
+   `.lost-orbit-flight` puts the marker. */
+.lost-orbit-trace {
+  background: conic-gradient(
+    from -135deg,
+    transparent 0deg,
+    rgb(var(--heat-600-rgb) / 0.7) 180deg,
+    transparent 180deg
+  );
+  -webkit-mask: radial-gradient(closest-side, transparent 96%, #000 97.5%, #000 100%, transparent 100%);
+  mask: radial-gradient(closest-side, transparent 96%, #000 97.5%, #000 100%, transparent 100%);
+}
+
+/* The star is still there. Only the thing that orbited it is missing. */
+.lost-orbit-star {
+  position: absolute;
+  inset: 41%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 42% 38%,
+    rgb(var(--heat-999-rgb) / 0.95),
+    rgb(var(--heat-700-rgb) / 0.8) 48%,
+    rgb(var(--heat-400-rgb) / 0.35) 80%,
+    transparent 100%
+  );
+  box-shadow: 0 0 0.14em rgb(var(--heat-600-rgb) / 0.45);
+  animation: lost-star-breathe 5.5s ease-in-out infinite;
+}
+
+/* A zero-size frame at the centre, turned so its +x axis points up and to the right (45° on the clock
+   face). Everything inside is laid out along that one axis, which keeps the marker, the line and the
+   body collinear without a single trigonometric constant. */
+.lost-orbit-flight {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform: rotate(-45deg);
+}
+
+/* Last known position. Hollow, because nothing is in it. */
+.lost-orbit-marker {
+  --lost-marker-size: 0.06em;
+  position: absolute;
+  left: calc(var(--lost-orbit-radius) - var(--lost-marker-size) / 2);
+  top: calc(var(--lost-marker-size) / -2);
+  width: var(--lost-marker-size);
+  height: var(--lost-marker-size);
+  border: 1px solid rgb(var(--heat-600-rgb) / 0.9);
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+.lost-orbit-marker::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border: 1px solid rgb(var(--heat-600-rgb) / 0.6);
+  border-radius: 50%;
+  animation: lost-marker-ping 2.8s ease-out infinite;
+}
+
+.lost-orbit-escape {
+  position: absolute;
+  left: calc(var(--lost-orbit-radius) + 0.05em);
+  top: -0.5px;
+  width: 0.58em;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgb(var(--heat-600-rgb) / 0.65) 0 4px,
+    transparent 4px 8px
+  );
+  -webkit-mask: linear-gradient(90deg, #000, transparent);
+  mask: linear-gradient(90deg, #000, transparent);
+}
+
+/* The body, leaving. ⚠ Its resting transform is part-way out and visible, because the reduced-motion
+   blanket rule collapses the animation to one 0.001ms run with no fill — what stays on screen is this
+   declaration, and it still has to tell the story. */
+.lost-orbit-body {
+  --lost-body-size: 0.036em;
+  position: absolute;
+  left: calc(var(--lost-body-size) / -2);
+  top: calc(var(--lost-body-size) / -2);
+  width: var(--lost-body-size);
+  height: var(--lost-body-size);
+  border-radius: 50%;
+  background: rgb(var(--heat-900-rgb));
+  box-shadow: 0 0 0.05em rgb(var(--heat-600-rgb) / 0.9);
+  transform: translateX(calc(var(--lost-orbit-radius) + 0.3em));
+  opacity: 0.7;
+  animation: lost-body-escape 6s cubic-bezier(0.3, 0, 0.2, 1) infinite;
+}
+
+@keyframes lost-body-escape {
+  0% {
+    transform: translateX(var(--lost-orbit-radius));
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  70%,
+  100% {
+    transform: translateX(calc(var(--lost-orbit-radius) + 0.66em));
+    opacity: 0;
+  }
+}
+
+@keyframes lost-marker-ping {
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+
+@keyframes lost-star-breathe {
+  50% {
+    box-shadow: 0 0 0.22em rgb(var(--heat-600-rgb) / 0.6);
+  }
+}
+
+/* ── The copy ──
+   A hairline and two halves: the claim on the left, the backing and the way out hung to the right —
+   the same diagonal the masthead sets with its offset lead. */
+.lost-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: end;
+  gap: clamp(1.5rem, 5vw, 5rem);
+  padding-top: clamp(1.5rem, 4vh, 2.5rem);
+  border-top: 1px solid var(--border);
+}
+
+.lost-title {
+  margin-top: clamp(0.75rem, 2vh, 1.25rem);
+  max-width: 14ch;
+  font-weight: 800;
+  font-size: clamp(1.9rem, 4.6vw, 3.6rem);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+
+.lost-lead {
+  max-width: 46ch;
+  font-size: var(--doc-fs-body);
+  line-height: 1.7;
+  color: var(--doc-ink);
+}
+
+.lost-coordinates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.7rem;
+  margin-top: 1.1rem;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.08em;
+}
+
+.lost-coordinates-label {
+  text-transform: uppercase;
+  letter-spacing: 0.1875em;
+  color: var(--doc-ink-label);
+}
+
+/* ⚠ A mistyped URL can be any length and has no spaces to break on. */
+.lost-coordinates-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--accent);
+}
+
+.lost-coordinates-verdict {
+  color: var(--doc-ink-label);
+}
+
+.lost-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(0.85rem, 2.5vw, 1.75rem);
+  margin-top: clamp(1.5rem, 3.5vh, 2.25rem);
+}
+
+.lost-return {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding-inline: 1.4rem;
+  border: 1px solid rgb(var(--accent-rgb) / 0.55);
+  font-size: var(--fs-small);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--accent);
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
+}
+
+.lost-return:hover,
+.lost-return:focus-visible {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.lost-return:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.lost-destinations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(0.85rem, 2.5vw, 1.75rem);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The shared link style is a footnote at 12.5px; here it is a way out, so it gets a tap target. */
+.lost-destinations .doc-close-link {
+  display: inline-block;
+  padding-block: 0.75rem;
+}
+
+@media (max-width: 51.25em) {
+  .lost-body {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+}
