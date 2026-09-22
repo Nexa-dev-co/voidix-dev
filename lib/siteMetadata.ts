@@ -39,6 +39,7 @@ export const SITEMAP_ROUTES = [
   { path: '/', changeFrequency: 'monthly', priority: 1 },
   { path: '/about', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/careers', changeFrequency: 'weekly', priority: 0.8 },
+  { path: '/blog', changeFrequency: 'weekly', priority: 0.8 },
   /**
    * ⚠ The legal routes ARE listed, and they are not `noindex`. Both are linked from every page's
    * footer, so a crawler reaches them either way — the choice is only whether it reaches them as

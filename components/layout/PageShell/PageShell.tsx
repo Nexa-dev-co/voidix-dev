@@ -8,7 +8,7 @@ import PageFooter from './PageFooter';
 import { useScrollReveal } from './hooks/useScrollReveal';
 
 /**
- * The frame both document pages are built in — `/about` and `/careers`.
+ * The frame the native-scroll document routes are built in: About, Careers, legal, and the journal.
  *
  * ── ⚠ THIS IS NOT A SECTION OF THE HOMEPAGE, AND MUST NOT BECOME ONE ─────────────────────────────
  * The homepage is ONE pinned ScrollTrigger and every "section" in it is an overlay inside that pin.
@@ -61,6 +61,11 @@ import { useScrollReveal } from './hooks/useScrollReveal';
  */
 const NO_SCRIPT_REVEAL_CSS = `
   .doc-page [class*='doc-'] {
+    opacity: 1 !important;
+    transform: none !important;
+    clip-path: none !important;
+  }
+  .doc-page [class*='blog-'] {
     opacity: 1 !important;
     transform: none !important;
     clip-path: none !important;

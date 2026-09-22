@@ -98,6 +98,27 @@ export interface PublishedCareers {
   aboutInvite: string;
 }
 
+/** One article in the studio's public field journal. */
+export interface PublishedBlogBlock {
+  kind: 'PARAGRAPH' | 'HEADING_2' | 'HEADING_3' | 'LIST_ITEM';
+  body: string;
+}
+
+export interface PublishedBlogPost {
+  index: string;
+  /** Stable route identity. Editing the title in the panel never rewrites this. */
+  slug: string;
+  title: string;
+  /** The source article's supplied search/browser title. */
+  seoTitle: string;
+  excerpt: string;
+  category: string;
+  /** Calendar date in `YYYY-MM-DD` form; no timezone shift is allowed to move it a day. */
+  publishedOn: string;
+  /** Controlled text blocks. No arbitrary HTML or Markdown crosses the CMS boundary. */
+  body: PublishedBlogBlock[];
+}
+
 export interface PublishedService {
   index: string;
   name: string;
@@ -198,6 +219,8 @@ export interface PublishedContent {
   footer: PublishedFooter | null;
   about: PublishedAbout | null;
   careers: PublishedCareers | null;
+  /** May legitimately be empty: an empty archive must not grow invented articles. */
+  blogs: PublishedBlogPost[];
   disciplines: PublishedDiscipline[];
   enquiryForm: PublishedEnquiryForm | null;
 }

@@ -11,7 +11,7 @@ import { SITE_URL, SITEMAP_ROUTES } from '@/lib/siteMetadata';
  * sitemap that 404s when the panel is down is worse than one carrying an approximate date. If this
  * ever needs to be exact, the fix is to read `publishedAt` and fall back to now.
  *
- * ⚠ Three routes, not four — `/lite` is deliberately absent. See `SITEMAP_ROUTES`.
+ * `/lite` is deliberately absent. See `SITEMAP_ROUTES`.
  */
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = new Date();

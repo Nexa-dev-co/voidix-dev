@@ -9,8 +9,8 @@ import { telemetryEnabled } from '@/lib/telemetryEnabled';
  * Which of this render's words came from the panel, and which came from this repo.
  *
  * ── ⚠ WHY THIS IS PER KEY AND NOT PER PAGE ──────────────────────────────────────────────────────
- * The nine payload keys resolve INDEPENDENTLY, and each one falls back on its own terms. A page can
- * therefore be eight-ninths connected and look completely fine — the fleet reading the panel while
+ * The ten payload keys resolve INDEPENDENTLY, and each one falls back on its own terms. A page can
+ * therefore be nine-tenths connected and look completely fine — the fleet reading the panel while
  * the FAQ quietly serves seven placeholder answers. "Did the panel answer?" is one boolean and it
  * cannot see that; this can.
  *
@@ -81,8 +81,8 @@ interface BuildOptions {
   route: string;
   release: FetchedRelease;
   scope: ContentScope;
-  /** The document routes' own key, resolved outside the shared set. */
-  pageKey?: 'about' | 'careers';
+  /** A document route's own key, resolved outside the shared set. */
+  pageKey?: 'about' | 'careers' | 'blogs';
 }
 
 /**
@@ -157,7 +157,7 @@ function fallbackDetail(release: FetchedRelease, reasonWhenReached: string): str
   return release.outcome === 'panel' ? reasonWhenReached : undefined;
 }
 
-/** `contact`, `enquiryForm`, `about`, `careers` — all four fall back on exactly "is it null". */
+/** Nullable singletons fall back on exactly "is it null"; list keys are still reportable here. */
 function describeObject(
   key: string,
   value: unknown,

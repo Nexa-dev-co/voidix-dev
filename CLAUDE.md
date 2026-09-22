@@ -269,12 +269,13 @@ app/
   globals.css       # tokens + every component's CSS
   page.tsx          # the site: the one pinned journey
   about/page.tsx    # ┐ the DOCUMENT routes (added 2026-08-06). Ordinary native scroll — no pin,
-  careers/page.tsx  # ┘ no WebGL, no scene. See "Two kinds of route" below.
+  careers/page.tsx  # │ no WebGL, no scene. See "Two kinds of route" below.
+  blog/             # ┘ CMS-backed journal archive + article routes, on the same PageShell.
 
 components/
   layout/Navbar/
   layout/PageShell/  # the document routes' frame: field, masthead, orbit rail, footer
-  pages/             # ⚠ a ROUTE's content (About/, Careers/) — not a homepage section
+  pages/             # ⚠ a ROUTE's content (About/, Careers/, Blog/) — not a homepage section
   sections/
     Hero/           # Hero, HeroSun, SunModelCanvas, HeroInstruments/
     ServicesDeck/   # the fleet carousel + DeckCanvas + hullMaterial
@@ -301,12 +302,12 @@ docs/               # living design + state docs
 **Added 2026-08-06.** For most of this project's life the homepage was the only page, and a lot of
 the code below was written on that assumption. It no longer holds.
 
-| | `/` | `/about`, `/careers` |
+| | `/` | `/about`, `/careers`, `/blog`, `/blog/[slug]` |
 |---|---|---|
 | scroll | ONE pinned ScrollTrigger; every section is an overlay inside it | native, ordinary document flow |
 | 3D | four scenes | none |
 | libraries | gsap + ScrollTrigger + three | none used (⚠ gsap still *ships* — see below) |
-| copy | in a content file per section | same convention: `aboutContent.ts`, `careersContent.ts` |
+| copy | in a content file per section | local fallbacks for about/careers; blog entries come from the CMS |
 | CSS | `globals.css` | `globals.css`, the `.doc-*` block at the end |
 | width | full bleed, the shared padding expression | **the same, since 2026-08-21** — see below |
 
@@ -432,10 +433,10 @@ the other compiles on both and arrives `undefined` — and because every consume
 throwing, the symptom is a section quietly reverting to placeholder copy. **Change one, change the
 other in the same sitting.**
 
-**State: `about` and `careers` read the panel. The other seven keys do not yet** — they are all on the
-homepage, whose content files are imported at module scope by the client components that render them.
-`docs/cms-integration-plan.md` is the plan of record for the rest, and for the search-visibility work
-that has to happen in the same components.
+**State: every published payload key is consumed.** The homepage and document routes resolve the
+shared content through `lib/cms/siteContent.ts`; `/blog` and `/blog/[slug]` consume the ordered
+`blogs` list directly and deliberately preserve a published empty list. `docs/cms-integration-plan.md`
+remains the record for the earlier integration and search-visibility work.
 
 ---
 
@@ -1114,7 +1115,7 @@ Be accurate about this; the previous revision of this file was wrong in both dir
 | **Real content** | `worksProjects.ts` and `faqEntries.ts` are both explicitly placeholder — and since 2026-08-14 `worksProjects.ts` is a **fallback** rather than the source: real projects and their marks are uploaded in the panel. The deck ships 4 services; the brief names 6. The fallback marks are still three stock SVG logos, plus one project deliberately left with none so the **initial** fallback is visible in the shipped data; a letter mark extrudes in **helvetiker, not Syne** (`markBody.ts` says why — `marks.ts` is gone). `careersContent.ts`'s four roles are likewise invented — and there they are the **template for the dashboard**, see below. |
 | **Careers content** | **DASHBOARD-MANAGED AND CONNECTED** (decided 2026-08-11, wired 2026-08-13). `app/careers/page.tsx` is a Server Component on **ISR** — `fetchPublishedContent()` → `resolveCareersContent()`, with `careersContent.ts` as the fallback when the panel has published nothing or is unreachable. Section 02 renders an honest **empty state** when the list is empty; ⚠ an empty published list must NEVER fall back to this repo's four invented roles, and `PublishedCareers.roles` says why. The application form is `EnquiryForm variant="application"` — name\*, email\*, and **the work** (a link and/or one PDF ≤ 5 MB, at least one of the two, checked in JS because `required` cannot express "either"), split across **two steps** since 2026-08-16 so it fits every frame without scrolling. It posts multipart to `/api/application`, which uploads the PDF to UploadThing server-side and files the rest with the panel against the role's **`slug`** — never its title, which an editor can rewrite. ⚠ **The steps are a layout, not two requests**: one `<form>`, one `FormData`, one submit from step 02 carrying every field. |
 | **Attribution** | `black_hole.glb` is *"Black Hole" by NestaEric*, CC-BY-4.0. **Now credited**, in the contact footer — the first place on the site that puts the model on screen. No link to the source page: the licence does not require one and none was to hand. |
-| **CMS wiring** | **9 of 9 payload keys read.** ⚠ This row said "2 of 9" long after it stopped being true. `lib/cms/siteContent.ts` resolves every key, split so the document routes never carry the scene sections' copy (`resolveSharedContent`) and `/` and `/lite` get the lot (`resolveFullContent`). `lib/cms/contentReport.ts` prints per-key provenance in dev — read that rather than trusting this table. `docs/cms-integration-plan.md` §③. |
+| **CMS wiring** | **10 of 10 payload keys read.** The original nine resolve through `lib/cms/siteContent.ts`, split so the document routes never carry the scene sections' copy (`resolveSharedContent`) and `/` and `/lite` get the lot (`resolveFullContent`). The tenth, `blogs`, is consumed by the journal archive and article routes. `lib/cms/contentReport.ts` prints per-key provenance in dev — read that rather than trusting this table. `docs/cms-integration-plan.md` §③. |
 | **Journey analytics** | **BUILT, 2026-08-17; completed 2026-08-19.** Visitor analytics into the studio's own panel — no third party. `lib/journey/` collects by subscribing to the site's own events, `/api/journey` holds the secret, the panel stores and reports at `/user-activity`. Two consent tiers: tier 1 needs no permission and stores nothing on the device, tier 2 adds one id. GPC is honoured as a denial. **Outstanding: nothing has been seen end to end**, and ⚠ `voidix-cms/prisma/scripts/journey-maintenance-cron.sql` must be RUN once per database or `/privacy`'s ninety-day retention is a claim nothing performs. `docs/journey-analytics-plan.md`. |
 | **Search visibility** | **NOT BUILT, and measured 2026-08-13.** No `sitemap.ts`, no `robots.ts`, no canonical, no JSON-LD of any type, no OG image. ⚠ `metadataBase` is still a **guess** at the post-rebrand domain and carries a TODO — every relative canonical and OG URL resolves against it. ⚠ And the homepage's markup is the bigger problem: **0 `<h1>` elements** (the hero is a `div` with `role="heading"`, DOM text `"we build W rlds"`), **1 service description in 4**, **1 project in 4**, and **0 FAQ answers** — the render is a ternary, list *or* one answer. `/lite` carries all of it and is deliberately `noindex`. Numbers and the fix order in `docs/cms-integration-plan.md` §④–⑥. |
 

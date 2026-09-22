@@ -47,7 +47,7 @@ export interface ContactFooterGroup {
  * mailto that bounces is worse than a form. Replacing these is the same job as wiring the form's
  * endpoint (docs/contact-black-hole-plan.md §7b).
  *
- * `/about`, `/careers`, `/privacy`, and `/terms` are real pages.
+ * `/about`, `/careers`, `/blog`, `/privacy`, and `/terms` are real pages.
  *
  * ── ⚠ THIS ARRAY NOW FEEDS TWO FOOTERS ───────────────────────────────────────────────────────────
  * The contact section's, and `components/layout/PageShell/PageFooter` on the document routes. That is
@@ -68,6 +68,7 @@ export const CONTACT_FOOTER_GROUPS: ContactFooterGroup[] = [
     links: [
       { label: 'About', href: '/about' },
       { label: 'Careers', href: '/careers' },
+      { label: 'Journal', href: '/blog' },
     ],
   },
   {
