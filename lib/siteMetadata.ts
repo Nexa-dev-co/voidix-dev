@@ -25,6 +25,12 @@ export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.voidix.
 /** How the studio is named in structured data. Lowercase in the wordmark, capitalised in prose. */
 export const SITE_NAME = 'Voidix';
 
+/** Verified studio profiles that can be claimed in both visible links and structured data. */
+export const LINKEDIN_PROFILE_URL = 'https://www.linkedin.com/company/voidix-tech';
+
+/** Verified public inbox used by the footer and organization metadata. */
+export const PUBLIC_EMAIL_ADDRESS = 'info@voidix.tech';
+
 /**
  * Every route that should be in the sitemap, with how often each genuinely changes.
  *

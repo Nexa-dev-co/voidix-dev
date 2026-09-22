@@ -289,11 +289,10 @@ Usage note: each row below holds one sentence, one short label, or one list item
 | Sign off sentence 2 | Built with its own gravity. |  | Websites, apps, business systems, and practical AI, designed and built with care. | CMS |
 | Studio link | About |  | About Voidix | `/about` |
 | Studio link | Careers |  | Careers | `/careers` |
-| Direct link | hello@voidix.studio |  | Keep temporarily; confirm the public email and domain before launch. | `mailto:hello@voidix.studio` |
+| Direct link | info@voidix.tech |  | Verified public inbox. | `mailto:info@voidix.tech` |
 | Elsewhere link | X |  | Keep temporarily; verify the account before launch. | `https://x.com/voidixstudio` |
-| Elsewhere link | LinkedIn |  | Keep temporarily; verify the account before launch. | `https://linkedin.com/company/voidixstudio` |
+| Elsewhere link | LinkedIn |  | Verified studio profile. | `https://www.linkedin.com/company/voidix-tech` |
 | Elsewhere link | GitHub |  | Keep temporarily; verify the account before launch. | `https://github.com/voidixstudio` |
-| Elsewhere link | Dribbble |  | Keep temporarily; verify the account before launch. | `https://dribbble.com/voidixstudio` |
 | Legal link | Privacy |  | Privacy | `/privacy` |
 | Legal link | Terms |  | Terms | `/terms` |
 

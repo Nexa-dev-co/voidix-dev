@@ -49,9 +49,9 @@
  * with a blank where the controller should be is obviously unfinished; one that simply never names a
  * controller reads as complete and is not.
  *
- * ⚠ `PRIVACY_CONTACT` is ALSO a placeholder, and for a second reason: `contactContent.ts` still says
- * `hello@voidix.studio` while `lib/siteMetadata.ts` says the domain is `voidix.tech`. Fix both in one
- * change or this document will name an address the footer contradicts.
+ * ⚠ `PRIVACY_CONTACT` is ALSO a placeholder. The verified public inbox is `info@voidix.tech`, but
+ * that does not prove a separate privacy mailbox exists. Confirm the rights-request address before
+ * replacing the visible brackets below.
  */
 
 import type { LegalDocument } from './legalDocument';

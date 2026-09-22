@@ -12,6 +12,7 @@
  */
 
 import type { PublishedContact, PublishedFooter } from '@/lib/cms/publishedContent';
+import { LINKEDIN_PROFILE_URL, PUBLIC_EMAIL_ADDRESS } from '@/lib/siteMetadata';
 
 export const CONTACT_TITLE = "Tell us what you're building.";
 
@@ -38,10 +39,10 @@ export interface ContactFooterGroup {
 }
 
 /**
- * ⚠ EMAIL AND SOCIAL DESTINATIONS BELOW ARE PLACEHOLDERS.
+ * ⚠ THE X AND GITHUB DESTINATIONS BELOW ARE PLACEHOLDERS.
  *
- * `hello@voidix.studio` is not a verified address, the social handles are not claimed accounts, and
- * the route links are real. The placeholders are here so the footer has its real shape and spacing.
+ * The X and GitHub handles are not claimed accounts. The email, route links, and LinkedIn profile are
+ * real. The placeholders are here so the footer has its real shape and spacing.
  *
  * Do not ship the placeholder destinations. A dead social link on a studio site reads worse than no social link, and a
  * mailto that bounces is worse than a form. Replacing these is the same job as wiring the form's
@@ -73,15 +74,14 @@ export const CONTACT_FOOTER_GROUPS: ContactFooterGroup[] = [
   },
   {
     title: 'Direct',
-    links: [{ label: 'hello@voidix.studio', href: 'mailto:hello@voidix.studio' }],
+    links: [{ label: PUBLIC_EMAIL_ADDRESS, href: `mailto:${PUBLIC_EMAIL_ADDRESS}` }],
   },
   {
     title: 'Elsewhere',
     links: [
       { label: 'X', href: 'https://x.com/voidixstudio', external: true },
-      { label: 'LinkedIn', href: 'https://linkedin.com/company/voidixstudio', external: true },
+      { label: 'LinkedIn', href: LINKEDIN_PROFILE_URL, external: true },
       { label: 'GitHub', href: 'https://github.com/voidixstudio', external: true },
-      { label: 'Dribbble', href: 'https://dribbble.com/voidixstudio', external: true },
     ],
   },
   {
