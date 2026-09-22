@@ -290,9 +290,11 @@ Usage note: each row below holds one sentence, one short label, or one list item
 | Studio link | About |  | About Voidix | `/about` |
 | Studio link | Careers |  | Careers | `/careers` |
 | Direct link | info@voidix.tech |  | Verified public inbox. | `mailto:info@voidix.tech` |
-| Elsewhere link | X |  | Keep temporarily; verify the account before launch. | `https://x.com/voidixstudio` |
+| Direct link | Call +1 (307) 317-9422 |  | Verified public telephone; opens a call. | `tel:+13073179422` |
+| Direct link | Text |  | Opens a new SMS to the public telephone. | `sms:+13073179422` |
+| Elsewhere link | X |  | Verified studio profile. | `https://x.com/Voidix_tech` |
 | Elsewhere link | LinkedIn |  | Verified studio profile. | `https://www.linkedin.com/company/voidix-tech` |
-| Elsewhere link | GitHub |  | Keep temporarily; verify the account before launch. | `https://github.com/voidixstudio` |
+| Elsewhere link | GitHub |  | Verified studio profile. | `https://github.com/Voidix-tech` |
 | Legal link | Privacy |  | Privacy | `/privacy` |
 | Legal link | Terms |  | Terms | `/terms` |
 

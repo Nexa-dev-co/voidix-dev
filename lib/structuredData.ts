@@ -23,10 +23,11 @@
 
 import type { FaqEntry } from '@/components/sections/Chamber/faqEntries';
 import {
-  LINKEDIN_PROFILE_URL,
   PUBLIC_EMAIL_ADDRESS,
+  PUBLIC_PHONE_NUMBER,
   SITE_NAME,
   SITE_URL,
+  VERIFIED_SOCIAL_PROFILE_URLS,
 } from '@/lib/siteMetadata';
 
 export function buildOrganizationSchema() {
@@ -39,8 +40,9 @@ export function buildOrganizationSchema() {
       'Voidix builds custom websites, web applications, CRM platforms, mobile apps, SaaS products, AI tools, and workflow automation for businesses across the United States.',
     logo: `${SITE_URL}/icon.png`,
     email: PUBLIC_EMAIL_ADDRESS,
+    telephone: PUBLIC_PHONE_NUMBER,
     // `sameAs` is an ownership claim, so only profiles confirmed by the studio belong here.
-    sameAs: [LINKEDIN_PROFILE_URL],
+    sameAs: VERIFIED_SOCIAL_PROFILE_URLS,
   };
 }
 

@@ -26,10 +26,25 @@ export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.voidix.
 export const SITE_NAME = 'Voidix';
 
 /** Verified studio profiles that can be claimed in both visible links and structured data. */
+export const X_PROFILE_URL = 'https://x.com/Voidix_tech';
 export const LINKEDIN_PROFILE_URL = 'https://www.linkedin.com/company/voidix-tech';
+export const GITHUB_PROFILE_URL = 'https://github.com/Voidix-tech';
+
+export const VERIFIED_SOCIAL_PROFILE_URLS = [
+  X_PROFILE_URL,
+  LINKEDIN_PROFILE_URL,
+  GITHUB_PROFILE_URL,
+] as const;
 
 /** Verified public inbox used by the footer and organization metadata. */
 export const PUBLIC_EMAIL_ADDRESS = 'info@voidix.tech';
+
+/** Verified US telephone, with separate values for machines, display, calls, and SMS. */
+export const PUBLIC_PHONE_NUMBER = '+13073179422';
+export const PUBLIC_PHONE_LABEL = '+1 (307) 317-9422';
+export const PUBLIC_PHONE_CALL_LABEL = `Call ${PUBLIC_PHONE_LABEL}`;
+export const PUBLIC_PHONE_CALL_URL = `tel:${PUBLIC_PHONE_NUMBER}`;
+export const PUBLIC_PHONE_TEXT_URL = `sms:${PUBLIC_PHONE_NUMBER}`;
 
 /**
  * Every route that should be in the sitemap, with how often each genuinely changes.

@@ -12,7 +12,15 @@
  */
 
 import type { PublishedContact, PublishedFooter } from '@/lib/cms/publishedContent';
-import { LINKEDIN_PROFILE_URL, PUBLIC_EMAIL_ADDRESS } from '@/lib/siteMetadata';
+import {
+  GITHUB_PROFILE_URL,
+  LINKEDIN_PROFILE_URL,
+  PUBLIC_EMAIL_ADDRESS,
+  PUBLIC_PHONE_CALL_LABEL,
+  PUBLIC_PHONE_CALL_URL,
+  PUBLIC_PHONE_TEXT_URL,
+  X_PROFILE_URL,
+} from '@/lib/siteMetadata';
 
 export const CONTACT_TITLE = "Tell us what you're building.";
 
@@ -39,14 +47,8 @@ export interface ContactFooterGroup {
 }
 
 /**
- * ⚠ THE X AND GITHUB DESTINATIONS BELOW ARE PLACEHOLDERS.
- *
- * The X and GitHub handles are not claimed accounts. The email, route links, and LinkedIn profile are
- * real. The placeholders are here so the footer has its real shape and spacing.
- *
- * Do not ship the placeholder destinations. A dead social link on a studio site reads worse than no social link, and a
- * mailto that bounces is worse than a form. Replacing these is the same job as wiring the form's
- * endpoint (docs/contact-black-hole-plan.md §7b).
+ * The public email, telephone, and all three social profiles below are verified. Keep their values
+ * in `siteMetadata.ts` so the visible footer and Organization schema cannot drift.
  *
  * `/about`, `/careers`, `/blog`, `/privacy`, and `/terms` are real pages.
  *
@@ -74,14 +76,18 @@ export const CONTACT_FOOTER_GROUPS: ContactFooterGroup[] = [
   },
   {
     title: 'Direct',
-    links: [{ label: PUBLIC_EMAIL_ADDRESS, href: `mailto:${PUBLIC_EMAIL_ADDRESS}` }],
+    links: [
+      { label: PUBLIC_EMAIL_ADDRESS, href: `mailto:${PUBLIC_EMAIL_ADDRESS}` },
+      { label: PUBLIC_PHONE_CALL_LABEL, href: PUBLIC_PHONE_CALL_URL },
+      { label: 'Text', href: PUBLIC_PHONE_TEXT_URL },
+    ],
   },
   {
     title: 'Elsewhere',
     links: [
-      { label: 'X', href: 'https://x.com/voidixstudio', external: true },
+      { label: 'X', href: X_PROFILE_URL, external: true },
       { label: 'LinkedIn', href: LINKEDIN_PROFILE_URL, external: true },
-      { label: 'GitHub', href: 'https://github.com/voidixstudio', external: true },
+      { label: 'GitHub', href: GITHUB_PROFILE_URL, external: true },
     ],
   },
   {
