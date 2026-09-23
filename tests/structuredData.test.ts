@@ -7,6 +7,7 @@ test('publishes every verified social profile in the organization schema', () =>
     'https://x.com/Voidix_tech',
     'https://www.linkedin.com/company/voidix-tech',
     'https://github.com/Voidix-tech',
+    'https://www.facebook.com/Voidix.tech/',
   ]);
 });
 

@@ -29,11 +29,13 @@ export const SITE_NAME = 'Voidix';
 export const X_PROFILE_URL = 'https://x.com/Voidix_tech';
 export const LINKEDIN_PROFILE_URL = 'https://www.linkedin.com/company/voidix-tech';
 export const GITHUB_PROFILE_URL = 'https://github.com/Voidix-tech';
+export const FACEBOOK_PROFILE_URL = 'https://www.facebook.com/Voidix.tech/';
 
 export const VERIFIED_SOCIAL_PROFILE_URLS = [
   X_PROFILE_URL,
   LINKEDIN_PROFILE_URL,
   GITHUB_PROFILE_URL,
+  FACEBOOK_PROFILE_URL,
 ] as const;
 
 /** Verified public inbox used by the footer and organization metadata. */

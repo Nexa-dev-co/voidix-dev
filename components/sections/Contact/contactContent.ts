@@ -13,6 +13,7 @@
 
 import type { PublishedContact, PublishedFooter } from '@/lib/cms/publishedContent';
 import {
+  FACEBOOK_PROFILE_URL,
   GITHUB_PROFILE_URL,
   LINKEDIN_PROFILE_URL,
   PUBLIC_EMAIL_ADDRESS,
@@ -88,6 +89,7 @@ export const CONTACT_FOOTER_GROUPS: ContactFooterGroup[] = [
       { label: 'X', href: X_PROFILE_URL, external: true },
       { label: 'LinkedIn', href: LINKEDIN_PROFILE_URL, external: true },
       { label: 'GitHub', href: GITHUB_PROFILE_URL, external: true },
+      { label: 'Facebook', href: FACEBOOK_PROFILE_URL, external: true },
     ],
   },
   {
