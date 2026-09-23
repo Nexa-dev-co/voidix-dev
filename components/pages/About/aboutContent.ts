@@ -90,13 +90,14 @@ export const ABOUT_SECTIONS: readonly DocSectionMeta[] = [
 export const ABOUT_FALLBACK: AboutContent = {
   eyebrow: 'About',
 
-  title: ['One technology partner.', 'Multiple connected systems.'],
+  title: ['One technology partner.', 'Multiple systems.'],
 
-  lead: 'Voidix is a custom software development company building digital products and business systems for companies across the United States. We turn new ideas, outdated tools, manual processes, and disconnected systems into working software.',
+  lead:
+    'Voidix is a custom software development company building digital products and business systems for companies across the United States. We design and develop high-performance websites, custom web applications, CRM platforms, mobile apps, SaaS products, AI-powered tools, and workflow automation systems around the way your business actually operates. Whether you are launching a new product, replacing outdated software, automating manual processes, or connecting disconnected systems, we turn the idea into working software.',
 
   premiseParagraphs: [
-    'Off-the-shelf software asks your business to adapt to the product. Custom software works the other way around: it is designed around your processes, customers, data, and goals.',
-    'Your website should communicate with your CRM. Your CRM should communicate with your applications. Your applications should communicate with your internal systems. Automation should connect the work between them. We build that technology layer as one system.',
+    'Off-the-shelf software forces your business to adapt to the product. Custom software works the other way around. Voidix builds digital systems around your processes, customers, data, and goals — from the first concept through development, launch, and ongoing improvement.',
+    'Your website should communicate with your CRM. Your CRM should communicate with your applications. Your applications should communicate with your internal systems. And your automation should connect everything. We build the technology layer that makes those systems work together.',
   ],
 
   premiseQuote: 'Your business → Your workflow → Your software.',
@@ -106,7 +107,7 @@ export const ABOUT_FALLBACK: AboutContent = {
       index: '01',
       claim: 'Replace manual processes.',
       backing:
-        'Move repetitive work out of spreadsheets, emails, and disconnected tools and into systems that can carry it reliably.',
+        'Move repetitive work from spreadsheets, emails, and disconnected tools into automated systems.',
     },
     {
       index: '02',
@@ -118,7 +119,7 @@ export const ABOUT_FALLBACK: AboutContent = {
       index: '03',
       claim: 'Launch a new product.',
       backing:
-        'Turn an idea into an MVP, SaaS platform, web application, mobile product, or connected customer experience.',
+        'Turn an idea into an MVP, SaaS platform, web application, or mobile product.',
     },
     {
       index: '04',
@@ -128,15 +129,15 @@ export const ABOUT_FALLBACK: AboutContent = {
     },
     {
       index: '05',
-      claim: 'Add AI where it helps.',
+      claim: 'Add AI to your business.',
       backing:
-        'Identify practical uses for AI in customer service, operations, sales, internal knowledge, documents, and data-heavy workflows.',
+        'Identify practical opportunities to use AI for customer service, operations, sales, data, and internal workflows.',
     },
     {
       index: '06',
-      claim: 'Build a competitive product.',
+      claim: 'Build a competitive digital product.',
       backing:
-        'Create technology around your customers and operating model instead of relying on generic software to define both.',
+        'Create technology specifically designed around your customers instead of relying on generic software.',
     },
   ],
 
@@ -144,32 +145,38 @@ export const ABOUT_FALLBACK: AboutContent = {
     {
       span: '01',
       name: 'Discover',
-      detail: 'We learn your business, users, current technology, workflows, and objectives before deciding what to build.',
+      detail:
+        'We start by understanding your business, users, existing technology, workflows, and objectives. The goal is simple: Understand what needs to be built before we start building it.',
     },
     {
       span: '02',
       name: 'Architect',
-      detail: 'We turn the requirements into a roadmap covering product structure, data, integrations, automation, and priorities.',
+      detail:
+        'We translate requirements into a technical roadmap covering product structure, user experience, database architecture, integrations, automation, and priorities.',
     },
     {
       span: '03',
       name: 'Design',
-      detail: 'We design the interfaces and workflows around the people who will use the product and the decisions they need to make.',
+      detail:
+        'We design the interfaces and user experience around the people who will actually use the product. Every screen has a purpose. Every workflow has a reason.',
     },
     {
       span: '04',
       name: 'Build',
-      detail: 'We turn the approved architecture and designs into working software, with progress visible throughout development.',
+      detail:
+        'Our development team turns the approved architecture and designs into functional software, with visible progress throughout development.',
     },
     {
       span: '05',
       name: 'Launch',
-      detail: 'We test, deploy, integrate, and prepare the product for real users and real business operations.',
+      detail:
+        'We test, deploy, integrate, and prepare the product for real users. The goal is to put working software into your business.',
     },
     {
       span: '06',
       name: 'Evolve',
-      detail: 'We can continue improving the product, adding features, connecting systems, and introducing automation or AI as the business grows.',
+      detail:
+        'As your business grows, Voidix continues improving your platform, adding features, integrating new systems, optimizing performance, and implementing automation and AI.',
     },
   ],
 
@@ -195,12 +202,12 @@ export const ABOUT_FALLBACK: AboutContent = {
   ],
 
   stackNote:
-    'A project can begin with one system and grow into a connected digital ecosystem without rebuilding the foundation each time.',
+    'You don’t have to build everything at once. A project can start with a website, evolve into a customer portal, connect to a CRM, become a mobile application, add automation, and introduce AI. We build the foundation so your technology can evolve with your business.',
 
   closingTitle: "Tell us what you're building.",
 
   closingLead:
-    "You don't need a perfect technical specification. Tell us what it should do, who will use it, and what needs to be true when it launches.",
+    "You don't need a perfect technical specification. Tell us what you are building, who will use it, what problem it solves, and what needs to happen when it launches. Our team can help translate the idea into a practical product and development roadmap.",
 
   careersInvite: 'Or come and build it with us',
 };

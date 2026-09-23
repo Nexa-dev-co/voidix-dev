@@ -86,7 +86,7 @@ export default function Hero() {
           says the same thing twice. This is the standard treatment for a typographically split
           headline, not a cloak: the text is exactly what is on screen.
         */}
-        <h1 className="sr-only">we build worlds</h1>
+        <h1 className="sr-only">Custom Software Development for Businesses That Want to Build What Comes Next</h1>
 
         <div className="hero-title-group" aria-hidden="true">
           <p className="hero-line-top">

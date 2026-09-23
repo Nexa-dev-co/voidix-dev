@@ -31,7 +31,7 @@ export const CONTACT_TITLE = "Tell us what you're building.";
  * hold us to.
  */
 export const CONTACT_LEAD =
-  "You don't need a perfect technical specification. Tell us what you are building, who will use it, what problem it solves, and what needs to happen when it launches. We can help turn the idea into a practical product and development roadmap.";
+  "You don't need a perfect technical specification. Tell us what you are building, who will use it, what problem it solves, and what needs to happen when it launches. Our team can help translate the idea into a practical product and development roadmap.";
 
 export interface ContactFooterLink {
   label: string;

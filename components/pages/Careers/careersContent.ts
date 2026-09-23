@@ -113,9 +113,10 @@ export const CAREERS_SECTIONS: readonly DocSectionMeta[] = [
 export const CAREERS_FALLBACK: CareersContent = {
   eyebrow: 'Careers',
 
-  title: ['We hire the person', 'who reads the shader.'],
+  title: ['Build custom software.', 'Own the result.'],
 
-  lead: 'Four to six of us, depending on the season — engineers and designers in one room, a chain of command you can cross in a sentence, work that ships with your name still on the commit. If that sounds like your size, we would like to read what you have built.',
+  lead:
+    'At Voidix, engineers and designers work together on websites, apps, business systems, and AI products from the first decision through launch. If you care about the details, question weak assumptions, and want real ownership of what ships, we would like to see your work.',
 
   workingHere: [
     {

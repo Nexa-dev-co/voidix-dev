@@ -59,7 +59,7 @@ export const FAQ_ENTRIES: FaqEntry[] = [
     index: '02',
     question: 'Does Voidix work with businesses in the United States?',
     answer: [
-      'Yes. Voidix works with B2B companies across the United States that need custom software, digital products, automation, integrations, or AI solutions.',
+      'Yes. Voidix is positioned as a technology partner for businesses in the United States and can work with B2B companies that need custom software, digital products, automation, or AI solutions.',
     ],
   },
   {
@@ -73,28 +73,28 @@ export const FAQ_ENTRIES: FaqEntry[] = [
     index: '04',
     question: 'Can you turn our idea into a SaaS product?',
     answer: [
-      'Yes. Voidix can take a software concept through planning, UX and UI design, development, integrations, deployment, and continued product development.',
+      'Yes. Voidix can help take a software concept through planning, UX/UI design, development, integrations, deployment, and continued product development.',
     ],
   },
   {
     index: '05',
     question: 'Can you integrate AI into software we already use?',
     answer: [
-      'Yes. AI capabilities can be integrated into existing websites, CRMs, SaaS products, internal systems, and business workflows when the technology and use case support it.',
+      'Yes. AI capabilities can be integrated into existing websites, CRMs, SaaS products, internal systems, and business workflows depending on the technology and use case.',
     ],
   },
   {
     index: '06',
     question: 'Can you automate our existing business processes?',
     answer: [
-      'Yes. We can analyze repetitive workflows, connect systems, automate data movement, trigger actions, and reduce unnecessary manual work.',
+      'Yes. We can analyze repetitive workflows and identify opportunities to connect systems, automate data movement, trigger actions, and reduce manual work.',
     ],
   },
   {
     index: '07',
     question: 'Do you build mobile apps?',
     answer: [
-      'Yes. Voidix develops mobile applications for businesses and digital products, including customer-facing apps and internal business applications.',
+      'Yes. Voidix develops mobile applications for businesses and digital products, including customer-facing and internal business applications.',
     ],
   },
   {
@@ -115,7 +115,7 @@ export const FAQ_ENTRIES: FaqEntry[] = [
     index: '10',
     question: 'How do we start a project?',
     answer: [
-      'Tell us what you are building, who it is for, what problem it solves, and what the software needs to accomplish. We will review the requirements and determine the appropriate next step.',
+      'Tell us what you are building, who it is for, and what the software needs to accomplish. We will review the requirements and determine the appropriate next step.',
     ],
   },
 ];

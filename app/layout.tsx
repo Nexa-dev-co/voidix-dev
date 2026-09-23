@@ -22,9 +22,9 @@ const dmSans = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: 'Custom Software Development | Voidix',
+  title: 'Custom Software Development for Businesses | Voidix',
   description:
-    'Voidix builds custom websites, web applications, CRM platforms, mobile apps, SaaS products, AI tools, and workflow automation for businesses across the United States.',
+    'Voidix is a custom software development company building digital products, web apps, CRMs, mobile apps, SaaS, AI, and workflow automation across the United States.',
   metadataBase: new URL(SITE_URL),
   // ⚠ NO `alternates.canonical` HERE, and it was here for one build. A canonical in the ROOT LAYOUT
   // is inherited by every route that does not override it — which put `<link rel="canonical"
@@ -33,9 +33,9 @@ export const metadata: Metadata = {
   // Canonicals belong on PAGES, one per route, where forgetting one is a missing tag rather than a
   // silent claim to be a different page.
   openGraph: {
-    title: 'Custom Software Development | Voidix',
+    title: 'Custom Software Development for Businesses | Voidix',
     description:
-      'Custom websites, web applications, CRM platforms, mobile apps, SaaS products, AI tools, and workflow automation built around your business.',
+      'Custom software development for businesses that want to build what comes next. Websites, web apps, CRMs, mobile apps, SaaS, AI, and automation.',
     type: 'website',
     url: '/',
     siteName: 'Voidix',

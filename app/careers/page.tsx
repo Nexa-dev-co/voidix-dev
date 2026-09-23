@@ -16,11 +16,11 @@ export const metadata: Metadata = {
   title: 'Careers — Voidix',
   alternates: { canonical: '/careers' },
   description:
-    'Open roles at a small engineering studio: WebGL, interaction design, platform. Short chain of command, work that ships with your name on the commit.',
+    'Careers at Voidix. We design and build websites, apps, business systems, and AI products with real ownership from concept to launch.',
   openGraph: {
     title: 'Careers — Voidix',
     description:
-      'We hire the person who reads the shader. Open roles, and how hiring actually runs.',
+      'Build custom software. Own the result. Open roles, culture, and how hiring runs at Voidix.',
     type: 'website',
   },
 };

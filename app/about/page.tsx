@@ -29,11 +29,11 @@ export const metadata: Metadata = {
   title: 'About — Voidix',
   alternates: { canonical: '/about' },
   description:
-    'How Voidix turns business requirements into custom websites, applications, CRM platforms, mobile apps, SaaS products, AI tools, and connected automation.',
+    'Voidix is a custom software development company building digital products and business systems across the United States. One technology partner. Multiple systems.',
   openGraph: {
     title: 'About — Voidix',
     description:
-      'One technology partner for connected websites, applications, CRM, mobile, SaaS, AI, automation, and integrations.',
+      'We design and develop high-performance websites, web applications, CRM platforms, mobile apps, SaaS products, AI tools, and workflow automation.',
     type: 'website',
   },
 };

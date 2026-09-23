@@ -18,10 +18,10 @@ import type { PublishedService } from '@/lib/cms/publishedContent';
 
 // Model → service assignment. Each ship is one line — swap a path to reassign a
 // vessel. The carousel shows one craft at a time, so every bay gets a distinct hull.
-const WEB_VESSEL        = '/models/spaceship.glb';
-const MOBILE_VESSEL     = '/models/spaceship3.glb';
+const WEB_VESSEL = '/models/spaceship.glb';
+const MOBILE_VESSEL = '/models/spaceship3.glb';
 const ENTERPRISE_VESSEL = '/models/cargo_spaceship.glb';
-const AI_VESSEL         = '/models/star_aventure_spaceship_starship_fighter.glb';
+const AI_VESSEL = '/models/star_aventure_spaceship_starship_fighter.glb';
 
 // Each hull is re-graded onto its own palette instead of being washed to one flat hue. The
 // model's own albedo *luminance* drives a three-tone map (shadow → hull → highlight), so panels,
@@ -120,10 +120,10 @@ export const DECK_SERVICES: DeckService[] = [
     index: '01',
     name: 'Websites & Web Apps',
     discipline: 'web',
-    eyebrow: 'Digital products built for performance and conversion',
+    eyebrow: 'High-performance digital experiences built for conversion',
     description:
-      'We design and build high-performance business websites, landing pages, web applications, customer portals, and SaaS products around your brand, users, workflows, and goals.',
-    capabilities: ['Business Websites', 'Web Applications', 'SaaS Products', 'Customer Portals'],
+      'We design and develop modern business websites, conversion-focused landing pages, custom web applications, customer portals, and eCommerce experiences with performance and search visibility in mind.',
+    capabilities: ['Business Websites', 'Custom Web Apps', 'Customer Portals', 'eCommerce'],
     modelPath: WEB_VESSEL,
     // Ember Noir — a full-black hull lit almost neutrally; only a faint rim catch remains as a nod to
     // the heat. Predominantly black. Matte, low-reflectance.
@@ -158,7 +158,7 @@ export const DECK_SERVICES: DeckService[] = [
     eyebrow: 'iOS and Android experiences connected to your business',
     description:
       'We design and develop mobile applications for customers, employees, and digital products, connecting each app to the APIs, databases, and business systems behind it.',
-    capabilities: ['iOS & Android', 'Customer Apps', 'Business Apps', 'Connected Systems'],
+    capabilities: ['iOS & Android', 'Customer Apps', 'Business Apps', 'On-Demand Platforms'],
     modelPath: MOBILE_VESSEL,
     // Deep Navy — a dark blue hull (navy → steel-blue) raked by a reddish key light for a cinematic
     // warm/cool contrast. The ship itself stays cool/blue; the red mood comes from the light.
@@ -187,9 +187,9 @@ export const DECK_SERVICES: DeckService[] = [
     index: '03',
     name: 'AI & Automation',
     discipline: 'ai',
-    eyebrow: 'Intelligent systems that remove repetitive work',
+    eyebrow: 'Put AI where it creates measurable business value',
     description:
-      'We build AI-powered applications, assistants, document and knowledge tools, and workflow automation that helps teams work faster and make better use of their data.',
+      'We develop AI-powered applications, assistants, chatbots, and document workflows, connecting your systems and automating repetitive processes so information moves without friction.',
     capabilities: ['AI Assistants', 'Workflow Automation', 'Document Processing', 'Knowledge Systems'],
     modelPath: ENTERPRISE_VESSEL,
     // Gunmetal hull with a WARM amber accent — the one ship that breaks the cool palette, and
@@ -266,7 +266,7 @@ export function resolveDeckServices(published: PublishedService[] | null): DeckS
   if (published.length !== DECK_SERVICES.length) {
     console.warn(
       `[cms] the panel published ${published.length} services and this build has ` +
-        `${DECK_SERVICES.length} vessels — serving the site's own copy instead`,
+      `${DECK_SERVICES.length} vessels — serving the site's own copy instead`,
     );
     return DECK_SERVICES;
   }

@@ -37,7 +37,7 @@ export function buildOrganizationSchema() {
     name: SITE_NAME,
     url: SITE_URL,
     description:
-      'Voidix builds custom websites, web applications, CRM platforms, mobile apps, SaaS products, AI tools, and workflow automation for businesses across the United States.',
+      'Voidix is a custom software development company building digital products, web apps, CRMs, mobile apps, SaaS, AI, and workflow automation across the United States.',
     logo: `${SITE_URL}/icon.png`,
     email: PUBLIC_EMAIL_ADDRESS,
     telephone: PUBLIC_PHONE_NUMBER,
